@@ -6,6 +6,7 @@ let package = Package(
     name: "InferencePool",
     platforms: [
         .macOS(.v14),
+        .iOS(.v17),
     ],
     products: [
         .executable(name: "InferencePoolApp", targets: ["InferencePoolApp"]),
@@ -16,6 +17,9 @@ let package = Package(
         .library(name: "ModelManager", targets: ["ModelManager"]),
         .library(name: "LocalAPI", targets: ["LocalAPI"]),
         .library(name: "ClusterKit", targets: ["ClusterKit"]),
+        .library(name: "WANKit", targets: ["WANKit"]),
+        .library(name: "CreditKit", targets: ["CreditKit"]),
+        .library(name: "AgentKit", targets: ["AgentKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.21.0"),
@@ -80,6 +84,33 @@ let package = Package(
             ]
         ),
 
+        // MARK: - WANKit (WAN P2P networking)
+        .target(
+            name: "WANKit",
+            dependencies: [
+                "SharedTypes",
+                "HardwareProfile",
+                "ClusterKit",
+            ]
+        ),
+
+        // MARK: - CreditKit
+        .target(
+            name: "CreditKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
+        // MARK: - AgentKit (agent-to-agent communication)
+        .target(
+            name: "AgentKit",
+            dependencies: [
+                "SharedTypes",
+                "CreditKit",
+            ]
+        ),
+
         // MARK: - LocalAPI
         .target(
             name: "LocalAPI",
@@ -101,6 +132,18 @@ let package = Package(
                 "ModelManager",
                 "LocalAPI",
                 "ClusterKit",
+                "WANKit",
+                "CreditKit",
+                "AgentKit",
+            ]
+        ),
+
+        // MARK: - SolairCompanion (iOS)
+        .executableTarget(
+            name: "SolairCompanion",
+            dependencies: [
+                "SharedTypes",
+                "AgentKit",
             ]
         ),
 
@@ -120,6 +163,18 @@ let package = Package(
         .testTarget(
             name: "InferenceEngineTests",
             dependencies: ["InferenceEngine"]
+        ),
+        .testTarget(
+            name: "WANKitTests",
+            dependencies: ["WANKit"]
+        ),
+        .testTarget(
+            name: "CreditKitTests",
+            dependencies: ["CreditKit"]
+        ),
+        .testTarget(
+            name: "AgentKitTests",
+            dependencies: ["AgentKit"]
         ),
     ]
 )

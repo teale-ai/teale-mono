@@ -2,6 +2,8 @@ import SwiftUI
 import SharedTypes
 import HardwareProfile
 import ClusterKit
+import WANKit
+import CreditKit
 
 struct DashboardView: View {
     @Environment(AppState.self) private var appState
@@ -22,6 +24,17 @@ struct DashboardView: View {
                     Divider()
                     ClusterSummarySection()
                 }
+
+                // WAN Summary (if enabled)
+                if appState.wanEnabled {
+                    Divider()
+                    WANSummarySection()
+                }
+
+                Divider()
+
+                // Credit Balance
+                CreditBalanceSection()
 
                 Divider()
 
@@ -268,6 +281,86 @@ private struct ClusterSummarySection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+}
+
+// MARK: - WAN Summary
+
+private struct WANSummarySection: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("WAN Network")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("View") {
+                    appState.currentView = .wan
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+
+            let wanState = appState.wanManager.state
+            if !wanState.connectedPeers.isEmpty {
+                HStack(spacing: 12) {
+                    InfoPill(
+                        icon: "globe",
+                        text: "\(wanState.connectedPeers.count) WAN peers",
+                        color: .blue
+                    )
+                    InfoPill(
+                        icon: "bolt.horizontal",
+                        text: wanState.natType.rawValue
+                    )
+                }
+            } else {
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Connecting to WAN network...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Credit Balance
+
+private struct CreditBalanceSection: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Credits")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Wallet") {
+                    appState.currentView = .wallet
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+
+            HStack(spacing: 12) {
+                InfoPill(
+                    icon: "creditcard",
+                    text: String(format: "%.1f credits", appState.wallet.balance.value),
+                    color: appState.wallet.balance.value > 10 ? .green : .orange
+                )
+                InfoPill(
+                    icon: "arrow.down.circle",
+                    text: String(format: "+%.1f earned", appState.wallet.totalEarned.value),
+                    color: .green
+                )
             }
         }
     }

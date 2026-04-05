@@ -2,6 +2,8 @@ import SwiftUI
 import ServiceManagement
 import SharedTypes
 import ClusterKit
+import WANKit
+import CreditKit
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
@@ -9,6 +11,7 @@ struct SettingsView: View {
     @State private var maxStorage: Double = 50.0
     @State private var apiPort: String = "11435"
     @State private var clusterPasscode: String = ""
+    @State private var wanRelayURL: String = "wss://relay.solair.network/ws"
 
     var body: some View {
         @Bindable var state = appState
@@ -47,6 +50,51 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+            }
+
+            // WAN P2P
+            Section("WAN P2P Network") {
+                Toggle("Enable WAN", isOn: $state.wanEnabled)
+
+                if appState.wanEnabled {
+                    HStack {
+                        Text("Relay Server:")
+                        TextField("URL", text: $wanRelayURL)
+                            .frame(width: 200)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: wanRelayURL) { _, newValue in
+                                appState.wanRelayURL = newValue
+                            }
+                    }
+
+                    let wanState = appState.wanManager.state
+                    HStack {
+                        Circle()
+                            .fill(wanState.relayStatus == .connected ? .green : .orange)
+                            .frame(width: 8, height: 8)
+                        Text(wanState.relayStatus == .connected ?
+                             "\(wanState.connectedPeers.count) WAN peer(s)" :
+                             "Connecting to relay...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    LabeledContent("NAT Type", value: wanState.natType.rawValue)
+                        .font(.caption)
+                }
+            }
+
+            // Credits
+            Section("Credits") {
+                LabeledContent("Balance", value: String(format: "%.2f credits", appState.wallet.balance.value))
+                LabeledContent("Total Earned", value: String(format: "%.2f", appState.wallet.totalEarned.value))
+                LabeledContent("Total Spent", value: String(format: "%.2f", appState.wallet.totalSpent.value))
+
+                Button("View Wallet") {
+                    appState.currentView = .wallet
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
             // Storage

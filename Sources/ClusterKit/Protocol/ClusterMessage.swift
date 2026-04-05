@@ -24,6 +24,19 @@ public enum ClusterMessage: Codable, Sendable {
     case modelTransferRequest(ModelTransferRequestPayload)
     case modelTransferChunk(ModelTransferChunkPayload)
     case modelTransferComplete(ModelTransferCompletePayload)
+
+    // Agent protocol
+    case agentMessage(AgentTransportPayload)
+}
+
+// MARK: - Agent Transport Payload
+
+public struct AgentTransportPayload: Codable, Sendable {
+    public var data: Data
+
+    public init(data: Data) {
+        self.data = data
+    }
 }
 
 // MARK: - Handshake Payloads

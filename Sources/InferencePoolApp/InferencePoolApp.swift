@@ -5,6 +5,9 @@ import InferenceEngine
 import ModelManager
 import LocalAPI
 import ClusterKit
+import WANKit
+import CreditKit
+import AgentKit
 
 // MARK: - Main App Entry
 
@@ -42,11 +45,18 @@ struct ContentView: View {
                 ModelBrowserView()
             case .cluster:
                 ClusterView()
+            case .wan:
+                WANView()
+            case .wallet:
+                WalletView()
+            case .agents:
+                AgentView()
             case .settings:
                 SettingsView()
             }
         }
         .task {
+            await appState.initializeAsync()
             await appState.startServer()
         }
     }
@@ -69,6 +79,12 @@ struct SidebarView: View {
                 .tag(AppView.models)
             Label("Cluster", systemImage: "desktopcomputer.and.arrow.down")
                 .tag(AppView.cluster)
+            Label("WAN", systemImage: "globe")
+                .tag(AppView.wan)
+            Label("Wallet", systemImage: "creditcard")
+                .tag(AppView.wallet)
+            Label("Agents", systemImage: "person.2.wave.2")
+                .tag(AppView.agents)
             Label("Settings", systemImage: "gear")
                 .tag(AppView.settings)
         }

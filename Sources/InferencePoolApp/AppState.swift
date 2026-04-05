@@ -6,6 +6,9 @@ import ModelManager
 import MLXInference
 import LocalAPI
 import ClusterKit
+import WANKit
+import CreditKit
+import AgentKit
 
 // MARK: - App State
 
@@ -25,11 +28,24 @@ public final class AppState {
     // Models
     public let modelManager: ModelManagerService
 
-    // Cluster
+    // Cluster (LAN)
     public let clusterManager: ClusterManager
     public var clusterEnabled: Bool = false {
         didSet { toggleCluster() }
     }
+
+    // WAN P2P
+    public let wanManager: WANManager
+    public var wanEnabled: Bool = false {
+        didSet { toggleWAN() }
+    }
+
+    // Credits
+    public var wallet: CreditWallet
+
+    // Agent
+    public let agentManager: AgentManager
+    public var agentProfile: AgentProfile?
 
     // Server
     public var serverPort: Int = 11435
@@ -43,6 +59,7 @@ public final class AppState {
     // Settings
     public var launchAtLogin: Bool = false
     public var maxStorageGB: Double = 50.0
+    public var wanRelayURL: String = "wss://relay.solair.network/ws"
 
     public init() {
         let detector = HardwareDetector()
@@ -58,6 +75,49 @@ public final class AppState {
         let hostname = ProcessInfo.processInfo.hostName
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
         self.clusterManager = ClusterManager(localDeviceInfo: deviceInfo)
+        self.wanManager = WANManager()
+        self.agentManager = AgentManager()
+
+        // Wallet placeholder — replaced async on launch
+        self.wallet = CreditWallet.placeholder()
+    }
+
+    /// Call once at app launch to initialize async components (credit ledger, agent)
+    public func initializeAsync() async {
+        // Initialize credit wallet
+        let ledger = await CreditLedger()
+        await ledger.applyWelcomeBonusIfNeeded()
+        let realWallet = CreditWallet(ledger: ledger)
+        await realWallet.refreshBalance()
+        self.wallet = realWallet
+
+        // Initialize agent profile
+        let hostname = ProcessInfo.processInfo.hostName
+        let nodeID: String
+        if let identity = try? WANNodeIdentity.loadOrCreate() {
+            nodeID = identity.nodeID
+        } else {
+            nodeID = UUID().uuidString
+        }
+
+        let profile = AgentProfile(
+            nodeID: nodeID,
+            agentType: .personal,
+            displayName: hostname,
+            bio: "Personal AI agent on \(hardware.chipName)",
+            capabilities: [.generalChat, .inference, .taskExecution],
+            preferences: AgentPreferences(
+                tone: .casual,
+                autoNegotiate: true,
+                maxBudgetPerTransaction: 50.0,
+                delegationRules: [
+                    DelegationRule(capability: "inference", maxCreditSpend: 10.0),
+                    DelegationRule(capability: "general-chat", maxCreditSpend: 5.0),
+                ]
+            )
+        )
+        self.agentProfile = profile
+        await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
     }
 
     // MARK: - Actions
@@ -92,7 +152,7 @@ public final class AppState {
         engineStatus = await engine.status
     }
 
-    // MARK: - Cluster
+    // MARK: - Cluster (LAN)
 
     private func toggleCluster() {
         if clusterEnabled {
@@ -116,6 +176,44 @@ public final class AppState {
             await engine.setProvider(localProvider)
         }
     }
+
+    // MARK: - WAN P2P
+
+    private func toggleWAN() {
+        if wanEnabled {
+            enableWAN()
+        } else {
+            disableWAN()
+        }
+    }
+
+    private func enableWAN() {
+        Task {
+            do {
+                let identity = try WANNodeIdentity.loadOrCreate()
+                let config = WANConfig(
+                    relayServerURLs: [URL(string: wanRelayURL)!],
+                    identity: identity,
+                    displayName: ProcessInfo.processInfo.hostName
+                )
+                let deviceInfo = DeviceInfo(name: ProcessInfo.processInfo.hostName, hardware: hardware)
+                try await wanManager.enable(config: config, localDeviceInfo: deviceInfo)
+
+                // Set up WAN provider
+                let wanProvider = WANProvider(localProvider: localProvider, wanManager: wanManager)
+                await engine.setProvider(wanProvider)
+            } catch {
+                wanEnabled = false
+            }
+        }
+    }
+
+    private func disableWAN() {
+        Task {
+            await wanManager.disable()
+            await engine.setProvider(localProvider)
+        }
+    }
 }
 
 // MARK: - App View
@@ -125,5 +223,8 @@ public enum AppView: Hashable {
     case chat
     case models
     case cluster
+    case wan
+    case wallet
+    case agents
     case settings
 }

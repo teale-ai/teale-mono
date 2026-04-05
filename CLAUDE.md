@@ -28,14 +28,45 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 - Model sharing over LAN (1MB chunked file transfer)
 - Cluster UI: peer cards, stats, enable/disable toggle
 
-### Phase 3+ — Not started
-- WAN P2P (rust-libp2p, QUIC, NAT traversal)
-- Credit economy
-- iOS companion app
+### Phase 3 — WAN P2P (Complete)
+- WANKit module: pure-Swift WAN networking via QUIC (Network.framework)
+- Ed25519 node identity (CryptoKit) with Keychain persistence
+- Relay/signaling server client (WebSocket) for peer discovery
+- STUN client for NAT type detection and public endpoint discovery
+- NAT hole-punching with direct QUIC fallback to relay
+- WANManager orchestrator, WANProvider implementing InferenceProvider
+- WAN peer cards and status UI
+
+### Phase 4 — Credit Economy (Complete)
+- CreditKit module: local credit ledger with JSON persistence
+- Token-based pricing: cost = (tokens/1K) * model_complexity * quant_multiplier
+- Model complexity scales at 0.1x per billion params; earners get 80% (20% network fee)
+- CreditWallet (@Observable) for SwiftUI, CreditAwareProvider middleware
+- Welcome bonus of 100 credits for new users
+- Wallet UI with balance, transactions, earning/spending summary
+- CreditAnalytics for daily/weekly/monthly summaries
+
+### Phase 6 — Agent Protocol (Complete)
+- AgentKit module: agent-to-agent communication protocol
+- AgentProfile (personal/business/service), AgentCapability (8 well-known types)
+- AgentMessage with 10 types: intent, offer, counterOffer, accept, reject, complete, review, chat, capability, status
+- AgentConversation: state machine (initiated -> negotiating -> accepted -> completed)
+- AgentNegotiator: auto-accept/reject within delegation rules, flag ambiguous for human
+- AgentDirectory: discover agents by capability, ratings
+- AgentRouter: transport-agnostic message routing with signing
+- AgentManager: central orchestrator wiring everything together
+- Agent UI: conversation list, message bubbles, directory view
+
+### Phase 5 — iOS Companion App (Complete)
+- SolairCompanion executable target (iOS 17+)
+- Thin client — no local inference, talks to Mac nodes via HTTP API
+- Bonjour discovery of LAN Macs, remote inference via URLSession
+- Chat UI, Network view, Wallet view, Settings
+- Depends only on SharedTypes (no MLX/macOS-only deps)
 
 ## Architecture
 
-8 Swift modules in a single Package.swift:
+12 Swift modules in a single Package.swift:
 
 | Module | Purpose |
 |--------|---------|
@@ -45,8 +76,12 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 | ModelManager | Model catalog, cache, download service |
 | InferenceEngine | Provider-agnostic engine manager + adaptive throttler |
 | ClusterKit | LAN discovery, transport, cluster orchestration, routing |
+| WANKit | WAN P2P via QUIC, STUN/NAT traversal, relay signaling |
+| CreditKit | Credit economy, ledger, pricing, wallet, analytics |
+| AgentKit | Agent-to-agent protocol, negotiation, directory, conversations |
 | LocalAPI | Hummingbird HTTP server, OpenAI-compatible endpoints |
-| InferencePoolApp | SwiftUI MenuBarExtra app (executable) |
+| InferencePoolApp | SwiftUI MenuBarExtra app (executable, macOS) |
+| SolairCompanion | iOS companion app (executable, iOS) |
 
 ## Key Patterns
 
