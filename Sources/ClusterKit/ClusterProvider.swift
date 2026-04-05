@@ -77,10 +77,19 @@ public actor ClusterProvider: InferenceProvider {
             continuation.finish()
 
         case .remote(_, let peer):
+            peer.activeRequestCount += 1
+            clusterManager.localQueueDepth += 1
+            defer {
+                peer.activeRequestCount -= 1
+                clusterManager.localQueueDepth -= 1
+            }
             try await generateRemote(request: request, peer: peer, continuation: continuation)
 
         case .noModelAvailable:
             throw ClusterError.noModelAvailable
+
+        case .capacityReserved:
+            throw ClusterError.capacityReserved
         }
     }
 
@@ -129,6 +138,7 @@ public enum ClusterError: LocalizedError, Sendable {
     case peerDisconnected
     case remoteError(String)
     case routingFailed
+    case capacityReserved
 
     public var errorDescription: String? {
         switch self {
@@ -136,6 +146,7 @@ public enum ClusterError: LocalizedError, Sendable {
         case .peerDisconnected: return "Peer disconnected during inference"
         case .remoteError(let msg): return "Remote error: \(msg)"
         case .routingFailed: return "Failed to route request to a peer"
+        case .capacityReserved: return "Capacity reserved for organization members"
         }
     }
 }

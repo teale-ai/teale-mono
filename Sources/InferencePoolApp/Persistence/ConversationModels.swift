@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - Conversation (in-memory for CLI build; SwiftData for Xcode build)
+// MARK: - Conversation
 
 public final class Conversation: Identifiable, ObservableObject, Hashable {
     public let id: UUID
@@ -15,6 +15,24 @@ public final class Conversation: Identifiable, ObservableObject, Hashable {
         self.createdAt = Date()
         self.updatedAt = Date()
         self.messages = []
+    }
+
+    public init(from codable: CodableConversation) {
+        self.id = codable.id
+        self.title = codable.title
+        self.createdAt = codable.createdAt
+        self.updatedAt = codable.updatedAt
+        self.messages = codable.messages.map { Message(from: $0) }
+    }
+
+    public func toCodable() -> CodableConversation {
+        CodableConversation(
+            id: id,
+            title: title,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            messages: messages.map { $0.toCodable() }
+        )
     }
 
     public static func == (lhs: Conversation, rhs: Conversation) -> Bool {
@@ -40,4 +58,32 @@ public final class Message: Identifiable, ObservableObject {
         self.content = content
         self.timestamp = Date()
     }
+
+    public init(from codable: CodableMessage) {
+        self.id = codable.id
+        self.role = codable.role
+        self.content = codable.content
+        self.timestamp = codable.timestamp
+    }
+
+    public func toCodable() -> CodableMessage {
+        CodableMessage(id: id, role: role, content: content, timestamp: timestamp)
+    }
+}
+
+// MARK: - Codable Bridge Types
+
+public struct CodableConversation: Codable {
+    public let id: UUID
+    public var title: String
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var messages: [CodableMessage]
+}
+
+public struct CodableMessage: Codable {
+    public let id: UUID
+    public var role: String
+    public var content: String
+    public var timestamp: Date
 }

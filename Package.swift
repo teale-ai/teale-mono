@@ -135,7 +135,8 @@ let package = Package(
                 "WANKit",
                 "CreditKit",
                 "AgentKit",
-            ]
+            ],
+            exclude: ["Info.plist", "InferencePool.entitlements"]
         ),
 
         // MARK: - SolairCompanion (iOS)

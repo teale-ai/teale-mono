@@ -24,23 +24,39 @@ public actor MLXProvider: InferenceProvider {
     // MARK: - Load Model
 
     public func loadModel(_ descriptor: ModelDescriptor) async throws {
+        try await loadModel(descriptor, onProgress: nil)
+    }
+
+    public func loadModel(_ descriptor: ModelDescriptor, onProgress: LoadProgressCallback?) async throws {
         if let current = currentDescriptor, current.id != descriptor.id {
             await unloadModel()
         }
 
         _status = .loadingModel(descriptor)
+        onProgress?(LoadProgress(phase: .downloading, fractionCompleted: 0))
 
         do {
             let config = ModelConfiguration(id: descriptor.huggingFaceRepo)
+
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: HFDownloader(),
                 using: HFTokenizerLoader(),
                 configuration: config
-            ) { _ in }
+            ) { progress in
+                let fraction = progress.fractionCompleted
+                if fraction < 1.0 {
+                    onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
+                } else {
+                    onProgress?(LoadProgress(phase: .loadingWeights, fractionCompleted: 0.5))
+                }
+            }
+
+            onProgress?(LoadProgress(phase: .warmup, fractionCompleted: 0.9))
 
             self.modelContainer = container
             self.currentDescriptor = descriptor
             _status = .ready(descriptor)
+            onProgress?(LoadProgress(phase: .warmup, fractionCompleted: 1.0))
         } catch {
             _status = .error("Failed to load \(descriptor.name): \(error.localizedDescription)")
             throw error
@@ -50,10 +66,19 @@ public actor MLXProvider: InferenceProvider {
     // MARK: - Unload Model
 
     public func unloadModel() async {
-        modelContainer = nil
-        currentDescriptor = nil
-        MLX.GPU.clearCache()
         _status = .idle
+        currentDescriptor = nil
+
+        // Release the container first, then yield to let MLX finish
+        // any pending GPU work before clearing the cache
+        let hadModel = modelContainer != nil
+        modelContainer = nil
+
+        if hadModel {
+            // Give MLX time to finish any in-flight GPU operations
+            try? await Task.sleep(for: .milliseconds(200))
+            Memory.clearCache()
+        }
     }
 
     // MARK: - Generate (Streaming)

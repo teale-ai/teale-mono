@@ -101,7 +101,7 @@ struct ModelRowView: View {
             Spacer()
 
             // Actions
-            VStack(spacing: 4) {
+            VStack(alignment: .trailing, spacing: 4) {
                 if isCurrentlyLoaded {
                     Button("Unload") {
                         Task { await appState.unloadModel() }
@@ -109,8 +109,20 @@ struct ModelRowView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 } else if isDownloading {
-                    ProgressView()
-                        .controlSize(.small)
+                    VStack(alignment: .trailing, spacing: 3) {
+                        if let progress = appState.loadingProgress, progress > 0 && progress < 1.0 {
+                            ProgressView(value: progress)
+                                .frame(width: 80)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(appState.loadingPhase.isEmpty ? "Loading…" : appState.loadingPhase)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(minWidth: 90)
                 } else {
                     Button("Load") {
                         Task { await loadModel() }

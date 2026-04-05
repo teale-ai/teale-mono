@@ -40,12 +40,33 @@ public struct ClusterTopology: Sendable {
         connectedPeers.filter { $0.loadedModels.contains(modelID) }
     }
 
-    /// Find the best peer for a given model (loaded, not busy, highest capability)
+    /// Find the best peer for a given model (loaded, available, least loaded, highest capability)
     public func bestPeerForModel(_ modelID: String) -> PeerInfo? {
-        peersWithModel(modelID)
+        bestPeerForModel(modelID, preferringOrg: nil)
+    }
+
+    /// Find the best peer for a given model, preferring peers in the same organization
+    public func bestPeerForModel(_ modelID: String, preferringOrg orgID: String?) -> PeerInfo? {
+        let available = peersWithModel(modelID)
             .filter { !$0.isGenerating && $0.throttleLevel > 0 && $0.thermalLevel < .serious }
-            .sorted { $0.capabilityScore > $1.capabilityScore }
-            .first
+
+        let sortByLoadAndCapability: (PeerInfo, PeerInfo) -> Bool = { lhs, rhs in
+            if lhs.activeRequestCount != rhs.activeRequestCount {
+                return lhs.activeRequestCount < rhs.activeRequestCount
+            }
+            return lhs.capabilityScore > rhs.capabilityScore
+        }
+
+        // If org preference is set, try org peers first
+        if let orgID = orgID {
+            let orgPeers = available.filter { $0.organizationID == orgID }
+            if let best = orgPeers.sorted(by: sortByLoadAndCapability).first {
+                return best
+            }
+        }
+
+        // Fall back to any available peer
+        return available.sorted(by: sortByLoadAndCapability).first
     }
 
     /// Cluster state summary for UI

@@ -43,13 +43,24 @@ public actor AgentRouter {
     private var signer: AgentMessageSigner?
     private var messageHandler: (@Sendable (AgentMessage) async -> Void)?
 
+    /// When true, rejects unsigned messages and messages from unknown agents
+    public var strictMode: Bool = true
+
+    /// Optional verifier for checking against registered agent keys
+    public var verifier: AgentVerifier?
+
     public init() {}
 
     // MARK: - Configuration
 
-    public func configure(transport: AgentTransport, signer: AgentMessageSigner? = nil) {
+    public func configure(
+        transport: AgentTransport,
+        signer: AgentMessageSigner? = nil,
+        verifier: AgentVerifier? = nil
+    ) {
         self.transport = transport
         self.signer = signer
+        self.verifier = verifier
     }
 
     public func onMessageReceived(_ handler: @escaping @Sendable (AgentMessage) async -> Void) {
@@ -81,12 +92,37 @@ public actor AgentRouter {
         let envelope = try JSONDecoder().decode(AgentTransportMessage.self, from: data)
         let message = try envelope.decode()
 
-        // Verify signature if signer is configured
-        if let signer = signer, let signature = message.signature {
+        if strictMode {
+            // Strict mode: signature is mandatory
+            guard let signature = message.signature else {
+                throw AgentError.signatureMissing
+            }
+
+            guard let signer = signer else {
+                throw AgentError.signerNotConfigured
+            }
+
             let signingData = try message.signingData()
             let valid = try signer.verify(signature: signature, data: signingData, fromNodeID: message.fromAgentID)
             if !valid {
                 throw AgentError.signatureVerificationFailed
+            }
+
+            // Check against known agents if verifier is configured
+            if let verifier = verifier {
+                let known = await verifier.isKnown(agentID: message.fromAgentID)
+                if !known {
+                    throw AgentError.unknownAgent(message.fromAgentID)
+                }
+            }
+        } else {
+            // Permissive mode: verify if possible, but don't reject unsigned messages
+            if let signer = signer, let signature = message.signature {
+                let signingData = try message.signingData()
+                let valid = try signer.verify(signature: signature, data: signingData, fromNodeID: message.fromAgentID)
+                if !valid {
+                    throw AgentError.signatureVerificationFailed
+                }
             }
         }
 

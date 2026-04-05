@@ -47,14 +47,18 @@ public final class AppState {
     public let agentManager: AgentManager
     public var agentProfile: AgentProfile?
 
-    // Server
+    // Server & API Keys
     public var serverPort: Int = 11435
     public var isServerRunning: Bool = false
+    public var allowNetworkAccess: Bool = false
+    public let apiKeyStore = APIKeyStore()
 
     // UI State
     public var selectedModel: ModelDescriptor?
     public var engineStatus: EngineStatus = .idle
     public var currentView: AppView = .dashboard
+    public var loadingPhase: String = ""
+    public var loadingProgress: Double?
 
     // Settings
     public var launchAtLogin: Bool = false
@@ -108,7 +112,7 @@ public final class AppState {
             capabilities: [.generalChat, .inference, .taskExecution],
             preferences: AgentPreferences(
                 tone: .casual,
-                autoNegotiate: true,
+                autoNegotiate: false,
                 maxBudgetPerTransaction: 50.0,
                 delegationRules: [
                     DelegationRule(capability: "inference", maxCreditSpend: 10.0),
@@ -118,6 +122,17 @@ public final class AppState {
         )
         self.agentProfile = profile
         await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
+
+        // Wire credit transfer handling
+        clusterManager.onCreditTransferReceived = { [weak self] payload, connection in
+            guard let self = self else { return }
+            await self.wallet.receiveTransfer(amount: payload.amount, fromPeer: payload.senderNodeID, memo: payload.memo)
+            let confirm = CreditTransferConfirmPayload(
+                transferID: payload.transferID,
+                receiverNodeID: self.clusterManager.localDeviceInfo.id.uuidString
+            )
+            try? await connection.send(.creditTransferConfirm(confirm))
+        }
     }
 
     // MARK: - Actions
@@ -126,9 +141,22 @@ public final class AppState {
         do {
             selectedModel = descriptor
             engineStatus = .loadingModel(descriptor)
-            try await engine.loadModel(descriptor)
+            loadingPhase = "Preparing…"
+            loadingProgress = 0
+
+            try await engine.loadModel(descriptor) { [weak self] progress in
+                Task { @MainActor in
+                    self?.loadingPhase = progress.phase.rawValue
+                    self?.loadingProgress = progress.fractionCompleted
+                }
+            }
+
+            loadingPhase = ""
+            loadingProgress = nil
             engineStatus = .ready(descriptor)
         } catch {
+            loadingPhase = ""
+            loadingProgress = nil
             engineStatus = .error(error.localizedDescription)
         }
     }
@@ -142,7 +170,12 @@ public final class AppState {
     public func startServer() async {
         guard !isServerRunning else { return }
         isServerRunning = true
-        let server = LocalHTTPServer(engine: engine, port: serverPort)
+        let server = LocalHTTPServer(
+            engine: engine,
+            port: serverPort,
+            apiKeyStore: apiKeyStore,
+            allowNetworkAccess: allowNetworkAccess
+        )
         Task.detached {
             try? await server.start()
         }
@@ -150,6 +183,25 @@ public final class AppState {
 
     public func refreshStatus() async {
         engineStatus = await engine.status
+    }
+
+    /// Send credits to a connected peer
+    public func sendCredits(amount: Double, to peerID: UUID, memo: String? = nil) async -> Bool {
+        let peerNodeID = peerID.uuidString
+        let success = await wallet.sendTransfer(amount: amount, toPeer: peerNodeID, memo: memo)
+        guard success else { return false }
+
+        let payload = CreditTransferPayload(
+            senderNodeID: clusterManager.localDeviceInfo.id.uuidString,
+            amount: amount,
+            memo: memo
+        )
+        do {
+            try await clusterManager.sendCreditTransfer(to: peerID, payload: payload)
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Cluster (LAN)
@@ -167,11 +219,13 @@ public final class AppState {
         Task {
             await engine.setProvider(clusterProvider)
         }
+        modelManager.peerModelSource = clusterManager
         clusterManager.enable()
     }
 
     private func disableCluster() {
         clusterManager.disable()
+        modelManager.peerModelSource = nil
         Task {
             await engine.setProvider(localProvider)
         }

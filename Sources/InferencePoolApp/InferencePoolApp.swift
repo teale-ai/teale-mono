@@ -15,6 +15,12 @@ import AgentKit
 struct InferencePoolApp: App {
     @State private var appState = AppState()
 
+    init() {
+        // Disable Hub library's NetworkMonitor offline mode detection
+        // which incorrectly reports "expensive" connections and blocks downloads
+        setenv("CI_DISABLE_NETWORK_MONITOR", "1", 1)
+    }
+
     var body: some Scene {
         MenuBarExtra {
             ContentView()
@@ -77,16 +83,20 @@ struct SidebarView: View {
                 .tag(AppView.chat)
             Label("Models", systemImage: "square.stack.3d.up")
                 .tag(AppView.models)
-            Label("Cluster", systemImage: "desktopcomputer.and.arrow.down")
-                .tag(AppView.cluster)
-            Label("WAN", systemImage: "globe")
-                .tag(AppView.wan)
-            Label("Wallet", systemImage: "creditcard")
-                .tag(AppView.wallet)
-            Label("Agents", systemImage: "person.2.wave.2")
-                .tag(AppView.agents)
-            Label("Settings", systemImage: "gear")
-                .tag(AppView.settings)
+
+            Section("Network") {
+                Label("Cluster", systemImage: "desktopcomputer.and.arrow.down")
+                    .tag(AppView.cluster)
+                Label("WAN", systemImage: "globe")
+                    .tag(AppView.wan)
+            }
+
+            Section {
+                Label("Wallet", systemImage: "creditcard")
+                    .tag(AppView.wallet)
+                Label("Settings", systemImage: "gear")
+                    .tag(AppView.settings)
+            }
         }
         .listStyle(.sidebar)
         .frame(minWidth: 140)

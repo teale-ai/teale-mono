@@ -30,6 +30,10 @@ public actor InferenceEngineManager {
         try await provider.loadModel(descriptor)
     }
 
+    public func loadModel(_ descriptor: ModelDescriptor, onProgress: LoadProgressCallback?) async throws {
+        try await provider.loadModel(descriptor, onProgress: onProgress)
+    }
+
     public func unloadModel() async {
         await provider.unloadModel()
     }
