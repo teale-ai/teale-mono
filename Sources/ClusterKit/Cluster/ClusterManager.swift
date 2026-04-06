@@ -115,7 +115,7 @@ public final class ClusterManager: @unchecked Sendable {
             startListening(to: peerInfo)
             updateState()
         } catch {
-            // Discovery failed, will retry on next Bonjour update
+            print("Cluster resolve failed for \(endpoint): \(error.localizedDescription)")
         }
     }
 
@@ -139,7 +139,7 @@ public final class ClusterManager: @unchecked Sendable {
                 await peerInfo.connection.cancel()
             }
         } catch {
-            // Incoming connection failed
+            print("Cluster incoming connection failed: \(error.localizedDescription)")
         }
     }
 

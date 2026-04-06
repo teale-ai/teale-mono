@@ -16,6 +16,14 @@ public actor PeerConnection {
         self.peerID = peerID
     }
 
+    private static var clusterContentContext: NWConnection.ContentContext {
+        let message = NWProtocolFramer.Message(definition: ClusterMessageFramer.definition)
+        return NWConnection.ContentContext(
+            identifier: ClusterMessageFramer.label,
+            metadata: [message]
+        )
+    }
+
     /// Start the connection and begin receiving messages
     public func start() async {
         let (stream, continuation) = AsyncStream<ClusterMessage>.makeStream()
@@ -45,12 +53,11 @@ public actor PeerConnection {
     /// Send a message to the peer
     public func send(_ message: ClusterMessage) async throws {
         let data = try JSONEncoder().encode(message)
-        let content = data
 
         return try await withCheckedThrowingContinuation { continuation in
             connection.send(
-                content: content,
-                contentContext: .defaultMessage,
+                content: data,
+                contentContext: Self.clusterContentContext,
                 isComplete: true,
                 completion: .contentProcessed { error in
                     if let error = error {
@@ -93,14 +100,16 @@ public actor PeerConnection {
 
     private nonisolated func receiveNextMessage() {
         connection.receiveMessage { [weak self] content, context, isComplete, error in
-            guard let self = self, let content = content else { return }
+            guard let self = self else { return }
 
-            if let message = try? JSONDecoder().decode(ClusterMessage.self, from: content) {
+            if let content, !content.isEmpty,
+               let message = try? JSONDecoder().decode(ClusterMessage.self, from: content) {
                 Task { await self.deliverMessage(message) }
             }
 
-            // Continue receiving
-            self.receiveNextMessage()
+            if error == nil {
+                self.receiveNextMessage()
+            }
         }
     }
 
