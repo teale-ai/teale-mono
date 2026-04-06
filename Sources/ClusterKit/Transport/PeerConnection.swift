@@ -24,6 +24,26 @@ public actor PeerConnection {
         )
     }
 
+    private nonisolated func shouldContinueReceiving(
+        content: Data?,
+        isComplete: Bool,
+        error: NWError?
+    ) -> Bool {
+        if error == nil {
+            return !isComplete
+        }
+
+        switch error {
+        case .posix(let code):
+            // NWConnection.receiveMessage() on a framed TCP stream can report
+            // ENODATA/EAGAIN before the next framed message is ready. Treat that
+            // as a transient condition instead of permanently stopping reads.
+            return code == .ENODATA || code == .EAGAIN
+        default:
+            return false
+        }
+    }
+
     /// Start the connection and begin receiving messages
     public func start() async {
         let (stream, continuation) = AsyncStream<ClusterMessage>.makeStream()
@@ -107,8 +127,10 @@ public actor PeerConnection {
                 Task { await self.deliverMessage(message) }
             }
 
-            if error == nil {
+            if self.shouldContinueReceiving(content: content, isComplete: isComplete, error: error) {
                 self.receiveNextMessage()
+            } else if error != nil || isComplete {
+                Task { await self.cancel() }
             }
         }
     }
