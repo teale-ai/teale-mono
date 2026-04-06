@@ -1,5 +1,4 @@
 import SwiftUI
-import AuthenticationServices
 import SharedTypes
 import Auth
 
@@ -13,8 +12,6 @@ public struct LoginView: View {
     @State private var showOTPField = false
     @State private var isLoading = false
     @State private var errorMessage: String?
-
-    private let appleSignInHelper = AppleSignInHelper()
 
     public init(authManager: AuthManager) {
         self.authManager = authManager
@@ -40,37 +37,6 @@ public struct LoginView: View {
             }
             .padding(.bottom, 40)
 
-            // Sign in with Apple
-            SignInWithAppleButton(.signIn) { request in
-                let nonce = AppleSignInHelper.randomNonce()
-                request.requestedScopes = [.fullName, .email]
-                request.nonce = AppleSignInHelper.sha256(nonce)
-            } onCompletion: { _ in
-                // Handled via the helper below
-            }
-            .signInWithAppleButtonStyle(.white)
-            .frame(height: 50)
-            .frame(maxWidth: 300)
-            .hidden() // Hidden — we use our own button to control the flow
-
-            // Custom Apple Sign In button
-            Button {
-                Task { await handleAppleSignIn() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "apple.logo")
-                        .font(.title3)
-                    Text("Sign in with Apple")
-                        .fontWeight(.medium)
-                }
-                .frame(maxWidth: 300)
-                .frame(height: 50)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.primary)
-            .foregroundStyle(.background)
-            .disabled(isLoading)
-
             // Sign in with Google
             Button {
                 Task { await handleOAuth(provider: .google) }
@@ -84,9 +50,9 @@ public struct LoginView: View {
                 .frame(maxWidth: 300)
                 .frame(height: 50)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
+            .tint(.blue)
             .disabled(isLoading)
-            .padding(.top, 10)
 
             // Sign in with GitHub
             Button {
@@ -211,24 +177,6 @@ public struct LoginView: View {
     }
 
     // MARK: - Actions
-
-    @MainActor
-    private func handleAppleSignIn() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            let result = try await appleSignInHelper.signIn()
-            try await authManager.signInWithApple(idToken: result.idToken, nonce: result.nonce)
-            if let name = result.fullName?.formatted(), !name.isEmpty {
-                await authManager.updateDisplayName(name)
-            }
-        } catch let error as ASAuthorizationError where error.code == .canceled {
-            // User cancelled — no error
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
-    }
 
     @MainActor
     private func handleOAuth(provider: Auth.Provider) async {
