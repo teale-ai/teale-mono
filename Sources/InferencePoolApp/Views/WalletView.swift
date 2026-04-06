@@ -170,36 +170,59 @@ private struct SendCreditsSection: View {
 private struct PricingGuideSection: View {
     @Environment(AppState.self) private var appState
 
-    private struct ModelEstimate: Identifiable {
-        var id: String { label }
-        let label: String
-        let paramB: Double
-        let tokensFor100Credits: Int
-        let approxChats: String
+    private struct UsageExample: Identifiable {
+        var id: String { emoji + title }
+        let emoji: String
+        let title: String
+        let detail: String
+        let creditCost: String
     }
 
-    private var estimates: [ModelEstimate] {
+    private var balance: Double {
+        appState.wallet.balance.value
+    }
+
+    private var examples: [UsageExample] {
         [
-            ModelEstimate(label: "Small (1-4B)", paramB: 3, tokensFor100Credits: tokenBudget(paramB: 3), approxChats: "~hundreds of chats"),
-            ModelEstimate(label: "Medium (8B)", paramB: 8, tokensFor100Credits: tokenBudget(paramB: 8), approxChats: "~50-100 chats"),
-            ModelEstimate(label: "Large (27-32B)", paramB: 30, tokensFor100Credits: tokenBudget(paramB: 30), approxChats: "~10-20 chats"),
-            ModelEstimate(label: "XL (70B+)", paramB: 70, tokensFor100Credits: tokenBudget(paramB: 70), approxChats: "~5-10 chats"),
+            UsageExample(
+                emoji: "💬",
+                title: "Quick question",
+                detail: "A short back-and-forth conversation",
+                creditCost: "~0.5 credits"
+            ),
+            UsageExample(
+                emoji: "📝",
+                title: "Write an email or essay",
+                detail: "A few paragraphs of generated text",
+                creditCost: "~1-2 credits"
+            ),
+            UsageExample(
+                emoji: "💻",
+                title: "Help debug code",
+                detail: "Paste code, get an explanation and fix",
+                creditCost: "~2-5 credits"
+            ),
+            UsageExample(
+                emoji: "📖",
+                title: "Summarize a long document",
+                detail: "Feed in pages of text, get a summary",
+                creditCost: "~3-8 credits"
+            ),
         ]
     }
 
-    private func tokenBudget(paramB: Double) -> Int {
-        // cost = (tokens/1000) * (paramB * 0.1) * 1.0 (q4)
-        // tokens = 100 * 1000 / (paramB * 0.1)
-        Int(100.0 * 1000.0 / (paramB * 0.1))
-    }
-
-    private func formatTokens(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.0fM", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.0fK", Double(count) / 1_000)
+    private var balanceSummary: String {
+        if balance >= 100 {
+            return "You have plenty of credits for heavy daily use."
+        } else if balance >= 30 {
+            return "Enough for dozens of conversations."
+        } else if balance >= 10 {
+            return "Good for several conversations today."
+        } else if balance > 0 {
+            return "Running low — earn more by serving other nodes."
+        } else {
+            return "No credits yet. Enable the cluster to start earning."
         }
-        return "\(count)"
     }
 
     var body: some View {
@@ -208,28 +231,37 @@ private struct PricingGuideSection: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            VStack(spacing: 6) {
-                ForEach(estimates) { est in
-                    HStack {
-                        Text(est.label)
-                            .font(.caption)
-                            .frame(width: 100, alignment: .leading)
-                        Text("~\(formatTokens(est.tokensFor100Credits)) tokens")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.primary)
+            Text(balanceSummary)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .padding(.bottom, 2)
+
+            VStack(spacing: 2) {
+                ForEach(examples) { ex in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(ex.emoji)
+                            .font(.body)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(ex.title)
+                                .font(.caption.bold())
+                            Text(ex.detail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
-                        Text(est.approxChats)
-                            .font(.caption2)
+                        Text(ex.creditCost)
+                            .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
-                    .padding(.vertical, 3)
+                    .padding(.vertical, 5)
                     .padding(.horizontal, 8)
                 }
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 4)
             .background(.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
 
-            Text("Estimates based on 100 credits with 4-bit quantization. Larger models cost more per token but produce higher quality output. You earn credits by serving inference to other nodes on the network.")
+            Text("Costs vary by model size — smaller models are cheaper, larger ones give better answers. You earn credits automatically when other devices use your Mac for inference.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
