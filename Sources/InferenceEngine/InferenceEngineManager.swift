@@ -42,16 +42,20 @@ public actor InferenceEngineManager {
         // Note: we can't access provider directly here since this is nonisolated.
         // The provider's generate is also nonisolated, so we capture it via Task.
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 let stream = await self.provider.generate(request: request)
                 do {
                     for try await chunk in stream {
+                        if Task.isCancelled { break }
                         continuation.yield(chunk)
                     }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }

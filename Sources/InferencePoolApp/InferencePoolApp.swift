@@ -28,7 +28,7 @@ struct InferencePoolApp: App {
                 .environment(appState)
                 .frame(width: 480, height: 600)
                 .onOpenURL { url in
-                    Task { await appState.authManager.handleOAuthCallback(url: url) }
+                    Task { await appState.authManager?.handleOAuthCallback(url: url) }
                 }
         } label: {
             Label("Teale", systemImage: "brain.head.profile")
@@ -44,7 +44,7 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if appState.authManager.authState.canUseApp {
+            if appState.authManager?.authState.canUseApp ?? true {
                 NavigationSplitView {
                     SidebarView()
                 } detail: {
@@ -64,18 +64,31 @@ struct ContentView: View {
                     case .agents:
                         AgentView()
                     case .devices:
-                        DevicesView(authManager: appState.authManager)
+                        if let authManager = appState.authManager {
+                            DevicesView(authManager: authManager)
+                        } else {
+                            Text("Sign in to manage devices")
+                        }
                     case .settings:
                         SettingsView()
                     }
                 }
+                .sheet(isPresented: Binding(
+                    get: { appState.showSignIn },
+                    set: { appState.showSignIn = $0 }
+                )) {
+                    if let authManager = appState.authManager {
+                        LoginView(authManager: authManager)
+                            .frame(width: 400, height: 500)
+                    }
+                }
             } else {
-                LoginView(authManager: appState.authManager)
+                LoginView(authManager: appState.authManager!)
             }
         }
         .task {
             await appState.initializeAsync()
-            if appState.authManager.authState.canUseApp {
+            if appState.authManager?.authState.canUseApp ?? true {
                 await appState.startServer()
             }
         }
@@ -108,7 +121,7 @@ struct SidebarView: View {
             Section {
                 Label("Wallet", systemImage: "creditcard")
                     .tag(AppView.wallet)
-                if appState.authManager.authState.isAuthenticated {
+                if appState.authManager?.authState.isAuthenticated ?? false {
                     Label("Devices", systemImage: "laptopcomputer.and.iphone")
                         .tag(AppView.devices)
                 }

@@ -40,18 +40,20 @@ public final class ModelManagerService: @unchecked Sendable {
         await cache.isModelCached(model)
     }
 
-    /// Download a model (MLX handles download internally via HuggingFace Hub)
+    /// Download model files only (no loading into memory)
     public func downloadModel(_ descriptor: ModelDescriptor) async throws {
         downloadingModels[descriptor.id] = 0.0
 
         do {
             try await cache.ensureDirectory()
 
-            let config = ModelConfiguration(id: descriptor.huggingFaceRepo)
-            _ = try await LLMModelFactory.shared.loadContainer(
-                from: HFDownloader(),
-                using: HFTokenizerLoader(),
-                configuration: config
+            let downloader = HFDownloader()
+            let patterns = ["*.safetensors", "*.json", "tokenizer.*", "*.model"]
+            _ = try await downloader.download(
+                id: descriptor.huggingFaceRepo,
+                revision: nil,
+                matching: patterns,
+                useLatest: false
             ) { [weak self] progress in
                 Task { @MainActor in
                     self?.downloadingModels[descriptor.id] = progress.fractionCompleted

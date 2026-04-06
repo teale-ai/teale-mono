@@ -45,7 +45,7 @@ public final class AppState {
     public var wallet: CreditWallet
 
     // Auth
-    public let authManager: AuthManager
+    public let authManager: AuthManager?
 
     // Agent
     public let agentManager: AgentManager
@@ -57,10 +57,19 @@ public final class AppState {
     public var allowNetworkAccess: Bool = false
     public let apiKeyStore = APIKeyStore()
 
+    // Chat
+    public let conversationStore = ConversationStore()
+
     // UI State
     public var selectedModel: ModelDescriptor?
     public var engineStatus: EngineStatus = .idle
+    public var downloadedModelIDs: Set<String> = []
+    /// Models currently being downloaded (modelID -> progress 0..1)
+    public var activeDownloads: [String: Double] = [:]
+    /// Models that just finished downloading — prompt user to load
+    public var justDownloadedModel: ModelDescriptor?
     public var currentView: AppView = .dashboard
+    public var showSignIn: Bool = false
     public var loadingPhase: String = ""
     public var loadingProgress: Double?
 
@@ -84,7 +93,11 @@ public final class AppState {
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
         self.clusterManager = ClusterManager(localDeviceInfo: deviceInfo)
         self.wanManager = WANManager()
-        self.authManager = AuthManager(config: .default)
+        if let config = SupabaseConfig.default {
+            self.authManager = AuthManager(config: config)
+        } else {
+            self.authManager = nil
+        }
         self.agentManager = AgentManager()
 
         // Wallet placeholder — replaced async on launch
@@ -93,11 +106,14 @@ public final class AppState {
 
     /// Call once at app launch to initialize async components (auth, credit ledger, agent)
     public func initializeAsync() async {
-        // Check auth session
-        await authManager.checkSession()
+        // Scan which models are already downloaded
+        await refreshDownloadedModels()
 
-        // Pass device hardware info for registration
-        authManager.deviceHardware = (chipName: hardware.chipName, ramGB: Int(hardware.totalRAMGB))
+        // Check auth session (skip if Supabase not configured)
+        if let authManager {
+            await authManager.checkSession()
+            authManager.deviceHardware = (chipName: hardware.chipName, ramGB: Int(hardware.totalRAMGB))
+        }
 
         // Initialize credit wallet
         let ledger = await CreditLedger()
@@ -106,19 +122,17 @@ public final class AppState {
         await realWallet.refreshBalance()
         self.wallet = realWallet
 
-        // Initialize agent profile
+        // Initialize agent profile — use a random node ID to avoid Keychain prompt on launch.
+        // WANNodeIdentity is created lazily when WAN is actually enabled.
         let hostname = ProcessInfo.processInfo.hostName
-        let nodeID: String
-        if let identity = try? WANNodeIdentity.loadOrCreate() {
-            nodeID = identity.nodeID
-        } else {
-            nodeID = UUID().uuidString
-        }
+        let nodeID = UUID().uuidString
 
         // Link WAN identity to auth device record
-        authManager.wanNodeID = nodeID
-        if authManager.authState.isAuthenticated {
-            await authManager.fetchDevices()
+        if let authManager {
+            authManager.wanNodeID = nodeID
+            if authManager.authState.isAuthenticated {
+                await authManager.fetchDevices()
+            }
         }
 
         let profile = AgentProfile(
@@ -154,8 +168,34 @@ public final class AppState {
 
     // MARK: - Actions
 
+    /// Download model files only — does not load into memory.
+    /// Multiple downloads can run concurrently.
+    public func downloadModel(_ descriptor: ModelDescriptor) async {
+        activeDownloads[descriptor.id] = 0.0
+        do {
+            try await modelManager.downloadModel(descriptor)
+            activeDownloads.removeValue(forKey: descriptor.id)
+            downloadedModelIDs.insert(descriptor.id)
+            // Prompt user to load if another model is currently active
+            if case .ready = engineStatus {
+                justDownloadedModel = descriptor
+            } else if case .idle = engineStatus {
+                // No model loaded — auto-load
+                await loadModel(descriptor)
+            }
+        } catch {
+            activeDownloads.removeValue(forKey: descriptor.id)
+        }
+    }
+
+    /// Load a model into GPU memory for inference.
     public func loadModel(_ descriptor: ModelDescriptor) async {
         do {
+            // Unload any currently loaded model first
+            if case .ready = engineStatus {
+                await engine.unloadModel()
+            }
+
             selectedModel = descriptor
             engineStatus = .loadingModel(descriptor)
             loadingPhase = "Preparing…"
@@ -171,11 +211,22 @@ public final class AppState {
             loadingPhase = ""
             loadingProgress = nil
             engineStatus = .ready(descriptor)
+            await refreshDownloadedModels()
         } catch {
             loadingPhase = ""
             loadingProgress = nil
             engineStatus = .error(error.localizedDescription)
         }
+    }
+
+    public func refreshDownloadedModels() async {
+        var ids = Set<String>()
+        for model in modelManager.compatibleModels {
+            if await modelManager.isDownloaded(model) {
+                ids.insert(model.id)
+            }
+        }
+        downloadedModelIDs = ids
     }
 
     public func unloadModel() async {

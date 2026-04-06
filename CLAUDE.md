@@ -40,7 +40,7 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 ### Phase 4 — Credit Economy (Complete)
 - CreditKit module: local credit ledger with JSON persistence
 - Token-based pricing: cost = (tokens/1K) * model_complexity * quant_multiplier
-- Model complexity scales at 0.1x per billion params; earners get 80% (20% network fee)
+- Model complexity scales at 0.1x per billion params; earners get 95% (5% network fee)
 - CreditWallet (@Observable) for SwiftUI, CreditAwareProvider middleware
 - Welcome bonus of 100 credits for new users
 - Wallet UI with balance, transactions, earning/spending summary

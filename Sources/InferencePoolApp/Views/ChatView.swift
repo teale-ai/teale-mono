@@ -3,12 +3,10 @@ import SharedTypes
 
 struct ChatView: View {
     @Environment(AppState.self) private var appState
-    @State private var store = ConversationStore()
     @State private var conversation: Conversation?
     @State private var messageText: String = ""
     @State private var streamingText: String = ""
     @State private var isGenerating: Bool = false
-    @State private var hasModelLoaded: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -119,24 +117,21 @@ struct ChatView: View {
         .navigationTitle("Chat")
         .onAppear {
             // Use the first conversation or create one — single continuous chat
-            if let first = store.conversations.first {
+            if let first = appState.conversationStore.conversations.first {
                 conversation = first
             } else {
-                conversation = store.createConversation()
+                conversation = appState.conversationStore.createConversation()
             }
         }
-        .task {
-            await checkModelLoaded()
-        }
+    }
+
+    private var hasModelLoaded: Bool {
+        if case .ready = appState.engineStatus { return true }
+        return false
     }
 
     private var canSend: Bool {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func checkModelLoaded() async {
-        let model = await appState.engine.loadedModel
-        hasModelLoaded = model != nil
     }
 
     // MARK: - Actions
@@ -148,7 +143,7 @@ struct ChatView: View {
         let userText = messageText
         messageText = ""
 
-        let _ = store.addMessage(to: conversation, role: "user", content: userText)
+        let _ = appState.conversationStore.addMessage(to: conversation, role: "user", content: userText)
 
         Task {
             await generateResponse(for: conversation)
@@ -156,9 +151,8 @@ struct ChatView: View {
     }
 
     private func generateResponse(for conversation: Conversation) async {
-        await checkModelLoaded()
         guard hasModelLoaded else {
-            let _ = store.addMessage(to: conversation, role: "assistant", content: "No model loaded. Go to Models to download and load one.")
+            let _ = appState.conversationStore.addMessage(to: conversation, role: "assistant", content: "No model loaded. Go to Models to download and load one.")
             return
         }
 
@@ -178,9 +172,9 @@ struct ChatView: View {
                     streamingText += content
                 }
             }
-            let _ = store.addMessage(to: conversation, role: "assistant", content: streamingText)
+            let _ = appState.conversationStore.addMessage(to: conversation, role: "assistant", content: streamingText)
         } catch {
-            let _ = store.addMessage(to: conversation, role: "assistant", content: "Error: \(error.localizedDescription)")
+            let _ = appState.conversationStore.addMessage(to: conversation, role: "assistant", content: "Error: \(error.localizedDescription)")
         }
 
         streamingText = ""

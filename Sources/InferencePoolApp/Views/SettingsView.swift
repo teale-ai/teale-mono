@@ -15,9 +15,6 @@ struct SettingsView: View {
     @State private var apiPort: String = "11435"
     @State private var clusterPasscode: String = ""
     @State private var wanRelayURL: String = "wss://relay.teale.network/ws"
-    @State private var apiKeys: [APIKey] = []
-    @State private var newKeyName: String = "Default"
-    @State private var generatedKey: String?
     @State private var orgReservation: Double = 60
 
     var body: some View {
@@ -26,25 +23,53 @@ struct SettingsView: View {
         Form {
             // Account
             Section("Account") {
-                if case .signedIn(let user) = appState.authManager.authState {
-                    if let phone = user.phone {
-                        LabeledContent("Phone", value: phone)
-                    }
-                    if let email = user.email {
-                        LabeledContent("Email", value: email)
-                    }
-                    LabeledContent("Devices", value: "\(appState.authManager.devices.count)")
-                    Button("Sign Out") {
-                        Task { await appState.authManager.signOut() }
+                if let authManager = appState.authManager {
+                    switch authManager.authState {
+                    case .signedIn(let user):
+                        if let phone = user.phone {
+                            LabeledContent("Phone", value: phone)
+                        }
+                        if let email = user.email {
+                            LabeledContent("Email", value: email)
+                        }
+                        LabeledContent("Devices", value: "\(authManager.devices.count)")
+                        Button("Sign Out") {
+                            Task { await authManager.signOut() }
+                        }
+                    case .signingIn:
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Signing in...")
+                                .font(.subheadline)
+                        }
+                    default:
+                        HStack {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Not signed in")
+                                    .font(.subheadline)
+                                Text("Sign in to sync devices and back up your wallet")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Button("Sign In") {
+                            appState.currentView = .settings
+                            appState.showSignIn = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     }
                 } else {
                     HStack {
-                        Image(systemName: "person.crop.circle.badge.questionmark")
+                        Image(systemName: "person.crop.circle")
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Not signed in")
+                            Text("Local mode")
                                 .font(.subheadline)
-                            Text("Sign in to sync devices and back up your wallet")
+                            Text("Configure Supabase to enable sign-in and device sync")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -60,118 +85,8 @@ struct SettingsView: View {
                     }
             }
 
-            // Connect / API
-            Section("Connect") {
-                if appState.isServerRunning {
-                    HStack {
-                        Circle()
-                            .fill(.green)
-                            .frame(width: 8, height: 8)
-                        Text("Running at http://localhost:\(appState.serverPort)/v1")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                HStack {
-                    Text("Port:")
-                    TextField("Port", text: $apiPort)
-                        .frame(width: 80)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                Toggle("Allow Network Access", isOn: $state.allowNetworkAccess)
-                Text(appState.allowNetworkAccess
-                     ? "Server binds to all interfaces — API key required for requests"
-                     : "Server binds to localhost only — no API key needed")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-
-                // API Keys
-                if !apiKeys.isEmpty {
-                    ForEach(apiKeys) { key in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(key.name)
-                                    .font(.caption.weight(.medium))
-                                Text(key.truncatedKey)
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if !key.isActive {
-                                Text("Revoked")
-                                    .font(.caption2)
-                                    .foregroundStyle(.red)
-                            } else {
-                                Button("Revoke") {
-                                    Task {
-                                        await appState.apiKeyStore.revokeKey(id: key.id)
-                                        await refreshKeys()
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.mini)
-                            }
-                        }
-                    }
-                }
-
-                if let generatedKey {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("New key (copy now — won't be shown again):")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                        HStack {
-                            Text(generatedKey)
-                                .font(.caption2.monospaced())
-                                .textSelection(.enabled)
-                                .lineLimit(1)
-                            Button("Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(generatedKey, forType: .string)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                    }
-                    .padding(8)
-                    .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                }
-
-                HStack {
-                    TextField("Key name", text: $newKeyName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 120)
-                    Button("Generate API Key") {
-                        Task {
-                            let key = await appState.apiKeyStore.generateKey(name: newKeyName)
-                            generatedKey = key.key
-                            newKeyName = "Default"
-                            await refreshKeys()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-
-                Button("Copy for Terminal") {
-                    let activeKey = apiKeys.first(where: { $0.isActive })?.key ?? "sk-teale-YOUR_KEY_HERE"
-                    let snippet = """
-                    export OPENAI_API_BASE=http://localhost:\(appState.serverPort)/v1
-                    export OPENAI_API_KEY=\(activeKey)
-                    """
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(snippet, forType: .string)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Text("Compatible with OpenAI SDK, ollama, conductor.build, and any OpenAI-compatible client")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            // Connect Your Agent
+            ConnectAgentSection()
 
             // LAN Cluster
             Section("LAN Cluster") {
@@ -281,7 +196,7 @@ struct SettingsView: View {
             Section("About") {
                 LabeledContent("Version", value: "0.1.0")
                 LabeledContent("Engine", value: "MLX")
-                Link("Source Code", destination: URL(string: "https://github.com/taylorhou/teale")!)
+                Link("Source Code", destination: URL(string: "https://github.com/taylorhou/teale-mac-app")!)
             }
 
             // Quit
@@ -297,12 +212,7 @@ struct SettingsView: View {
             maxStorage = appState.maxStorageGB
             apiPort = String(appState.serverPort)
             orgReservation = appState.clusterManager.orgCapacityReservation * 100
-            Task { await refreshKeys() }
         }
-    }
-
-    private func refreshKeys() async {
-        apiKeys = await appState.apiKeyStore.allKeys()
     }
 
     private var tierDescription: String {
@@ -324,6 +234,327 @@ struct SettingsView: View {
         } catch {
             launchAtLogin = !enabled
         }
+    }
+}
+
+// MARK: - Connect Your Agent Section
+
+private struct ConnectAgentSection: View {
+    @Environment(AppState.self) private var appState
+    @State private var apiKeys: [APIKey] = []
+    @State private var generatedKey: String?
+    @State private var copied: CopiedItem?
+    @State private var showAdvanced = false
+
+    private enum CopiedItem: Equatable {
+        case key, endpoint, python, curl, envVars
+    }
+
+    var body: some View {
+        Section {
+            // Server status
+            serverStatus
+
+            // One-click key generation or show existing key
+            if apiKeys.filter(\.isActive).isEmpty {
+                generateKeyButton
+            } else {
+                activeKeyDisplay
+            }
+
+            // Just-generated key (shown once)
+            if let generatedKey {
+                newKeyBanner(key: generatedKey)
+            }
+
+            // Quick-copy snippets
+            quickCopySnippets
+
+            // Advanced
+            DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                advancedSection
+            }
+        } header: {
+            Label("Connect Your Agent", systemImage: "link")
+        } footer: {
+            Text("Works with any OpenAI-compatible client — Claude Code, Cursor, Hermes, OpenClaw, Python SDK, and more.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .onAppear {
+            Task { await refreshKeys() }
+        }
+    }
+
+    // MARK: - Server Status
+
+    private var serverStatus: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(appState.isServerRunning ? .green : .red)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(appState.isServerRunning ? "API Server Running" : "API Server Starting...")
+                    .font(.callout.weight(.medium))
+                Text(endpoint)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            copyButton(text: endpoint, item: .endpoint, label: "Copy")
+        }
+    }
+
+    // MARK: - Generate Key
+
+    private var generateKeyButton: some View {
+        Button {
+            Task {
+                let key = await appState.apiKeyStore.generateKey(name: "My Agent")
+                generatedKey = key.key
+                await refreshKeys()
+            }
+        } label: {
+            HStack {
+                Image(systemName: "key.fill")
+                Text("Generate API Key")
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.regular)
+    }
+
+    // MARK: - Active Key
+
+    private var activeKeyDisplay: some View {
+        Group {
+            if let key = apiKeys.first(where: \.isActive) {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .foregroundStyle(.green)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(key.name)
+                            .font(.callout.weight(.medium))
+                        Text(key.truncatedKey)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    copyButton(text: key.key, item: .key, label: "Copy Key")
+                }
+            }
+        }
+    }
+
+    // MARK: - New Key Banner
+
+    private func newKeyBanner(key: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+                Text("Save this key — it won't be shown again")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Text(key)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                Spacer()
+                copyButton(text: key, item: .key, label: "Copy")
+            }
+        }
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Quick Copy Snippets
+
+    private var quickCopySnippets: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Quick Setup")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 6) {
+                snippetButton(
+                    title: "Python",
+                    icon: "chevron.left.forwardslash.chevron.right",
+                    item: .python
+                ) {
+                    pythonSnippet
+                }
+                snippetButton(
+                    title: "cURL",
+                    icon: "terminal",
+                    item: .curl
+                ) {
+                    curlSnippet
+                }
+                snippetButton(
+                    title: "Env Vars",
+                    icon: "doc.text",
+                    item: .envVars
+                ) {
+                    envVarsSnippet
+                }
+            }
+        }
+    }
+
+    private func snippetButton(title: String, icon: String, item: CopiedItem, snippet: @escaping () -> String) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(snippet(), forType: .string)
+            withAnimation { copied = item }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                withAnimation { if copied == item { copied = nil } }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied == item ? "checkmark" : icon)
+                    .frame(width: 14)
+                Text(copied == item ? "Copied" : title)
+            }
+            .font(.caption)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(copied == item ? .green : nil)
+    }
+
+    // MARK: - Advanced
+
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // All keys list
+            if apiKeys.count > 1 || apiKeys.contains(where: { !$0.isActive }) {
+                ForEach(apiKeys) { key in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(key.name)
+                                .font(.caption.weight(.medium))
+                            Text(key.truncatedKey)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if !key.isActive {
+                            Text("Revoked")
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        } else {
+                            Button("Revoke") {
+                                Task {
+                                    await appState.apiKeyStore.revokeKey(id: key.id)
+                                    await refreshKeys()
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                    }
+                }
+            }
+
+            // Generate another key
+            Button("Generate Another Key") {
+                Task {
+                    let key = await appState.apiKeyStore.generateKey(name: "Key \(apiKeys.count + 1)")
+                    generatedKey = key.key
+                    await refreshKeys()
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Divider()
+
+            // Network access toggle
+            @Bindable var state = appState
+            Toggle("Allow Network Access", isOn: $state.allowNetworkAccess)
+            Text(appState.allowNetworkAccess
+                 ? "Accepting requests from other devices on the network"
+                 : "Only accepting requests from this Mac (localhost)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var activeKey: String {
+        apiKeys.first(where: \.isActive)?.key ?? "YOUR_API_KEY"
+    }
+
+    private var endpoint: String {
+        "http://localhost:\(appState.serverPort)/v1"
+    }
+
+    private var pythonSnippet: String {
+        """
+        from openai import OpenAI
+
+        client = OpenAI(
+            base_url="\(endpoint)",
+            api_key="\(activeKey)",
+        )
+
+        response = client.chat.completions.create(
+            model="local",
+            messages=[{"role": "user", "content": "Hello!"}],
+        )
+        print(response.choices[0].message.content)
+        """
+    }
+
+    private var curlSnippet: String {
+        """
+        curl \(endpoint)/chat/completions \\
+          -H "Authorization: Bearer \(activeKey)" \\
+          -H "Content-Type: application/json" \\
+          -d '{"model":"local","messages":[{"role":"user","content":"Hello!"}]}'
+        """
+    }
+
+    private var envVarsSnippet: String {
+        """
+        export OPENAI_API_BASE=\(endpoint)
+        export OPENAI_API_KEY=\(activeKey)
+        """
+    }
+
+    private func copyButton(text: String, item: CopiedItem, label: String) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            withAnimation { copied = item }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                withAnimation { if copied == item { copied = nil } }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: copied == item ? "checkmark" : "doc.on.doc")
+                    .frame(width: 12)
+                Text(copied == item ? "Copied" : label)
+            }
+            .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .tint(copied == item ? .green : nil)
+    }
+
+    private func refreshKeys() async {
+        apiKeys = await appState.apiKeyStore.allKeys()
     }
 }
 

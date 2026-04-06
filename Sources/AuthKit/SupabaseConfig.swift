@@ -12,7 +12,7 @@ public struct SupabaseConfig: Sendable {
     }
 
     /// Load config from Supabase.plist in the main bundle, then env vars.
-    public static var `default`: SupabaseConfig {
+    public static var `default`: SupabaseConfig? {
         // Try Supabase.plist first
         if let plistURL = Bundle.main.url(forResource: "Supabase", withExtension: "plist"),
            let data = try? Data(contentsOf: plistURL),
@@ -30,7 +30,7 @@ public struct SupabaseConfig: Sendable {
             return SupabaseConfig(url: url, anonKey: key)
         }
 
-        // Development fallback — will fail at runtime if not configured
-        fatalError("Supabase not configured. Add Supabase.plist or set SUPABASE_URL and SUPABASE_ANON_KEY environment variables.")
+        // Development fallback — return nil when not configured
+        return nil
     }
 }

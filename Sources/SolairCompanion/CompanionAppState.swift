@@ -112,9 +112,11 @@ final class CompanionAppState {
 
     @MainActor
     func initialize() async {
-        let manager = AuthManager(config: .default)
-        self.authManager = manager
-        await manager.checkSession()
+        if let config = SupabaseConfig.default {
+            let manager = AuthManager(config: config)
+            self.authManager = manager
+            await manager.checkSession()
+        }
         await startDiscovery()
     }
 
