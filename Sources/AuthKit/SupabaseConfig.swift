@@ -41,15 +41,22 @@ public struct SupabaseConfig: Sendable {
     /// when the resource bundle isn't embedded in the app package.
     private static var authKitBundle: Bundle? {
         #if SWIFT_PACKAGE
-        let bundleName = "AuthKit_AuthKit"
+        final class BundleFinder {}
+        let bundleNames = [
+            "InferencePool_AuthKit",
+            "AuthKit_AuthKit",
+        ]
         let candidates = [
             Bundle.main.resourceURL,
+            Bundle(for: BundleFinder.self).resourceURL,
             Bundle.main.bundleURL,
         ]
         for candidate in candidates {
-            let bundlePath = candidate?.appendingPathComponent(bundleName + ".bundle")
-            if let bundlePath, let bundle = Bundle(url: bundlePath) {
-                return bundle
+            for bundleName in bundleNames {
+                let bundlePath = candidate?.appendingPathComponent(bundleName + ".bundle")
+                if let bundlePath, let bundle = Bundle(url: bundlePath) {
+                    return bundle
+                }
             }
         }
         return nil

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build and bundle InferencePoolApp as a macOS .app
-# Uses xcodebuild to properly compile Metal shaders required by MLX
+# Build and bundle InferencePoolApp as a macOS .app.
+# Uses xcodebuild to properly compile Metal shaders required by MLX.
 set -e
 
 DERIVED_DATA=".build/xcode"
@@ -9,6 +9,8 @@ APP_DIR=".build/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-"-"}"
+ENTITLEMENTS="Sources/InferencePoolApp/InferencePool.entitlements"
 
 echo "Building InferencePoolApp (Release via xcodebuild)..."
 xcodebuild \
@@ -44,12 +46,21 @@ else
     echo "WARNING: Metal shader bundle not found — inference will not work"
 fi
 
+# Copy SwiftPM/Xcode resource bundles such as AuthKit's bundled Supabase config.
+find "${DERIVED_DATA}/Build/Products/Release" -maxdepth 1 -name '*.bundle' -type d | while read -r bundle; do
+    cp -R "${bundle}" "${RESOURCES_DIR}/"
+done
+
 # Copy Info.plist
 cp Sources/InferencePoolApp/Info.plist "${CONTENTS_DIR}/Info.plist"
 
-# Sign with ad-hoc signature + entitlements (required for MenuBarExtra + network)
-# TODO: Replace with Developer ID for distribution: --sign "Developer ID Application: ..."
-codesign --force --sign - --entitlements Sources/InferencePoolApp/InferencePool.entitlements "${APP_DIR}"
+# Local ad-hoc signing cannot carry restricted entitlements like multicast networking.
+# Only attach entitlements when signing with a real identity.
+if [ "${SIGNING_IDENTITY}" = "-" ]; then
+    codesign --force --deep --sign - "${APP_DIR}"
+else
+    codesign --force --deep --sign "${SIGNING_IDENTITY}" --entitlements "${ENTITLEMENTS}" "${APP_DIR}"
+fi
 
 SIZE=$(du -sh "${APP_DIR}" | cut -f1)
 echo ""
