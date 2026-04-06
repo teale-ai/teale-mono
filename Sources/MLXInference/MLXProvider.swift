@@ -21,6 +21,13 @@ public actor MLXProvider: InferenceProvider {
 
     public init() {}
 
+    private func describeMLXError(_ error: Error) -> String {
+        if let mlxError = error as? MLXError, let description = mlxError.errorDescription {
+            return description
+        }
+        return error.localizedDescription
+    }
+
     // MARK: - Load Model
 
     public func loadModel(_ descriptor: ModelDescriptor) async throws {
@@ -59,27 +66,29 @@ public actor MLXProvider: InferenceProvider {
         onProgress?(LoadProgress(phase: .verifying, fractionCompleted: 0))
 
         do {
-            let config = ModelConfiguration(id: descriptor.huggingFaceRepo)
+            let container = try await withError {
+                let config = ModelConfiguration(id: descriptor.huggingFaceRepo)
 
-            // Track whether we've seen real download progress to distinguish
-            // "verifying cached files" from "actually downloading"
-            var sawRealDownload = false
-            let container = try await LLMModelFactory.shared.loadContainer(
-                from: HFDownloader(),
-                using: HFTokenizerLoader(),
-                configuration: config
-            ) { progress in
-                let fraction = progress.fractionCompleted
-                if fraction >= 1.0 {
-                    onProgress?(LoadProgress(phase: .loadingWeights, fractionCompleted: 0.5))
-                } else if fraction > 0 && fraction < 0.99 {
-                    // Real download in progress
-                    sawRealDownload = true
-                    onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
-                } else if sawRealDownload {
-                    onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
-                } else {
-                    onProgress?(LoadProgress(phase: .verifying, fractionCompleted: fraction))
+                // Track whether we've seen real download progress to distinguish
+                // "verifying cached files" from "actually downloading"
+                var sawRealDownload = false
+                return try await LLMModelFactory.shared.loadContainer(
+                    from: HFDownloader(),
+                    using: HFTokenizerLoader(),
+                    configuration: config
+                ) { progress in
+                    let fraction = progress.fractionCompleted
+                    if fraction >= 1.0 {
+                        onProgress?(LoadProgress(phase: .loadingWeights, fractionCompleted: 0.5))
+                    } else if fraction > 0 && fraction < 0.99 {
+                        // Real download in progress
+                        sawRealDownload = true
+                        onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
+                    } else if sawRealDownload {
+                        onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
+                    } else {
+                        onProgress?(LoadProgress(phase: .verifying, fractionCompleted: fraction))
+                    }
                 }
             }
 
@@ -90,7 +99,8 @@ public actor MLXProvider: InferenceProvider {
             _status = .ready(descriptor)
             onProgress?(LoadProgress(phase: .warmup, fractionCompleted: 1.0))
         } catch {
-            _status = .error("Failed to load \(descriptor.name): \(error.localizedDescription)")
+            let message = describeMLXError(error)
+            _status = .error("Failed to load \(descriptor.name): \(message)")
             throw error
         }
     }
@@ -156,22 +166,28 @@ public actor MLXProvider: InferenceProvider {
 
         // Prepare input and generate
         let userInput = UserInput(messages: messages)
-        let lmInput = try await container.prepare(input: userInput)
-        let parameters = GenerateParameters(temperature: temperature)
-        let stream = try await container.generate(input: lmInput, parameters: parameters)
+        do {
+            try await withError {
+                let lmInput = try await container.prepare(input: userInput)
+                let parameters = GenerateParameters(temperature: temperature)
+                let stream = try await container.generate(input: lmInput, parameters: parameters)
 
-        for await generation in stream {
-            if Task.isCancelled { break }
-            switch generation {
-            case .chunk(let text):
-                tokenCount += 1
-                continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
-                if tokenCount >= maxTokens { break }
-            case .info:
-                break
-            case .toolCall:
-                break
+                for await generation in stream {
+                    if Task.isCancelled { break }
+                    switch generation {
+                    case .chunk(let text):
+                        tokenCount += 1
+                        continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
+                        if tokenCount >= maxTokens { break }
+                    case .info:
+                        break
+                    case .toolCall:
+                        break
+                    }
+                }
             }
+        } catch {
+            throw InferenceError.generationFailed(describeMLXError(error))
         }
 
         // Final chunk
