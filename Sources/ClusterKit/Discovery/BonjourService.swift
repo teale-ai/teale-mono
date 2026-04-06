@@ -13,6 +13,7 @@ public final class BonjourService: @unchecked Sendable {
     private var browser: NWBrowser?
     private let localDeviceID: UUID
     private let parameters: NWParameters
+    private var visiblePeerEndpoints: [UUID: NWEndpoint] = [:]
 
     public private(set) var isAdvertising: Bool = false
     public private(set) var isBrowsing: Bool = false
@@ -100,19 +101,36 @@ public final class BonjourService: @unchecked Sendable {
                 self.discoveredEndpoints = Array(results)
             }
 
-            for change in changes {
-                switch change {
-                case .added(let result):
-                    let txtDict = self.parseTXTRecord(result)
-                    // Filter out self
-                    if txtDict["deviceID"] != self.localDeviceID.uuidString {
-                        self.onPeerDiscovered?(result.endpoint, txtDict)
-                    }
-                case .removed(let result):
-                    self.onPeerRemoved?(result.endpoint)
-                default:
-                    break
+            var currentPeers: [UUID: (endpoint: NWEndpoint, txtDict: [String: String])] = [:]
+            for result in results {
+                let txtDict = self.parseTXTRecord(result)
+                guard
+                    let deviceIDString = txtDict["deviceID"],
+                    let deviceID = UUID(uuidString: deviceIDString),
+                    deviceID != self.localDeviceID
+                else {
+                    continue
                 }
+
+                // Bonjour can report the same peer on multiple interfaces. Keep the
+                // first visible endpoint per deviceID and dedupe the rest.
+                if currentPeers[deviceID] == nil {
+                    currentPeers[deviceID] = (result.endpoint, txtDict)
+                }
+            }
+
+            let removedPeerIDs = Set(self.visiblePeerEndpoints.keys).subtracting(currentPeers.keys)
+            for peerID in removedPeerIDs {
+                if let endpoint = self.visiblePeerEndpoints.removeValue(forKey: peerID) {
+                    self.onPeerRemoved?(endpoint)
+                }
+            }
+
+            for (peerID, peer) in currentPeers {
+                if self.visiblePeerEndpoints[peerID] == nil {
+                    self.onPeerDiscovered?(peer.endpoint, peer.txtDict)
+                }
+                self.visiblePeerEndpoints[peerID] = peer.endpoint
             }
         }
 
@@ -125,6 +143,7 @@ public final class BonjourService: @unchecked Sendable {
         browser = nil
         isBrowsing = false
         discoveredEndpoints = []
+        visiblePeerEndpoints.removeAll()
     }
 
     // MARK: - Stop
