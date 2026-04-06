@@ -31,6 +31,7 @@ public final class ClusterManager: @unchecked Sendable {
     private var heartbeatTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
     private var scanStopTask: Task<Void, Never>?
+    private var connectingPeerIDs: Set<UUID> = []
 
     // Model sharing
     private var modelQueryContinuation: AsyncStream<ModelQueryResult>.Continuation?
@@ -67,7 +68,7 @@ public final class ClusterManager: @unchecked Sendable {
         }
 
         bonjourService?.onPeerRemoved = { [weak self] endpoint in
-            Task { await self?.handlePeerRemoved(endpoint: endpoint) }
+            self?.handlePeerRemoved(endpoint: endpoint)
         }
 
         // Handle incoming connections
@@ -132,10 +133,25 @@ public final class ClusterManager: @unchecked Sendable {
 
     private func handlePeerDiscovered(endpoint: NWEndpoint, txtDict: [String: String]) async {
         guard let resolver = peerResolver else { return }
+        guard let peerIDString = txtDict["deviceID"], let discoveredPeerID = UUID(uuidString: peerIDString) else {
+            print("Cluster discovery missing deviceID for \(endpoint)")
+            return
+        }
+        guard discoveredPeerID != localDeviceInfo.id else { return }
+        guard peers[discoveredPeerID] == nil, !connectingPeerIDs.contains(discoveredPeerID) else { return }
+        guard shouldInitiateOutboundConnection(to: discoveredPeerID) else { return }
+
+        connectingPeerIDs.insert(discoveredPeerID)
+        defer { connectingPeerIDs.remove(discoveredPeerID) }
 
         do {
             let peerInfo = try await resolver.resolve(endpoint: endpoint)
             if peerInfo.id == localDeviceInfo.id {
+                await peerInfo.connection.cancel()
+                return
+            }
+            if peerInfo.id != discoveredPeerID {
+                print("Cluster resolved deviceID mismatch for \(endpoint): expected \(discoveredPeerID), got \(peerInfo.id)")
                 await peerInfo.connection.cancel()
                 return
             }
@@ -173,6 +189,10 @@ public final class ClusterManager: @unchecked Sendable {
         } catch {
             print("Cluster incoming connection failed: \(error.localizedDescription)")
         }
+    }
+
+    private func shouldInitiateOutboundConnection(to peerID: UUID) -> Bool {
+        localDeviceInfo.id.uuidString < peerID.uuidString
     }
 
     // MARK: - Message Handling
