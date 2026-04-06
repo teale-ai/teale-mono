@@ -48,7 +48,7 @@ public struct HFTokenizerLoader: MLXLMCommon.TokenizerLoader, Sendable {
     public init() {}
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        let tokenizer = try await AutoTokenizer.from(modelFolder: directory)
+        let tokenizer = try await AutoTokenizer.from(modelFolder: directory, hubApi: tealeHubApi)
         return TokenizerAdapter(tokenizer)
     }
 }

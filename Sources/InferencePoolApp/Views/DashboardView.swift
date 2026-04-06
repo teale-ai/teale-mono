@@ -66,7 +66,7 @@ private struct StatusHeaderView: View {
                 .font(.headline)
             Spacer()
             if appState.isServerRunning {
-                Label("API: \(appState.serverPort)", systemImage: "network")
+                Label("API: " + String(appState.serverPort), systemImage: "network")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

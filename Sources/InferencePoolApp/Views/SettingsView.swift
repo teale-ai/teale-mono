@@ -194,7 +194,7 @@ struct SettingsView: View {
 
             // About
             Section("About") {
-                LabeledContent("Version", value: "0.1.0")
+                LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")
                 LabeledContent("Engine", value: "MLX")
                 Link("Source Code", destination: URL(string: "https://github.com/taylorhou/teale-mac-app")!)
             }
