@@ -2,6 +2,7 @@ import Foundation
 import SharedTypes
 import Network
 import Observation
+import AuthKit
 
 // MARK: - Connection Status
 
@@ -79,6 +80,9 @@ struct WalletTransaction: Identifiable {
 
 @Observable
 final class CompanionAppState {
+    // Auth (initialized lazily on MainActor in initialize())
+    var authManager: AuthManager?
+
     // Connection
     var connectionStatus: ConnectionStatus = .disconnected
     var discoveredNodes: [DiscoveredNode] = []
@@ -106,8 +110,18 @@ final class CompanionAppState {
 
     // MARK: - Discovery
 
+    @MainActor
+    func initialize() async {
+        if let config = SupabaseConfig.default {
+            let manager = AuthManager(config: config)
+            self.authManager = manager
+            await manager.checkSession()
+        }
+        await startDiscovery()
+    }
+
     func startDiscovery() async {
-        let browser = NWBrowser(for: .bonjour(type: "_inferencepool._tcp", domain: "local."), using: .tcp)
+        let browser = NWBrowser(for: .bonjour(type: "_teale._tcp", domain: "local."), using: .tcp)
 
         browser.stateUpdateHandler = { [weak self] state in
             switch state {

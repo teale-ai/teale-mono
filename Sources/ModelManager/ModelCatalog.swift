@@ -32,15 +32,15 @@ public struct ModelCatalog: Sendable {
             description: "Good balance of speed and quality for small tasks"
         ),
         ModelDescriptor(
-            id: "gemma-2-2b-it-4bit",
-            name: "Gemma 2 2B Instruct",
-            huggingFaceRepo: "mlx-community/gemma-2-2b-it-4bit",
-            parameterCount: "2B",
+            id: "gemma-3-4b-it-qat-4bit",
+            name: "Gemma 3 4B Instruct",
+            huggingFaceRepo: "mlx-community/gemma-3-4b-it-qat-4bit",
+            parameterCount: "4B",
             quantization: .q4,
-            estimatedSizeGB: 1.4,
-            requiredRAMGB: 5.0,
+            estimatedSizeGB: 2.5,
+            requiredRAMGB: 6.0,
             family: "Gemma",
-            description: "Google's efficient small model"
+            description: "Google's efficient small model, great quality for its size"
         ),
 
         // Medium models — 16GB+ RAM
@@ -56,26 +56,26 @@ public struct ModelCatalog: Sendable {
             description: "Strong general-purpose model"
         ),
         ModelDescriptor(
-            id: "qwen2.5-7b-instruct-4bit",
-            name: "Qwen 2.5 7B Instruct",
-            huggingFaceRepo: "mlx-community/Qwen2.5-7B-Instruct-4bit",
-            parameterCount: "7B",
+            id: "qwen3-8b-4bit",
+            name: "Qwen 3 8B",
+            huggingFaceRepo: "mlx-community/Qwen3-8B-4bit",
+            parameterCount: "8B",
             quantization: .q4,
-            estimatedSizeGB: 4.2,
+            estimatedSizeGB: 4.5,
             requiredRAMGB: 10.0,
             family: "Qwen",
-            description: "Excellent multilingual and coding model"
+            description: "Latest Qwen with thinking and non-thinking modes"
         ),
         ModelDescriptor(
-            id: "mistral-7b-instruct-v0.3-4bit",
-            name: "Mistral 7B Instruct v0.3",
-            huggingFaceRepo: "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-            parameterCount: "7B",
+            id: "mistral-small-24b-instruct-2501-4bit",
+            name: "Mistral Small 24B",
+            huggingFaceRepo: "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+            parameterCount: "24B",
             quantization: .q4,
-            estimatedSizeGB: 4.1,
-            requiredRAMGB: 10.0,
+            estimatedSizeGB: 13.0,
+            requiredRAMGB: 20.0,
             family: "Mistral",
-            description: "Fast and capable instruction-following model"
+            description: "Mistral's efficient mid-size model"
         ),
         ModelDescriptor(
             id: "phi-4-4bit",
@@ -91,9 +91,20 @@ public struct ModelCatalog: Sendable {
 
         // Large models — 32GB+ RAM
         ModelDescriptor(
-            id: "qwen2.5-32b-instruct-4bit",
-            name: "Qwen 2.5 32B Instruct",
-            huggingFaceRepo: "mlx-community/Qwen2.5-32B-Instruct-4bit",
+            id: "gemma-3-27b-it-4bit",
+            name: "Gemma 3 27B Instruct",
+            huggingFaceRepo: "mlx-community/gemma-3-27b-it-qat-4bit",
+            parameterCount: "27B",
+            quantization: .q4,
+            estimatedSizeGB: 15.0,
+            requiredRAMGB: 24.0,
+            family: "Gemma",
+            description: "Google's flagship model, strong reasoning and coding"
+        ),
+        ModelDescriptor(
+            id: "qwen3-32b-4bit",
+            name: "Qwen 3 32B",
+            huggingFaceRepo: "mlx-community/Qwen3-32B-4bit",
             parameterCount: "32B",
             quantization: .q4,
             estimatedSizeGB: 18.0,
@@ -104,15 +115,15 @@ public struct ModelCatalog: Sendable {
 
         // XL models — 64GB+ RAM
         ModelDescriptor(
-            id: "llama-3.1-70b-instruct-4bit",
-            name: "Llama 3.1 70B Instruct",
-            huggingFaceRepo: "mlx-community/Meta-Llama-3.1-70B-Instruct-4bit",
-            parameterCount: "70B",
+            id: "llama-4-scout-17b-16e-instruct-4bit",
+            name: "Llama 4 Scout 109B (MoE)",
+            huggingFaceRepo: "mlx-community/Llama-4-Scout-17Bx16E-Instruct-4bit",
+            parameterCount: "109B",
             quantization: .q4,
-            estimatedSizeGB: 38.0,
-            requiredRAMGB: 52.0,
+            estimatedSizeGB: 56.0,
+            requiredRAMGB: 72.0,
             family: "Llama",
-            description: "Frontier-class model, excellent at everything"
+            description: "Meta's MoE model — 17B active params, frontier quality"
         ),
     ]
 

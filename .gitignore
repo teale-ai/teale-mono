@@ -8,3 +8,5 @@ DerivedData/
 *.dylib
 *.dSYM
 .claude/
+Supabase.plist
+default.profraw

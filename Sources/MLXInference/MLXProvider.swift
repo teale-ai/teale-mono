@@ -24,23 +24,71 @@ public actor MLXProvider: InferenceProvider {
     // MARK: - Load Model
 
     public func loadModel(_ descriptor: ModelDescriptor) async throws {
+        try await loadModel(descriptor, onProgress: nil)
+    }
+
+    public func loadModel(_ descriptor: ModelDescriptor, onProgress: LoadProgressCallback?) async throws {
         if let current = currentDescriptor, current.id != descriptor.id {
             await unloadModel()
         }
 
+        // Check available memory before loading to avoid Jetsam kill
+        var vmStats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &vmStats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        let pageSize = Double(vm_kernel_page_size)
+        let availableGB: Double
+        if result == KERN_SUCCESS {
+            let freePages = Double(vmStats.free_count) + Double(vmStats.inactive_count) + Double(vmStats.purgeable_count)
+            availableGB = (freePages * pageSize) / (1024 * 1024 * 1024)
+        } else {
+            availableGB = Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024) * 0.5
+        }
+        let requiredGB = descriptor.requiredRAMGB * 0.8 // weights + overhead, some headroom
+        if availableGB < requiredGB {
+            let msg = "Not enough free memory to load \(descriptor.name). Available: \(String(format: "%.1f", availableGB)) GB, needs ~\(String(format: "%.0f", descriptor.requiredRAMGB)) GB. Close other apps and try again."
+            _status = .error(msg)
+            throw InferenceError.generationFailed(msg)
+        }
+
         _status = .loadingModel(descriptor)
+        onProgress?(LoadProgress(phase: .verifying, fractionCompleted: 0))
 
         do {
             let config = ModelConfiguration(id: descriptor.huggingFaceRepo)
+
+            // Track whether we've seen real download progress to distinguish
+            // "verifying cached files" from "actually downloading"
+            var sawRealDownload = false
             let container = try await LLMModelFactory.shared.loadContainer(
                 from: HFDownloader(),
                 using: HFTokenizerLoader(),
                 configuration: config
-            ) { _ in }
+            ) { progress in
+                let fraction = progress.fractionCompleted
+                if fraction >= 1.0 {
+                    onProgress?(LoadProgress(phase: .loadingWeights, fractionCompleted: 0.5))
+                } else if fraction > 0 && fraction < 0.99 {
+                    // Real download in progress
+                    sawRealDownload = true
+                    onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
+                } else if sawRealDownload {
+                    onProgress?(LoadProgress(phase: .downloading, fractionCompleted: fraction))
+                } else {
+                    onProgress?(LoadProgress(phase: .verifying, fractionCompleted: fraction))
+                }
+            }
+
+            onProgress?(LoadProgress(phase: .warmup, fractionCompleted: 0.9))
 
             self.modelContainer = container
             self.currentDescriptor = descriptor
             _status = .ready(descriptor)
+            onProgress?(LoadProgress(phase: .warmup, fractionCompleted: 1.0))
         } catch {
             _status = .error("Failed to load \(descriptor.name): \(error.localizedDescription)")
             throw error
@@ -50,22 +98,34 @@ public actor MLXProvider: InferenceProvider {
     // MARK: - Unload Model
 
     public func unloadModel() async {
-        modelContainer = nil
-        currentDescriptor = nil
-        MLX.GPU.clearCache()
         _status = .idle
+        currentDescriptor = nil
+
+        // Release the container first, then yield to let MLX finish
+        // any pending GPU work before clearing the cache
+        let hadModel = modelContainer != nil
+        modelContainer = nil
+
+        if hadModel {
+            // Give MLX time to finish any in-flight GPU operations
+            try? await Task.sleep(for: .milliseconds(200))
+            Memory.clearCache()
+        }
     }
 
     // MARK: - Generate (Streaming)
 
     public nonisolated func generate(request: ChatCompletionRequest) -> AsyncThrowingStream<ChatCompletionChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     try await self._generate(request: request, continuation: continuation)
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
@@ -101,6 +161,7 @@ public actor MLXProvider: InferenceProvider {
         let stream = try await container.generate(input: lmInput, parameters: parameters)
 
         for await generation in stream {
+            if Task.isCancelled { break }
             switch generation {
             case .chunk(let text):
                 tokenCount += 1
@@ -114,7 +175,9 @@ public actor MLXProvider: InferenceProvider {
         }
 
         // Final chunk
-        continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "stop"))
+        if !Task.isCancelled {
+            continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "stop"))
+        }
         continuation.finish()
         _status = .ready(descriptor)
     }

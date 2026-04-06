@@ -180,7 +180,7 @@ public struct QUICParameters: Codable, Sendable {
     public var alpn: [String]
     public var certificateFingerprint: String  // hex SHA256 of self-signed cert
 
-    public init(alpn: [String] = ["solair-wan-1"], certificateFingerprint: String) {
+    public init(alpn: [String] = ["teale-wan-1"], certificateFingerprint: String) {
         self.alpn = alpn
         self.certificateFingerprint = certificateFingerprint
     }

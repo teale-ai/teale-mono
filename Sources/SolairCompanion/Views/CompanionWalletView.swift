@@ -58,7 +58,7 @@ struct CompanionWalletView: View {
                             Text("How credits work")
                                 .font(.subheadline)
                                 .fontWeight(.medium)
-                            Text("You earn credits by contributing inference compute on your Mac. Spending credits lets you use other nodes from this iOS app. Run the Solair macOS app to start earning.")
+                            Text("You earn credits by contributing inference compute on your Mac. Spending credits lets you use other nodes from this iOS app. Run the Teale macOS app to start earning.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

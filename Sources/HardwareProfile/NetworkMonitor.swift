@@ -9,8 +9,11 @@ public final class NetworkMonitor: @unchecked Sendable {
     public private(set) var isConnected: Bool = true
     public private(set) var isExpensive: Bool = false  // cellular/hotspot
     public private(set) var isConstrained: Bool = false  // low data mode
+
+    /// True when connected via Wi-Fi (not cellular/hotspot)
+    public var isOnWiFi: Bool { isConnected && !isExpensive }
     private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "com.inferencepool.network-monitor")
+    private let queue = DispatchQueue(label: "com.teale.network-monitor")
 
     public init() {
         startMonitoring()

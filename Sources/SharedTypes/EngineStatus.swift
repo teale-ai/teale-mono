@@ -49,6 +49,9 @@ public enum PauseReason: Sendable {
     case lowPowerMode
     case userActive
     case networkUnavailable
+    case scheduledOff
+    case notPluggedIn
+    case notOnWiFi
 
     public var displayText: String {
         switch self {
@@ -57,6 +60,9 @@ public enum PauseReason: Sendable {
         case .lowPowerMode: return "Low Power Mode"
         case .userActive: return "User active"
         case .networkUnavailable: return "No network"
+        case .scheduledOff: return "Outside scheduled hours"
+        case .notPluggedIn: return "Not plugged in"
+        case .notOnWiFi: return "Not on Wi-Fi"
         }
     }
 }

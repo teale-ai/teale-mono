@@ -40,7 +40,7 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 ### Phase 4 — Credit Economy (Complete)
 - CreditKit module: local credit ledger with JSON persistence
 - Token-based pricing: cost = (tokens/1K) * model_complexity * quant_multiplier
-- Model complexity scales at 0.1x per billion params; earners get 80% (20% network fee)
+- Model complexity scales at 0.1x per billion params; earners get 95% (5% network fee)
 - CreditWallet (@Observable) for SwiftUI, CreditAwareProvider middleware
 - Welcome bonus of 100 credits for new users
 - Wallet UI with balance, transactions, earning/spending summary
@@ -57,6 +57,18 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 - AgentManager: central orchestrator wiring everything together
 - Agent UI: conversation list, message bubbles, directory view
 
+### Phase 8 — Authentication & Device Management (Complete)
+- AuthKit module: Supabase integration for user auth and device management
+- Sign in with Apple + Phone/SMS OTP (no passwords)
+- Anonymous mode: app works without account, local wallet only
+- Device registration: devices auto-register to Supabase on sign-in
+- Device management view: list devices, remove, transfer ownership
+- Device transfer: atomic transfer via Supabase RPC, future credits go to new owner
+- Auth gate on both macOS and iOS apps (login screen on first launch)
+- Account section in Settings with sign-in/sign-out
+- Supabase schema: profiles, devices, device_transfers tables with RLS
+- SQL migration at supabase/migrations/001_auth_schema.sql
+
 ### Phase 5 — iOS Companion App (Complete)
 - SolairCompanion executable target (iOS 17+)
 - Thin client — no local inference, talks to Mac nodes via HTTP API
@@ -66,7 +78,7 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 
 ## Architecture
 
-12 Swift modules in a single Package.swift:
+13 Swift modules in a single Package.swift:
 
 | Module | Purpose |
 |--------|---------|
@@ -79,6 +91,7 @@ Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026
 | WANKit | WAN P2P via QUIC, STUN/NAT traversal, relay signaling |
 | CreditKit | Credit economy, ledger, pricing, wallet, analytics |
 | AgentKit | Agent-to-agent protocol, negotiation, directory, conversations |
+| AuthKit | Supabase auth, device management, Sign in with Apple + Phone OTP |
 | LocalAPI | Hummingbird HTTP server, OpenAI-compatible endpoints |
 | InferencePoolApp | SwiftUI MenuBarExtra app (executable, macOS) |
 | SolairCompanion | iOS companion app (executable, iOS) |
@@ -99,10 +112,11 @@ swift build          # CLI build (works, 86MB binary)
 
 ## Dependencies
 
-- mlx-swift (0.31.x) — Apple's ML framework for Apple Silicon
+- mlx-swift (0.21.x) — Apple's ML framework for Apple Silicon
 - mlx-swift-lm (main) — LLM/VLM model loading and generation
 - swift-transformers (0.1.x) — Tokenizer + HuggingFace Hub
 - hummingbird (2.x) — HTTP server
+- supabase-swift (2.x) — Auth, database, realtime (Supabase BaaS)
 
 ## Notes
 

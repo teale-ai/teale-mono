@@ -60,7 +60,7 @@ public actor ConversationStore {
 
     public init(directory: URL? = nil) {
         let dir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("InferencePool", isDirectory: true)
+            .appendingPathComponent("Teale", isDirectory: true)
         self.fileURL = dir.appendingPathComponent("agent_conversations.json")
     }
 
@@ -168,6 +168,9 @@ public enum AgentError: Error, Sendable, Equatable {
     case profileNotConfigured
     case transportNotAvailable
     case signatureVerificationFailed
+    case signatureMissing
+    case signerNotConfigured
+    case unknownAgent(String)
     case offerExpired
     case insufficientCredits(required: Double, available: Double)
     case agentNotFound(String)

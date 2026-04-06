@@ -22,6 +22,7 @@ public final class ModelManagerService: @unchecked Sendable {
     private let hardware: HardwareCapability
 
     public private(set) var downloadingModels: [String: Double] = [:]  // modelID -> progress
+    public var peerModelSource: (any PeerModelSource)?
 
     public init(hardware: HardwareCapability, maxStorageGB: Double = 50.0) {
         self.catalog = ModelCatalog()
@@ -39,18 +40,20 @@ public final class ModelManagerService: @unchecked Sendable {
         await cache.isModelCached(model)
     }
 
-    /// Download a model (MLX handles download internally via HuggingFace Hub)
+    /// Download model files only (no loading into memory)
     public func downloadModel(_ descriptor: ModelDescriptor) async throws {
         downloadingModels[descriptor.id] = 0.0
 
         do {
             try await cache.ensureDirectory()
 
-            let config = ModelConfiguration(id: descriptor.huggingFaceRepo)
-            _ = try await LLMModelFactory.shared.loadContainer(
-                from: HFDownloader(),
-                using: HFTokenizerLoader(),
-                configuration: config
+            let downloader = HFDownloader()
+            let patterns = ["*.safetensors", "*.json", "tokenizer.*", "*.model"]
+            _ = try await downloader.download(
+                id: descriptor.huggingFaceRepo,
+                revision: nil,
+                matching: patterns,
+                useLatest: false
             ) { [weak self] progress in
                 Task { @MainActor in
                     self?.downloadingModels[descriptor.id] = progress.fractionCompleted
@@ -72,5 +75,36 @@ public final class ModelManagerService: @unchecked Sendable {
     /// Current cache size
     public func cacheSizeGB() async -> Double {
         await cache.totalSizeGB()
+    }
+
+    /// Download a model from a peer in the cluster
+    public func downloadModelFromPeer(_ descriptor: ModelDescriptor, peerID: UUID) async throws {
+        guard let source = peerModelSource else {
+            throw ModelManagerError.peerSourceNotAvailable
+        }
+        downloadingModels[descriptor.id] = 0.0
+        do {
+            try await source.requestModelFromPeer(modelID: descriptor.id, peerID: peerID)
+            downloadingModels.removeValue(forKey: descriptor.id)
+        } catch {
+            downloadingModels.removeValue(forKey: descriptor.id)
+            throw error
+        }
+    }
+
+    /// Query peers for model availability
+    public func queryPeersForModel(_ descriptor: ModelDescriptor) async -> [(peerID: UUID, available: Bool, sizeBytes: UInt64?)] {
+        guard let source = peerModelSource else { return [] }
+        return await source.queryModelAvailability(modelID: descriptor.id)
+    }
+}
+
+public enum ModelManagerError: LocalizedError, Sendable {
+    case peerSourceNotAvailable
+
+    public var errorDescription: String? {
+        switch self {
+        case .peerSourceNotAvailable: return "No peer model source configured"
+        }
     }
 }

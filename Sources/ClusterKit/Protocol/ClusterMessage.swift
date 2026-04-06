@@ -27,6 +27,10 @@ public enum ClusterMessage: Codable, Sendable {
 
     // Agent protocol
     case agentMessage(AgentTransportPayload)
+
+    // Credit transfer
+    case creditTransferRequest(CreditTransferPayload)
+    case creditTransferConfirm(CreditTransferConfirmPayload)
 }
 
 // MARK: - Agent Transport Payload
@@ -64,14 +68,18 @@ public struct HeartbeatPayload: Codable, Sendable {
     public var throttleLevel: Int  // 0-100
     public var loadedModels: [String]
     public var isGenerating: Bool
+    public var queueDepth: Int
+    public var organizationID: String?  // Optional for backward compat
 
-    public init(deviceID: UUID, timestamp: Date = Date(), thermalLevel: ThermalLevel = .nominal, throttleLevel: Int = 100, loadedModels: [String] = [], isGenerating: Bool = false) {
+    public init(deviceID: UUID, timestamp: Date = Date(), thermalLevel: ThermalLevel = .nominal, throttleLevel: Int = 100, loadedModels: [String] = [], isGenerating: Bool = false, queueDepth: Int = 0, organizationID: String? = nil) {
         self.deviceID = deviceID
         self.timestamp = timestamp
         self.thermalLevel = thermalLevel
         self.throttleLevel = throttleLevel
         self.loadedModels = loadedModels
         self.isGenerating = isGenerating
+        self.queueDepth = queueDepth
+        self.organizationID = organizationID
     }
 }
 
@@ -172,5 +180,33 @@ public struct ModelTransferCompletePayload: Codable, Sendable {
     public init(transferID: UUID, modelID: String) {
         self.transferID = transferID
         self.modelID = modelID
+    }
+}
+
+// MARK: - Credit Transfer Payloads
+
+public struct CreditTransferPayload: Codable, Sendable {
+    public var transferID: UUID
+    public var senderNodeID: String
+    public var amount: Double
+    public var memo: String?
+
+    public init(transferID: UUID = UUID(), senderNodeID: String, amount: Double, memo: String? = nil) {
+        self.transferID = transferID
+        self.senderNodeID = senderNodeID
+        self.amount = amount
+        self.memo = memo
+    }
+}
+
+public struct CreditTransferConfirmPayload: Codable, Sendable {
+    public var transferID: UUID
+    public var receiverNodeID: String
+    public var accepted: Bool
+
+    public init(transferID: UUID, receiverNodeID: String, accepted: Bool = true) {
+        self.transferID = transferID
+        self.receiverNodeID = receiverNodeID
+        self.accepted = accepted
     }
 }

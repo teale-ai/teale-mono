@@ -141,7 +141,7 @@ public struct AgentPreferences: Codable, Sendable, Equatable {
     public init(
         tone: CommunicationTone = .casual,
         language: String = "en",
-        autoNegotiate: Bool = true,
+        autoNegotiate: Bool = false,
         maxBudgetPerTransaction: Double? = nil,
         availableHours: AvailabilitySchedule? = nil,
         delegationRules: [DelegationRule] = []

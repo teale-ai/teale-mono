@@ -3,13 +3,24 @@ import MLXLMCommon
 import Hub
 import Tokenizers
 
+// MARK: - Shared HubApi with App Support cache (avoids ~/Documents TCC prompt)
+
+/// Custom HubApi that stores models in ~/Library/Application Support/Teale/huggingface/
+/// instead of ~/Documents/huggingface/ to avoid macOS TCC permission prompts on every launch.
+public let tealeHubApi: HubApi = {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let cacheDir = appSupport.appendingPathComponent("Teale/huggingface", isDirectory: true)
+    try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+    return HubApi(downloadBase: cacheDir)
+}()
+
 // MARK: - HuggingFace Hub Downloader
 
 /// Implements the MLXLMCommon.Downloader protocol using swift-transformers' Hub module
 public struct HFDownloader: MLXLMCommon.Downloader, Sendable {
     private let hubApi: HubApi
 
-    public init(hubApi: HubApi = .shared) {
+    public init(hubApi: HubApi = tealeHubApi) {
         self.hubApi = hubApi
     }
 

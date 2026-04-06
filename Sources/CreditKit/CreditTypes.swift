@@ -126,10 +126,10 @@ public struct CreditPricing: Sendable {
         cost(tokenCount: tokenCount, parameterCount: model.parameterCount, quantization: model.quantization)
     }
 
-    /// The earning rate is 80% of the cost (20% network fee).
+    /// The earning rate is 95% of the cost (5% network fee).
     public static func earning(tokenCount: Int, parameterCount: String, quantization: QuantizationType) -> CreditAmount {
         let totalCost = cost(tokenCount: tokenCount, parameterCount: parameterCount, quantization: quantization)
-        return totalCost * 0.8
+        return totalCost * 0.95
     }
 
     /// The earning rate using a ModelDescriptor.

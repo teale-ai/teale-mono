@@ -62,6 +62,15 @@ public struct ClusterState: Sendable {
     }
 }
 
+// MARK: - Peer Model Source
+
+/// Protocol for querying and transferring models from peers.
+/// Allows ModelManager to request models without depending on ClusterKit.
+public protocol PeerModelSource: AnyObject, Sendable {
+    func queryModelAvailability(modelID: String) async -> [(peerID: UUID, available: Bool, sizeBytes: UInt64?)]
+    func requestModelFromPeer(modelID: String, peerID: UUID) async throws
+}
+
 // MARK: - Peer Summary (lightweight info for UI without connection)
 
 public struct PeerSummary: Sendable, Identifiable {

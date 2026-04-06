@@ -7,7 +7,7 @@ import SharedTypes
 /// Advertises this device and discovers peers on the LAN via mDNS/Bonjour
 @Observable
 public final class BonjourService: @unchecked Sendable {
-    public static let serviceType = "_inferencepool._tcp"
+    public static let serviceType = "_teale._tcp"
 
     private var listener: NWListener?
     private var browser: NWBrowser?

@@ -39,7 +39,8 @@ public actor PeerHealthMonitor {
         thermalLevel: ThermalLevel,
         throttleLevel: Int,
         loadedModels: [String],
-        isGenerating: Bool
+        isGenerating: Bool,
+        queueDepth: Int = 0
     ) -> HeartbeatPayload {
         HeartbeatPayload(
             deviceID: deviceID,
@@ -47,7 +48,8 @@ public actor PeerHealthMonitor {
             thermalLevel: thermalLevel,
             throttleLevel: throttleLevel,
             loadedModels: loadedModels,
-            isGenerating: isGenerating
+            isGenerating: isGenerating,
+            queueDepth: queueDepth
         )
     }
 }

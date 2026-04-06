@@ -15,7 +15,7 @@ public struct WANConfig: Sendable {
     public var heartbeatIntervalSeconds: TimeInterval
 
     public init(
-        relayServerURLs: [URL] = [URL(string: "wss://relay.solair.network/ws")!],
+        relayServerURLs: [URL] = [URL(string: "wss://relay.teale.network/ws")!],
         stunServerURLs: [URL] = [
             URL(string: "stun://stun.l.google.com:19302")!,
             URL(string: "stun://stun1.l.google.com:19302")!,
@@ -91,7 +91,7 @@ public struct WANNodeIdentity: Sendable {
 
     // MARK: - Keychain persistence
 
-    private static let keychainService = "com.solair.inference-pool"
+    private static let keychainService = "com.teale.app"
     private static let keychainAccount = "wan-identity-key"
 
     /// Load identity from Keychain, or generate and store a new one

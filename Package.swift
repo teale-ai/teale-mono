@@ -10,22 +10,13 @@ let package = Package(
     ],
     products: [
         .executable(name: "InferencePoolApp", targets: ["InferencePoolApp"]),
-        .library(name: "SharedTypes", targets: ["SharedTypes"]),
-        .library(name: "HardwareProfile", targets: ["HardwareProfile"]),
-        .library(name: "MLXInference", targets: ["MLXInference"]),
-        .library(name: "InferenceEngine", targets: ["InferenceEngine"]),
-        .library(name: "ModelManager", targets: ["ModelManager"]),
-        .library(name: "LocalAPI", targets: ["LocalAPI"]),
-        .library(name: "ClusterKit", targets: ["ClusterKit"]),
-        .library(name: "WANKit", targets: ["WANKit"]),
-        .library(name: "CreditKit", targets: ["CreditKit"]),
-        .library(name: "AgentKit", targets: ["AgentKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.21.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.12"),
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
+        .package(url: "https://github.com/supabase/supabase-swift", from: "2.0.0"),
     ],
     targets: [
         // MARK: - SharedTypes
@@ -102,6 +93,15 @@ let package = Package(
             ]
         ),
 
+        // MARK: - AuthKit
+        .target(
+            name: "AuthKit",
+            dependencies: [
+                "SharedTypes",
+                .product(name: "Supabase", package: "supabase-swift"),
+            ]
+        ),
+
         // MARK: - AgentKit (agent-to-agent communication)
         .target(
             name: "AgentKit",
@@ -135,7 +135,9 @@ let package = Package(
                 "WANKit",
                 "CreditKit",
                 "AgentKit",
-            ]
+                "AuthKit",
+            ],
+            exclude: ["Info.plist", "InferencePool.entitlements"]
         ),
 
         // MARK: - SolairCompanion (iOS)
@@ -144,6 +146,7 @@ let package = Package(
             dependencies: [
                 "SharedTypes",
                 "AgentKit",
+                "AuthKit",
             ]
         ),
 

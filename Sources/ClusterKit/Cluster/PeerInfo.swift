@@ -17,6 +17,8 @@ public final class PeerInfo: Sendable, Identifiable {
     public var isGenerating: Bool
     public var thermalLevel: ThermalLevel
     public var throttleLevel: Int  // 0-100
+    public var activeRequestCount: Int
+    public var organizationID: String?
 
     public init(
         deviceInfo: DeviceInfo,
@@ -27,7 +29,8 @@ public final class PeerInfo: Sendable, Identifiable {
         loadedModels: [String] = [],
         isGenerating: Bool = false,
         thermalLevel: ThermalLevel = .nominal,
-        throttleLevel: Int = 100
+        throttleLevel: Int = 100,
+        activeRequestCount: Int = 0
     ) {
         self.id = deviceInfo.id
         self.deviceInfo = deviceInfo
@@ -39,6 +42,7 @@ public final class PeerInfo: Sendable, Identifiable {
         self.isGenerating = isGenerating
         self.thermalLevel = thermalLevel
         self.throttleLevel = throttleLevel
+        self.activeRequestCount = activeRequestCount
     }
 
     /// Capability score for routing decisions (higher = more capable)

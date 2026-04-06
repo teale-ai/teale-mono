@@ -98,7 +98,7 @@ public actor CreditLedger {
 
     private static func defaultDirectory() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("InferencePool")
+        let dir = appSupport.appendingPathComponent("Teale")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

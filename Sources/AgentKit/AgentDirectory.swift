@@ -42,7 +42,7 @@ public actor AgentDirectory {
 
     public init(directory: URL? = nil) {
         let dir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("InferencePool", isDirectory: true)
+            .appendingPathComponent("Teale", isDirectory: true)
         self.fileURL = dir.appendingPathComponent("agent_directory.json")
     }
 

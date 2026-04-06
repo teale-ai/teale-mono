@@ -17,17 +17,29 @@ public final class ClusterManager: @unchecked Sendable {
     // Configuration
     public var passcode: String?
     public var deviceName: String
+    public var organizationID: String?
+    public var orgCapacityReservation: Double = 0.6  // 0-1, default 60% reserved for org
 
     // Components
-    private let localDeviceInfo: DeviceInfo
+    public let localDeviceInfo: DeviceInfo
     private var bonjourService: BonjourService?
     private var peerResolver: PeerResolver?
     private let healthMonitor = PeerHealthMonitor()
+    private let modelSharingService = ModelSharingService()
+    private let tlsManager = ClusterTLSManager()
     private var heartbeatTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
 
-    // Callbacks for inference handling
+    // Model sharing
+    private var modelQueryContinuation: AsyncStream<ModelQueryResult>.Continuation?
+    public private(set) var activeTransfers: [UUID: TransferProgress] = [:]
+
+    // Load tracking
+    public var localQueueDepth: Int = 0
+
+    // Callbacks
     public var onInferenceRequest: ((InferenceRequestPayload, PeerConnection) async -> Void)?
+    public var onCreditTransferReceived: ((CreditTransferPayload, PeerConnection) async -> Void)?
 
     public init(localDeviceInfo: DeviceInfo) {
         self.localDeviceInfo = localDeviceInfo
@@ -41,7 +53,8 @@ public final class ClusterManager: @unchecked Sendable {
         isEnabled = true
 
         let passcodeHash = passcode.map { ClusterSecurity.hashPasscode($0) }
-        let parameters = NWParameters.clusterParameters(passcode: passcode)
+        self.organizationID = passcodeHash  // Nodes with same passcode form an org
+        let parameters = NWParameters.clusterParameters(passcode: passcode, tlsManager: tlsManager)
 
         bonjourService = BonjourService(localDeviceID: localDeviceInfo.id, parameters: parameters)
         peerResolver = PeerResolver(localDeviceInfo: localDeviceInfo, passcodeHash: passcodeHash, parameters: parameters)
@@ -152,6 +165,8 @@ public final class ClusterManager: @unchecked Sendable {
             peer.isGenerating = payload.isGenerating
             peer.thermalLevel = payload.thermalLevel
             peer.throttleLevel = payload.throttleLevel
+            peer.activeRequestCount = payload.queueDepth
+            peer.organizationID = payload.organizationID
             if peer.status == .degraded {
                 peer.status = .connected
             }
@@ -175,7 +190,45 @@ public final class ClusterManager: @unchecked Sendable {
             // These are handled by the ClusterProvider waiting on specific requestIDs
             break
 
-        default:
+        case .modelQuery(let payload):
+            try? await modelSharingService.handleModelQuery(payload, connection: peer.connection)
+
+        case .modelQueryResponse(let payload):
+            modelQueryContinuation?.yield(ModelQueryResult(
+                peerID: peer.id,
+                modelID: payload.modelID,
+                available: payload.available,
+                sizeBytes: payload.totalSizeBytes
+            ))
+
+        case .modelTransferRequest(let payload):
+            try? await modelSharingService.handleTransferRequest(payload, connection: peer.connection)
+
+        case .modelTransferChunk(let payload):
+            try? await modelSharingService.handleTransferChunk(payload)
+            // Update transfer progress
+            if var progress = activeTransfers[payload.transferID] {
+                progress.bytesReceived += UInt64(payload.data.count)
+                activeTransfers[payload.transferID] = progress
+            }
+
+        case .modelTransferComplete(let payload):
+            try? await modelSharingService.handleTransferComplete(payload)
+            activeTransfers.removeValue(forKey: payload.transferID)
+
+        case .hello, .helloAck:
+            // Handled during connection setup by PeerResolver
+            break
+
+        case .agentMessage:
+            // Handled by AgentKit layer
+            break
+
+        case .creditTransferRequest(let payload):
+            await onCreditTransferReceived?(payload, peer.connection)
+
+        case .creditTransferConfirm:
+            // Confirmation received — informational only (sender already debited)
             break
         }
     }
@@ -188,13 +241,15 @@ public final class ClusterManager: @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self = self else { return }
 
-                let heartbeat = await self.healthMonitor.makeHeartbeat(
+                var heartbeat = await self.healthMonitor.makeHeartbeat(
                     deviceID: self.localDeviceInfo.id,
                     thermalLevel: .nominal,  // TODO: wire to actual throttler
                     throttleLevel: 100,
                     loadedModels: self.localDeviceInfo.loadedModels,
-                    isGenerating: false
+                    isGenerating: false,
+                    queueDepth: self.localQueueDepth
                 )
+                heartbeat.organizationID = self.organizationID
 
                 for (_, peer) in self.peers where peer.status == .connected || peer.status == .degraded {
                     try? await peer.connection.send(.heartbeat(heartbeat))
@@ -247,5 +302,84 @@ public final class ClusterManager: @unchecked Sendable {
     /// Find the best peer to handle inference for a given model
     public func bestPeer(forModel modelID: String) -> PeerInfo? {
         topology.bestPeerForModel(modelID)
+    }
+
+    // MARK: - Credit Transfers
+
+    /// Send a credit transfer to a specific peer
+    public func sendCreditTransfer(to peerID: UUID, payload: CreditTransferPayload) async throws {
+        guard let peer = peers[peerID] else {
+            throw ClusterError.routingFailed
+        }
+        try await peer.connection.send(.creditTransferRequest(payload))
+    }
+
+    // MARK: - Model Sharing
+
+    /// Query all connected peers for model availability
+    public func queryModelAvailability(modelID: String) -> AsyncStream<ModelQueryResult> {
+        let (stream, continuation) = AsyncStream<ModelQueryResult>.makeStream()
+        self.modelQueryContinuation = continuation
+
+        let query = ModelQueryPayload(modelID: modelID)
+        for (_, peer) in peers where peer.status == .connected {
+            Task { try? await peer.connection.send(.modelQuery(query)) }
+        }
+
+        // Auto-close after timeout
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            continuation.finish()
+            self.modelQueryContinuation = nil
+        }
+
+        return stream
+    }
+
+    /// Request a model transfer from a specific peer
+    public func requestModelFromPeer(modelID: String, peerID: UUID) async throws {
+        guard let peer = peers[peerID] else {
+            throw ClusterError.routingFailed
+        }
+
+        let transferID = UUID()
+        let request = ModelTransferRequestPayload(transferID: transferID, modelID: modelID)
+        activeTransfers[transferID] = TransferProgress(modelID: modelID, bytesReceived: 0, totalBytes: nil)
+        try await peer.connection.send(.modelTransferRequest(request))
+    }
+}
+
+// MARK: - Model Query Result
+
+public struct ModelQueryResult: Sendable {
+    public let peerID: UUID
+    public let modelID: String
+    public let available: Bool
+    public let sizeBytes: UInt64?
+}
+
+// MARK: - Transfer Progress
+
+// MARK: - PeerModelSource Conformance
+
+extension ClusterManager: PeerModelSource {
+    public func queryModelAvailability(modelID: String) async -> [(peerID: UUID, available: Bool, sizeBytes: UInt64?)] {
+        let stream = queryModelAvailability(modelID: modelID) as AsyncStream<ModelQueryResult>
+        var results: [(peerID: UUID, available: Bool, sizeBytes: UInt64?)] = []
+        for await result in stream {
+            results.append((peerID: result.peerID, available: result.available, sizeBytes: result.sizeBytes))
+        }
+        return results
+    }
+}
+
+public struct TransferProgress: Sendable {
+    public var modelID: String
+    public var bytesReceived: UInt64
+    public var totalBytes: UInt64?
+
+    public var fraction: Double? {
+        guard let total = totalBytes, total > 0 else { return nil }
+        return Double(bytesReceived) / Double(total)
     }
 }

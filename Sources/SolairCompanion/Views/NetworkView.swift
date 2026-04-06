@@ -13,7 +13,7 @@ struct NetworkView: View {
                     HStack {
                         Image(systemName: "antenna.radiowaves.left.and.right")
                             .foregroundStyle(.blue)
-                        Text("Scanning for Solair nodes...")
+                        Text("Scanning for Teale nodes...")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Spacer()

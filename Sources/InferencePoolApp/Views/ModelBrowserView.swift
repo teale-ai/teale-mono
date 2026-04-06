@@ -4,6 +4,7 @@ import SharedTypes
 struct ModelBrowserView: View {
     @Environment(AppState.self) private var appState
     @State private var searchText: String = ""
+    @State private var switchConfirmModel: ModelDescriptor?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,9 +24,12 @@ struct ModelBrowserView: View {
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(filteredModels) { model in
-                        ModelRowView(model: model)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                        ModelRowView(
+                            model: model,
+                            onSwitchRequest: { switchConfirmModel = $0 }
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                     }
                 }
             }
@@ -45,6 +49,42 @@ struct ModelBrowserView: View {
             .padding(8)
         }
         .navigationTitle("Models")
+        .alert("Switch Model?", isPresented: Binding(
+            get: { switchConfirmModel != nil },
+            set: { if !$0 { switchConfirmModel = nil } }
+        )) {
+            Button("Cancel", role: .cancel) {
+                switchConfirmModel = nil
+            }
+            Button("Switch") {
+                if let model = switchConfirmModel {
+                    switchConfirmModel = nil
+                    Task { await appState.loadModel(model) }
+                }
+            }
+        } message: {
+            if let model = switchConfirmModel {
+                Text("This will unload the current model and load \(model.name).")
+            }
+        }
+        .alert("Download Complete", isPresented: Binding(
+            get: { appState.justDownloadedModel != nil },
+            set: { if !$0 { appState.justDownloadedModel = nil } }
+        )) {
+            Button("Not Now", role: .cancel) {
+                appState.justDownloadedModel = nil
+            }
+            Button("Load") {
+                if let model = appState.justDownloadedModel {
+                    appState.justDownloadedModel = nil
+                    Task { await appState.loadModel(model) }
+                }
+            }
+        } message: {
+            if let model = appState.justDownloadedModel {
+                Text("\(model.name) is ready. Load it now? This will unload the current model.")
+            }
+        }
     }
 
     private var filteredModels: [ModelDescriptor] {
@@ -62,25 +102,59 @@ struct ModelBrowserView: View {
 struct ModelRowView: View {
     @Environment(AppState.self) private var appState
     let model: ModelDescriptor
-    @State private var isDownloading = false
-    @State private var downloadError: String?
+    var onSwitchRequest: (ModelDescriptor) -> Void
+    @State private var error: String?
+
+    private var isDownloaded: Bool {
+        appState.downloadedModelIDs.contains(model.id)
+    }
+
+    private var isDownloading: Bool {
+        appState.activeDownloads[model.id] != nil
+    }
+
+    private var downloadProgress: Double? {
+        appState.activeDownloads[model.id]
+    }
+
+    private var isCurrentlyLoaded: Bool {
+        if case .ready(let loaded) = appState.engineStatus {
+            return loaded.id == model.id
+        }
+        return false
+    }
+
+    private var isCurrentlyLoading: Bool {
+        if case .loadingModel(let loading) = appState.engineStatus {
+            return loading.id == model.id
+        }
+        return false
+    }
+
+    /// Another model is currently loaded (not this one)
+    private var hasOtherModelLoaded: Bool {
+        if case .ready(let loaded) = appState.engineStatus {
+            return loaded.id != model.id
+        }
+        return false
+    }
+
+    /// Engine is busy loading or generating
+    private var isEngineOccupied: Bool {
+        switch appState.engineStatus {
+        case .loadingModel, .generating: return true
+        default: return false
+        }
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             // Model info
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
+                HStack(spacing: 6) {
                     Text(model.name)
                         .font(.body.bold())
-                    if isCurrentlyLoaded {
-                        Text("LOADED")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.green.opacity(0.2))
-                            .foregroundStyle(.green)
-                            .clipShape(Capsule())
-                    }
+                    statusBadge
                 }
 
                 Text(model.description)
@@ -101,45 +175,127 @@ struct ModelRowView: View {
             Spacer()
 
             // Actions
-            VStack(spacing: 4) {
-                if isCurrentlyLoaded {
-                    Button("Unload") {
-                        Task { await appState.unloadModel() }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else if isDownloading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Button("Load") {
-                        Task { await loadModel() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-            }
+            actionView
         }
 
-        if let error = downloadError {
+        if let error {
             Text(error)
                 .font(.caption)
                 .foregroundStyle(.red)
         }
     }
 
-    private var isCurrentlyLoaded: Bool {
-        appState.selectedModel?.id == model.id
+    // MARK: - Status Badge
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if isCurrentlyLoaded {
+            badge("LOADED", color: .green)
+        } else if isCurrentlyLoading {
+            let phase = appState.loadingPhase.lowercased()
+            if phase.contains("verif") {
+                badge("CHECKING", color: .yellow)
+            } else {
+                badge("LOADING", color: .blue)
+            }
+        } else if isDownloading {
+            badge("DL", color: .orange)
+        } else if isDownloaded {
+            badge("READY", color: .secondary)
+        }
     }
 
-    private func loadModel() async {
-        isDownloading = true
-        downloadError = nil
-        await appState.loadModel(model)
-        isDownloading = false
+    // MARK: - Action Buttons
 
-        if case .error(let msg) = appState.engineStatus {
-            downloadError = msg
+    @ViewBuilder
+    private var actionView: some View {
+        if isCurrentlyLoaded {
+            // Loaded — offer unload
+            Button("Unload") {
+                Task { await appState.unloadModel() }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+        } else if isCurrentlyLoading {
+            // Loading weights into GPU
+            VStack(alignment: .trailing, spacing: 3) {
+                let phase = appState.loadingPhase.lowercased()
+                let isWeightLoading = phase.contains("loading") || phase.contains("warming")
+                if let progress = appState.loadingProgress,
+                   progress > 0 && progress < 1.0 && !isWeightLoading {
+                    ProgressView(value: progress)
+                        .frame(width: 80)
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(appState.loadingPhase.isEmpty ? "Preparing…" : appState.loadingPhase)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(minWidth: 90)
+
+        } else if isDownloading {
+            // Downloading files — show progress
+            VStack(alignment: .trailing, spacing: 3) {
+                if let progress = downloadProgress, progress > 0 && progress < 1.0 {
+                    ProgressView(value: progress)
+                        .frame(width: 80)
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .frame(minWidth: 90)
+
+        } else if isDownloaded {
+            // On disk — load into memory
+            Button("Load") {
+                if hasOtherModelLoaded || isEngineOccupied {
+                    onSwitchRequest(model)
+                } else {
+                    Task {
+                        error = nil
+                        await appState.loadModel(model)
+                        if case .error(let msg) = appState.engineStatus {
+                            error = msg
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
+        } else {
+            // Not downloaded — download only (no alert, no load)
+            Button {
+                Task {
+                    error = nil
+                    await appState.downloadModel(model)
+                }
+            } label: {
+                Label("Download", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.2))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
     }
 }

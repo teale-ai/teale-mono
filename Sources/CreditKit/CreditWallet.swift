@@ -59,6 +59,42 @@ public final class CreditWallet: @unchecked Sendable {
         await refreshBalance()
     }
 
+    /// Debit wallet for an outgoing P2P credit transfer. Returns true if balance was sufficient.
+    public func sendTransfer(amount: Double, toPeer peerNodeID: String, memo: String? = nil) async -> Bool {
+        guard let ledger = ledger else { return false }
+        let creditAmount = CreditAmount(amount)
+        let currentBal = await ledger.getBalance().currentBalance
+        guard currentBal >= creditAmount else { return false }
+
+        let desc = memo.map { "Sent \(String(format: "%.2f", amount)) credits: \($0)" }
+            ?? "Sent \(String(format: "%.2f", amount)) credits"
+        let transaction = CreditTransaction(
+            type: .transfer,
+            amount: creditAmount,
+            description: desc,
+            peerNodeID: peerNodeID
+        )
+        await ledger.debit(amount: creditAmount, transaction: transaction)
+        await refreshBalance()
+        return true
+    }
+
+    /// Credit wallet for an incoming P2P credit transfer.
+    public func receiveTransfer(amount: Double, fromPeer peerNodeID: String, memo: String? = nil) async {
+        guard let ledger = ledger else { return }
+        let creditAmount = CreditAmount(amount)
+        let desc = memo.map { "Received \(String(format: "%.2f", amount)) credits: \($0)" }
+            ?? "Received \(String(format: "%.2f", amount)) credits"
+        let transaction = CreditTransaction(
+            type: .transfer,
+            amount: creditAmount,
+            description: desc,
+            peerNodeID: peerNodeID
+        )
+        await ledger.credit(amount: creditAmount, transaction: transaction)
+        await refreshBalance()
+    }
+
     /// Get current balance asynchronously (safe from any context).
     public func currentBalance() async -> CreditAmount {
         guard let ledger = ledger else { return .zero }

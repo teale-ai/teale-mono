@@ -14,7 +14,7 @@ public actor ModelCache {
 
     public static func defaultCacheDirectory() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("InferencePool/Models", isDirectory: true)
+        return appSupport.appendingPathComponent("Teale/huggingface", isDirectory: true)
     }
 
     /// Ensure the cache directory exists
@@ -22,15 +22,19 @@ public actor ModelCache {
         try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
     }
 
-    /// Get path for a specific model's cache
+    /// Get path for a specific model's cache (matches HuggingFace Hub's storage layout)
     public func modelDirectory(for descriptor: ModelDescriptor) -> URL {
-        baseDirectory.appendingPathComponent(descriptor.id, isDirectory: true)
+        baseDirectory.appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent(descriptor.huggingFaceRepo, isDirectory: true)
     }
 
     /// Check if a model is cached locally
     public func isModelCached(_ descriptor: ModelDescriptor) -> Bool {
         let dir = modelDirectory(for: descriptor)
-        return FileManager.default.fileExists(atPath: dir.path)
+        // Check that the directory exists and has actual model files (not just an empty dir)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return false }
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return contents.contains { $0.hasSuffix(".safetensors") || $0.hasSuffix(".json") }
     }
 
     /// List all cached model IDs
@@ -51,8 +55,9 @@ public actor ModelCache {
 
     /// Total size of cache in GB
     public func totalSizeGB() -> Double {
+        let modelsDir = baseDirectory.appendingPathComponent("models", isDirectory: true)
         guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: baseDirectory,
+            at: modelsDir,
             includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
             options: .skipsHiddenFiles
         ) else {

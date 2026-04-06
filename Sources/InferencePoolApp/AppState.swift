@@ -9,6 +9,7 @@ import ClusterKit
 import WANKit
 import CreditKit
 import AgentKit
+import AuthKit
 
 // MARK: - App State
 
@@ -43,23 +44,39 @@ public final class AppState {
     // Credits
     public var wallet: CreditWallet
 
+    // Auth
+    public let authManager: AuthManager?
+
     // Agent
     public let agentManager: AgentManager
     public var agentProfile: AgentProfile?
 
-    // Server
+    // Server & API Keys
     public var serverPort: Int = 11435
     public var isServerRunning: Bool = false
+    public var allowNetworkAccess: Bool = false
+    public let apiKeyStore = APIKeyStore()
+
+    // Chat
+    public let conversationStore = ConversationStore()
 
     // UI State
     public var selectedModel: ModelDescriptor?
     public var engineStatus: EngineStatus = .idle
+    public var downloadedModelIDs: Set<String> = []
+    /// Models currently being downloaded (modelID -> progress 0..1)
+    public var activeDownloads: [String: Double] = [:]
+    /// Models that just finished downloading — prompt user to load
+    public var justDownloadedModel: ModelDescriptor?
     public var currentView: AppView = .dashboard
+    public var showSignIn: Bool = false
+    public var loadingPhase: String = ""
+    public var loadingProgress: Double?
 
     // Settings
     public var launchAtLogin: Bool = false
     public var maxStorageGB: Double = 50.0
-    public var wanRelayURL: String = "wss://relay.solair.network/ws"
+    public var wanRelayURL: String = "wss://relay.teale.network/ws"
 
     public init() {
         let detector = HardwareDetector()
@@ -76,14 +93,28 @@ public final class AppState {
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
         self.clusterManager = ClusterManager(localDeviceInfo: deviceInfo)
         self.wanManager = WANManager()
+        if let config = SupabaseConfig.default {
+            self.authManager = AuthManager(config: config)
+        } else {
+            self.authManager = nil
+        }
         self.agentManager = AgentManager()
 
         // Wallet placeholder — replaced async on launch
         self.wallet = CreditWallet.placeholder()
     }
 
-    /// Call once at app launch to initialize async components (credit ledger, agent)
+    /// Call once at app launch to initialize async components (auth, credit ledger, agent)
     public func initializeAsync() async {
+        // Scan which models are already downloaded
+        await refreshDownloadedModels()
+
+        // Check auth session (skip if Supabase not configured)
+        if let authManager {
+            await authManager.checkSession()
+            authManager.deviceHardware = (chipName: hardware.chipName, ramGB: Int(hardware.totalRAMGB))
+        }
+
         // Initialize credit wallet
         let ledger = await CreditLedger()
         await ledger.applyWelcomeBonusIfNeeded()
@@ -91,13 +122,17 @@ public final class AppState {
         await realWallet.refreshBalance()
         self.wallet = realWallet
 
-        // Initialize agent profile
+        // Initialize agent profile — use a random node ID to avoid Keychain prompt on launch.
+        // WANNodeIdentity is created lazily when WAN is actually enabled.
         let hostname = ProcessInfo.processInfo.hostName
-        let nodeID: String
-        if let identity = try? WANNodeIdentity.loadOrCreate() {
-            nodeID = identity.nodeID
-        } else {
-            nodeID = UUID().uuidString
+        let nodeID = UUID().uuidString
+
+        // Link WAN identity to auth device record
+        if let authManager {
+            authManager.wanNodeID = nodeID
+            if authManager.authState.isAuthenticated {
+                await authManager.fetchDevices()
+            }
         }
 
         let profile = AgentProfile(
@@ -108,7 +143,7 @@ public final class AppState {
             capabilities: [.generalChat, .inference, .taskExecution],
             preferences: AgentPreferences(
                 tone: .casual,
-                autoNegotiate: true,
+                autoNegotiate: false,
                 maxBudgetPerTransaction: 50.0,
                 delegationRules: [
                     DelegationRule(capability: "inference", maxCreditSpend: 10.0),
@@ -118,19 +153,80 @@ public final class AppState {
         )
         self.agentProfile = profile
         await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
+
+        // Wire credit transfer handling
+        clusterManager.onCreditTransferReceived = { [weak self] payload, connection in
+            guard let self = self else { return }
+            await self.wallet.receiveTransfer(amount: payload.amount, fromPeer: payload.senderNodeID, memo: payload.memo)
+            let confirm = CreditTransferConfirmPayload(
+                transferID: payload.transferID,
+                receiverNodeID: self.clusterManager.localDeviceInfo.id.uuidString
+            )
+            try? await connection.send(.creditTransferConfirm(confirm))
+        }
     }
 
     // MARK: - Actions
 
+    /// Download model files only — does not load into memory.
+    /// Multiple downloads can run concurrently.
+    public func downloadModel(_ descriptor: ModelDescriptor) async {
+        activeDownloads[descriptor.id] = 0.0
+        do {
+            try await modelManager.downloadModel(descriptor)
+            activeDownloads.removeValue(forKey: descriptor.id)
+            downloadedModelIDs.insert(descriptor.id)
+            // Prompt user to load if another model is currently active
+            if case .ready = engineStatus {
+                justDownloadedModel = descriptor
+            } else if case .idle = engineStatus {
+                // No model loaded — auto-load
+                await loadModel(descriptor)
+            }
+        } catch {
+            activeDownloads.removeValue(forKey: descriptor.id)
+        }
+    }
+
+    /// Load a model into GPU memory for inference.
     public func loadModel(_ descriptor: ModelDescriptor) async {
         do {
+            // Unload any currently loaded model first
+            if case .ready = engineStatus {
+                await engine.unloadModel()
+            }
+
             selectedModel = descriptor
             engineStatus = .loadingModel(descriptor)
-            try await engine.loadModel(descriptor)
+            loadingPhase = "Preparing…"
+            loadingProgress = 0
+
+            try await engine.loadModel(descriptor) { [weak self] progress in
+                Task { @MainActor in
+                    self?.loadingPhase = progress.phase.rawValue
+                    self?.loadingProgress = progress.fractionCompleted
+                }
+            }
+
+            loadingPhase = ""
+            loadingProgress = nil
             engineStatus = .ready(descriptor)
+            await refreshDownloadedModels()
         } catch {
+            loadingPhase = ""
+            loadingProgress = nil
             engineStatus = .error(error.localizedDescription)
         }
+    }
+
+    public func refreshDownloadedModels() async {
+        var ids = Set<String>()
+        for model in modelManager.compatibleModels {
+            if await modelManager.isDownloaded(model) {
+                ids.insert(model.id)
+            }
+        }
+        downloadedModelIDs = ids
     }
 
     public func unloadModel() async {
@@ -142,7 +238,12 @@ public final class AppState {
     public func startServer() async {
         guard !isServerRunning else { return }
         isServerRunning = true
-        let server = LocalHTTPServer(engine: engine, port: serverPort)
+        let server = LocalHTTPServer(
+            engine: engine,
+            port: serverPort,
+            apiKeyStore: apiKeyStore,
+            allowNetworkAccess: allowNetworkAccess
+        )
         Task.detached {
             try? await server.start()
         }
@@ -150,6 +251,25 @@ public final class AppState {
 
     public func refreshStatus() async {
         engineStatus = await engine.status
+    }
+
+    /// Send credits to a connected peer
+    public func sendCredits(amount: Double, to peerID: UUID, memo: String? = nil) async -> Bool {
+        let peerNodeID = peerID.uuidString
+        let success = await wallet.sendTransfer(amount: amount, toPeer: peerNodeID, memo: memo)
+        guard success else { return false }
+
+        let payload = CreditTransferPayload(
+            senderNodeID: clusterManager.localDeviceInfo.id.uuidString,
+            amount: amount,
+            memo: memo
+        )
+        do {
+            try await clusterManager.sendCreditTransfer(to: peerID, payload: payload)
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Cluster (LAN)
@@ -167,11 +287,13 @@ public final class AppState {
         Task {
             await engine.setProvider(clusterProvider)
         }
+        modelManager.peerModelSource = clusterManager
         clusterManager.enable()
     }
 
     private func disableCluster() {
         clusterManager.disable()
+        modelManager.peerModelSource = nil
         Task {
             await engine.setProvider(localProvider)
         }
@@ -226,5 +348,6 @@ public enum AppView: Hashable {
     case wan
     case wallet
     case agents
+    case devices
     case settings
 }

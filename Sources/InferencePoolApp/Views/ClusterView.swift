@@ -37,7 +37,7 @@ struct ClusterView: View {
                                 .foregroundStyle(.secondary)
                             Text("Searching for devices on your network...")
                                 .foregroundStyle(.secondary)
-                            Text("Run Inference Pool on another Mac on the same network")
+                            Text("Run Teale on another Mac on the same network")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
@@ -53,7 +53,7 @@ struct ClusterView: View {
                         Image(systemName: "desktopcomputer.and.arrow.down")
                             .font(.system(size: 40))
                             .foregroundStyle(.secondary)
-                        Text("Enable LAN Cluster to connect your Macs into a unified inference pool")
+                        Text("Enable LAN Cluster to connect your Macs into a unified inference network")
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
                         Text("Devices on the same network will automatically discover each other")

@@ -167,7 +167,7 @@ public enum QUICTransport {
 
     /// Create QUIC parameters for outgoing connections
     public static func clientParameters(identity: WANNodeIdentity) -> NWParameters {
-        let quicOptions = NWProtocolQUIC.Options(alpn: ["solair-wan-1"])
+        let quicOptions = NWProtocolQUIC.Options(alpn: ["teale-wan-1"])
 
         // Configure TLS with an insecure option for self-signed certs
         // In production, verify against known certificate fingerprints
@@ -183,7 +183,7 @@ public enum QUICTransport {
 
     /// Create QUIC parameters for a listener
     public static func listenerParameters(identity: WANNodeIdentity) -> NWParameters {
-        let quicOptions = NWProtocolQUIC.Options(alpn: ["solair-wan-1"])
+        let quicOptions = NWProtocolQUIC.Options(alpn: ["teale-wan-1"])
 
         // Use an identity for TLS
         // For now, use an insecure configuration as we verify via Ed25519

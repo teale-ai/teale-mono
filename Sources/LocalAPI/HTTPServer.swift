@@ -8,14 +8,20 @@ import InferenceEngine
 public actor LocalHTTPServer {
     private let engine: InferenceEngineManager
     public let port: Int
+    private let apiKeyStore: APIKeyStore
+    private let allowNetworkAccess: Bool
 
-    public init(engine: InferenceEngineManager, port: Int = 11435) {
+    public init(engine: InferenceEngineManager, port: Int = 11435, apiKeyStore: APIKeyStore = APIKeyStore(), allowNetworkAccess: Bool = false) {
         self.engine = engine
         self.port = port
+        self.apiKeyStore = apiKeyStore
+        self.allowNetworkAccess = allowNetworkAccess
     }
 
     public func start() async throws {
         let engine = self.engine
+        let keyStore = self.apiKeyStore
+        let requireAuth = self.allowNetworkAccess
 
         let router = Router()
 
@@ -28,7 +34,12 @@ public actor LocalHTTPServer {
             )
         }
 
-        // Health check
+        // Auth (require key when network access is enabled)
+        router.addMiddleware {
+            AuthMiddleware(keyStore: keyStore, requireAuth: requireAuth)
+        }
+
+        // Health check (no auth needed — middleware passes through if not required)
         router.get("/health") { _, _ in
             return "{\"status\":\"ok\"}"
         }
@@ -43,9 +54,10 @@ public actor LocalHTTPServer {
             return try await ChatCompletionsRoute.handle(request: request, engine: engine)
         }
 
+        let bindAddress = allowNetworkAccess ? "0.0.0.0" : "127.0.0.1"
         let app = Application(
             router: router,
-            configuration: .init(address: .hostname("127.0.0.1", port: port))
+            configuration: .init(address: .hostname(bindAddress, port: port))
         )
         try await app.run()
     }

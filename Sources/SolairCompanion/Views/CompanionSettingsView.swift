@@ -1,4 +1,5 @@
 import SwiftUI
+import AuthKit
 
 struct CompanionSettingsView: View {
     var appState: CompanionAppState
@@ -7,6 +8,34 @@ struct CompanionSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // Account
+                Section("Account") {
+                    if let authManager = appState.authManager,
+                       case .signedIn(let user) = authManager.authState {
+                        if let phone = user.phone {
+                            LabeledContent("Phone", value: phone)
+                        }
+                        if let email = user.email {
+                            LabeledContent("Email", value: email)
+                        }
+                        Button("Sign Out") {
+                            Task { await authManager.signOut() }
+                        }
+                    } else {
+                        HStack {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Not signed in")
+                                    .font(.subheadline)
+                                Text("Sign in to sync across devices")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
                 // Connection preferences
                 Section("Connection") {
                     HStack {
@@ -27,7 +56,7 @@ struct CompanionSettingsView: View {
                     HStack {
                         Text("WAN Relay Server")
                         Spacer()
-                        TextField("https://relay.solair.network", text: Binding(
+                        TextField("https://relay.teale.network", text: Binding(
                             get: { appState.wanRelayURL },
                             set: { appState.wanRelayURL = $0 }
                         ))
@@ -67,13 +96,13 @@ struct CompanionSettingsView: View {
 
                 // About
                 Section("About") {
-                    LabeledContent("App", value: "Solair Companion")
+                    LabeledContent("App", value: "Teale Companion")
                     LabeledContent("Version", value: "1.0.0")
                     LabeledContent("Platform", value: "iOS")
                     HStack {
                         Text("Project")
                         Spacer()
-                        Link("github.com/solair", destination: URL(string: "https://github.com/solair")!)
+                        Link("github.com/taylorhou/teale", destination: URL(string: "https://github.com/taylorhou/teale")!)
                             .font(.subheadline)
                     }
                 }
