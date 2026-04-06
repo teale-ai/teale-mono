@@ -111,6 +111,10 @@ public final class ClusterManager: @unchecked Sendable {
 
         do {
             let peerInfo = try await resolver.resolve(endpoint: endpoint)
+            if peerInfo.id == localDeviceInfo.id {
+                await peerInfo.connection.cancel()
+                return
+            }
             peers[peerInfo.id] = peerInfo
             startListening(to: peerInfo)
             updateState()
@@ -130,6 +134,10 @@ public final class ClusterManager: @unchecked Sendable {
 
         do {
             let peerInfo = try await resolver.acceptIncoming(connection: connection)
+            if peerInfo.id == localDeviceInfo.id {
+                await peerInfo.connection.cancel()
+                return
+            }
             // Avoid duplicate connections
             if peers[peerInfo.id] == nil {
                 peers[peerInfo.id] = peerInfo
