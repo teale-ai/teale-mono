@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>SUPABASE_URL</key>
-    <string>https://YOUR_PROJECT_ID.supabase.co</string>
+    <string>https://sditwifmpbuzlwuuihub.supabase.co</string>
     <key>SUPABASE_ANON_KEY</key>
-    <string>YOUR_ANON_KEY_HERE</string>
+    <string>sb_publishable_19tdwq34U9Fa8p3N39l8pA_b4PFr5Fn</string>
     <key>SUPABASE_REDIRECT_URL</key>
     <string>teale://auth/callback</string>
 </dict>

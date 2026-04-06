@@ -18,6 +18,7 @@ public final class AuthManager {
     public var wanNodeID: String?
 
     private let client: SupabaseClient
+    private let redirectURL: URL?
     private var authListenerTask: Task<Void, Never>?
     private var lastSeenTimer: Task<Void, Never>?
 
@@ -28,6 +29,7 @@ public final class AuthManager {
             supabaseURL: config.url,
             supabaseKey: config.anonKey
         )
+        self.redirectURL = config.redirectURL
     }
 
     // Cancel tasks when no longer needed
@@ -111,9 +113,9 @@ public final class AuthManager {
     public func signInWithOAuth(provider: Auth.Provider) async throws {
         authState = .signingIn
         do {
-            let session = try await client.auth.signInWithOAuth(
+            _ = try await client.auth.signInWithOAuth(
                 provider: provider,
-                redirectTo: URL(string: "teale://auth/callback")
+                redirectTo: redirectURL
             )
             // OAuth opens browser — session is established via deep link callback
             // The auth state listener will pick up the session

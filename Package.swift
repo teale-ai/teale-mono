@@ -99,6 +99,9 @@ let package = Package(
             dependencies: [
                 "SharedTypes",
                 .product(name: "Supabase", package: "supabase-swift"),
+            ],
+            resources: [
+                .process("Resources"),
             ]
         ),
 
