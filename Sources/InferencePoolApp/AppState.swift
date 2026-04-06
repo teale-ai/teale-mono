@@ -202,7 +202,10 @@ public final class AppState {
             loadingProgress = 0
 
             try await engine.loadModel(descriptor) { [weak self] progress in
-                Task { @MainActor in
+                // Avoid creating unstructured Task per progress update — the rapid fire-and-forget
+                // Task { @MainActor } pattern can trigger swift_task_dealloc crashes when the
+                // parent async context completes while orphaned tasks are still queued.
+                DispatchQueue.main.async { [weak self] in
                     self?.loadingPhase = progress.phase.rawValue
                     self?.loadingProgress = progress.fractionCompleted
                 }

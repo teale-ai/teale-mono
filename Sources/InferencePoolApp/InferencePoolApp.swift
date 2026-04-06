@@ -82,8 +82,11 @@ struct ContentView: View {
                             .frame(width: 400, height: 500)
                     }
                 }
+            } else if let authManager = appState.authManager {
+                LoginView(authManager: authManager)
             } else {
-                LoginView(authManager: appState.authManager!)
+                Text("Authentication unavailable")
+                    .foregroundStyle(.secondary)
             }
         }
         .task {
