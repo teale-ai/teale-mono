@@ -192,6 +192,8 @@ enum L {
         "settings.version": "Version",
         "settings.engine": "Engine",
         "settings.sourceCode": "Source Code",
+        "settings.keepAwake": "Keep Mac Awake",
+        "settings.keepAwakeHelp": "Prevents your Mac from sleeping so it stays online for the inference pool. Your screen can still turn off.",
         "settings.quit": "Quit Teale",
 
         // Connect Agent
@@ -398,6 +400,8 @@ enum L {
         "settings.version": "版本",
         "settings.engine": "引擎",
         "settings.sourceCode": "源代码",
+        "settings.keepAwake": "保持 Mac 唤醒",
+        "settings.keepAwakeHelp": "防止 Mac 进入睡眠状态，使其始终在线为推理池提供服务。屏幕仍然可以关闭。",
         "settings.quit": "退出 Teale",
 
         "agent.connect": "连接您的 Agent",
@@ -598,6 +602,8 @@ enum L {
         "settings.version": "バージョン",
         "settings.engine": "エンジン",
         "settings.sourceCode": "ソースコード",
+        "settings.keepAwake": "Macをスリープさせない",
+        "settings.keepAwakeHelp": "Macがスリープしないようにして、推論プールにオンラインで参加し続けます。画面はオフにできます。",
         "settings.quit": "Tealeを終了",
 
         "agent.connect": "Agentを接続",
@@ -798,6 +804,8 @@ enum L {
         "settings.version": "Versión",
         "settings.engine": "Motor",
         "settings.sourceCode": "Código fuente",
+        "settings.keepAwake": "Mantener Mac despierto",
+        "settings.keepAwakeHelp": "Evita que tu Mac entre en suspensión para que siga conectado al pool de inferencia. La pantalla aún puede apagarse.",
         "settings.quit": "Salir de Teale",
 
         "agent.connect": "Conecta tu agente",
@@ -998,6 +1006,8 @@ enum L {
         "settings.version": "Version",
         "settings.engine": "Moteur",
         "settings.sourceCode": "Code source",
+        "settings.keepAwake": "Garder le Mac éveillé",
+        "settings.keepAwakeHelp": "Empêche votre Mac de se mettre en veille pour qu'il reste en ligne dans le pool d'inférence. L'écran peut toujours s'éteindre.",
         "settings.quit": "Quitter Teale",
 
         "agent.connect": "Connectez votre agent",

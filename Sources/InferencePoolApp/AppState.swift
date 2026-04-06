@@ -1,4 +1,6 @@
 import Foundation
+import IOKit
+import IOKit.pwr_mgt
 import SharedTypes
 import HardwareProfile
 import InferenceEngine
@@ -81,6 +83,36 @@ public final class AppState {
         didSet { UserDefaults.standard.set(maxStorageGB, forKey: "teale.maxStorageGB") }
     }
     public var wanRelayURL: String = "wss://relay.teale.network/ws"
+
+    /// Prevent system sleep so the node stays online for the inference pool.
+    /// Display can still turn off — only system/idle sleep is inhibited.
+    public var keepAwake: Bool = UserDefaults.standard.bool(forKey: "teale.keepAwake") {
+        didSet {
+            UserDefaults.standard.set(keepAwake, forKey: "teale.keepAwake")
+            updatePowerAssertion()
+        }
+    }
+    private var powerAssertionID: IOPMAssertionID = 0
+
+    private func updatePowerAssertion() {
+        if keepAwake {
+            if powerAssertionID == 0 {
+                let reason = "Teale inference node staying online for the network" as CFString
+                IOPMAssertionCreateWithName(
+                    kIOPMAssertPreventUserIdleSystemSleep as CFString,
+                    IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                    reason,
+                    &powerAssertionID
+                )
+            }
+        } else {
+            if powerAssertionID != 0 {
+                IOPMAssertionRelease(powerAssertionID)
+                powerAssertionID = 0
+            }
+        }
+    }
+
     public var language: AppLanguage = AppLanguage(
         rawValue: UserDefaults.standard.string(forKey: "teale.language") ?? "en"
     ) ?? .english {
@@ -119,6 +151,9 @@ public final class AppState {
 
     /// Call once at app launch to initialize async components (auth, credit ledger, agent)
     public func initializeAsync() async {
+        // Restore power assertion if keep-awake was enabled
+        if keepAwake { updatePowerAssertion() }
+
         // Scan which models are already downloaded
         await refreshDownloadedModels()
         let nodeID = Self.stableNodeID()

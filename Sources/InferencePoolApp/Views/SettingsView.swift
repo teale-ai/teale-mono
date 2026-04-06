@@ -89,6 +89,11 @@ struct SettingsView: View {
                         Text(lang.displayName).tag(lang)
                     }
                 }
+
+                Toggle(appState.loc("settings.keepAwake"), isOn: $state.keepAwake)
+                Text(appState.loc("settings.keepAwakeHelp"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
             // Connect Your Agent
