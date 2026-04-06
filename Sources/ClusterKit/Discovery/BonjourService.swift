@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import OSLog
 import SharedTypes
 
 // MARK: - Bonjour Service
@@ -8,6 +9,7 @@ import SharedTypes
 @Observable
 public final class BonjourService: @unchecked Sendable {
     public static let serviceType = "_teale._tcp"
+    private static let logger = Logger(subsystem: "com.teale.app", category: "ClusterBonjour")
 
     private var listener: NWListener?
     private var browser: NWBrowser?
@@ -50,6 +52,7 @@ public final class BonjourService: @unchecked Sendable {
         )
 
         listener.stateUpdateHandler = { [weak self] state in
+            Self.logger.info("Listener state changed: \(String(describing: state), privacy: .public)")
             DispatchQueue.main.async {
                 switch state {
                 case .ready:
@@ -83,6 +86,7 @@ public final class BonjourService: @unchecked Sendable {
         let browser = NWBrowser(for: browserDescriptor, using: browseParams)
 
         browser.stateUpdateHandler = { [weak self] state in
+            Self.logger.info("Browser state changed: \(String(describing: state), privacy: .public)")
             DispatchQueue.main.async {
                 switch state {
                 case .ready:
@@ -97,6 +101,7 @@ public final class BonjourService: @unchecked Sendable {
 
         browser.browseResultsChangedHandler = { [weak self] results, changes in
             guard let self = self else { return }
+            Self.logger.info("Browse results changed: results=\(results.count) changes=\(changes.count)")
             DispatchQueue.main.async {
                 self.discoveredEndpoints = Array(results)
             }
@@ -104,11 +109,15 @@ public final class BonjourService: @unchecked Sendable {
             var currentPeers: [UUID: (endpoint: NWEndpoint, txtDict: [String: String])] = [:]
             for result in results {
                 let txtDict = self.parseTXTRecord(result)
+                Self.logger.info("Result endpoint=\(String(describing: result.endpoint), privacy: .public) txt=\(String(describing: txtDict), privacy: .public)")
                 guard
                     let deviceIDString = txtDict["deviceID"],
                     let deviceID = UUID(uuidString: deviceIDString),
                     deviceID != self.localDeviceID
                 else {
+                    if txtDict["deviceID"] == nil {
+                        Self.logger.info("Skipping result without deviceID: \(String(describing: result.endpoint), privacy: .public)")
+                    }
                     continue
                 }
 
@@ -122,12 +131,14 @@ public final class BonjourService: @unchecked Sendable {
             let removedPeerIDs = Set(self.visiblePeerEndpoints.keys).subtracting(currentPeers.keys)
             for peerID in removedPeerIDs {
                 if let endpoint = self.visiblePeerEndpoints.removeValue(forKey: peerID) {
+                    Self.logger.info("Peer removed from browse set: \(peerID.uuidString, privacy: .public) endpoint=\(String(describing: endpoint), privacy: .public)")
                     self.onPeerRemoved?(endpoint)
                 }
             }
 
             for (peerID, peer) in currentPeers {
                 if self.visiblePeerEndpoints[peerID] == nil {
+                    Self.logger.info("Peer discovered from browse set: \(peerID.uuidString, privacy: .public) endpoint=\(String(describing: peer.endpoint), privacy: .public)")
                     self.onPeerDiscovered?(peer.endpoint, peer.txtDict)
                 }
                 self.visiblePeerEndpoints[peerID] = peer.endpoint

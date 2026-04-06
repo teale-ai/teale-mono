@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import OSLog
 import SharedTypes
 import HardwareProfile
 
@@ -8,6 +9,7 @@ import HardwareProfile
 /// Central orchestrator for LAN cluster mode
 @Observable
 public final class ClusterManager: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "com.teale.app", category: "ClusterManager")
     // State
     public private(set) var isEnabled: Bool = false
     public private(set) var isScanning: Bool = false
@@ -133,13 +135,20 @@ public final class ClusterManager: @unchecked Sendable {
 
     private func handlePeerDiscovered(endpoint: NWEndpoint, txtDict: [String: String]) async {
         guard let resolver = peerResolver else { return }
+        Self.logger.info("handlePeerDiscovered endpoint=\(String(describing: endpoint), privacy: .public) txt=\(String(describing: txtDict), privacy: .public)")
         guard let peerIDString = txtDict["deviceID"], let discoveredPeerID = UUID(uuidString: peerIDString) else {
-            print("Cluster discovery missing deviceID for \(endpoint)")
+            Self.logger.error("Cluster discovery missing deviceID for \(String(describing: endpoint), privacy: .public)")
             return
         }
         guard discoveredPeerID != localDeviceInfo.id else { return }
-        guard peers[discoveredPeerID] == nil, !connectingPeerIDs.contains(discoveredPeerID) else { return }
-        guard shouldInitiateOutboundConnection(to: discoveredPeerID) else { return }
+        guard peers[discoveredPeerID] == nil, !connectingPeerIDs.contains(discoveredPeerID) else {
+            Self.logger.info("Skipping discovered peer \(discoveredPeerID.uuidString, privacy: .public) because it is already connected or connecting")
+            return
+        }
+        guard shouldInitiateOutboundConnection(to: discoveredPeerID) else {
+            Self.logger.info("Skipping outbound dial to \(discoveredPeerID.uuidString, privacy: .public); waiting for inbound")
+            return
+        }
 
         connectingPeerIDs.insert(discoveredPeerID)
         defer { connectingPeerIDs.remove(discoveredPeerID) }
@@ -151,15 +160,16 @@ public final class ClusterManager: @unchecked Sendable {
                 return
             }
             if peerInfo.id != discoveredPeerID {
-                print("Cluster resolved deviceID mismatch for \(endpoint): expected \(discoveredPeerID), got \(peerInfo.id)")
+                Self.logger.error("Cluster resolved deviceID mismatch for endpoint=\(String(describing: endpoint), privacy: .public) expected=\(discoveredPeerID.uuidString, privacy: .public) got=\(peerInfo.id.uuidString, privacy: .public)")
                 await peerInfo.connection.cancel()
                 return
             }
+            Self.logger.info("Resolved peer successfully: \(peerInfo.id.uuidString, privacy: .public)")
             peers[peerInfo.id] = peerInfo
             startListening(to: peerInfo)
             updateState()
         } catch {
-            print("Cluster resolve failed for \(endpoint): \(error.localizedDescription)")
+            Self.logger.error("Cluster resolve failed for endpoint=\(String(describing: endpoint), privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -180,14 +190,16 @@ public final class ClusterManager: @unchecked Sendable {
             }
             // Avoid duplicate connections
             if peers[peerInfo.id] == nil {
+                Self.logger.info("Accepted incoming peer: \(peerInfo.id.uuidString, privacy: .public)")
                 peers[peerInfo.id] = peerInfo
                 startListening(to: peerInfo)
                 updateState()
             } else {
+                Self.logger.info("Closing duplicate incoming peer: \(peerInfo.id.uuidString, privacy: .public)")
                 await peerInfo.connection.cancel()
             }
         } catch {
-            print("Cluster incoming connection failed: \(error.localizedDescription)")
+            Self.logger.error("Cluster incoming connection failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
