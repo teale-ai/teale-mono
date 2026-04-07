@@ -7,6 +7,7 @@ import CreditKit
 import LocalAPI
 import InferenceEngine
 import AuthKit
+import WalletKit
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
@@ -184,6 +185,49 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+            }
+
+            // Solana Wallet
+            Section(appState.loc("settings.solanaWallet")) {
+                Toggle(appState.loc("settings.enableSolana"), isOn: $state.solanaWalletEnabled)
+
+                if appState.solanaWalletEnabled {
+                    Picker(appState.loc("settings.solanaNetwork"), selection: $state.solanaNetwork) {
+                        Text("Devnet").tag("devnet")
+                        Text("Mainnet").tag("mainnet")
+                    }
+
+                    if let bridge = appState.walletBridge {
+                        LabeledContent(appState.loc("settings.solanaAddress")) {
+                            HStack(spacing: 4) {
+                                Text(String(bridge.solanaAddress.prefix(8)) + "..." + String(bridge.solanaAddress.suffix(4)))
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                                Button {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(bridge.solanaAddress, forType: .string)
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                        LabeledContent(appState.loc("settings.usdcBalance"), value: bridge.usdcBalanceFormatted)
+                        HStack {
+                            Circle()
+                                .fill(bridge.isMonitoring ? .green : .gray)
+                                .frame(width: 8, height: 8)
+                            Text(bridge.isMonitoring ? appState.loc("settings.solanaMonitoring") : appState.loc("settings.solanaStopped"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Text(appState.loc("settings.solanaHelp"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
             // Storage

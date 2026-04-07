@@ -12,6 +12,7 @@ import WANKit
 import CreditKit
 import AgentKit
 import AuthKit
+import WalletKit
 
 // MARK: - App State
 
@@ -47,6 +48,18 @@ public final class AppState {
 
     // Credits
     public var wallet: CreditWallet
+
+    // Solana Wallet (USDC on-chain bridge)
+    public var walletBridge: WalletBridge?
+    public var solanaWalletEnabled: Bool = UserDefaults.standard.bool(forKey: "teale.solanaWalletEnabled") {
+        didSet {
+            UserDefaults.standard.set(solanaWalletEnabled, forKey: "teale.solanaWalletEnabled")
+            Task { await toggleSolanaWallet() }
+        }
+    }
+    public var solanaNetwork: String = UserDefaults.standard.string(forKey: "teale.solanaNetwork") ?? "devnet" {
+        didSet { UserDefaults.standard.set(solanaNetwork, forKey: "teale.solanaNetwork") }
+    }
 
     // Auth
     public let authManager: AuthManager?
@@ -232,6 +245,11 @@ public final class AppState {
         self.agentProfile = profile
         await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
 
+        // Initialize Solana wallet bridge if enabled
+        if solanaWalletEnabled {
+            await initializeSolanaWallet(creditWallet: realWallet)
+        }
+
         // Wire credit transfer handling
         clusterManager.onCreditTransferReceived = { [weak self] payload, peer in
             guard let self = self else { return }
@@ -284,6 +302,31 @@ public final class AppState {
         let nodeID = UUID().uuidString
         UserDefaults.standard.set(nodeID, forKey: stableNodeIDKey)
         return nodeID
+    }
+
+    // MARK: - Solana Wallet
+
+    private func initializeSolanaWallet(creditWallet: CreditWallet) async {
+        do {
+            let solanaIdentity = try SolanaIdentity.loadOrCreate()
+            let config: WalletKitConfig = solanaNetwork == "mainnet" ? .mainnet : .devnet
+            let bridge = WalletBridge(identity: solanaIdentity, creditWallet: creditWallet, config: config)
+            await bridge.startMonitoring()
+            self.walletBridge = bridge
+        } catch {
+            print("[WalletKit] Failed to initialize Solana wallet: \(error)")
+        }
+    }
+
+    private func toggleSolanaWallet() async {
+        if solanaWalletEnabled {
+            await initializeSolanaWallet(creditWallet: wallet)
+        } else {
+            if let bridge = walletBridge {
+                await bridge.stopMonitoring()
+            }
+            walletBridge = nil
+        }
     }
 
     // MARK: - Actions
@@ -562,6 +605,7 @@ public final class AppState {
                 let wanProvider = WANProvider(localProvider: localProvider, wanManager: wanManager)
                 await engine.setProvider(wanProvider)
             } catch {
+                print("[WAN] Failed to enable: \(error.localizedDescription)")
                 wanEnabled = false
             }
         }

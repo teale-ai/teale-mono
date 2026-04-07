@@ -133,8 +133,15 @@ public final class WANManager: @unchecked Sendable {
         self.discoveryService = discovery
         self.natTraversal = nat
 
-        // Connect to relay
-        try await relay.connect()
+        // Mark as enabled early so the UI updates
+        isEnabled = true
+
+        // Connect to relay (non-fatal — node stays enabled and retries)
+        do {
+            try await relay.connect()
+        } catch {
+            print("[WAN] Relay connection failed (will retry): \(error.localizedDescription)")
+        }
 
         // Discover public endpoint
         let mapping: NATMapping?
@@ -164,14 +171,18 @@ public final class WANManager: @unchecked Sendable {
             // Non-fatal — we can still make outgoing connections
         }
 
-        // Register and start discovery
+        // Register and start discovery (non-fatal if relay not connected)
         let capabilities = NodeCapabilities(
             hardware: localDeviceInfo.hardware,
             loadedModels: localDeviceInfo.loadedModels,
             maxModelSizeGB: localDeviceInfo.hardware.availableRAMForModelsGB,
             isAvailable: true
         )
-        try await discovery.start(capabilities: capabilities)
+        do {
+            try await discovery.start(capabilities: capabilities)
+        } catch {
+            print("[WAN] Discovery registration failed (relay may be unavailable): \(error.localizedDescription)")
+        }
 
         // Start relay message listener for offers/answers
         startRelayListener()
@@ -180,7 +191,6 @@ public final class WANManager: @unchecked Sendable {
         startHeartbeatLoop()
         startHealthCheckLoop()
 
-        isEnabled = true
         updateState(mapping: mapping, natType: natType)
     }
 

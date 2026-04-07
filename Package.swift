@@ -17,6 +17,7 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.12"),
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
         .package(url: "https://github.com/supabase/supabase-swift", from: "2.0.0"),
+        .package(url: "https://github.com/p2p-org/solana-swift", from: "5.0.0"),
     ],
     targets: [
         // MARK: - SharedTypes
@@ -105,6 +106,16 @@ let package = Package(
             ]
         ),
 
+        // MARK: - WalletKit (Solana USDC integration)
+        .target(
+            name: "WalletKit",
+            dependencies: [
+                "SharedTypes",
+                "CreditKit",
+                .product(name: "SolanaSwift", package: "solana-swift"),
+            ]
+        ),
+
         // MARK: - AgentKit (agent-to-agent communication)
         .target(
             name: "AgentKit",
@@ -137,6 +148,7 @@ let package = Package(
                 "ClusterKit",
                 "WANKit",
                 "CreditKit",
+                "WalletKit",
                 "AgentKit",
                 "AuthKit",
             ],
@@ -177,6 +189,10 @@ let package = Package(
         .testTarget(
             name: "CreditKitTests",
             dependencies: ["CreditKit"]
+        ),
+        .testTarget(
+            name: "WalletKitTests",
+            dependencies: ["WalletKit"]
         ),
         .testTarget(
             name: "AgentKitTests",

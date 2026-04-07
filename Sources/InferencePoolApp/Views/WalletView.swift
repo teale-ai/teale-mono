@@ -2,6 +2,7 @@ import SwiftUI
 import CreditKit
 import SharedTypes
 import ClusterKit
+import WalletKit
 
 struct WalletView: View {
     @Environment(AppState.self) private var appState
@@ -11,6 +12,12 @@ struct WalletView: View {
             VStack(alignment: .leading, spacing: 16) {
                 // Balance Card
                 BalanceCard()
+
+                // Solana Wallet (if enabled)
+                if appState.walletBridge != nil {
+                    Divider()
+                    SolanaWalletSection()
+                }
 
                 Divider()
 
@@ -56,6 +63,12 @@ private struct BalanceCard: View {
             Text(appState.loc("wallet.credits"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if appState.walletBridge != nil {
+                Text(appState.wallet.balance.usdFormatted + " USDC")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
@@ -418,24 +431,158 @@ private struct TransactionRow: View {
         case .bonus: return "gift.fill"
         case .adjustment: return "arrow.left.arrow.right"
         case .transfer: return isSentTransfer ? "arrow.up.right.circle.fill" : "arrow.down.left.circle.fill"
+        case .deposit: return "arrow.down.to.line.circle.fill"
+        case .withdrawal: return "arrow.up.to.line.circle.fill"
         }
     }
 
     private var iconColor: Color {
         switch transaction.type {
-        case .earned, .bonus: return .green
-        case .spent: return .red
+        case .earned, .bonus, .deposit: return .green
+        case .spent, .withdrawal: return .red
         case .adjustment: return .blue
         case .transfer: return isSentTransfer ? .orange : .blue
         }
     }
 
     private var amountText: String {
-        let sign = (transaction.type == .spent || isSentTransfer) ? "-" : "+"
+        let sign = (transaction.type == .spent || transaction.type == .withdrawal || isSentTransfer) ? "-" : "+"
         return "\(sign)\(String(format: "%.2f", transaction.amount.value))"
     }
 
     private var amountColor: Color {
-        (transaction.type == .spent || isSentTransfer) ? .red : .green
+        (transaction.type == .spent || transaction.type == .withdrawal || isSentTransfer) ? .red : .green
+    }
+}
+
+// MARK: - Solana Wallet Section
+
+private struct SolanaWalletSection: View {
+    @Environment(AppState.self) private var appState
+    @State private var withdrawAmount: String = ""
+    @State private var destinationAddress: String = ""
+    @State private var isWithdrawing: Bool = false
+    @State private var withdrawResult: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(appState.loc("wallet.solana.title"), systemImage: "link.circle.fill")
+                .font(.headline)
+
+            if let bridge = appState.walletBridge {
+                // Address display
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(appState.loc("wallet.solana.address"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(bridge.solanaAddress)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(bridge.solanaAddress, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.3))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                // USDC Balance
+                HStack {
+                    Text(appState.loc("wallet.solana.onChainBalance"))
+                        .font(.subheadline)
+                    Spacer()
+                    Text(bridge.usdcBalanceFormatted + " USDC")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.green)
+                }
+
+                // Deposit instructions
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(appState.loc("wallet.solana.depositTitle"))
+                        .font(.caption.bold())
+                    Text(appState.loc("wallet.solana.depositInstructions"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.blue.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                // Withdraw form
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(appState.loc("wallet.solana.withdrawTitle"))
+                        .font(.caption.bold())
+
+                    HStack(spacing: 8) {
+                        TextField(appState.loc("wallet.solana.creditsAmount"), text: $withdrawAmount)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+
+                        TextField(appState.loc("wallet.solana.destinationAddress"), text: $destinationAddress)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+
+                        Button {
+                            Task { await performWithdrawal(bridge: bridge) }
+                        } label: {
+                            if isWithdrawing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text(appState.loc("wallet.solana.withdrawButton"))
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(isWithdrawing || withdrawAmount.isEmpty || destinationAddress.isEmpty)
+                    }
+
+                    if let result = withdrawResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(result.contains("Success") ? .green : .red)
+                    }
+                }
+
+                // Error display
+                if let error = bridge.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    private func performWithdrawal(bridge: WalletBridge) async {
+        guard let amount = Double(withdrawAmount), amount > 0 else {
+            withdrawResult = "Invalid amount"
+            return
+        }
+
+        isWithdrawing = true
+        withdrawResult = nil
+
+        do {
+            let credits = CreditAmount(amount)
+            let sig = try await bridge.withdraw(creditAmount: credits, to: destinationAddress)
+            withdrawResult = "Success! Tx: \(sig.prefix(16))..."
+            withdrawAmount = ""
+            destinationAddress = ""
+        } catch {
+            withdrawResult = error.localizedDescription
+        }
+
+        isWithdrawing = false
     }
 }
