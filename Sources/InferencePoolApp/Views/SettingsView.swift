@@ -175,8 +175,13 @@ struct SettingsView: View {
                 .controlSize(.small)
             }
 
-            // Storage
-            Section("Model Storage") {
+            // Storage & Model Management
+            Section("Model Management") {
+                Toggle("Auto-manage models", isOn: $state.autoManageModels)
+                Text("Automatically download and load in-demand models so your node serves what the network needs. Models are swapped based on request patterns from connected peers.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
                 VStack(alignment: .leading) {
                     Text("Maximum storage: \(Int(maxStorage)) GB")
                     Slider(value: $maxStorage, in: 5...200, step: 5)

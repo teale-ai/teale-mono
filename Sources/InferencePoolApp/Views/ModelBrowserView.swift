@@ -6,6 +6,15 @@ struct ModelBrowserView: View {
     @State private var searchText: String = ""
     @State private var switchConfirmModel: ModelDescriptor?
 
+    private var topModels: [ModelDescriptor] {
+        appState.modelManager.catalog.topModels(for: appState.hardware)
+    }
+
+    private var otherModels: [ModelDescriptor] {
+        let topIDs = Set(topModels.map(\.id))
+        return filteredModels.filter { !topIDs.contains($0.id) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header with search
@@ -20,10 +29,44 @@ struct ModelBrowserView: View {
 
             Divider()
 
-            // Model list
+            // Model list with ranking sections
             ScrollView {
                 LazyVStack(spacing: 1) {
-                    ForEach(filteredModels) { model in
+                    // Top models section — only show when not searching
+                    if searchText.isEmpty && !topModels.isEmpty {
+                        sectionHeader(
+                            title: "Most In-Demand",
+                            subtitle: "Popular models on the network",
+                            icon: "flame.fill",
+                            color: .orange
+                        )
+
+                        ForEach(Array(topModels.enumerated()), id: \.element.id) { index, model in
+                            HStack(spacing: 0) {
+                                Text("#\(index + 1)")
+                                    .font(.caption.weight(.bold).monospacedDigit())
+                                    .foregroundStyle(.orange)
+                                    .frame(width: 28, alignment: .center)
+
+                                ModelRowView(
+                                    model: model,
+                                    onSwitchRequest: { switchConfirmModel = $0 }
+                                )
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.03))
+                        }
+
+                        sectionHeader(
+                            title: "All Models",
+                            subtitle: "Compatible with your \(appState.hardware.chipName)",
+                            icon: "square.grid.2x2",
+                            color: .secondary
+                        )
+                    }
+
+                    ForEach(searchText.isEmpty ? otherModels : filteredModels) { model in
                         ModelRowView(
                             model: model,
                             onSwitchRequest: { switchConfirmModel = $0 }
@@ -85,6 +128,23 @@ struct ModelBrowserView: View {
                 Text("\(model.name) is ready. Load it now? This will unload the current model.")
             }
         }
+    }
+
+    private func sectionHeader(title: String, subtitle: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .font(.caption)
+            Text(title)
+                .font(.caption.weight(.semibold))
+            Text("— \(subtitle)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.5))
     }
 
     private var filteredModels: [ModelDescriptor] {

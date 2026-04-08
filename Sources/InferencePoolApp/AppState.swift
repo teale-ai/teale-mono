@@ -28,6 +28,7 @@ public final class AppState {
 
     // Models
     public let modelManager: ModelManagerService
+    public let demandTracker: ModelDemandTracker
 
     // Cluster (LAN)
     public let clusterManager: ClusterManager
@@ -77,6 +78,9 @@ public final class AppState {
     public var launchAtLogin: Bool = false
     public var maxStorageGB: Double = 50.0
     public var wanRelayURL: String = "wss://relay.teale.network/ws"
+    public var autoManageModels: Bool = false {
+        didSet { demandTracker.autoManageEnabled = autoManageModels }
+    }
 
     public init() {
         let detector = HardwareDetector()
@@ -88,6 +92,7 @@ public final class AppState {
         self.localProvider = mlxProvider
         self.engine = InferenceEngineManager(provider: mlxProvider, throttler: throttler)
         self.modelManager = ModelManagerService(hardware: hw, maxStorageGB: 50.0)
+        self.demandTracker = ModelDemandTracker(catalog: modelManager.catalog, hardware: hw)
 
         let hostname = ProcessInfo.processInfo.hostName
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
@@ -153,6 +158,17 @@ public final class AppState {
         )
         self.agentProfile = profile
         await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
+
+        // Wire auto model management — download in-demand models when enabled
+        demandTracker.onAutoDownloadRequested = { [weak self] model in
+            guard let self else { return }
+            // Only auto-download if not already downloaded or downloading
+            guard !self.downloadedModelIDs.contains(model.id),
+                  self.activeDownloads[model.id] == nil else { return }
+            Task { @MainActor in
+                await self.downloadModel(model)
+            }
+        }
 
         // Wire credit transfer handling
         clusterManager.onCreditTransferReceived = { [weak self] payload, connection in

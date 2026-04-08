@@ -7,11 +7,23 @@ struct ChatView: View {
     @State private var messageText: String = ""
     @State private var streamingText: String = ""
     @State private var isGenerating: Bool = false
+    @State private var showModelPicker: Bool = false
+
+    /// Models that are downloaded and ready to load
+    private var availableModels: [ModelDescriptor] {
+        appState.modelManager.compatibleModels.filter {
+            appState.downloadedModelIDs.contains($0.id)
+        }
+    }
+
+    private var loadedModel: ModelDescriptor? {
+        appState.engineStatus.currentModel
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // No model banner
-            if !hasModelLoaded {
+            // No model banner — only show if nothing downloaded at all
+            if !hasModelLoaded && availableModels.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -93,26 +105,46 @@ struct ChatView: View {
 
             Divider()
 
-            // Input area
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message...", text: $messageText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
-                    .padding(8)
-                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-                    .onSubmit { sendMessage() }
-
-                Button(action: sendMessage) {
-                    Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(canSend ? .blue : .secondary)
+            // Input area with model picker
+            VStack(spacing: 0) {
+                // Model picker row
+                HStack(spacing: 6) {
+                    modelPickerButton
+                    Spacer()
+                    if case .loadingModel(let m) = appState.engineStatus {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Loading \(m.name)…")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSend && !isGenerating)
-                .keyboardShortcut(.return, modifiers: .command)
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
+
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField("Message...", text: $messageText, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...8)
+                        .padding(8)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        .onSubmit { sendMessage() }
+
+                    Button(action: sendMessage) {
+                        Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(canSend ? .blue : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend && !isGenerating)
+                    .keyboardShortcut(.return, modifiers: .command)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
         }
         .navigationTitle("Chat")
         .onAppear {
@@ -132,6 +164,67 @@ struct ChatView: View {
 
     private var canSend: Bool {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    // MARK: - Model Picker
+
+    @ViewBuilder
+    private var modelPickerButton: some View {
+        Menu {
+            if availableModels.isEmpty {
+                Text("No models downloaded")
+            } else {
+                ForEach(availableModels) { model in
+                    Button {
+                        Task { await switchModel(model) }
+                    } label: {
+                        HStack {
+                            Text(model.name)
+                            Text(model.parameterCount)
+                                .foregroundStyle(.secondary)
+                            if loadedModel?.id == model.id {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                    .disabled(loadedModel?.id == model.id)
+                }
+            }
+
+            Divider()
+
+            Button {
+                appState.currentView = .models
+            } label: {
+                Label("Browse Models…", systemImage: "square.grid.2x2")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "cpu")
+                    .font(.caption2)
+                if let model = loadedModel {
+                    Text(model.name)
+                        .font(.caption.weight(.medium))
+                } else {
+                    Text("No model")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(.quaternary.opacity(0.5), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private func switchModel(_ model: ModelDescriptor) async {
+        guard loadedModel?.id != model.id else { return }
+        await appState.loadModel(model)
     }
 
     // MARK: - Actions
