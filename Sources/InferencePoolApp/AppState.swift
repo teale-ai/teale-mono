@@ -172,8 +172,20 @@ public final class AppState {
     /// Multiple downloads can run concurrently.
     public func downloadModel(_ descriptor: ModelDescriptor) async {
         activeDownloads[descriptor.id] = 0.0
+
+        // Sync progress from modelManager → activeDownloads so the UI updates
+        let progressTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let progress = self?.modelManager.downloadingModels[descriptor.id] {
+                    self?.activeDownloads[descriptor.id] = progress
+                }
+                try await Task.sleep(for: .milliseconds(200))
+            }
+        }
+
         do {
             try await modelManager.downloadModel(descriptor)
+            progressTask.cancel()
             activeDownloads.removeValue(forKey: descriptor.id)
             downloadedModelIDs.insert(descriptor.id)
             // Prompt user to load if another model is currently active
@@ -184,6 +196,7 @@ public final class AppState {
                 await loadModel(descriptor)
             }
         } catch {
+            progressTask.cancel()
             activeDownloads.removeValue(forKey: descriptor.id)
         }
     }

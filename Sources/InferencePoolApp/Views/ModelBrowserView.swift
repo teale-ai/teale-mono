@@ -240,20 +240,23 @@ struct ModelRowView: View {
             .frame(minWidth: 90)
 
         } else if isDownloading {
-            // Downloading files — show progress
+            // Downloading files — show progress with size
             VStack(alignment: .trailing, spacing: 3) {
                 if let progress = downloadProgress, progress > 0 && progress < 1.0 {
                     ProgressView(value: progress)
-                        .frame(width: 80)
-                    Text("\(Int(progress * 100))%")
+                        .frame(width: 100)
+                    Text(downloadSizeText(progress: progress))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                         .controlSize(.small)
+                    Text("Starting…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .frame(minWidth: 90)
+            .frame(minWidth: 110)
 
         } else if isDownloaded {
             // On disk — load into memory
@@ -286,6 +289,15 @@ struct ModelRowView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
+    }
+
+    private func downloadSizeText(progress: Double) -> String {
+        let totalGB = model.estimatedSizeGB
+        let downloadedGB = totalGB * progress
+        if totalGB < 1.0 {
+            return String(format: "%.0f / %.0f MB", downloadedGB * 1024, totalGB * 1024)
+        }
+        return String(format: "%.1f / %.1f GB", downloadedGB, totalGB)
     }
 
     private func badge(_ text: String, color: Color) -> some View {
