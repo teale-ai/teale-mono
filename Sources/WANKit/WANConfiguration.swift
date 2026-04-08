@@ -15,7 +15,7 @@ public struct WANConfig: Sendable {
     public var heartbeatIntervalSeconds: TimeInterval
 
     public init(
-        relayServerURLs: [URL] = [URL(string: "wss://teale-relay.fly.dev/ws")!],
+        relayServerURLs: [URL] = [URL(string: "wss://relay.teale.com/ws")!],
         stunServerURLs: [URL] = [
             URL(string: "stun://stun.l.google.com:19302")!,
             URL(string: "stun://stun1.l.google.com:19302")!,

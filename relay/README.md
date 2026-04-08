@@ -42,10 +42,10 @@ fly deploy
 4. Confirm health:
 
 ```bash
-curl https://teale-relay.fly.dev/health
+curl https://relay.teale.com/health
 ```
 
-The production relay is deployed at `wss://teale-relay.fly.dev/ws` and is the default in both apps.
+The production relay is deployed at `wss://relay.teale.com/ws` and is the default in both apps.
 
 ## Platform Note
 

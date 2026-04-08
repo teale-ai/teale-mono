@@ -129,7 +129,7 @@ final class CompanionAppState {
     // Settings
     var displayName: String = "My iPhone"
     var preferredNode: String? // nil = auto
-    var wanRelayURL: String = "wss://teale-relay.fly.dev/ws"
+    var wanRelayURL: String = "wss://relay.teale.com/ws"
 
     // WAN P2P
     let wanManager = WANManager()

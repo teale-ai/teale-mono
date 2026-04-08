@@ -97,7 +97,7 @@ public final class AppState {
             Task { await modelManager.cache.setMaxStorage(maxStorageGB) }
         }
     }
-    public var wanRelayURL: String = "wss://teale-relay.fly.dev/ws" {
+    public var wanRelayURL: String = "wss://relay.teale.com/ws" {
         didSet {
             UserDefaults.standard.set(wanRelayURL, forKey: Preferences.wanRelayURL)
         }
@@ -135,7 +135,7 @@ public final class AppState {
         // Wallet placeholder — replaced async on launch
         self.wallet = CreditWallet.placeholder()
         self.maxStorageGB = persistedMaxStorage
-        self.wanRelayURL = UserDefaults.standard.string(forKey: Preferences.wanRelayURL) ?? "wss://teale-relay.fly.dev/ws"
+        self.wanRelayURL = UserDefaults.standard.string(forKey: Preferences.wanRelayURL) ?? "wss://relay.teale.com/ws"
         // Start server eagerly so it's available even if the MenuBarExtra is never clicked.
         // DispatchQueue.global dispatches to a background thread, then Task hops to @MainActor.
         let appState = self
