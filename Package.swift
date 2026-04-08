@@ -156,7 +156,9 @@ let package = Package(
                 "CreditKit",
                 "AgentKit",
                 "AuthKit",
-            ]
+                "WANKit",
+            ],
+            exclude: ["Info.plist"]
         ),
 
         // MARK: - TealeSDK (third-party resource contribution SDK)

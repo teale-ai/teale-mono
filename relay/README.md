@@ -42,14 +42,10 @@ fly deploy
 4. Confirm health:
 
 ```bash
-curl https://<your-app>.fly.dev/health
+curl https://relay.teale.com/health
 ```
 
-5. In both Teale apps, set the WAN relay URL to:
-
-```text
-wss://<your-app>.fly.dev/ws
-```
+The production relay is deployed at `wss://relay.teale.com/ws` and is the default in both apps.
 
 ## Platform Note
 

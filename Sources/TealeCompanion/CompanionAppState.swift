@@ -7,6 +7,7 @@ import HardwareProfile
 import MLXInference
 import ModelManager
 import InferenceEngine
+import WANKit
 
 // MARK: - Connection Status
 
@@ -128,7 +129,19 @@ final class CompanionAppState {
     // Settings
     var displayName: String = "My iPhone"
     var preferredNode: String? // nil = auto
-    var wanRelayURL: String = ""
+    var wanRelayURL: String = "wss://relay.teale.com/ws"
+
+    // WAN P2P
+    let wanManager = WANManager()
+    var wanEnabled: Bool = false {
+        didSet {
+            guard !isUpdatingWANToggle else { return }
+            toggleWAN()
+        }
+    }
+    var isWANBusy: Bool = false
+    var wanLastError: String?
+    private var isUpdatingWANToggle: Bool = false
 
     // Network discovery
     private var browser: NWBrowser?
@@ -396,5 +409,121 @@ final class CompanionAppState {
                 content: "\n\n[Error: \(error.localizedDescription)]"
             )
         }
+    }
+
+    // MARK: - WAN P2P
+
+    private func toggleWAN() {
+        if wanEnabled {
+            enableWAN()
+        } else {
+            disableWAN()
+        }
+    }
+
+    private func enableWAN() {
+        let relayURLString = wanRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let relayURL = validatedWANRelayURL(from: relayURLString) else {
+            wanLastError = "Enter a valid relay WebSocket URL before enabling WAN."
+            setWANEnabled(false)
+            return
+        }
+
+        wanLastError = nil
+        isWANBusy = true
+
+        let hw = hardware
+        let name = displayName
+        let loadedModels = localModel.map { [$0.huggingFaceRepo] } ?? []
+
+        Task.detached { [weak self] in
+            do {
+                let identity = try WANNodeIdentity.loadOrCreate()
+                let config = WANConfig(
+                    relayServerURLs: [relayURL],
+                    identity: identity,
+                    displayName: name
+                )
+                let deviceInfo = DeviceInfo(
+                    name: name,
+                    hardware: hw,
+                    loadedModels: loadedModels
+                )
+
+                guard let self else { return }
+                try await self.wanManager.enable(config: config, localDeviceInfo: deviceInfo)
+
+                await MainActor.run {
+                    self.wanLastError = nil
+                    self.isWANBusy = false
+                    self.syncWANPeers()
+                }
+
+                // Periodically sync WAN peers into discoveredNodes
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .seconds(5))
+                    await MainActor.run { [weak self] in
+                        self?.syncWANPeers()
+                    }
+                }
+            } catch {
+                let msg = error.localizedDescription
+                guard let self else { return }
+                await MainActor.run {
+                    self.wanLastError = msg
+                    self.isWANBusy = false
+                    self.setWANEnabled(false)
+                }
+                await self.wanManager.disable()
+            }
+        }
+    }
+
+    private func disableWAN(clearError: Bool = true) {
+        isWANBusy = false
+        if clearError {
+            wanLastError = nil
+        }
+        discoveredNodes.removeAll { !$0.isLAN }
+        Task {
+            await wanManager.disable()
+        }
+    }
+
+    @MainActor
+    private func syncWANPeers() {
+        let wanState = wanManager.state
+        discoveredNodes.removeAll { !$0.isLAN }
+        for peer in wanState.connectedPeers {
+            let node = DiscoveredNode(
+                id: peer.id,
+                name: peer.displayName,
+                host: peer.id,
+                port: 0,
+                isLAN: false,
+                chipName: peer.hardware.chipName,
+                totalRAMGB: peer.hardware.totalRAMGB,
+                loadedModel: peer.loadedModels.first,
+                lastSeen: peer.lastSeen
+            )
+            discoveredNodes.append(node)
+        }
+    }
+
+    private func validatedWANRelayURL(from string: String) -> URL? {
+        guard let url = URL(string: string),
+              let scheme = url.scheme?.lowercased(),
+              ["ws", "wss"].contains(scheme),
+              url.host != nil
+        else {
+            return nil
+        }
+        return url
+    }
+
+    private func setWANEnabled(_ enabled: Bool) {
+        isUpdatingWANToggle = true
+        wanEnabled = enabled
+        isUpdatingWANToggle = false
     }
 }

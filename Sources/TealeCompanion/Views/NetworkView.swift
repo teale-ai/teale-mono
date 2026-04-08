@@ -1,5 +1,6 @@
 import SwiftUI
 import SharedTypes
+import WANKit
 
 struct NetworkView: View {
     var appState: CompanionAppState
@@ -43,19 +44,55 @@ struct NetworkView: View {
 
                 // WAN Nodes
                 Section("Wide Area Network") {
+                    Toggle(isOn: Binding(
+                        get: { appState.wanEnabled },
+                        set: { appState.wanEnabled = $0 }
+                    )) {
+                        HStack {
+                            Image(systemName: "globe")
+                                .foregroundStyle(.blue)
+                            Text("WAN P2P")
+                        }
+                    }
+                    .disabled(appState.isWANBusy)
+
+                    if appState.isWANBusy {
+                        HStack {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Connecting to relay...")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let error = appState.wanLastError {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if appState.wanEnabled {
+                        let relayStatus = appState.wanManager.state.relayStatus
+                        LabeledContent("Relay") {
+                            Text(relayStatus.rawValue.capitalized)
+                                .font(.subheadline)
+                                .foregroundStyle(relayStatus == .connected ? .green : .secondary)
+                        }
+                    }
+
                     let wanNodes = appState.discoveredNodes.filter { !$0.isLAN }
-                    if wanNodes.isEmpty {
+                    if wanNodes.isEmpty && appState.wanEnabled {
                         HStack {
                             Image(systemName: "globe")
                                 .foregroundStyle(.tertiary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("No WAN nodes")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                Text("Configure a relay server in Settings")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
+                            Text("No WAN peers found yet")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 4)
                     } else {

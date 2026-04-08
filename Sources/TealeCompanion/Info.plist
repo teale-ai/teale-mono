@@ -5,9 +5,9 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>InferencePoolApp</string>
+	<string>TealeCompanion</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.teale.app</string>
+	<string>com.teale.companion</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -18,18 +18,8 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>NSMainNibFile</key>
-	<string></string>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Teale uses your local network to discover and connect to other inference nodes.</string>
+	<string>Teale uses your local network to discover and connect to Mac inference nodes running on your LAN.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_teale._tcp</string>
@@ -38,7 +28,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.teale.app</string>
+			<string>com.teale.companion</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>teale</string>
