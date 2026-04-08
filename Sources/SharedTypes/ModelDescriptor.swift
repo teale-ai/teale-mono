@@ -28,6 +28,7 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
     public var requiredRAMGB: Double        // minimum RAM to load
     public var family: String               // e.g. "Llama", "Gemma", "Qwen"
     public var description: String
+    public var popularityRank: Int          // 1 = most popular, lower = more in-demand
 
     public init(
         id: String,
@@ -38,7 +39,8 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
         estimatedSizeGB: Double,
         requiredRAMGB: Double,
         family: String,
-        description: String
+        description: String,
+        popularityRank: Int = 999
     ) {
         self.id = id
         self.name = name
@@ -49,6 +51,7 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
         self.requiredRAMGB = requiredRAMGB
         self.family = family
         self.description = description
+        self.popularityRank = popularityRank
     }
 }
 

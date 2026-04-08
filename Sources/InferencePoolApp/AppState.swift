@@ -34,6 +34,7 @@ public final class AppState {
 
     // Models
     public let modelManager: ModelManagerService
+    public let demandTracker: ModelDemandTracker
 
     // Cluster (LAN)
     public let clusterManager: ClusterManager
@@ -101,6 +102,9 @@ public final class AppState {
             UserDefaults.standard.set(wanRelayURL, forKey: Preferences.wanRelayURL)
         }
     }
+    public var autoManageModels: Bool = false {
+        didSet { demandTracker.autoManageEnabled = autoManageModels }
+    }
 
     private var isUpdatingWANToggle: Bool = false
 
@@ -115,6 +119,7 @@ public final class AppState {
         let persistedMaxStorage = UserDefaults.standard.object(forKey: Preferences.maxStorageGB) as? Double ?? 50.0
         self.engine = InferenceEngineManager(provider: mlxProvider, throttler: throttler)
         self.modelManager = ModelManagerService(hardware: hw, maxStorageGB: persistedMaxStorage)
+        self.demandTracker = ModelDemandTracker(catalog: modelManager.catalog, hardware: hw)
 
         let hostname = ProcessInfo.processInfo.hostName
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
@@ -209,6 +214,17 @@ public final class AppState {
         self.agentProfile = profile
         await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
 
+        // Wire auto model management — download in-demand models when enabled
+        demandTracker.onAutoDownloadRequested = { [weak self] model in
+            guard let self else { return }
+            // Only auto-download if not already downloaded or downloading
+            guard !self.downloadedModelIDs.contains(model.id),
+                  self.activeDownloads[model.id] == nil else { return }
+            Task { @MainActor in
+                await self.downloadModel(model)
+            }
+        }
+
         // Wire credit transfer handling
         clusterManager.onCreditTransferReceived = { [weak self] payload, connection in
             guard let self = self else { return }
@@ -227,8 +243,20 @@ public final class AppState {
     /// Multiple downloads can run concurrently.
     public func downloadModel(_ descriptor: ModelDescriptor) async {
         activeDownloads[descriptor.id] = 0.0
+
+        // Sync progress from modelManager → activeDownloads so the UI updates
+        let progressTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let progress = self?.modelManager.downloadingModels[descriptor.id] {
+                    self?.activeDownloads[descriptor.id] = progress
+                }
+                try await Task.sleep(for: .milliseconds(200))
+            }
+        }
+
         do {
             try await modelManager.downloadModel(descriptor)
+            progressTask.cancel()
             activeDownloads.removeValue(forKey: descriptor.id)
             downloadedModelIDs.insert(descriptor.id)
             // Prompt user to load if another model is currently active
@@ -239,6 +267,7 @@ public final class AppState {
                 await loadModel(descriptor)
             }
         } catch {
+            progressTask.cancel()
             activeDownloads.removeValue(forKey: descriptor.id)
         }
     }

@@ -10,6 +10,15 @@ struct ModelBrowserView: View {
     @State private var showFolderPicker: Bool = false
     @State private var localModelError: String?
 
+    private var topModels: [ModelDescriptor] {
+        appState.modelManager.catalog.topModels(for: appState.hardware)
+    }
+
+    private var otherModels: [ModelDescriptor] {
+        let topIDs = Set(topModels.map(\.id))
+        return filteredModels.filter { !topIDs.contains($0.id) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header with search
@@ -24,7 +33,7 @@ struct ModelBrowserView: View {
 
             Divider()
 
-            // Model list
+            // Model list with ranking sections
             ScrollView {
                 LazyVStack(spacing: 1) {
                     // Local models section
@@ -32,8 +41,41 @@ struct ModelBrowserView: View {
                         localModelsSection
                     }
 
-                    // Catalog models
-                    ForEach(filteredModels) { model in
+                    // Top models section — only show when not searching
+                    if searchText.isEmpty && !topModels.isEmpty {
+                        sectionHeader(
+                            title: "Most In-Demand",
+                            subtitle: "Popular models on the network",
+                            icon: "flame.fill",
+                            color: .orange
+                        )
+
+                        ForEach(Array(topModels.enumerated()), id: \.element.id) { index, model in
+                            HStack(spacing: 0) {
+                                Text("#\(index + 1)")
+                                    .font(.caption.weight(.bold).monospacedDigit())
+                                    .foregroundStyle(.orange)
+                                    .frame(width: 28, alignment: .center)
+
+                                ModelRowView(
+                                    model: model,
+                                    onSwitchRequest: { switchConfirmModel = $0 }
+                                )
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.03))
+                        }
+
+                        sectionHeader(
+                            title: "All Models",
+                            subtitle: "Compatible with your \(appState.hardware.chipName)",
+                            icon: "square.grid.2x2",
+                            color: .secondary
+                        )
+                    }
+
+                    ForEach(searchText.isEmpty ? otherModels : filteredModels) { model in
                         ModelRowView(
                             model: model,
                             onSwitchRequest: { switchConfirmModel = $0 }
@@ -136,6 +178,23 @@ struct ModelBrowserView: View {
         }
     }
 
+    private func sectionHeader(title: String, subtitle: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+                .font(.caption)
+            Text(title)
+                .font(.caption.weight(.semibold))
+            Text("— \(subtitle)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.5))
+    }
+
     // MARK: - Local Models Section
 
     @ViewBuilder
@@ -172,6 +231,7 @@ struct ModelBrowserView: View {
     }
 
     // MARK: - Filtering
+
 
     private var filteredModels: [ModelDescriptor] {
         let models = appState.modelManager.compatibleModels
@@ -435,20 +495,23 @@ struct ModelRowView: View {
             .frame(minWidth: 90)
 
         } else if isDownloading {
-            // Downloading files — show progress
+            // Downloading files — show progress with size
             VStack(alignment: .trailing, spacing: 3) {
                 if let progress = downloadProgress, progress > 0 && progress < 1.0 {
                     ProgressView(value: progress)
-                        .frame(width: 80)
-                    Text("\(Int(progress * 100))%")
+                        .frame(width: 100)
+                    Text(downloadSizeText(progress: progress))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                         .controlSize(.small)
+                    Text("Starting…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .frame(minWidth: 90)
+            .frame(minWidth: 110)
 
         } else if isDownloaded {
             // On disk — load into memory
@@ -481,6 +544,15 @@ struct ModelRowView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
+    }
+
+    private func downloadSizeText(progress: Double) -> String {
+        let totalGB = model.estimatedSizeGB
+        let downloadedGB = totalGB * progress
+        if totalGB < 1.0 {
+            return String(format: "%.0f / %.0f MB", downloadedGB * 1024, totalGB * 1024)
+        }
+        return String(format: "%.1f / %.1f GB", downloadedGB, totalGB)
     }
 
     private func badge(_ text: String, color: Color) -> some View {

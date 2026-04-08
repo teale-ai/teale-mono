@@ -57,7 +57,7 @@ actor SDKWANBridge {
 
     private func handleInferenceRequest(
         _ payload: InferenceRequestPayload,
-        connection: WANPeerConnection
+        connection: WANTransportConnection
     ) async {
         // Check if we should accept work
         guard await resourceGovernor.shouldAcceptWork() else {
