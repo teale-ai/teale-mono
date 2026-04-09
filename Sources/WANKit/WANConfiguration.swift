@@ -51,6 +51,23 @@ public struct WANNodeIdentity: Sendable {
         publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Derive a Curve25519 KeyAgreement private key from the same raw bytes.
+    /// Used for WireGuard/Noise protocol DH operations.
+    public var keyAgreementPrivateKey: Curve25519.KeyAgreement.PrivateKey {
+        try! Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKey.rawRepresentation)
+    }
+
+    /// The KeyAgreement public key (differs from signing public key).
+    /// This must be distributed separately from nodeID for WireGuard handshakes.
+    public var keyAgreementPublicKey: Curve25519.KeyAgreement.PublicKey {
+        keyAgreementPrivateKey.publicKey
+    }
+
+    /// Hex-encoded KeyAgreement public key for WireGuard handshakes.
+    public var wgPublicKeyHex: String {
+        keyAgreementPublicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Generate a new random identity
     public init() {
         self.privateKey = Curve25519.Signing.PrivateKey()

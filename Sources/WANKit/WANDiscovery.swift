@@ -7,6 +7,7 @@ public struct WANPeerInfo: Codable, Sendable, Identifiable {
     public var id: String { nodeID }
     public var nodeID: String
     public var publicKey: String  // hex-encoded Ed25519 public key
+    public var wgPublicKey: String?  // hex-encoded Curve25519 KeyAgreement public key for WireGuard
     public var displayName: String
     public var capabilities: NodeCapabilities
     public var lastSeen: Date
@@ -16,6 +17,7 @@ public struct WANPeerInfo: Codable, Sendable, Identifiable {
     public init(
         nodeID: String,
         publicKey: String,
+        wgPublicKey: String? = nil,
         displayName: String,
         capabilities: NodeCapabilities,
         lastSeen: Date = Date(),
@@ -24,6 +26,7 @@ public struct WANPeerInfo: Codable, Sendable, Identifiable {
     ) {
         self.nodeID = nodeID
         self.publicKey = publicKey
+        self.wgPublicKey = wgPublicKey
         self.displayName = displayName
         self.capabilities = capabilities
         self.lastSeen = lastSeen

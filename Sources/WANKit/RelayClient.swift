@@ -187,7 +187,7 @@ public struct ConnectionInfo: Codable, Sendable {
     public var localIP: String?
     public var localPort: UInt16?
     public var natType: NATType
-    public var quicParameters: QUICParameters?
+    public var wgPublicKey: String?  // hex-encoded Curve25519 KeyAgreement public key for WireGuard
 
     public init(
         publicIP: String,
@@ -195,24 +195,14 @@ public struct ConnectionInfo: Codable, Sendable {
         localIP: String? = nil,
         localPort: UInt16? = nil,
         natType: NATType = .unknown,
-        quicParameters: QUICParameters? = nil
+        wgPublicKey: String? = nil
     ) {
         self.publicIP = publicIP
         self.publicPort = publicPort
         self.localIP = localIP
         self.localPort = localPort
         self.natType = natType
-        self.quicParameters = quicParameters
-    }
-}
-
-public struct QUICParameters: Codable, Sendable {
-    public var alpn: [String]
-    public var certificateFingerprint: String  // hex SHA256 of self-signed cert
-
-    public init(alpn: [String] = ["teale-wan-1"], certificateFingerprint: String) {
-        self.alpn = alpn
-        self.certificateFingerprint = certificateFingerprint
+        self.wgPublicKey = wgPublicKey
     }
 }
 

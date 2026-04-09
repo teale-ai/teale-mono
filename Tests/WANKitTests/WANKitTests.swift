@@ -171,7 +171,7 @@ final class RelayMessageTests: XCTestCase {
                 publicIP: "1.2.3.4",
                 publicPort: 12345,
                 natType: .portRestricted,
-                quicParameters: QUICParameters(certificateFingerprint: "abc")
+                wgPublicKey: "abc123"
             ),
             signature: "sig"
         )
@@ -434,10 +434,7 @@ final class ConnectionInfoTests: XCTestCase {
             localIP: "192.168.1.10",
             localPort: 4433,
             natType: .fullCone,
-            quicParameters: QUICParameters(
-                alpn: ["teale-wan-1"],
-                certificateFingerprint: "abc123"
-            )
+            wgPublicKey: "abc123def456"
         )
 
         let data = try JSONEncoder().encode(info)
@@ -447,6 +444,6 @@ final class ConnectionInfoTests: XCTestCase {
         XCTAssertEqual(decoded.publicPort, 4433)
         XCTAssertEqual(decoded.localIP, "192.168.1.10")
         XCTAssertEqual(decoded.natType, .fullCone)
-        XCTAssertEqual(decoded.quicParameters?.alpn, ["teale-wan-1"])
+        XCTAssertEqual(decoded.wgPublicKey, "abc123def456")
     }
 }

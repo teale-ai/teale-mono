@@ -62,7 +62,7 @@ public struct WANPeerSummary: Sendable, Identifiable {
 }
 
 public enum WANConnectionType: String, Sendable {
-    case direct     // Direct QUIC P2P connection
+    case direct     // Direct WireGuard P2P connection
     case relayed    // Via relay server
 }
 
@@ -156,14 +156,14 @@ public final class WANManager: @unchecked Sendable {
             natType = .unknown
         }
 
-        // Start QUIC listener for incoming P2P connections
+        // Start UDP listener for incoming WireGuard connections
         do {
-            let quicListener = try QUICTransport.createListener(
+            let udpListener = try WireGuardTransport.createListener(
                 port: mapping.map { $0.publicPort } ?? 0,
                 identity: config.identity
             )
-            self.listener = quicListener
-            startQUICListener(quicListener)
+            self.listener = udpListener
+            startUDPListener(udpListener)
         } catch {
             // Non-fatal — we can still make outgoing connections
         }
@@ -299,7 +299,7 @@ public final class WANManager: @unchecked Sendable {
         connectedPeers.values.contains { $0.peerInfo.hasModel(modelID) }
     }
 
-    /// Get the WANPeerConnection for a connected peer with the given model
+    /// Get the transport connection for a connected peer with the given model
     public func connectionForPeer(withModel modelID: String) -> WANTransportConnection? {
         connectedPeers.values.first { $0.peerInfo.hasModel(modelID) }?.connection
     }
@@ -491,35 +491,29 @@ public final class WANManager: @unchecked Sendable {
         }
     }
 
-    // MARK: - QUIC Listener
+    // MARK: - UDP Listener
 
-    private func startQUICListener(_ listener: NWListener) {
+    private func startUDPListener(_ listener: NWListener) {
         listenerTask = Task { [weak self] in
             listener.newConnectionHandler = { [weak self] connection in
-                Task { await self?.handleIncomingQUICConnection(connection) }
+                Task { await self?.handleIncomingWireGuardConnection(connection) }
             }
             listener.start(queue: .global(qos: .userInitiated))
         }
     }
 
-    private func handleIncomingQUICConnection(_ nwConnection: NWConnection) async {
+    private func handleIncomingWireGuardConnection(_ nwConnection: NWConnection) async {
         guard let config = config else { return }
         guard connectedPeers.count < config.maxWANPeers else {
             nwConnection.cancel()
             return
         }
 
-        let peerConn = WANPeerConnection(connection: nwConnection, remoteNodeID: "pending")
-        await peerConn.start()
-
-        let isReady = await peerConn.isReady
-        guard isReady else {
-            await peerConn.cancel()
-            return
-        }
-
-        // The first message should identify the peer
-        // For now, accept and wait for identification via heartbeat
+        // For incoming connections, we don't yet know the remote peer's identity.
+        // The Noise responder handshake will reveal the remote's static public key,
+        // which we can then match to a known peer. For now, use a placeholder nodeID.
+        // The WireGuardPeerConnection as responder needs the remote WG public key after handshake.
+        // TODO: Refine incoming connection flow once peer directory is available.
     }
 
     // MARK: - Heartbeat Loop

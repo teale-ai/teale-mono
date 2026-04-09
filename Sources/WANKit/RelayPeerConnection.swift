@@ -2,7 +2,7 @@ import Foundation
 import ClusterKit
 
 public enum WANTransportConnection: Sendable {
-    case direct(WANPeerConnection)
+    case direct(WireGuardPeerConnection)
     case relayed(RelayPeerConnection)
 
     public var remoteNodeID: String {
