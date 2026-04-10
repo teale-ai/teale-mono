@@ -509,11 +509,68 @@ public final class WANManager: @unchecked Sendable {
             return
         }
 
-        // For incoming connections, we don't yet know the remote peer's identity.
-        // The Noise responder handshake will reveal the remote's static public key,
-        // which we can then match to a known peer. For now, use a placeholder nodeID.
-        // The WireGuardPeerConnection as responder needs the remote WG public key after handshake.
-        // TODO: Refine incoming connection flow once peer directory is available.
+        // Create a responder connection — remote identity is unknown until the Noise
+        // handshake completes, at which point the initiator's static public key is revealed.
+        let peerConn = WireGuardPeerConnection(
+            connection: nwConnection,
+            localIdentity: config.identity
+        )
+
+        await peerConn.start()
+
+        let isReady = await peerConn.isReady
+        guard isReady else {
+            await peerConn.cancel()
+            return
+        }
+
+        // The handshake revealed the remote peer's WG public key.
+        // Try to match it to a known peer from discovery.
+        let revealedWGKeyHex: String? = await {
+            guard let key = await peerConn.remoteWGPublicKeyRevealed else { return nil }
+            return key.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        }()
+
+        guard let wgKeyHex = revealedWGKeyHex else {
+            await peerConn.cancel()
+            return
+        }
+
+        // Look up the peer by WG public key in the discovery service
+        let discoveredPeers = await discoveryService?.peers ?? []
+        let peerInfo = discoveredPeers.first { $0.wgPublicKey == wgKeyHex }
+            ?? WANPeerInfo(
+                nodeID: wgKeyHex,  // Use WG key hex as provisional nodeID
+                publicKey: wgKeyHex,
+                wgPublicKey: wgKeyHex,
+                displayName: "Unknown Peer",
+                capabilities: NodeCapabilities(
+                    hardware: HardwareCapability(
+                        chipFamily: .unknown,
+                        chipName: "Unknown",
+                        totalRAMGB: 0,
+                        gpuCoreCount: 0,
+                        memoryBandwidthGBs: 0,
+                        tier: .tier4
+                    )
+                )
+            )
+
+        // Don't accept if already connected to this peer
+        guard connectedPeers[peerInfo.nodeID] == nil else {
+            await peerConn.cancel()
+            return
+        }
+
+        let connected = ConnectedWANPeer(
+            peerInfo: peerInfo,
+            connection: .direct(peerConn),
+            connectionType: .direct,
+            lastHeartbeat: Date()
+        )
+        connectedPeers[peerInfo.nodeID] = connected
+        startListening(to: connected)
+        updateState(mapping: state.publicEndpoint, natType: state.natType)
     }
 
     // MARK: - Heartbeat Loop

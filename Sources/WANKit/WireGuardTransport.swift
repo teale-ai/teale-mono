@@ -6,14 +6,17 @@ import ClusterKit
 // MARK: - WireGuard Peer Connection (Noise-encrypted UDP transport)
 
 public actor WireGuardPeerConnection {
-    public let remoteNodeID: String
+    public nonisolated(unsafe) var remoteNodeID: String
     public private(set) var isReady: Bool = false
     public private(set) var connectionState: WANConnectionState = .connecting
+
+    /// The remote peer's WG public key, revealed during the Noise handshake (responder path).
+    public private(set) var remoteWGPublicKeyRevealed: Curve25519.KeyAgreement.PublicKey?
 
     // UDP connection via Network.framework
     private let udpConnection: NWConnection
     private let localIdentity: WANNodeIdentity
-    private let remoteWGPublicKey: Curve25519.KeyAgreement.PublicKey
+    private let remoteWGPublicKey: Curve25519.KeyAgreement.PublicKey?
     private let role: NoiseHandshake.Role
 
     // Noise session (established after handshake)
@@ -26,6 +29,7 @@ public actor WireGuardPeerConnection {
     // Fragment reassembly
     private var fragments: [UInt32: FragmentBuffer] = [:]
 
+    /// Create a connection as initiator (remote WG public key known from discovery).
     public init(
         connection: NWConnection,
         remoteNodeID: String,
@@ -38,6 +42,18 @@ public actor WireGuardPeerConnection {
         self.localIdentity = localIdentity
         self.remoteWGPublicKey = remoteWGPublicKey
         self.role = role
+    }
+
+    /// Create a connection as responder (remote identity unknown until handshake).
+    public init(
+        connection: NWConnection,
+        localIdentity: WANNodeIdentity
+    ) {
+        self.udpConnection = connection
+        self.remoteNodeID = "pending"
+        self.localIdentity = localIdentity
+        self.remoteWGPublicKey = nil
+        self.role = .responder
     }
 
     // MARK: - Lifecycle
@@ -140,10 +156,13 @@ public actor WireGuardPeerConnection {
     }
 
     private func handshakeAsInitiator() async throws {
+        guard let remoteKey = remoteWGPublicKey else {
+            throw NoiseError.handshakeFailed("Initiator requires remote WG public key")
+        }
         // Send message 1
         let (msg1, state) = try NoiseHandshake.initiatorBegin(
             localStatic: localIdentity.keyAgreementPrivateKey,
-            remoteStaticPublic: remoteWGPublicKey
+            remoteStaticPublic: remoteKey
         )
         var packet1 = Data([0x01])  // handshake initiation
         packet1.append(msg1)
@@ -170,7 +189,7 @@ public actor WireGuardPeerConnection {
         }
         let msg1 = initiation.dropFirst()
 
-        let (msg2, keys, _) = try NoiseHandshake.responderComplete(
+        let (msg2, keys, remoteStaticPub) = try NoiseHandshake.responderComplete(
             localStatic: localIdentity.keyAgreementPrivateKey,
             message1: Data(msg1)
         )
@@ -179,6 +198,11 @@ public actor WireGuardPeerConnection {
         var packet2 = Data([0x02])  // handshake response
         packet2.append(msg2)
         try await sendUDP(packet2)
+
+        // Capture the revealed remote identity
+        self.remoteWGPublicKeyRevealed = remoteStaticPub
+        let revealedHex = remoteStaticPub.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        self.remoteNodeID = revealedHex  // Use WG public key hex as provisional nodeID
 
         self.noiseSession = NoiseSession(keys: keys)
         connectionState = .connected
