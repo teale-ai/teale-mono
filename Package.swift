@@ -10,6 +10,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "InferencePoolApp", targets: ["InferencePoolApp"]),
+        .executable(name: "TealeCompanion", targets: ["TealeCompanion"]),
         .library(name: "TealeSDK", targets: ["TealeSDK", "TealeSDKUI"]),
     ],
     dependencies: [
@@ -170,7 +171,8 @@ let package = Package(
                 "AgentKit",
                 "AuthKit",
                 "ChatKit",
-            ]
+            ],
+            exclude: ["Info.plist"]
         ),
 
         // MARK: - TealeSDK (third-party resource contribution SDK)

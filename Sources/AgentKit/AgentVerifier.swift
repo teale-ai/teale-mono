@@ -11,8 +11,10 @@ public actor AgentVerifier {
 
     public init(storePath: URL? = nil) {
         self.storePath = storePath ?? {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            return home.appendingPathComponent(".teale/agent_trusted_keys.json")
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let dir = appSupport.appendingPathComponent("Teale", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir.appendingPathComponent("agent_trusted_keys.json")
         }()
     }
 
