@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CryptoKit
 import ClusterKit
 import Darwin
 
@@ -44,7 +45,7 @@ public actor NATTraversal {
     }
 
     /// Attempt to establish a P2P connection with a remote peer.
-    /// Tries direct QUIC first, then falls back to relay.
+    /// Tries direct WireGuard first, then falls back to relay.
     public func connectToPeer(
         peerInfo: WANPeerInfo,
         sessionID: String
@@ -69,7 +70,8 @@ public actor NATTraversal {
             publicPort: localMapping.publicPort,
             localIP: Self.preferredLocalIPv4Address(),
             localPort: localMapping.publicPort,
-            natType: localNATType
+            natType: localNATType,
+            wgPublicKey: identity.wgPublicKeyHex
         )
 
         try await relayClient.sendOffer(
@@ -81,8 +83,15 @@ public actor NATTraversal {
         // Step 4: Wait for answer from the peer
         let answer = try await waitForAnswer(fromNodeID: peerInfo.nodeID, sessionID: sessionID)
 
-        // Step 5: Attempt direct QUIC connection if NAT types are compatible
-        if canDirect {
+        // Resolve remote WG public key (from answer or peer info)
+        let remoteWGKeyHex = answer.connectionInfo.wgPublicKey ?? peerInfo.wgPublicKey
+        let remoteWGKey: Curve25519.KeyAgreement.PublicKey? = remoteWGKeyHex.flatMap { hex in
+            guard let data = Data(hexString: hex) else { return nil }
+            return try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: data)
+        }
+
+        // Step 5: Attempt direct WireGuard connection if NAT types are compatible
+        if canDirect, let wgKey = remoteWGKey {
             if localMapping.publicIP == answer.connectionInfo.publicIP,
                let localIP = answer.connectionInfo.localIP,
                let localPort = answer.connectionInfo.localPort {
@@ -90,7 +99,8 @@ public actor NATTraversal {
                     let sameLANConn = try await attemptDirectConnection(
                         toHost: localIP,
                         port: localPort,
-                        remoteNodeID: peerInfo.nodeID
+                        remoteNodeID: peerInfo.nodeID,
+                        remoteWGPublicKey: wgKey
                     )
                     return .direct(.direct(sameLANConn))
                 } catch {
@@ -102,7 +112,8 @@ public actor NATTraversal {
                 let directConn = try await attemptDirectConnection(
                     toHost: answer.connectionInfo.publicIP,
                     port: answer.connectionInfo.publicPort,
-                    remoteNodeID: peerInfo.nodeID
+                    remoteNodeID: peerInfo.nodeID,
+                    remoteWGPublicKey: wgKey
                 )
                 return .direct(.direct(directConn))
             } catch {
@@ -125,7 +136,7 @@ public actor NATTraversal {
     /// Handle an incoming connection offer (called when we receive an offer from relay)
     public func handleIncomingOffer(
         offer: RelayMessage.OfferPayload
-    ) async throws -> WANPeerConnection {
+    ) async throws -> WireGuardPeerConnection {
         // Discover our public endpoint
         let localMapping = try await stunClient.discoverMapping()
         let localNATType = try await stunClient.detectNATType()
@@ -136,7 +147,8 @@ public actor NATTraversal {
             publicPort: localMapping.publicPort,
             localIP: Self.preferredLocalIPv4Address(),
             localPort: localMapping.publicPort,
-            natType: localNATType
+            natType: localNATType,
+            wgPublicKey: identity.wgPublicKeyHex
         )
 
         try await relayClient.sendAnswer(
@@ -144,6 +156,13 @@ public actor NATTraversal {
             sessionID: offer.sessionID,
             connectionInfo: connectionInfo
         )
+
+        // Resolve remote WG public key from offer
+        guard let remoteWGKeyHex = offer.connectionInfo.wgPublicKey,
+              let keyData = Data(hexString: remoteWGKeyHex),
+              let remoteWGKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: keyData) else {
+            throw WANError.invalidPublicKey
+        }
 
         // Attempt direct connection to offerer
         if localMapping.publicIP == offer.connectionInfo.publicIP,
@@ -153,7 +172,8 @@ public actor NATTraversal {
                 return try await attemptDirectConnection(
                     toHost: localIP,
                     port: localPort,
-                    remoteNodeID: offer.fromNodeID
+                    remoteNodeID: offer.fromNodeID,
+                    remoteWGPublicKey: remoteWGKey
                 )
             } catch {
                 // Fall through to the public endpoint attempt.
@@ -163,7 +183,8 @@ public actor NATTraversal {
         let peerConnection = try await attemptDirectConnection(
             toHost: offer.connectionInfo.publicIP,
             port: offer.connectionInfo.publicPort,
-            remoteNodeID: offer.fromNodeID
+            remoteNodeID: offer.fromNodeID,
+            remoteWGPublicKey: remoteWGKey
         )
 
         return peerConnection
@@ -203,17 +224,19 @@ public actor NATTraversal {
         }
     }
 
-    /// Attempt a direct QUIC connection to the peer's public endpoint
+    /// Attempt a direct WireGuard connection to the peer's endpoint
     private func attemptDirectConnection(
         toHost host: String,
         port: UInt16,
-        remoteNodeID: String
-    ) async throws -> WANPeerConnection {
-        let peerConn = QUICTransport.connect(
+        remoteNodeID: String,
+        remoteWGPublicKey: Curve25519.KeyAgreement.PublicKey
+    ) async throws -> WireGuardPeerConnection {
+        let peerConn = WireGuardTransport.connect(
             to: host,
             port: port,
             remoteNodeID: remoteNodeID,
-            identity: identity
+            remoteWGPublicKey: remoteWGPublicKey,
+            localIdentity: identity
         )
 
         await peerConn.start()
@@ -221,12 +244,10 @@ public actor NATTraversal {
         let isReady = await peerConn.isReady
         guard isReady else {
             await peerConn.cancel()
-            throw WANError.peerConnectionFailed("Direct QUIC connection timed out")
+            throw WANError.peerConnectionFailed("Direct WireGuard connection timed out")
         }
 
-        // Authenticate: send a signed hello
-        try await authenticateConnection(peerConn, remoteNodeID: remoteNodeID)
-
+        // Noise handshake authenticates peers via static keys — no additional auth needed
         return peerConn
     }
 
@@ -241,26 +262,6 @@ public actor NATTraversal {
             timeoutSeconds: timeoutSeconds
         )
         return .relayed(connection)
-    }
-
-    /// Authenticate a connection by exchanging signed messages
-    private func authenticateConnection(
-        _ connection: WANPeerConnection,
-        remoteNodeID: String
-    ) async throws {
-        // Create a challenge-response authentication
-        let challenge = UUID().uuidString
-        let signedChallenge = try identity.sign(Data(challenge.utf8))
-
-        // Send auth hello via a ClusterMessage heartbeat with our nodeID in loadedModels
-        // (Reusing existing ClusterMessage protocol — auth messages could be a future extension)
-        let authPayload = HeartbeatPayload(
-            deviceID: UUID(),  // placeholder
-            timestamp: Date(),
-            loadedModels: [identity.nodeID, challenge,
-                           signedChallenge.map { String(format: "%02x", $0) }.joined()]
-        )
-        try await connection.send(.heartbeat(authPayload))
     }
 
     private static func preferredLocalIPv4Address() -> String? {

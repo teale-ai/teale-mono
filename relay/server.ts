@@ -9,6 +9,7 @@ type JSONValue =
 type RegisterPayload = {
   nodeID: string;
   publicKey: string;
+  wgPublicKey?: string;
   displayName: string;
   capabilities: JSONValue;
   signature: string;
@@ -28,6 +29,7 @@ type RelayPeer = {
   ws: ServerWebSocket<unknown>;
   nodeID: string;
   publicKey: string;
+  wgPublicKey?: string;
   displayName: string;
   capabilities: JSONValue;
   lastSeenReferenceSeconds: number;
@@ -52,6 +54,7 @@ function peerInfo(peer: RelayPeer) {
   return {
     nodeID: peer.nodeID,
     publicKey: peer.publicKey,
+    wgPublicKey: peer.wgPublicKey ?? null,
     displayName: peer.displayName,
     capabilities: peer.capabilities,
     lastSeen: peer.lastSeenReferenceSeconds,
@@ -100,6 +103,7 @@ function handleRegister(ws: ServerWebSocket<unknown>, payload: RegisterPayload) 
     ws,
     nodeID: payload.nodeID,
     publicKey: payload.publicKey,
+    wgPublicKey: payload.wgPublicKey,
     displayName: payload.displayName,
     capabilities: payload.capabilities,
     lastSeenReferenceSeconds: nowReferenceSeconds()

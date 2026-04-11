@@ -62,7 +62,7 @@ public struct WANPeerSummary: Sendable, Identifiable {
 }
 
 public enum WANConnectionType: String, Sendable {
-    case direct     // Direct QUIC P2P connection
+    case direct     // Direct WireGuard P2P connection
     case relayed    // Via relay server
 }
 
@@ -74,6 +74,38 @@ struct ConnectedWANPeer: Sendable {
     var connectionType: WANConnectionType
     var lastHeartbeat: Date
     var latencyMs: Double?
+
+    /// Quality score (0-100) for routing decisions. Higher is better.
+    var qualityScore: Double {
+        var score: Double = 50
+
+        // Latency: lower is better (0-30 points)
+        if let latency = latencyMs {
+            if latency < 50 { score += 30 }
+            else if latency < 150 { score += 20 }
+            else if latency < 500 { score += 10 }
+        }
+
+        // Connection type: direct is better (0-20 points)
+        if connectionType == .direct { score += 20 }
+
+        // RAM: more is better (0-20 points)
+        let ram = peerInfo.capabilities.hardware.totalRAMGB
+        if ram >= 64 { score += 20 }
+        else if ram >= 32 { score += 15 }
+        else if ram >= 16 { score += 10 }
+        else if ram >= 8 { score += 5 }
+
+        // Has models loaded (0-10 points)
+        if !peerInfo.capabilities.loadedModels.isEmpty { score += 10 }
+
+        // Freshness penalty
+        let staleness = Date().timeIntervalSince(lastHeartbeat)
+        if staleness > 60 { score -= 20 }
+        else if staleness > 30 { score -= 10 }
+
+        return max(0, min(100, score))
+    }
 }
 
 // MARK: - WAN Manager
@@ -156,14 +188,14 @@ public final class WANManager: @unchecked Sendable {
             natType = .unknown
         }
 
-        // Start QUIC listener for incoming P2P connections
+        // Start UDP listener for incoming WireGuard connections
         do {
-            let quicListener = try QUICTransport.createListener(
+            let udpListener = try WireGuardTransport.createListener(
                 port: mapping.map { $0.publicPort } ?? 0,
                 identity: config.identity
             )
-            self.listener = quicListener
-            startQUICListener(quicListener)
+            self.listener = udpListener
+            startUDPListener(udpListener)
         } catch {
             // Non-fatal — we can still make outgoing connections
         }
@@ -299,9 +331,28 @@ public final class WANManager: @unchecked Sendable {
         connectedPeers.values.contains { $0.peerInfo.hasModel(modelID) }
     }
 
-    /// Get the WANPeerConnection for a connected peer with the given model
+    /// Get the best transport connection for a connected peer with the given model
     public func connectionForPeer(withModel modelID: String) -> WANTransportConnection? {
-        connectedPeers.values.first { $0.peerInfo.hasModel(modelID) }?.connection
+        connectedPeers.values
+            .filter { $0.peerInfo.hasModel(modelID) }
+            .sorted { $0.qualityScore > $1.qualityScore }
+            .first?.connection
+    }
+
+    /// Get any available connected peer's connection (best quality first)
+    public func anyAvailableConnection() -> WANTransportConnection? {
+        connectedPeers.values
+            .filter { $0.peerInfo.capabilities.isAvailable }
+            .sorted { $0.qualityScore > $1.qualityScore }
+            .first?.connection
+    }
+
+    /// Get all available connections for failover (ordered by quality score, best first)
+    public func allAvailableConnections() -> [WANTransportConnection] {
+        connectedPeers.values
+            .filter { $0.peerInfo.capabilities.isAvailable }
+            .sorted { $0.qualityScore > $1.qualityScore }
+            .map(\.connection)
     }
 
     /// Force a relay re-registration and peer discovery refresh.
@@ -329,14 +380,25 @@ public final class WANManager: @unchecked Sendable {
     // MARK: - Message Handling
 
     private func startListening(to peer: ConnectedWANPeer) {
-        Task {
+        Task { [weak self] in
             let messages = await peer.connection.incomingMessages
             for await message in messages {
-                await handleMessage(message, from: peer)
+                guard let self else { return }
+                await self.handleMessage(message, from: peer)
             }
-            // Connection ended
-            connectedPeers.removeValue(forKey: peer.peerInfo.nodeID)
-            updateState(mapping: state.publicEndpoint, natType: state.natType)
+            // Connection ended — attempt reconnect after a delay
+            guard let self else { return }
+            let nodeID = peer.peerInfo.nodeID
+            self.connectedPeers.removeValue(forKey: nodeID)
+            self.updateState(mapping: self.state.publicEndpoint, natType: self.state.natType)
+
+            // Try to reconnect if WAN is still enabled and we know this peer
+            guard self.isEnabled else { return }
+            try? await Task.sleep(for: .seconds(5))
+            guard self.isEnabled, self.connectedPeers[nodeID] == nil else { return }
+            if let peerInfo = await self.discoveryService?.peer(byNodeID: nodeID) {
+                try? await self.connectToPeer(peerInfo)
+            }
         }
     }
 
@@ -368,10 +430,20 @@ public final class WANManager: @unchecked Sendable {
         }
     }
 
+    /// Peers known to be reachable on LAN (set by AppState when cluster is enabled).
+    /// WAN auto-connect skips these to prefer the faster LAN path.
+    public var lanPeerNodeIDs: Set<String> = []
+
     private func handleDiscoveredPeer(_ peer: WANPeerInfo) async {
         guard let config else { return }
         guard peer.nodeID != config.identity.nodeID else { return }
         guard connectedPeers[peer.nodeID] == nil else { return }
+        // Only auto-connect to peers that advertise a WG public key (needed for Noise handshake)
+        guard peer.wgPublicKey != nil else { return }
+        // Only auto-connect if peer has models loaded or is available
+        guard peer.capabilities.isAvailable else { return }
+        // Skip peers already reachable on LAN (prefer faster path)
+        guard !lanPeerNodeIDs.contains(peer.nodeID) else { return }
 
         do {
             try await connectToPeer(peer)
@@ -491,25 +563,31 @@ public final class WANManager: @unchecked Sendable {
         }
     }
 
-    // MARK: - QUIC Listener
+    // MARK: - UDP Listener
 
-    private func startQUICListener(_ listener: NWListener) {
+    private func startUDPListener(_ listener: NWListener) {
         listenerTask = Task { [weak self] in
             listener.newConnectionHandler = { [weak self] connection in
-                Task { await self?.handleIncomingQUICConnection(connection) }
+                Task { await self?.handleIncomingWireGuardConnection(connection) }
             }
             listener.start(queue: .global(qos: .userInitiated))
         }
     }
 
-    private func handleIncomingQUICConnection(_ nwConnection: NWConnection) async {
+    private func handleIncomingWireGuardConnection(_ nwConnection: NWConnection) async {
         guard let config = config else { return }
         guard connectedPeers.count < config.maxWANPeers else {
             nwConnection.cancel()
             return
         }
 
-        let peerConn = WANPeerConnection(connection: nwConnection, remoteNodeID: "pending")
+        // Create a responder connection — remote identity is unknown until the Noise
+        // handshake completes, at which point the initiator's static public key is revealed.
+        let peerConn = WireGuardPeerConnection(
+            connection: nwConnection,
+            localIdentity: config.identity
+        )
+
         await peerConn.start()
 
         let isReady = await peerConn.isReady
@@ -518,8 +596,53 @@ public final class WANManager: @unchecked Sendable {
             return
         }
 
-        // The first message should identify the peer
-        // For now, accept and wait for identification via heartbeat
+        // The handshake revealed the remote peer's WG public key.
+        // Try to match it to a known peer from discovery.
+        let revealedWGKeyHex: String? = await {
+            guard let key = await peerConn.remoteWGPublicKeyRevealed else { return nil }
+            return key.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        }()
+
+        guard let wgKeyHex = revealedWGKeyHex else {
+            await peerConn.cancel()
+            return
+        }
+
+        // Look up the peer by WG public key in the discovery service
+        let discoveredPeers = await discoveryService?.peers ?? []
+        let peerInfo = discoveredPeers.first { $0.wgPublicKey == wgKeyHex }
+            ?? WANPeerInfo(
+                nodeID: wgKeyHex,  // Use WG key hex as provisional nodeID
+                publicKey: wgKeyHex,
+                wgPublicKey: wgKeyHex,
+                displayName: "Unknown Peer",
+                capabilities: NodeCapabilities(
+                    hardware: HardwareCapability(
+                        chipFamily: .unknown,
+                        chipName: "Unknown",
+                        totalRAMGB: 0,
+                        gpuCoreCount: 0,
+                        memoryBandwidthGBs: 0,
+                        tier: .tier4
+                    )
+                )
+            )
+
+        // Don't accept if already connected to this peer
+        guard connectedPeers[peerInfo.nodeID] == nil else {
+            await peerConn.cancel()
+            return
+        }
+
+        let connected = ConnectedWANPeer(
+            peerInfo: peerInfo,
+            connection: .direct(peerConn),
+            connectionType: .direct,
+            lastHeartbeat: Date()
+        )
+        connectedPeers[peerInfo.nodeID] = connected
+        startListening(to: connected)
+        updateState(mapping: state.publicEndpoint, natType: state.natType)
     }
 
     // MARK: - Heartbeat Loop

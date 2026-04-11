@@ -11,6 +11,13 @@ public actor WANProvider: InferenceProvider {
     private let wanManager: WANManager
     private let wanTimeoutSeconds: TimeInterval
 
+    /// Called after a successful remote inference with (tokenCount, modelName, peerNodeID).
+    private var _onRemoteInferenceCompleted: (@Sendable (Int, String, String) async -> Void)?
+
+    public func setOnRemoteInferenceCompleted(_ handler: @escaping @Sendable (Int, String, String) async -> Void) {
+        _onRemoteInferenceCompleted = handler
+    }
+
     public init(
         localProvider: any InferenceProvider,
         wanManager: WANManager,
@@ -96,7 +103,24 @@ public actor WANProvider: InferenceProvider {
                 )
                 return
             } catch {
-                // WAN peer failed, fall through to local
+                // WAN peer failed, fall through to next option
+            }
+        }
+
+        // If no local model is loaded, try any available WAN peer (with failover)
+        if localModel == nil {
+            for connection in wanManager.allAvailableConnections() {
+                do {
+                    try await generateRemote(
+                        request: request,
+                        connection: connection,
+                        continuation: continuation
+                    )
+                    return
+                } catch {
+                    // This peer failed, try next one
+                    continue
+                }
             }
         }
 
@@ -137,13 +161,23 @@ public actor WANProvider: InferenceProvider {
 
             // Message processing task
             group.addTask {
+                var totalTokens = 0
                 for await message in messages {
                     switch message {
                     case .inferenceChunk(let chunk) where chunk.requestID == requestID:
+                        if let content = chunk.chunk.choices.first?.delta.content {
+                            totalTokens += max(content.count / 4, 1)
+                        }
                         continuation.yield(chunk.chunk)
 
                     case .inferenceComplete(let complete) where complete.requestID == requestID:
                         continuation.finish()
+                        // Record spending via callback
+                        if totalTokens > 0 {
+                            let model = request.model ?? "unknown"
+                            let peer = connection.remoteNodeID
+                            await self._onRemoteInferenceCompleted?(totalTokens, model, peer)
+                        }
                         return
 
                     case .inferenceError(let error) where error.requestID == requestID:

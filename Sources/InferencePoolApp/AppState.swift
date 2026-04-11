@@ -329,6 +329,9 @@ public final class AppState {
             loadingPhase = ""
             loadingProgress = nil
             engineStatus = .ready(descriptor)
+            if wanEnabled {
+                await wanManager.updateLocalLoadedModels([descriptor.huggingFaceRepo])
+            }
         } catch {
             loadingPhase = ""
             loadingProgress = nil
@@ -387,8 +390,13 @@ public final class AppState {
         request.model = requestedModelID
 
         do {
+            var totalTokens = 0
             let stream = localProvider.generate(request: request)
             for try await chunk in stream {
+                // Count tokens from streamed content
+                if let content = chunk.choices.first?.delta.content {
+                    totalTokens += content.count / 4  // Rough estimate: ~4 chars per token
+                }
                 try await sendMessage(.inferenceChunk(InferenceChunkPayload(
                     requestID: payload.requestID,
                     chunk: chunk
@@ -398,6 +406,11 @@ public final class AppState {
             try await sendMessage(.inferenceComplete(InferenceCompletePayload(
                 requestID: payload.requestID
             )))
+
+            // Record earning for serving this inference
+            if totalTokens > 0, let model = selectedModel {
+                await wallet.recordEarning(tokens: max(totalTokens, 1), model: model)
+            }
         } catch {
             try? await sendMessage(.inferenceError(InferenceErrorPayload(
                 requestID: payload.requestID,
@@ -461,14 +474,22 @@ public final class AppState {
         }
         modelManager.peerModelSource = clusterManager
         clusterManager.enable()
+        syncLANPeersToWAN()
     }
 
     private func disableCluster() {
         clusterManager.disable()
         modelManager.peerModelSource = nil
+        wanManager.lanPeerNodeIDs = []
         Task {
             await engine.setProvider(localProvider)
         }
+    }
+
+    /// Tell WANManager which peers are reachable on LAN so it skips them for WAN auto-connect.
+    private func syncLANPeersToWAN() {
+        let lanIDs = Set(clusterManager.peers.keys.map(\.uuidString))
+        wanManager.lanPeerNodeIDs = lanIDs
     }
 
     // MARK: - WAN P2P
@@ -518,7 +539,17 @@ public final class AppState {
                 // Hop back to main actor for UI/engine updates.
                 await MainActor.run {
                     let wanProvider = WANProvider(localProvider: self.localProvider, wanManager: self.wanManager)
-                    Task { await self.engine.setProvider(wanProvider) }
+                    let wallet = self.wallet
+                    Task {
+                        await wanProvider.setOnRemoteInferenceCompleted { tokens, modelName, peerID in
+                            // Find model descriptor for spending record
+                            let model = ModelCatalog.allModels.first { $0.huggingFaceRepo == modelName }
+                            if let model {
+                                await wallet.recordSpending(tokens: tokens, model: model, peer: peerID)
+                            }
+                        }
+                        await self.engine.setProvider(wanProvider)
+                    }
                     self.wanLastError = nil
                     self.isWANBusy = false
                 }
