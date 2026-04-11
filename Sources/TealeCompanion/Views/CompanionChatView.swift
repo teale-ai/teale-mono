@@ -1,5 +1,6 @@
 import SwiftUI
 import SharedTypes
+import ChatKit
 
 struct CompanionChatView: View {
     var appState: CompanionAppState
@@ -224,22 +225,53 @@ struct CompanionChatView: View {
     private var emptyStateView: some View {
         VStack(spacing: 16) {
             Spacer()
-                .frame(height: 80)
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-            Text("Start a conversation")
-                .font(.title3)
-                .foregroundStyle(.secondary)
+                .frame(height: 60)
+            Image(systemName: "sparkles")
+                .font(.system(size: 44))
+                .foregroundStyle(Color.teale)
+            Text("Chat with Teale")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+
             if !appState.canInfer {
                 Text(appState.inferenceMode == .local
                      ? "Download and load a model in the Models tab"
                      : "Connect to a Mac node in the Network tab")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            } else {
+                Text("Ask me anything — or better yet, start a group chat and I can help plan trips, meals, events, and more with your friends and family.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
             }
+
+            // Group nudge
+            groupNudgeBanner
         }
+    }
+
+    private var groupNudgeBanner: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.3.fill")
+                    .foregroundStyle(Color.teale)
+                Text("I'm even better with groups")
+                    .font(.subheadline.weight(.medium))
+            }
+            Text("Plan trips, coordinate calendars, split tasks — @teale in any group chat.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(Color.tealeLight, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 24)
+        .padding(.top, 8)
     }
 
     // MARK: - Input Bar
@@ -259,7 +291,7 @@ struct CompanionChatView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.title2)
-                    .foregroundStyle(canSend ? .blue : .gray)
+                    .foregroundStyle(canSend ? Color.teale : .gray)
             }
             .disabled(!canSend)
         }
@@ -315,9 +347,9 @@ private struct MessageBubbleView: View {
 
     private var bubbleBackground: some ShapeStyle {
         if message.role == .user {
-            return AnyShapeStyle(.blue)
+            return AnyShapeStyle(Color.teale)
         } else {
-            return AnyShapeStyle(Color.gray.opacity(0.2))
+            return AnyShapeStyle(Color.gray.opacity(0.15))
         }
     }
 }

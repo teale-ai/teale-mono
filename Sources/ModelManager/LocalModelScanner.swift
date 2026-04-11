@@ -108,7 +108,11 @@ public struct LocalModelScanner: Sendable {
 
     private func knownDirectories() -> [(URL, LocalModelInfo.ModelSource)] {
         var dirs: [(URL, LocalModelInfo.ModelSource)] = []
+        #if os(macOS)
         let home = FileManager.default.homeDirectoryForCurrentUser
+        #else
+        let home = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        #endif
         let fm = FileManager.default
 
         // HuggingFace Hub cache

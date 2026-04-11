@@ -8,6 +8,7 @@ import MLXInference
 import ModelManager
 import InferenceEngine
 import WANKit
+import ChatKit
 
 // MARK: - Connection Status
 
@@ -119,8 +120,12 @@ final class CompanionAppState {
     var availableModels: [String] = []
     var selectedModel: String?
 
-    // Chat
+    // Chat (legacy single-user)
     var conversationStore = CompanionConversationStore()
+
+    // Group Chat (ChatKit)
+    var chatService: ChatService?
+    var currentUserID: UUID = UUID()
 
     // Wallet
     var walletBalance: Double = 0.0
@@ -169,6 +174,20 @@ final class CompanionAppState {
             let manager = AuthManager(config: config)
             self.authManager = manager
             await manager.checkSession()
+
+            // Initialize ChatKit after auth
+            if let user = manager.currentUser {
+                currentUserID = user.id
+                let service = ChatService(config: config, currentUserID: user.id)
+                // Wire inference for AI agent responses
+                service.aiParticipant.onInferenceRequest = { [weak self] request in
+                    guard let self else {
+                        return AsyncThrowingStream { $0.finish() }
+                    }
+                    return self.createInferenceStream(for: request)
+                }
+                self.chatService = service
+            }
         }
 
         // Scan for already-downloaded models
@@ -176,6 +195,45 @@ final class CompanionAppState {
 
         // Start network discovery in background
         await startDiscovery()
+    }
+
+    /// Create an inference stream routing to local MLX or remote Mac node
+    private func createInferenceStream(for request: ChatCompletionRequest) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                do {
+                    switch self.inferenceMode {
+                    case .local:
+                        guard self.localModel != nil else {
+                            continuation.finish(throwing: NSError(domain: "ChatKit", code: 0, userInfo: [NSLocalizedDescriptionKey: "No local model loaded"]))
+                            return
+                        }
+                        let stream = self.localProvider.generate(request: request)
+                        for try await chunk in stream {
+                            if let content = chunk.choices.first?.delta.content {
+                                continuation.yield(content)
+                            }
+                        }
+                        continuation.finish()
+                    case .remote:
+                        guard self.connectionStatus.isConnected else {
+                            continuation.finish(throwing: NSError(domain: "ChatKit", code: 0, userInfo: [NSLocalizedDescriptionKey: "Not connected to a Mac node"]))
+                            return
+                        }
+                        for try await token in self.client.streamCompletion(request: request) {
+                            continuation.yield(token)
+                        }
+                        continuation.finish()
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Local Model Management

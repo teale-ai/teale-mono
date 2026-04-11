@@ -2,6 +2,9 @@ import Foundation
 import SharedTypes
 import Supabase
 import Auth
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - File-based auth token storage (avoids Keychain prompts on unsigned apps)
 

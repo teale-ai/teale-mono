@@ -1,6 +1,7 @@
 import SwiftUI
 import SharedTypes
 import AuthKit
+import ChatKit
 
 @main
 struct TealeCompanionApp: App {
@@ -11,9 +12,9 @@ struct TealeCompanionApp: App {
             Group {
                 if let authManager = appState.authManager, authManager.authState.canUseApp {
                     TabView {
-                        CompanionChatView(appState: appState)
+                        ConversationListView(appState: appState)
                             .tabItem {
-                                Label("Chat", systemImage: "bubble.left.and.bubble.right")
+                                Label("Chats", systemImage: "bubble.left.and.bubble.right.fill")
                             }
 
                         NavigationStack {
@@ -34,13 +35,6 @@ struct TealeCompanionApp: App {
                                 Label("Wallet", systemImage: "creditcard")
                             }
 
-                        if authManager.authState.isAuthenticated {
-                            DevicesView(authManager: authManager)
-                                .tabItem {
-                                    Label("Devices", systemImage: "laptopcomputer.and.iphone")
-                                }
-                        }
-
                         CompanionSettingsView(appState: appState)
                             .tabItem {
                                 Label("Settings", systemImage: "gear")
@@ -56,6 +50,17 @@ struct TealeCompanionApp: App {
                 await appState.initialize()
             }
             .onOpenURL { url in
+                // Handle invite deep links
+                if url.scheme == "teale", url.host == "invite",
+                   let code = url.pathComponents.last {
+                    Task {
+                        if let conversationID = try? await appState.chatService?.invitationService.redeemInvitation(code: code) {
+                            await appState.chatService?.loadConversations()
+                        }
+                    }
+                }
+
+                // Handle OAuth callbacks
                 if let authManager = appState.authManager {
                     Task { await authManager.handleOAuthCallback(url: url) }
                 }
