@@ -115,6 +115,18 @@ let package = Package(
             ]
         ),
 
+        // MARK: - ChatKit (group chat with AI agents)
+        .target(
+            name: "ChatKit",
+            dependencies: [
+                "SharedTypes",
+                "AuthKit",
+                "CreditKit",
+                "AgentKit",
+                .product(name: "Supabase", package: "supabase-swift"),
+            ]
+        ),
+
         // MARK: - LocalAPI
         .target(
             name: "LocalAPI",
@@ -140,6 +152,7 @@ let package = Package(
                 "CreditKit",
                 "AgentKit",
                 "AuthKit",
+                "ChatKit",
             ],
             exclude: ["Info.plist", "InferencePool.entitlements"]
         ),
@@ -156,6 +169,7 @@ let package = Package(
                 "CreditKit",
                 "AgentKit",
                 "AuthKit",
+                "ChatKit",
             ]
         ),
 
