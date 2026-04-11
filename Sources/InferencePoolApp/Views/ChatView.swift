@@ -1,4 +1,5 @@
 import SwiftUI
+import AppCore
 import SharedTypes
 
 struct ChatView: View {

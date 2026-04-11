@@ -1,4 +1,5 @@
 import SwiftUI
+import AppCore
 import CreditKit
 import SharedTypes
 import ClusterKit

@@ -10,6 +10,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "InferencePoolApp", targets: ["InferencePoolApp"]),
+        .executable(name: "teale", targets: ["TealeCLI"]),
         .executable(name: "TealeCompanion", targets: ["TealeCompanion"]),
         .library(name: "TealeSDK", targets: ["TealeSDK", "TealeSDKUI"]),
     ],
@@ -20,6 +21,7 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
         .package(url: "https://github.com/supabase/supabase-swift", from: "2.0.0"),
         .package(url: "https://github.com/p2p-org/solana-swift", from: "5.0.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
     targets: [
         // MARK: - SharedTypes
@@ -149,9 +151,9 @@ let package = Package(
             ]
         ),
 
-        // MARK: - InferencePoolApp (main executable)
-        .executableTarget(
-            name: "InferencePoolApp",
+        // MARK: - AppCore (shared headless orchestration)
+        .target(
+            name: "AppCore",
             dependencies: [
                 "SharedTypes",
                 "HardwareProfile",
@@ -166,6 +168,36 @@ let package = Package(
                 "AgentKit",
                 "AuthKit",
                 "ChatKit",
+            ]
+        ),
+
+        // MARK: - TealeCLI (headless CLI)
+        .executableTarget(
+            name: "TealeCLI",
+            dependencies: [
+                "AppCore",
+                "SharedTypes",
+                "LocalAPI",
+                "AuthKit",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+
+        // MARK: - InferencePoolApp (main executable)
+        .executableTarget(
+            name: "InferencePoolApp",
+            dependencies: [
+                "AppCore",
+                "SharedTypes",
+                "HardwareProfile",
+                "InferenceEngine",
+                "ModelManager",
+                "LocalAPI",
+                "ClusterKit",
+                "WANKit",
+                "CreditKit",
+                "AgentKit",
+                "AuthKit",
             ],
             exclude: ["Info.plist", "InferencePool.entitlements"]
         ),

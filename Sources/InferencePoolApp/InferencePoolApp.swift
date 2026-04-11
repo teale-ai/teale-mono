@@ -1,13 +1,6 @@
 import SwiftUI
+import AppCore
 import SharedTypes
-import HardwareProfile
-import InferenceEngine
-import ModelManager
-import LocalAPI
-import ClusterKit
-import WANKit
-import CreditKit
-import AgentKit
 import AuthKit
 
 // MARK: - Main App Entry

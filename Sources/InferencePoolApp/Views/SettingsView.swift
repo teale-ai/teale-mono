@@ -1,4 +1,5 @@
 import SwiftUI
+import AppCore
 import ServiceManagement
 import SharedTypes
 import ClusterKit

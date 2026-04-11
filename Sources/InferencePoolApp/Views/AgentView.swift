@@ -1,4 +1,5 @@
 import SwiftUI
+import AppCore
 import AgentKit
 
 struct AgentView: View {

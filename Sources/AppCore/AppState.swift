@@ -219,7 +219,7 @@ public final class AppState {
         return false
     }
 
-    public init() {
+    public init(autoStart: Bool = true) {
         let detector = HardwareDetector()
         let hw = detector.detect()
         let initialBackend = InferenceBackend(
@@ -262,12 +262,14 @@ public final class AppState {
         self.maxStorageGB = persistedMaxStorage
         self.wanRelayURL = UserDefaults.standard.string(forKey: Self.wanRelayURLKey) ?? "wss://teale-relay.fly.dev/ws"
         // Start server eagerly so it's available even if the MenuBarExtra is never clicked.
-        // DispatchQueue.global dispatches to a background thread, then Task hops to @MainActor.
-        let appState = self
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) {
-            Task { @MainActor in
-                await appState.startServer()
-                await appState.initializeAsync()
+        // CLI callers pass autoStart: false and call startServer()/initializeAsync() manually.
+        if autoStart {
+            let appState = self
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) {
+                Task { @MainActor in
+                    await appState.startServer()
+                    await appState.initializeAsync()
+                }
             }
         }
 
