@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AppCore
 import SharedTypes
 import AuthKit
@@ -73,25 +74,87 @@ struct ContentView: View {
                 SettingsView()
             }
         }
-        .sheet(isPresented: Binding(
-            get: { appState.showSignIn || needsSignIn },
-            set: { appState.showSignIn = $0 }
-        )) {
-            if let authManager = appState.authManager {
-                LoginView(authManager: authManager)
-                    .frame(width: 400, height: 500)
-                    .interactiveDismissDisabled(needsSignIn)
+        .onChange(of: appState.showSignIn || needsSignIn) { _, shouldShow in
+            if shouldShow, let authManager = appState.authManager {
+                LoginWindowController.shared.show(authManager: authManager, appState: appState)
+            } else {
+                LoginWindowController.shared.close()
             }
         }
         .onChange(of: appState.authManager?.authState.isAuthenticated ?? false) { _, isAuthenticated in
             if isAuthenticated {
                 appState.showSignIn = false
+                LoginWindowController.shared.close()
             }
         }
         .task {
             await appState.startServer()
             await appState.initializeAsync()
         }
+        .onAppear {
+            if needsSignIn, let authManager = appState.authManager {
+                LoginWindowController.shared.show(authManager: authManager, appState: appState)
+            }
+        }
+    }
+}
+
+// MARK: - Login Window (standalone NSWindow for text field support)
+
+@MainActor
+final class LoginWindowController {
+    static let shared = LoginWindowController()
+
+    private var window: NSWindow?
+    private var observationTask: Task<Void, Never>?
+
+    func show(authManager: AuthManager, appState: AppState) {
+        if let existing = window, existing.isVisible { return }
+
+        let loginView = LoginView(authManager: authManager)
+            .environment(appState)
+            .frame(width: 400, height: 500)
+
+        let hostingController = NSHostingController(rootView: loginView)
+        let win = NSWindow(contentViewController: hostingController)
+        win.title = "Sign In — Teale"
+        win.styleMask = [.titled, .closable]
+        win.setContentSize(NSSize(width: 400, height: 500))
+        win.center()
+        win.isReleasedWhenClosed = false
+        win.level = .floating
+
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.window = win
+
+        // Observe auth state directly so the window closes after sign-in
+        observationTask?.cancel()
+        observationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let canUse = authManager.authState.canUseApp
+                if canUse {
+                    self?.close()
+                    break
+                }
+                // Wait for next change to authState
+                await withCheckedContinuation { continuation in
+                    withObservationTracking {
+                        _ = authManager.authState
+                    } onChange: {
+                        continuation.resume()
+                    }
+                }
+            }
+        }
+    }
+
+    func close() {
+        observationTask?.cancel()
+        observationTask = nil
+        window?.close()
+        window = nil
     }
 }
 

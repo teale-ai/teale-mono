@@ -319,7 +319,9 @@ public actor RelayClient {
             throw WANError.relayMessageFailed("Not connected to relay")
         }
 
-        let data = try JSONEncoder().encode(message)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .deferredToDate
+        let data = try encoder.encode(message)
         try await ws.send(.data(data))
     }
 
@@ -478,7 +480,9 @@ public actor RelayClient {
                     return
                 }
 
-                if let message = try? JSONDecoder().decode(RelayMessage.self, from: data) {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .deferredToDate
+                if let message = try? decoder.decode(RelayMessage.self, from: data) {
                     await handleDecodedMessage(message)
                     // Broadcast to all subscribers
                     for (_, cont) in messageContinuations {
