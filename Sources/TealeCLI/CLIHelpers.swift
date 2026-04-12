@@ -52,8 +52,9 @@ enum PIDFile {
 
 /// Block the current async context until SIGINT or SIGTERM is received.
 func awaitShutdownSignal() async {
-    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-    let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    let signalQueue = DispatchQueue(label: "teale.signal")
+    let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
+    let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: signalQueue)
     signal(SIGINT, SIG_IGN)
     signal(SIGTERM, SIG_IGN)
 

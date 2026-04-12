@@ -141,7 +141,7 @@ public struct WANNodeIdentity: Sendable {
     public static func saveToFile(_ identity: WANNodeIdentity) throws {
         let data = identity.privateKey.rawRepresentation
         let url = identityFileURL
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        try data.write(to: url, options: [.atomic])
         // Restrict to owner read/write (0600)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],

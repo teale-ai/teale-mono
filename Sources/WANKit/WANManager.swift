@@ -210,6 +210,9 @@ public final class WANManager: @unchecked Sendable {
         isEnabled = true
         var diag: [String] = []
 
+        wanLog("Node ID: \(config.identity.nodeID)")
+        wanLog("WG Public Key: \(config.identity.wgPublicKeyHex)")
+
         // Step 1: Connect to relay
         do {
             wanLog("Connecting to relay \(config.relayServerURLs.first?.absoluteString ?? "?")...")

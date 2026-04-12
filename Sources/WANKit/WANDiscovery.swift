@@ -103,6 +103,16 @@ public actor WANDiscoveryService {
         // Register with the relay
         try await relayClient.register(capabilities: capabilities)
 
+        // Re-register automatically after relay reconnects
+        let caps = capabilities
+        let relay = relayClient
+        await relayClient.setOnReconnect {
+            FileHandle.standardError.write(Data("[WAN] Re-registering with relay after reconnect...\n".utf8))
+            try? await relay.register(capabilities: caps)
+            try? await relay.discover()
+            FileHandle.standardError.write(Data("[WAN] Re-registration complete\n".utf8))
+        }
+
         // Start listening for relay messages
         startMessageListener()
 
