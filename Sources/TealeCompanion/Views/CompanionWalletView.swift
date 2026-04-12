@@ -1,4 +1,5 @@
 import SwiftUI
+import CreditKit
 
 struct CompanionWalletView: View {
     var appState: CompanionAppState
@@ -155,7 +156,7 @@ private struct TransactionRow: View {
 
             Spacer()
 
-            Text(String(format: "%@%.2f", transaction.isEarning ? "+" : "-", transaction.amount))
+            Text("\(transaction.isEarning ? "+" : "-")\(USDCAmount(transaction.amount).description)")
                 .font(.subheadline)
                 .fontWeight(.medium)
                 .foregroundStyle(transaction.isEarning ? .green : .orange)

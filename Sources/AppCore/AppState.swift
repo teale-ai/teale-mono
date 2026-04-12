@@ -402,11 +402,11 @@ public final class AppState {
 
             let description: String
             if let tokenCount, let modelName = self.resolveModelDescriptor(for: modelID)?.name {
-                description = "Received \(String(format: "%.2f", payload.amount)) credits from \(senderName) for \(tokenCount) tokens of \(modelName)"
+                description = "Received \(amount.description) from \(senderName) for \(tokenCount) tokens of \(modelName)"
             } else if let memo = payload.memo {
-                description = "Received \(String(format: "%.2f", payload.amount)) credits from \(senderName): \(memo)"
+                description = "Received \(amount.description) from \(senderName): \(memo)"
             } else {
-                description = "Received \(String(format: "%.2f", payload.amount)) credits from \(senderName)"
+                description = "Received \(amount.description) from \(senderName)"
             }
 
             await self.wallet.recordTransferCredit(
@@ -730,7 +730,7 @@ public final class AppState {
             return
         }
 
-        let transferDescription = "Sent \(String(format: "%.2f", amount.value)) credits to \(record.peer.deviceInfo.name) for \(record.tokenCount) tokens of \(model.name)"
+        let transferDescription = "Sent \(amount.description) to \(record.peer.deviceInfo.name) for \(record.tokenCount) tokens of \(model.name)"
         await wallet.recordTransferDebit(
             amount: amount,
             toPeer: peerNodeID,
