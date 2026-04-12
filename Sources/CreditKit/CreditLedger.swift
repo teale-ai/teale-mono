@@ -31,7 +31,21 @@ public actor USDCLedger {
         self.fileURL = url
 
         // Try to load existing data
-        if let loaded = USDCLedger.loadFromDisk(url: url) {
+        if var loaded = USDCLedger.loadFromDisk(url: url) {
+            // Migrate old credit-denominated ledgers to USDC.
+            // Old credits used values like 100.0 for the welcome bonus;
+            // USDC equivalents are 10,000x smaller (100 credits = $0.01 USDC).
+            // Any balance >= 1.0 is definitely old credits (max realistic USDC
+            // balance from inference earnings would be far below $1).
+            if loaded.currentBalance.value >= 1.0 {
+                let factor = 1.0 / 10_000.0
+                loaded.currentBalance = USDCAmount(loaded.currentBalance.value * factor)
+                loaded.totalEarned = USDCAmount(loaded.totalEarned.value * factor)
+                loaded.totalSpent = USDCAmount(loaded.totalSpent.value * factor)
+                for i in loaded.transactions.indices {
+                    loaded.transactions[i].amount = USDCAmount(loaded.transactions[i].amount.value * factor)
+                }
+            }
             self.data = loaded
             self.isNewLedger = false
         } else {
