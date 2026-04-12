@@ -143,7 +143,7 @@ public final class AppState {
             Task { await modelManager.cache.setMaxStorage(maxStorageGB) }
         }
     }
-    public var wanRelayURL: String = UserDefaults.standard.string(forKey: "teale.wan_relay_url") ?? "wss://teale-relay.fly.dev/ws" {
+    public var wanRelayURL: String = UserDefaults.standard.string(forKey: "teale.wan_relay_url") ?? "wss://relay.teale.com/ws" {
         didSet { UserDefaults.standard.set(wanRelayURL, forKey: "teale.wan_relay_url") }
     }
     public var autoManageModels: Bool = false {
@@ -260,7 +260,7 @@ public final class AppState {
         // Wallet placeholder — replaced async on launch
         self.wallet = USDCWallet.placeholder()
         self.maxStorageGB = persistedMaxStorage
-        self.wanRelayURL = UserDefaults.standard.string(forKey: Self.wanRelayURLKey) ?? "wss://teale-relay.fly.dev/ws"
+        self.wanRelayURL = UserDefaults.standard.string(forKey: Self.wanRelayURLKey) ?? "wss://relay.teale.com/ws"
         // Start server eagerly so it's available even if the MenuBarExtra is never clicked.
         // CLI callers pass autoStart: false and call startServer()/initializeAsync() manually.
         if autoStart {

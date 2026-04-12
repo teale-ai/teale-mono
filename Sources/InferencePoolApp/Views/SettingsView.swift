@@ -18,7 +18,7 @@ struct SettingsView: View {
     @State private var orgReservation: Double = 60
     @State private var exoBaseURL: String = "http://localhost:52415"
     @State private var exoPreferredModelID: String = ""
-    @State private var wanRelayURL: String = "wss://teale-relay.fly.dev/ws"
+    @State private var wanRelayURL: String = "wss://relay.teale.com/ws"
     @State private var maxStorage: Double = 50
 
     var body: some View {
