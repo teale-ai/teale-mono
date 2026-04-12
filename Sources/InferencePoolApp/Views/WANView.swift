@@ -125,6 +125,21 @@ private struct WANStatusSection: View {
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
             }
+
+            // Connection diagnostics (collapsible)
+            if !wanState.diagnostics.isEmpty {
+                DisclosureGroup("Connection Log") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(wanState.diagnostics, id: \.self) { line in
+                            Text(line)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(line.contains("FAILED") ? .red : .secondary)
+                        }
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
         }
     }
 }

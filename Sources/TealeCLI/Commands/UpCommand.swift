@@ -81,6 +81,7 @@ struct Up: AsyncParsableCommand {
         let hw = await MainActor.run { appState.hardware }
         let wanErr = await MainActor.run { appState.wanLastError }
         let wanBusy = await MainActor.run { appState.isWANBusy }
+        let wanDiag = await MainActor.run { appState.wanManager.enableDiagnostics }
 
         printErr("")
         printErr("Teale node is up.")
@@ -96,6 +97,12 @@ struct Up: AsyncParsableCommand {
             printErr("  WAN:     connecting...")
         } else {
             printErr("  WAN:     connected")
+        }
+        // Show WAN diagnostics if there were issues
+        if !wanDiag.isEmpty && (wanErr != nil || wanBusy) {
+            for line in wanDiag {
+                printErr("           \(line)")
+            }
         }
         printErr("  Cluster: enabled")
         printErr("  Chip:    \(hw.chipName) (\(Int(hw.totalRAMGB)) GB)")
