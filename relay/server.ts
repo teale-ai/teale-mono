@@ -94,8 +94,14 @@ function forwardToTarget(kind: string, payload: TargetedPayload & Record<string,
 }
 
 function handleRegister(ws: ServerWebSocket<unknown>, payload: RegisterPayload) {
+  if (!payload?.nodeID) {
+    sendError(ws, "invalid_register", "Missing nodeID in register payload");
+    return;
+  }
+  console.log(`[register] nodeID=${payload.nodeID.substring(0, 16)}... displayName=${payload.displayName} peers_before=${peers.size}`);
   const existing = peers.get(payload.nodeID);
   if (existing && existing.ws !== ws) {
+    console.log(`[register] replacing existing session for ${payload.nodeID.substring(0, 16)}...`);
     existing.ws.close(1012, "Replaced by newer session");
   }
 
@@ -158,7 +164,11 @@ function handleMessage(ws: ServerWebSocket<unknown>, rawMessage: string | Buffer
     return;
   }
 
-  const [kind, payload] = entry as [string, any];
+  const [kind, rawPayload] = entry as [string, any];
+
+  // Swift's auto-synthesized Codable wraps enum associated values in {"_0": {...}}.
+  // Unwrap transparently so the relay handles both formats.
+  const payload = rawPayload?._0 ?? rawPayload;
 
   switch (kind) {
     case "register":
@@ -188,16 +198,20 @@ function handleMessage(ws: ServerWebSocket<unknown>, rawMessage: string | Buffer
 function handleClose(ws: ServerWebSocket<unknown>) {
   const nodeID = sockets.get(ws);
   if (!nodeID) {
+    console.log(`[close] unknown websocket closed`);
     return;
   }
 
+  console.log(`[close] nodeID=${nodeID.substring(0, 16)}... peers_before=${peers.size}`);
   sockets.delete(ws);
   const peer = peers.get(nodeID);
   if (!peer || peer.ws !== ws) {
+    console.log(`[close] stale ws for ${nodeID.substring(0, 16)}... (already replaced)`);
     return;
   }
 
   peers.delete(nodeID);
+  console.log(`[close] removed ${nodeID.substring(0, 16)}... peers_after=${peers.size}`);
   broadcast({
     peerLeft: {
       nodeID,
@@ -215,6 +229,16 @@ const server = Bun.serve({
         ok: true,
         peers: peers.size
       });
+    }
+
+    if (url.pathname === "/peers") {
+      const peerList = Array.from(peers.values()).map(p => ({
+        nodeID: p.nodeID.substring(0, 16) + "...",
+        displayName: p.displayName,
+        wgPublicKey: p.wgPublicKey ? p.wgPublicKey.substring(0, 16) + "..." : null,
+        lastSeen: p.lastSeenReferenceSeconds,
+      }));
+      return Response.json({ peers: peerList });
     }
 
     if (url.pathname === "/ws" && server.upgrade(req)) {

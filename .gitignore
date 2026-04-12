@@ -11,3 +11,4 @@ DerivedData/
 Supabase.plist
 !Sources/AuthKit/Resources/Supabase.plist
 default.profraw
+node_modules/

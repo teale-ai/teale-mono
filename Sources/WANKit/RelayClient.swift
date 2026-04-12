@@ -253,6 +253,12 @@ public actor RelayClient {
     private var currentBackoff: TimeInterval = 1.0
     private var relayedConnections: [String: RelayPeerConnection] = [:]
     private var relayReadyWaiters: [String: CheckedContinuation<Void, Error>] = [:]
+    /// Called after a successful reconnect so the discovery service can re-register.
+    private var onReconnectHandler: (@Sendable () async -> Void)?
+
+    public func setOnReconnect(_ handler: @escaping @Sendable () async -> Void) {
+        onReconnectHandler = handler
+    }
     private static let maxBackoff: TimeInterval = 60.0
 
     public var relayStatus: RelayStatus {
@@ -263,7 +269,7 @@ public actor RelayClient {
 
     public init(config: WANConfig) {
         self.config = config
-        self.urlSession = URLSession(configuration: .default)
+        self.urlSession = URLSession(configuration: .ephemeral)
     }
 
     // MARK: - Connection
@@ -273,7 +279,13 @@ public actor RelayClient {
             throw WANError.relayConnectionFailed("No relay server URLs configured")
         }
 
-        let task = urlSession.webSocketTask(with: relayURL)
+        // Append nodeID as query param so proxies (Fly.io) don't coalesce WebSocket
+        // connections from the same public IP into a single connection.
+        var components = URLComponents(url: relayURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "node", value: config.identity.nodeID)]
+        let uniqueURL = components.url ?? relayURL
+
+        let task = urlSession.webSocketTask(with: uniqueURL)
         self.webSocketTask = task
         task.resume()
 
@@ -492,6 +504,8 @@ public actor RelayClient {
 
                 _receiveLoop()
             } catch {
+                let msg = "[WAN] Relay WebSocket disconnected: \(error.localizedDescription)"
+                FileHandle.standardError.write(Data((msg + "\n").utf8))
                 isConnected = false
                 failActiveRelaySessions(with: WANError.peerDisconnected)
                 for (_, cont) in messageContinuations {
@@ -517,10 +531,15 @@ public actor RelayClient {
                 guard !Task.isCancelled else { return }
 
                 do {
+                    FileHandle.standardError.write(Data("[WAN] Attempting relay reconnect (backoff: \(backoff)s)...\n".utf8))
                     try await self.connect()
+                    FileHandle.standardError.write(Data("[WAN] Relay reconnected successfully\n".utf8))
                     await self.resetReconnect()
+                    // Re-register after reconnect
+                    await self.onReconnectHandler?()
                     return
                 } catch {
+                    FileHandle.standardError.write(Data("[WAN] Relay reconnect failed: \(error.localizedDescription)\n".utf8))
                     await self.increaseBackoff()
                 }
             }
