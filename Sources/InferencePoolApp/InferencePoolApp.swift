@@ -39,54 +39,48 @@ struct InferencePoolApp: App {
 struct ContentView: View {
     @Environment(AppState.self) private var appState
 
-    var body: some View {
+    private var needsSignIn: Bool {
         let authState = appState.authManager?.authState
-        let shouldShowMainApp = (authState?.canUseApp ?? true) || appState.showSignIn
+        return !(authState?.canUseApp ?? true)
+    }
 
-        Group {
-            if shouldShowMainApp {
-                NavigationSplitView {
-                    SidebarView()
-                } detail: {
-                    switch appState.currentView {
-                    case .dashboard:
-                        DashboardView()
-                    case .chat:
-                        ChatView()
-                    case .models:
-                        ModelBrowserView()
-                    case .cluster:
-                        ClusterView()
-                    case .wan:
-                        WANView()
-                    case .wallet:
-                        WalletView()
-                    case .agents:
-                        AgentView()
-                    case .devices:
-                        if let authManager = appState.authManager {
-                            DevicesView(authManager: authManager)
-                        } else {
-                            Text(appState.loc("settings.signInSubtitle"))
-                        }
-                    case .settings:
-                        SettingsView()
-                    }
+    var body: some View {
+        NavigationSplitView {
+            SidebarView()
+        } detail: {
+            switch appState.currentView {
+            case .dashboard:
+                DashboardView()
+            case .chat:
+                ChatView()
+            case .models:
+                ModelBrowserView()
+            case .cluster:
+                ClusterView()
+            case .wan:
+                WANView()
+            case .wallet:
+                WalletView()
+            case .agents:
+                AgentView()
+            case .devices:
+                if let authManager = appState.authManager {
+                    DevicesView(authManager: authManager)
+                } else {
+                    Text(appState.loc("settings.signInSubtitle"))
                 }
-                .sheet(isPresented: Binding(
-                    get: { appState.showSignIn },
-                    set: { appState.showSignIn = $0 }
-                )) {
-                    if let authManager = appState.authManager {
-                        LoginView(authManager: authManager)
-                            .frame(width: 400, height: 500)
-                    }
-                }
-            } else if let authManager = appState.authManager {
+            case .settings:
+                SettingsView()
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { appState.showSignIn || needsSignIn },
+            set: { appState.showSignIn = $0 }
+        )) {
+            if let authManager = appState.authManager {
                 LoginView(authManager: authManager)
-            } else {
-                Text("Authentication unavailable")
-                    .foregroundStyle(.secondary)
+                    .frame(width: 400, height: 500)
+                    .interactiveDismissDisabled(needsSignIn)
             }
         }
         .onChange(of: appState.authManager?.authState.isAuthenticated ?? false) { _, isAuthenticated in
