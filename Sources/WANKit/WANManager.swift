@@ -14,6 +14,8 @@ public struct WANState: Sendable {
     public var publicEndpoint: NATMapping?
     public var natType: NATType
     public var discoveredPeerCount: Int
+    /// Diagnostic log of the last enable() attempt — each step's result.
+    public var diagnostics: [String]
 
     public init(
         isEnabled: Bool = false,
@@ -22,7 +24,8 @@ public struct WANState: Sendable {
         relayStatus: RelayStatus = .disconnected,
         publicEndpoint: NATMapping? = nil,
         natType: NATType = .unknown,
-        discoveredPeerCount: Int = 0
+        discoveredPeerCount: Int = 0,
+        diagnostics: [String] = []
     ) {
         self.isEnabled = isEnabled
         self.connectedPeers = connectedPeers
@@ -31,6 +34,27 @@ public struct WANState: Sendable {
         self.publicEndpoint = publicEndpoint
         self.natType = natType
         self.discoveredPeerCount = discoveredPeerCount
+        self.diagnostics = diagnostics
+    }
+
+    /// Human-readable summary of connection health.
+    public var statusSummary: String {
+        if !isEnabled { return "Disabled" }
+        switch relayStatus {
+        case .connected:
+            if connectedPeers.isEmpty {
+                return discoveredPeerCount > 0
+                    ? "Relay connected, \(discoveredPeerCount) peers discovered (connecting...)"
+                    : "Relay connected, waiting for peers"
+            }
+            return "Connected to \(connectedPeers.count) peer(s)"
+        case .connecting:
+            return "Connecting to relay..."
+        case .reconnecting:
+            return "Reconnecting to relay..."
+        case .disconnected:
+            return "Relay disconnected — peers cannot discover this node"
+        }
     }
 }
 
@@ -118,6 +142,8 @@ public final class WANManager: @unchecked Sendable {
     // Public state
     public private(set) var state: WANState = WANState()
     public private(set) var isEnabled: Bool = false
+    /// Diagnostic log from the last enable() call
+    public private(set) var enableDiagnostics: [String] = []
 
     // Configuration
     private var config: WANConfig?
@@ -182,31 +208,51 @@ public final class WANManager: @unchecked Sendable {
 
         // Mark as enabled early so the UI updates
         isEnabled = true
+        var diag: [String] = []
 
-        // Connect to relay (non-fatal — node stays enabled and retries)
+        // Step 1: Connect to relay
         do {
+            wanLog("Connecting to relay \(config.relayServerURLs.first?.absoluteString ?? "?")...")
             try await relay.connect()
+            let msg = "Relay: connected"
+            wanLog(msg)
+            diag.append(msg)
         } catch {
-            print("[WAN] Relay connection failed (will retry): \(error.localizedDescription)")
+            let msg = "Relay: FAILED — \(error.localizedDescription)"
+            wanLog(msg)
+            diag.append(msg)
         }
 
-        // Discover public endpoint
+        // Step 2: STUN — discover public endpoint
         let mapping: NATMapping?
         do {
+            wanLog("STUN: discovering public endpoint...")
             mapping = try await stun.discoverMapping()
+            let msg = "STUN: \(mapping!.publicIP):\(mapping!.publicPort)"
+            wanLog(msg)
+            diag.append(msg)
         } catch {
             mapping = nil
+            let msg = "STUN: FAILED — \(error.localizedDescription)"
+            wanLog(msg)
+            diag.append(msg)
         }
 
-        // Detect NAT type
+        // Step 3: NAT type detection
         let natType: NATType
         do {
             natType = try await stun.detectNATType()
+            let msg = "NAT type: \(natType.rawValue)"
+            wanLog(msg)
+            diag.append(msg)
         } catch {
             natType = .unknown
+            let msg = "NAT type: detection failed — \(error.localizedDescription)"
+            wanLog(msg)
+            diag.append(msg)
         }
 
-        // Start UDP listener for incoming WireGuard connections
+        // Step 4: UDP listener for incoming WireGuard connections
         do {
             let udpListener = try WireGuardTransport.createListener(
                 port: mapping.map { $0.publicPort } ?? 0,
@@ -214,17 +260,30 @@ public final class WANManager: @unchecked Sendable {
             )
             self.listener = udpListener
             startUDPListener(udpListener)
+            let msg = "UDP listener: ready on port \(mapping?.publicPort ?? 0)"
+            wanLog(msg)
+            diag.append(msg)
         } catch {
-            // Non-fatal — we can still make outgoing connections
+            let msg = "UDP listener: FAILED — \(error.localizedDescription)"
+            wanLog(msg)
+            diag.append(msg)
         }
 
-        // Register and start discovery (non-fatal if relay not connected)
+        // Step 5: Register with relay and start discovery
         let capabilities = currentCapabilities()
         do {
             try await discovery.start(capabilities: capabilities)
+            let msg = "Discovery: registered with relay"
+            wanLog(msg)
+            diag.append(msg)
         } catch {
-            print("[WAN] Discovery registration failed (relay may be unavailable): \(error.localizedDescription)")
+            let msg = "Discovery: registration FAILED — \(error.localizedDescription)"
+            wanLog(msg)
+            diag.append(msg)
         }
+
+        // Check relay health endpoint for peer count
+        await logRelayHealth(diag: &diag)
 
         // Start relay message listener for offers/answers
         startRelayListener()
@@ -233,6 +292,7 @@ public final class WANManager: @unchecked Sendable {
         startHeartbeatLoop()
         startHealthCheckLoop()
 
+        self.enableDiagnostics = diag
         updateState(mapping: mapping, natType: natType)
     }
 
@@ -782,7 +842,8 @@ public final class WANManager: @unchecked Sendable {
             relayStatus: .disconnected,  // Updated async below
             publicEndpoint: mapping,
             natType: natType,
-            discoveredPeerCount: 0  // Updated async below
+            discoveredPeerCount: 0,  // Updated async below
+            diagnostics: enableDiagnostics
         )
 
         // Update relay status and discovered count asynchronously
@@ -821,5 +882,35 @@ public final class WANManager: @unchecked Sendable {
 
     private func refreshStateSnapshot() {
         updateState(mapping: state.publicEndpoint, natType: state.natType)
+    }
+
+    // MARK: - Diagnostics
+
+    private func wanLog(_ message: String) {
+        let line = "[WAN] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
+    private func logRelayHealth(diag: inout [String]) async {
+        guard let relayURL = config?.relayServerURLs.first else { return }
+        // Convert wss://host/ws to https://host/health
+        var components = URLComponents(url: relayURL, resolvingAgainstBaseURL: false)
+        components?.scheme = relayURL.scheme == "wss" ? "https" : "http"
+        components?.path = "/health"
+        guard let healthURL = components?.url else { return }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: healthURL)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let peers = json["peers"] as? Int {
+                let msg = "Relay health: \(peers) peer(s) registered on relay"
+                wanLog(msg)
+                diag.append(msg)
+            }
+        } catch {
+            let msg = "Relay health: could not reach \(healthURL.absoluteString)"
+            wanLog(msg)
+            diag.append(msg)
+        }
     }
 }

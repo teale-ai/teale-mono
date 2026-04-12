@@ -840,10 +840,23 @@ public final class AppState {
                 guard let self else { return }
                 try await self.wanManager.enable(config: config, localDeviceInfo: deviceInfo)
 
-                // Hop back to main actor for UI/engine updates.
+                // Check if relay actually connected — enable() doesn't throw on relay failure
+                let relayStatus = self.wanManager.state.relayStatus
+                let diagnostics = self.wanManager.enableDiagnostics
+
                 await MainActor.run {
-                    self.wanLastError = nil
                     self.isWANBusy = false
+                    if relayStatus == .connected {
+                        self.wanLastError = nil
+                    } else {
+                        // Surface the actual problem instead of silently pretending it worked
+                        let failedSteps = diagnostics.filter { $0.contains("FAILED") }
+                        if !failedSteps.isEmpty {
+                            self.wanLastError = failedSteps.joined(separator: "; ")
+                        } else {
+                            self.wanLastError = "Relay not connected (\(relayStatus.rawValue))"
+                        }
+                    }
                 }
                 await self.applyInferenceBackendSelection()
             } catch {
