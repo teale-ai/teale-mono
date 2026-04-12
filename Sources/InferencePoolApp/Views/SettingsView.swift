@@ -317,24 +317,7 @@ struct SettingsView: View {
     }
 
     private var displayVersion: String {
-        let info = Bundle.main.infoDictionary ?? [:]
-        if let buildDate = info["TealeBuildDate"] as? String, !buildDate.isEmpty {
-            return buildDate
-        }
-
-        let short = info["CFBundleShortVersionString"] as? String
-        let build = info["CFBundleVersion"] as? String
-
-        switch (short, build) {
-        case let (short?, build?) where short != build:
-            return "\(short) (\(build))"
-        case let (short?, _):
-            return short
-        case let (_, build?):
-            return build
-        default:
-            return "Unknown"
-        }
+        BuildVersion.display
     }
 
     private var tierDescription: String {

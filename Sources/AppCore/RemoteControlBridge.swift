@@ -168,13 +168,6 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     }
 
     private func appVersion() -> String {
-        let info = Bundle.main.infoDictionary ?? [:]
-        if let buildDate = info["TealeBuildDate"] as? String, !buildDate.isEmpty {
-            return buildDate
-        }
-        if let version = info["CFBundleShortVersionString"] as? String {
-            return version
-        }
-        return "Unknown"
+        BuildVersion.display
     }
 }

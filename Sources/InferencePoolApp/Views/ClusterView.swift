@@ -187,7 +187,7 @@ private struct ThisDeviceCard: View {
                 Text("\(appState.hardware.chipName) \u{2022} \(Int(appState.hardware.totalRAMGB)) GB")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Build: \(Bundle.main.object(forInfoDictionaryKey: "TealeBuildDate") as? String ?? "dev")")
+                Text("Build: \(BuildVersion.display)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
