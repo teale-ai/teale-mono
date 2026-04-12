@@ -100,11 +100,9 @@ function handleRegister(ws: ServerWebSocket<unknown>, payload: RegisterPayload) 
   }
   console.log(`[register] nodeID=${payload.nodeID.substring(0, 16)}... displayName=${payload.displayName} peers_before=${peers.size}`);
   const existing = peers.get(payload.nodeID);
-  if (existing && existing.ws !== ws) {
-    console.log(`[register] replacing existing session for ${payload.nodeID.substring(0, 16)}...`);
-    existing.ws.close(1012, "Replaced by newer session");
-  }
-
+  // Store the new peer BEFORE closing the old connection to prevent race conditions.
+  // If we close first, the close handler could fire synchronously and remove the peer
+  // before the new registration is stored.
   const peer: RelayPeer = {
     ws,
     nodeID: payload.nodeID,
@@ -117,6 +115,13 @@ function handleRegister(ws: ServerWebSocket<unknown>, payload: RegisterPayload) 
 
   peers.set(payload.nodeID, peer);
   sockets.set(ws, payload.nodeID);
+
+  // Close old connection AFTER the new peer is stored, so the close handler
+  // sees peer.ws !== old_ws and skips removal.
+  if (existing && existing.ws !== ws) {
+    console.log(`[register] replacing existing session for ${payload.nodeID.substring(0, 16)}...`);
+    existing.ws.close(1012, "Replaced by newer session");
+  }
 
   send(ws, {
     registerAck: {
