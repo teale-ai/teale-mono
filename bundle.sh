@@ -17,6 +17,11 @@ if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
     export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 fi
 
+# Regenerate BuildVersion.swift with current git info
+if [ -x scripts/generate-version.sh ]; then
+    scripts/generate-version.sh
+fi
+
 echo "Building InferencePoolApp (Release via xcodebuild)..."
 xcodebuild \
     -scheme InferencePoolApp \
