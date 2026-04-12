@@ -146,7 +146,7 @@ public final class ClusterManager: @unchecked Sendable {
         updateState()
     }
 
-    public func scanForPeers(duration: Duration = .seconds(10)) {
+    public func scanForPeers(duration: Duration? = nil) {
         guard isEnabled, bonjourService != nil else { return }
 
         scanStopTask?.cancel()
@@ -154,6 +154,11 @@ public final class ClusterManager: @unchecked Sendable {
         bonjourService?.startBrowsing()
         isScanning = true
         connectionNotice = nil
+
+        guard let duration else {
+            scanStopTask = nil
+            return
+        }
 
         scanStopTask = Task { [weak self] in
             try? await Task.sleep(for: duration)

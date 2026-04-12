@@ -293,7 +293,7 @@ struct SettingsView: View {
 
             // About
             Section(appState.loc("settings.about")) {
-                LabeledContent(appState.loc("settings.version"), value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")
+                LabeledContent(appState.loc("settings.version"), value: displayVersion)
                 LabeledContent(appState.loc("settings.engine"), value: appState.inferenceEngineName)
                 Link(appState.loc("settings.sourceCode"), destination: URL(string: "https://github.com/taylorhou/teale-mac-app")!)
             }

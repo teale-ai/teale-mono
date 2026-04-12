@@ -113,7 +113,7 @@ private struct DiscoveryControlsView: View {
                 }
                 .buttonStyle(.bordered)
             } else {
-                Text("Teale scans briefly when Cluster turns on or when this screen opens.")
+                Text("Teale keeps scanning while LAN Cluster is enabled.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -187,6 +187,9 @@ private struct ThisDeviceCard: View {
                 Text("\(appState.hardware.chipName) \u{2022} \(Int(appState.hardware.totalRAMGB)) GB")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("Build: \(Bundle.main.object(forInfoDictionaryKey: "TealeBuildDate") as? String ?? "dev")")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
             Spacer()

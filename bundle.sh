@@ -72,12 +72,15 @@ done
 cp Sources/InferencePoolApp/Info.plist "${CONTENTS_DIR}/Info.plist"
 
 BUILD_DATE="$(date '+%Y.%m.%d')"
+BUILD_TIME="$(date '+%H:%M')"
 BUILD_NUMBER="$(date '+%Y%m%d%H%M')"
+GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo 'nogit')"
+BUILD_VERSION="${BUILD_DATE}-${BUILD_TIME}-${GIT_HASH}"
 
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${BUILD_DATE}" "${CONTENTS_DIR}/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${BUILD_VERSION}" "${CONTENTS_DIR}/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER}" "${CONTENTS_DIR}/Info.plist"
 /usr/libexec/PlistBuddy -c "Delete :TealeBuildDate" "${CONTENTS_DIR}/Info.plist" >/dev/null 2>&1 || true
-/usr/libexec/PlistBuddy -c "Add :TealeBuildDate string ${BUILD_DATE}" "${CONTENTS_DIR}/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :TealeBuildDate string ${BUILD_VERSION}" "${CONTENTS_DIR}/Info.plist"
 
 # Local ad-hoc signing cannot carry restricted entitlements like multicast networking.
 # Only attach entitlements when signing with a real identity.
