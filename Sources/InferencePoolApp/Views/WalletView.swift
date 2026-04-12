@@ -168,7 +168,7 @@ private struct SendCreditsSection: View {
             isSending = false
             withAnimation {
                 if success {
-                    resultMessage = "Sent \(String(format: "$%.2f", amount)) USDC"
+                    resultMessage = "Sent \(USDCAmount(amount).description) USDC"
                     amountText = ""
                     memo = ""
                 } else {
@@ -311,7 +311,7 @@ private struct CreditSummarySection: View {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.down.circle.fill")
                             .foregroundStyle(.green)
-                        Text(String(format: "%.2f", appState.wallet.totalEarned.value))
+                        Text(appState.wallet.totalEarned.description)
                             .font(.headline)
                     }
                     Text(appState.loc("wallet.earned"))
@@ -327,7 +327,7 @@ private struct CreditSummarySection: View {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.up.circle.fill")
                             .foregroundStyle(.red)
-                        Text(String(format: "%.2f", appState.wallet.totalSpent.value))
+                        Text(appState.wallet.totalSpent.description)
                             .font(.headline)
                     }
                     Text(appState.loc("wallet.spent"))

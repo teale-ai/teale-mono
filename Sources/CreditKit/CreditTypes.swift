@@ -12,9 +12,10 @@ public struct USDCAmount: Codable, Sendable, Hashable, CustomStringConvertible {
     }
 
     public var description: String {
-        if value == 0 { return "$0.00" }
-        if value < 0.01 { return String(format: "$%.6f", value) }
-        return String(format: "$%.2f", value)
+        if value == 0 { return "$0.000000" }
+        if value >= 1.0 { return String(format: "$%.2f", value) }
+        // Always show 6 decimals for sub-dollar amounts so users can see micro-earnings
+        return String(format: "$%.6f", value)
     }
 
     public static func + (lhs: USDCAmount, rhs: USDCAmount) -> USDCAmount {

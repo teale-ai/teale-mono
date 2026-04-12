@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import AppCore
 import SharedTypes
+import CreditKit
 
 struct Up: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -205,7 +206,7 @@ struct Up: AsyncParsableCommand {
                         memo: "Auto-forward to \(toAddress)"
                     )
                     if success {
-                        printErr("Forwarded \(String(format: "%.2f", amount)) USDC to \(toAddress)")
+                        printErr("Forwarded \(USDCAmount(amount).description) USDC to \(toAddress)")
                     }
                 }
             }

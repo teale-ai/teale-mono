@@ -146,8 +146,8 @@ public final class USDCWallet: @unchecked Sendable {
         let currentBal = await ledger.getBalance().currentBalance
         guard currentBal >= usdcAmount else { return false }
 
-        let desc = memo.map { "Sent \(String(format: "%.2f", amount)) USDC: \($0)" }
-            ?? "Sent \(String(format: "%.2f", amount)) USDC"
+        let desc = memo.map { "Sent \(usdcAmount.description) USDC: \($0)" }
+            ?? "Sent \(usdcAmount.description) USDC"
         await recordTransferDebit(amount: usdcAmount, toPeer: peerNodeID, description: desc)
         return true
     }
@@ -155,8 +155,8 @@ public final class USDCWallet: @unchecked Sendable {
     /// Credit wallet for an incoming P2P USDC transfer.
     public func receiveTransfer(amount: Double, fromPeer peerNodeID: String, memo: String? = nil) async {
         let usdcAmount = USDCAmount(amount)
-        let desc = memo.map { "Received \(String(format: "%.2f", amount)) USDC: \($0)" }
-            ?? "Received \(String(format: "%.2f", amount)) USDC"
+        let desc = memo.map { "Received \(usdcAmount.description) USDC: \($0)" }
+            ?? "Received \(usdcAmount.description) USDC"
         await recordTransferCredit(amount: usdcAmount, fromPeer: peerNodeID, description: desc)
     }
 
