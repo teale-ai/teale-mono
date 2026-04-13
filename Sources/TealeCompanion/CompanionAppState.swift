@@ -512,11 +512,28 @@ final class CompanionAppState {
                 guard let self else { return }
                 try await self.wanManager.enable(config: config, localDeviceInfo: deviceInfo)
 
+                // Check relay status and sync loaded models
+                let relayStatus = self.wanManager.state.relayStatus
+                let diagnostics = self.wanManager.enableDiagnostics
+
                 await MainActor.run {
-                    self.wanLastError = nil
                     self.isWANBusy = false
+                    if relayStatus == .connected {
+                        self.wanLastError = nil
+                    } else {
+                        let failedSteps = diagnostics.filter { $0.contains("FAILED") }
+                        self.wanLastError = failedSteps.isEmpty
+                            ? "Relay not connected (\(relayStatus.rawValue))"
+                            : failedSteps.joined(separator: "; ")
+                    }
                     self.syncWANPeers()
                 }
+
+                // Sync loaded models to WAN (model may have loaded before WAN was enabled)
+                let currentModels: [String] = await MainActor.run {
+                    self.localModel.map { [$0.huggingFaceRepo] } ?? []
+                }
+                await self.wanManager.updateLocalLoadedModels(currentModels)
 
                 // Periodically sync WAN peers into discoveredNodes
                 while !Task.isCancelled {
