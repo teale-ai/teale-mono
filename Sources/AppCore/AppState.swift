@@ -859,6 +859,16 @@ public final class AppState {
                     }
                 }
                 await self.applyInferenceBackendSelection()
+
+                // Sync loaded models to WAN now that it's enabled
+                // (model may have loaded before WAN was turned on)
+                let loadedModels: [String]
+                if case .ready(let descriptor) = await MainActor.run(body: { self.engineStatus }) {
+                    loadedModels = [descriptor.huggingFaceRepo]
+                } else {
+                    loadedModels = []
+                }
+                await self.wanManager.updateLocalLoadedModels(loadedModels)
             } catch {
                 let msg = error.localizedDescription
                 guard let self else { return }

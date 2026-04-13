@@ -461,6 +461,7 @@ public actor RelayClient {
     }
 
     public func openRelayedSession(toNodeID: String, sessionID: String, timeoutSeconds: TimeInterval) async throws -> RelayPeerConnection {
+        FileHandle.standardError.write(Data("[WAN] openRelayedSession: sending relayOpen to \(toNodeID.prefix(16))... session=\(sessionID.prefix(8))\n".utf8))
         let connection = relayConnection(sessionID: sessionID, remoteNodeID: toNodeID)
         let payload = RelayMessage.RelaySessionPayload(
             fromNodeID: config.identity.nodeID,
@@ -469,7 +470,9 @@ public actor RelayClient {
         )
 
         try await send(.relayOpen(payload))
+        FileHandle.standardError.write(Data("[WAN] openRelayedSession: waiting for relayReady (timeout \(timeoutSeconds)s)...\n".utf8))
         try await waitForRelayReady(fromNodeID: toNodeID, sessionID: sessionID, timeoutSeconds: timeoutSeconds)
+        FileHandle.standardError.write(Data("[WAN] openRelayedSession: relayReady received! Connection established.\n".utf8))
         return connection
     }
 
@@ -632,7 +635,10 @@ public actor RelayClient {
             waiter.resume(returning: ())
 
         case .relayData(let payload):
-            guard let connection = relayedConnections[payload.sessionID] else { return }
+            guard let connection = relayedConnections[payload.sessionID] else {
+                FileHandle.standardError.write(Data("[WAN] relayData: no connection for session \(payload.sessionID.prefix(8))... (known sessions: \(relayedConnections.keys.map { String($0.prefix(8)) }))\n".utf8))
+                return
+            }
             await connection.receiveRelayedClusterMessage(payload.data)
 
         case .relayClose(let payload):

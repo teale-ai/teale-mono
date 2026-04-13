@@ -122,12 +122,15 @@ public actor NATTraversal {
 
         // Step 6: Fall back to relay-assisted connection
         do {
+            FileHandle.standardError.write(Data("[WAN] Step 6: attempting relay fallback for \(peerInfo.displayName)...\n".utf8))
             let relayedConn = try await attemptRelayedConnection(
                 to: peerInfo,
                 sessionID: sessionID
             )
+            FileHandle.standardError.write(Data("[WAN] Step 6: relay connection established!\n".utf8))
             return .relayed(relayedConn)
         } catch {
+            FileHandle.standardError.write(Data("[WAN] Step 6: relay fallback failed: \(error.localizedDescription)\n".utf8))
             return .failed(.natTraversalFailed("All connection methods failed"))
         }
     }

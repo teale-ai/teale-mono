@@ -607,7 +607,8 @@ public final class WANManager: @unchecked Sendable {
                     switch message {
                     case .offer(let offer):
                         self.wanLog("Received incoming offer from \(offer.fromNodeID.prefix(16))...")
-                        await self.handleIncomingOffer(offer)
+                        // Don't block the listener — offer handling involves long timeouts
+                        Task { await self.handleIncomingOffer(offer) }
                     case .relayOpen(let payload):
                         self.wanLog("Received relay open from \(payload.fromNodeID.prefix(16))...")
                         await self.handleIncomingRelayOpen(payload)
@@ -666,10 +667,11 @@ public final class WANManager: @unchecked Sendable {
     }
 
     private func handleIncomingRelayOpen(_ payload: RelayMessage.RelaySessionPayload) async {
-        guard let relay = relayClient, let config = config else { return }
-        guard payload.toNodeID == config.identity.nodeID else { return }
-        guard connectedPeers.count < config.maxWANPeers else { return }
-        guard connectedPeers[payload.fromNodeID] == nil else { return }
+        wanLog("handleIncomingRelayOpen: from=\(payload.fromNodeID.prefix(16))... to=\(payload.toNodeID.prefix(16))... session=\(payload.sessionID.prefix(8))")
+        guard let relay = relayClient, let config = config else { wanLog("  -> skip: no relay/config"); return }
+        guard payload.toNodeID == config.identity.nodeID else { wanLog("  -> skip: not for us (toNodeID mismatch)"); return }
+        guard connectedPeers.count < config.maxWANPeers else { wanLog("  -> skip: max peers"); return }
+        guard connectedPeers[payload.fromNodeID] == nil else { wanLog("  -> skip: already connected"); return }
 
         do {
             let connection = try await relay.acceptRelayedSession(
