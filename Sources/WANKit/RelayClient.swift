@@ -3,6 +3,8 @@ import SharedTypes
 
 // MARK: - Relay Message Protocol
 
+/// Relay messages use flat JSON: `{"register": {...}}` (no Swift `_0` wrapper).
+/// Custom Codable ensures the encoding matches what the relay server expects.
 public enum RelayMessage: Codable, Sendable {
     case register(RegisterPayload)
     case registerAck(RegisterAckPayload)
@@ -18,6 +20,52 @@ public enum RelayMessage: Codable, Sendable {
     case peerJoined(PeerNotificationPayload)
     case peerLeft(PeerNotificationPayload)
     case error(RelayErrorPayload)
+
+    private enum CodingKeys: String, CodingKey {
+        case register, registerAck, discover, discoverResponse
+        case offer, answer, iceCandidate
+        case relayOpen, relayReady, relayData, relayClose
+        case peerJoined, peerLeft, error
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .register(let p): try container.encode(p, forKey: .register)
+        case .registerAck(let p): try container.encode(p, forKey: .registerAck)
+        case .discover(let p): try container.encode(p, forKey: .discover)
+        case .discoverResponse(let p): try container.encode(p, forKey: .discoverResponse)
+        case .offer(let p): try container.encode(p, forKey: .offer)
+        case .answer(let p): try container.encode(p, forKey: .answer)
+        case .iceCandidate(let p): try container.encode(p, forKey: .iceCandidate)
+        case .relayOpen(let p): try container.encode(p, forKey: .relayOpen)
+        case .relayReady(let p): try container.encode(p, forKey: .relayReady)
+        case .relayData(let p): try container.encode(p, forKey: .relayData)
+        case .relayClose(let p): try container.encode(p, forKey: .relayClose)
+        case .peerJoined(let p): try container.encode(p, forKey: .peerJoined)
+        case .peerLeft(let p): try container.encode(p, forKey: .peerLeft)
+        case .error(let p): try container.encode(p, forKey: .error)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let p = try? container.decode(RegisterPayload.self, forKey: .register) { self = .register(p); return }
+        if let p = try? container.decode(RegisterAckPayload.self, forKey: .registerAck) { self = .registerAck(p); return }
+        if let p = try? container.decode(DiscoverPayload.self, forKey: .discover) { self = .discover(p); return }
+        if let p = try? container.decode(DiscoverResponsePayload.self, forKey: .discoverResponse) { self = .discoverResponse(p); return }
+        if let p = try? container.decode(OfferPayload.self, forKey: .offer) { self = .offer(p); return }
+        if let p = try? container.decode(AnswerPayload.self, forKey: .answer) { self = .answer(p); return }
+        if let p = try? container.decode(ICECandidatePayload.self, forKey: .iceCandidate) { self = .iceCandidate(p); return }
+        if let p = try? container.decode(RelaySessionPayload.self, forKey: .relayOpen) { self = .relayOpen(p); return }
+        if let p = try? container.decode(RelaySessionPayload.self, forKey: .relayReady) { self = .relayReady(p); return }
+        if let p = try? container.decode(RelayDataPayload.self, forKey: .relayData) { self = .relayData(p); return }
+        if let p = try? container.decode(RelaySessionPayload.self, forKey: .relayClose) { self = .relayClose(p); return }
+        if let p = try? container.decode(PeerNotificationPayload.self, forKey: .peerJoined) { self = .peerJoined(p); return }
+        if let p = try? container.decode(PeerNotificationPayload.self, forKey: .peerLeft) { self = .peerLeft(p); return }
+        if let p = try? container.decode(RelayErrorPayload.self, forKey: .error) { self = .error(p); return }
+        throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unknown relay message type"))
+    }
 
     // MARK: - Payloads
 

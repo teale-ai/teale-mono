@@ -171,9 +171,10 @@ function handleMessage(ws: ServerWebSocket<unknown>, rawMessage: string | Buffer
 
   const [kind, rawPayload] = entry as [string, any];
 
-  // Swift's auto-synthesized Codable wraps enum associated values in {"_0": {...}}.
-  // Unwrap transparently so the relay handles both formats.
+  // Support both flat JSON and Swift's auto-synthesized {"_0": {...}} wrapper format.
   const payload = rawPayload?._0 ?? rawPayload;
+
+  console.log(`[msg] kind=${kind} from=${sockets.get(ws)?.substring(0, 16) ?? "unknown"}...`);
 
   switch (kind) {
     case "register":

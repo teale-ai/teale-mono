@@ -565,20 +565,28 @@ public final class WANManager: @unchecked Sendable {
     public var lanPeerNodeIDs: Set<String> = []
 
     private func handleDiscoveredPeer(_ peer: WANPeerInfo) async {
-        guard let config else { return }
-        guard peer.nodeID != config.identity.nodeID else { return }
-        guard connectedPeers[peer.nodeID] == nil else { return }
-        // Only auto-connect to peers that advertise a WG public key (needed for Noise handshake)
-        guard peer.wgPublicKey != nil else { return }
-        // Only auto-connect if peer has models loaded or is available
-        guard peer.capabilities.isAvailable else { return }
-        // Skip peers already reachable on LAN (prefer faster path)
-        guard !lanPeerNodeIDs.contains(peer.nodeID) else { return }
+        wanLog("Discovered peer: \(peer.displayName) nodeID=\(peer.nodeID.prefix(16))... wgKey=\(peer.wgPublicKey?.prefix(16) ?? "nil") models=\(peer.capabilities.loadedModels) available=\(peer.capabilities.isAvailable)")
+        guard let config else { wanLog("  -> skip: no config"); return }
+        guard peer.nodeID != config.identity.nodeID else { wanLog("  -> skip: self"); return }
+        guard connectedPeers[peer.nodeID] == nil else { wanLog("  -> skip: already connected"); return }
+        guard peer.wgPublicKey != nil else { wanLog("  -> skip: no wgPublicKey"); return }
+        guard peer.capabilities.isAvailable else { wanLog("  -> skip: not available"); return }
+        guard !lanPeerNodeIDs.contains(peer.nodeID) else { wanLog("  -> skip: on LAN"); return }
 
+        // Tiebreaker: only the node with the higher nodeID initiates the connection.
+        // This prevents simultaneous offers where both nodes send offers and neither
+        // listens for answers, causing mutual timeouts.
+        guard config.identity.nodeID > peer.nodeID else {
+            wanLog("  -> waiting for \(peer.displayName) to initiate (lower nodeID)")
+            return
+        }
+
+        wanLog("  -> connecting to \(peer.displayName)...")
         do {
             try await connectToPeer(peer)
+            wanLog("  -> connected to \(peer.displayName)!")
         } catch {
-            // Discovery should be opportunistic; a failed auto-connect is non-fatal.
+            wanLog("  -> connection failed: \(error.localizedDescription)")
         }
     }
 
