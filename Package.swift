@@ -215,7 +215,10 @@ let package = Package(
                 "WANKit",
                 "ChatKit",
             ],
-            exclude: ["Info.plist"]
+            exclude: ["Info.plist"],
+            resources: [
+                .process("Resources"),
+            ]
         ),
 
         // MARK: - TealeSDK (third-party resource contribution SDK)
