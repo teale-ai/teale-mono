@@ -1,0 +1,26 @@
+# teale-node — Cross-platform TealeNet supply node configuration
+# Copy this file to teale-node.toml and customize.
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[llama]
+# Path to llama-server binary
+binary = "/usr/local/bin/llama-server"
+# Path to GGUF model file
+model = "/models/qwen3-8b-q4_k_m.gguf"
+# Number of GPU layers to offload (999 = all)
+gpu_layers = 999
+# Context window size
+context_size = 8192
+# Local port for llama-server HTTP API
+port = 11436
+# Extra arguments to pass to llama-server
+# extra_args = ["--flash-attn", "--threads", "8"]
+
+[node]
+display_name = "Linux GPU Server"
+# GPU backend override (auto-detected if omitted): metal, cuda, rocm, vulkan, cpu
+# gpu_backend = "cuda"
+# Discrete GPU VRAM in GB (omit for unified memory systems like Apple Silicon)
+# gpu_vram_gb = 24.0
