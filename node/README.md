@@ -44,6 +44,18 @@ docker build -f Dockerfile.cpu -t teale/node-cpu .
 docker run -v /path/to/models:/models teale/node-cpu
 ```
 
+## Windows Fleet Deployment
+
+For deploying to multiple Windows machines (tested with 200+ nodes):
+
+```powershell
+# On each machine (or via Group Policy / PSRemoting):
+powershell -ExecutionPolicy Bypass -File \\share\teale\deploy-windows.ps1 `
+    -ModelSharePath "\\fileserver\teale\models\qwen3-8b-q4_k_m.gguf"
+```
+
+See [Fleet Deployment Guide](docs/fleet-deployment-windows.md) for detailed instructions including SCCM, Group Policy, and BranchCache strategies.
+
 ## Supported Platforms
 
 | Platform | GPU | Status |
