@@ -78,3 +78,7 @@ docker run -v /path/to/models:/models teale/node-cpu
 │ (GGUF model) │
 └──────────────┘
 ```
+
+## License
+
+[AGPL-3.0](LICENSE)
