@@ -51,7 +51,7 @@ For deploying to multiple Windows machines (tested with 200+ nodes):
 ```powershell
 # On each machine (or via Group Policy / PSRemoting):
 powershell -ExecutionPolicy Bypass -File \\share\teale\deploy-windows.ps1 `
-    -ModelSharePath "\\fileserver\teale\models\qwen3-8b-q4_k_m.gguf"
+    -ModelSharePath "\\fileserver\teale\models\qwen3-4b-q4_k_m.gguf"
 ```
 
 See [Fleet Deployment Guide](docs/fleet-deployment-windows.md) for detailed instructions including SCCM, Group Policy, and BranchCache strategies.

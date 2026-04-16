@@ -39,7 +39,7 @@ param(
     [string]$ModelSharePath = "",
 
     # Direct download URL for the GGUF model
-    [string]$ModelUrl = "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/qwen3-8b-q4_k_m.gguf",
+    [string]$ModelUrl = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/qwen3-4b-q4_k_m.gguf",
 
     # Model filename (derived from URL if not set)
     [string]$ModelFilename = "",
@@ -50,8 +50,8 @@ param(
     # GPU layers to offload (0 = CPU-only, 999 = all)
     [int]$GpuLayers = 0,
 
-    # Context window size
-    [int]$ContextSize = 4096,
+    # Context window size (8192 fits comfortably with 4B model in 8-10GB free RAM)
+    [int]$ContextSize = 8192,
 
     # Node display name (defaults to hostname)
     [string]$DisplayName = $env:COMPUTERNAME,
