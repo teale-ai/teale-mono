@@ -10,6 +10,8 @@ pub struct Config {
     pub llama: Option<LlamaConfig>,
     /// MNN-LLM config (required when backend = "mnn")
     pub mnn: Option<MnnConfig>,
+    /// LiteRT-LM config (required when backend = "litert")
+    pub litert: Option<LiteRtConfig>,
     pub node: NodeConfig,
 }
 
@@ -53,6 +55,25 @@ pub struct MnnConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields used via FFI when litert feature is enabled
+pub struct LiteRtConfig {
+    /// Path to .litertlm model file
+    pub model: String,
+    /// Model identifier reported to the network (defaults to model filename)
+    #[serde(default)]
+    pub model_id: Option<String>,
+    /// Compute backend: "cpu", "gpu", "npu" (default "cpu")
+    #[serde(default)]
+    pub backend_type: Option<String>,
+    /// Maximum context size in tokens
+    #[serde(default = "default_litert_context_size")]
+    pub context_size: u32,
+    /// Cache directory for compiled model artifacts
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct NodeConfig {
     pub display_name: String,
     #[serde(default)]
@@ -89,6 +110,10 @@ fn default_mnn_port() -> u16 {
     11437
 }
 
+fn default_litert_context_size() -> u32 {
+    4096
+}
+
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -107,8 +132,13 @@ impl Config {
                     anyhow::bail!("[mnn] config section is required when backend = \"mnn\"");
                 }
             }
+            "litert" => {
+                if config.litert.is_none() {
+                    anyhow::bail!("[litert] config section is required when backend = \"litert\"");
+                }
+            }
             other => {
-                anyhow::bail!("Unknown backend '{}'. Supported: \"llama\", \"mnn\"", other);
+                anyhow::bail!("Unknown backend '{}'. Supported: \"llama\", \"mnn\", \"litert\"", other);
             }
         }
 

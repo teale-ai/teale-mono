@@ -178,6 +178,43 @@ gpu_backend = "opencl"
 - **Pre-built models**: [Qwen3.5 4B MNN](https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN) and [Qwen3 4B MNN](https://huggingface.co/taobao-mnn/Qwen3-4B-MNN) are ready to deploy
 - **No Google Play Services required**: Works on Huawei devices without GMS
 
+## LiteRT-LM (Pixel / Tensor — In-Process)
+
+For Pixel devices with Tensor chips, LiteRT-LM runs inference **in-process** via FFI — no subprocess, no HTTP proxy, single binary. This uses Google's on-device runtime with GPU/NPU acceleration optimized for Gemma models.
+
+### Build with LiteRT-LM support
+
+```bash
+# 1. Build the LiteRT-LM static library (one-time, requires Bazel + NDK)
+./scripts/build-litert.sh
+
+# 2. Cross-compile teale-node with litert feature
+./scripts/build-android.sh --features litert
+```
+
+### Download model
+
+```bash
+huggingface-cli download litert-community/gemma-4-E4B-it-litert-lm \
+  --local-dir /storage/emulated/0/models/gemma-4-E4B-it-litert-lm
+```
+
+### Deploy
+
+```bash
+adb push target/aarch64-linux-android/release/teale-node /data/local/tmp/
+adb push lib/android_arm64/*.so /data/local/tmp/lib/   # GPU accelerator plugins
+adb push teale-node.litert.toml /data/local/tmp/teale-node.toml
+adb shell /data/local/tmp/teale-node --config /data/local/tmp/teale-node.toml
+```
+
+### Why LiteRT-LM?
+
+- **Single binary**: No llama-server subprocess, no Python, no Node.js
+- **Hardware-optimized**: Tensor G4's dedicated AI cores accelerate Gemma models directly
+- **Smallest footprint**: One binary + model file + GPU plugins
+- **Multimodal**: Supports vision + audio input natively via the C API
+
 ## Windows Fleet Deployment
 
 For deploying to multiple Windows machines (tested with 200+ nodes):
@@ -198,6 +235,7 @@ Use **Gemma 4 E4B** — Google-optimized for Tensor hardware with dedicated AI c
 
 | Format | Model | Size | Link |
 |--------|-------|------|------|
+| LiteRT-LM (in-process) | Gemma 4 E4B | ~3.6 GB | [litert-community/gemma-4-E4B-it-litert-lm](https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm) |
 | GGUF (llama-server) | Gemma 4 E4B Q4_K_M | ~2.5 GB | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) |
 | GGUF (llama-server) | Gemma 4 E2B Q8_0 | ~5.0 GB | [ggml-org/gemma-4-E2B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF) |
 
@@ -224,6 +262,7 @@ Qwen3.5 is a generation newer than Qwen3 with hybrid Gated Delta Networks + spar
 | Windows x86_64 | CUDA/Vulkan/CPU | llama-server | Native binary |
 | Android aarch64 | Vulkan/CPU | llama-server | Termux or NDK |
 | Android aarch64 (Kirin/Mali) | OpenCL/CPU | MNN-LLM | Termux |
+| Android aarch64 (Pixel/Tensor) | GPU/NPU | LiteRT-LM | Native (in-process) |
 
 ## How It Works
 

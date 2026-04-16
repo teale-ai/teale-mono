@@ -1,0 +1,22 @@
+# teale-node — LiteRT-LM configuration (Pixel 9 Pro Fold)
+# Requires teale-node built with: cargo build --features litert
+#
+# Download model:
+#   huggingface-cli download litert-community/gemma-4-E4B-it-litert-lm \
+#     --local-dir /storage/emulated/0/models/gemma-4-E4B-it-litert-lm
+
+backend = "litert"
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[litert]
+model = "/storage/emulated/0/models/gemma-4-E4B-it-litert-lm/gemma-4-E4B-it.litertlm"
+model_id = "gemma-4-E4B-it"
+backend_type = "gpu"
+context_size = 4096
+# cache_dir = "/data/local/tmp/litert-cache"
+
+[node]
+display_name = "Pixel 9 Pro Fold"
+gpu_backend = "gpu"

@@ -61,11 +61,14 @@ echo ""
 # Ensure target is installed
 rustup target add aarch64-linux-android 2>/dev/null || true
 
+# Pass through any extra cargo args (e.g., --features litert)
+EXTRA_ARGS="${*:-}"
+
 # Build
 echo "Building teale-node for aarch64-linux-android (release)..."
 CC_aarch64_linux_android="$CLANG" \
 AR_aarch64_linux_android="$AR" \
-    cargo build --release --target aarch64-linux-android
+    cargo build --release --target aarch64-linux-android $EXTRA_ARGS
 
 # Strip debug symbols
 BINARY="target/aarch64-linux-android/release/teale-node"

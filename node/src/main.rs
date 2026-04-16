@@ -1,14 +1,18 @@
+mod backend;
 mod cluster;
 mod config;
 mod hardware;
 mod identity;
 mod inference;
+#[cfg(feature = "litert")]
+mod litert;
 mod relay;
 
 use clap::Parser;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
+use crate::backend::Backend;
 use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
 use crate::identity::NodeIdentity;
@@ -56,38 +60,8 @@ async fn main() -> anyhow::Result<()> {
         hw.chip_name, hw.chip_family, hw.total_ram_gb, hw.tier
     );
 
-    // 3. Start inference backend (unless --no-backend)
-    let (port, model_id) = match config.backend.as_str() {
-        "mnn" => {
-            let mnn = config.mnn.as_ref().unwrap();
-            let mid = mnn.model_id.clone().unwrap_or_else(|| {
-                std::path::Path::new(&mnn.model_dir)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| mnn.model_dir.clone())
-            });
-            (mnn.port, mid)
-        }
-        _ => {
-            let llama = config.llama.as_ref().unwrap();
-            (llama.port, llama.model.clone())
-        }
-    };
-    let inference = InferenceProxy::new(port, &model_id);
-
-    let _backend_child = if !args.no_backend {
-        let child = match config.backend.as_str() {
-            "mnn" => spawn_mnn_server(config.mnn.as_ref().unwrap())?,
-            _ => spawn_llama_server(config.llama.as_ref().unwrap())?,
-        };
-        info!("Waiting for {} to become healthy...", config.backend);
-        inference.wait_for_health(120).await?;
-        Some(child)
-    } else {
-        info!("Skipping backend launch (--no-backend), connecting to port {}", port);
-        inference.wait_for_health(10).await?;
-        None
-    };
+    // 3. Start inference backend
+    let (backend, model_id) = start_backend(&config, &args).await?;
 
     // 4. Build capabilities
     let capabilities = build_capabilities(hw, Some(&model_id));
@@ -99,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
     let display_name = args.name.unwrap_or(config.node.display_name.clone());
 
     loop {
-        match run_relay_session(&config.relay.url, &identity, &display_name, &capabilities, &inference, &device_info).await {
+        match run_relay_session(&config.relay.url, &identity, &display_name, &capabilities, &backend, &device_info).await {
             Ok(()) => {
                 info!("Relay session ended cleanly");
                 break;
@@ -114,12 +88,76 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Initialize the inference backend based on config.
+/// Returns the Backend and model_id string.
+async fn start_backend(config: &Config, args: &Args) -> anyhow::Result<(Backend, String)> {
+    match config.backend.as_str() {
+        #[cfg(feature = "litert")]
+        "litert" => {
+            let litert_config = config.litert.as_ref().unwrap();
+            let engine = litert::LiteRtEngine::new(litert_config)?;
+            let model_id = engine.loaded_models().into_iter().next().unwrap_or_default();
+            Ok((Backend::LiteRt(engine), model_id))
+        }
+
+        #[cfg(not(feature = "litert"))]
+        "litert" => {
+            anyhow::bail!(
+                "LiteRT-LM backend requires the 'litert' feature. \
+                 Rebuild with: cargo build --features litert"
+            );
+        }
+
+        backend_name => {
+            // HTTP proxy backends (llama-server, mnn_llm)
+            let (port, model_id) = match backend_name {
+                "mnn" => {
+                    let mnn = config.mnn.as_ref().unwrap();
+                    let mid = mnn.model_id.clone().unwrap_or_else(|| {
+                        std::path::Path::new(&mnn.model_dir)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| mnn.model_dir.clone())
+                    });
+                    (mnn.port, mid)
+                }
+                _ => {
+                    let llama = config.llama.as_ref().unwrap();
+                    (llama.port, llama.model.clone())
+                }
+            };
+
+            let inference = InferenceProxy::new(port, &model_id);
+
+            let _backend_child = if !args.no_backend {
+                let child = match backend_name {
+                    "mnn" => spawn_mnn_server(config.mnn.as_ref().unwrap())?,
+                    _ => spawn_llama_server(config.llama.as_ref().unwrap())?,
+                };
+                info!("Waiting for {} to become healthy...", backend_name);
+                inference.wait_for_health(120).await?;
+                Some(child)
+            } else {
+                info!("Skipping backend launch (--no-backend), connecting to port {}", port);
+                inference.wait_for_health(10).await?;
+                None
+            };
+
+            // Note: _backend_child is intentionally leaked here — the subprocess
+            // lives for the duration of the program. It's cleaned up on process exit.
+            std::mem::forget(_backend_child);
+
+            Ok((Backend::Http(inference), model_id))
+        }
+    }
+}
+
 async fn run_relay_session(
     relay_url: &str,
     identity: &NodeIdentity,
     display_name: &str,
     capabilities: &hardware::NodeCapabilities,
-    inference: &InferenceProxy,
+    inference: &Backend,
     device_info: &Value,
 ) -> anyhow::Result<()> {
     let (relay, mut incoming) = RelayClient::connect(relay_url, identity).await?;

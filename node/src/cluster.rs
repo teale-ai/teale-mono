@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{error, info, warn};
 
-use crate::inference::InferenceProxy;
+use crate::backend::Backend;
 use crate::relay::{RelayClient, RelayDataPayload};
 
 /// Decode the `data` field from a relayData payload.
@@ -110,7 +110,7 @@ pub struct ApiMessage {
 pub async fn handle_relay_data(
     relay: &RelayClient,
     payload: &RelayDataPayload,
-    inference: &InferenceProxy,
+    inference: &Backend,
     device_info_json: &Value,
 ) {
     let data_bytes = match decode_relay_data(&payload.data) {
@@ -181,7 +181,7 @@ async fn handle_inference_request(
     from: &str,
     session: &str,
     req: InferenceRequestPayload,
-    inference: &InferenceProxy,
+    inference: &Backend,
 ) {
     let request_id = &req.request_id;
 

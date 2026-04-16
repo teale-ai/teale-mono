@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Cross-platform TealeNet supply node agent"
 
+[features]
+default = []
+litert = []  # Enable LiteRT-LM in-process backend (requires prebuilt libengine.a)
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
