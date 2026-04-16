@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
 use crate::identity::NodeIdentity;
-use crate::inference::{spawn_llama_server, InferenceProxy};
+use crate::inference::{spawn_llama_server, spawn_mnn_server, InferenceProxy};
 use crate::relay::{IncomingRelayMessage, RelayClient};
 
 #[derive(Parser)]
@@ -22,9 +22,9 @@ struct Args {
     #[arg(short, long, default_value = "teale-node.toml")]
     config: String,
 
-    /// Skip launching llama-server (connect to existing instance)
-    #[arg(long)]
-    no_llama: bool,
+    /// Skip launching inference backend (connect to existing instance)
+    #[arg(long, alias = "no-llama")]
+    no_backend: bool,
 
     /// Override display name
     #[arg(long)]
@@ -56,17 +56,35 @@ async fn main() -> anyhow::Result<()> {
         hw.chip_name, hw.chip_family, hw.total_ram_gb, hw.tier
     );
 
-    // 3. Start llama-server (unless --no-llama)
-    let model_id = config.llama.model.clone();
-    let inference = InferenceProxy::new(config.llama.port, &model_id);
+    // 3. Start inference backend (unless --no-backend)
+    let (port, model_id) = match config.backend.as_str() {
+        "mnn" => {
+            let mnn = config.mnn.as_ref().unwrap();
+            let mid = mnn.model_id.clone().unwrap_or_else(|| {
+                std::path::Path::new(&mnn.model_dir)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| mnn.model_dir.clone())
+            });
+            (mnn.port, mid)
+        }
+        _ => {
+            let llama = config.llama.as_ref().unwrap();
+            (llama.port, llama.model.clone())
+        }
+    };
+    let inference = InferenceProxy::new(port, &model_id);
 
-    let _llama_child = if !args.no_llama {
-        let child = spawn_llama_server(&config.llama)?;
-        info!("Waiting for llama-server to become healthy...");
+    let _backend_child = if !args.no_backend {
+        let child = match config.backend.as_str() {
+            "mnn" => spawn_mnn_server(config.mnn.as_ref().unwrap())?,
+            _ => spawn_llama_server(config.llama.as_ref().unwrap())?,
+        };
+        info!("Waiting for {} to become healthy...", config.backend);
         inference.wait_for_health(120).await?;
         Some(child)
     } else {
-        info!("Skipping llama-server launch (--no-llama), connecting to port {}", config.llama.port);
+        info!("Skipping backend launch (--no-backend), connecting to port {}", port);
         inference.wait_for_health(10).await?;
         None
     };
