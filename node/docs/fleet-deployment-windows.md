@@ -98,10 +98,17 @@ Use `-ThrottleLimit` to control concurrency and avoid saturating the network.
 
 ## 32GB Test Machine
 
-For the test machine with more RAM, use a larger model for better quality:
+Run the same config as the fleet to validate before rollout:
 
 ```powershell
-# Larger model with bigger context:
+# Match fleet config exactly (Qwen3-4B, 8192 context, CPU-only):
+.\deploy-windows.ps1 -DisplayName "TestBench-32GB"
+```
+
+Once validated, you can optionally reconfigure for a larger model:
+
+```powershell
+# Upgrade to Qwen3-14B for better quality (after fleet validation):
 .\deploy-windows.ps1 -ContextSize 16384 -DisplayName "TestBench-32GB" `
     -ModelUrl "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/qwen3-14b-q4_k_m.gguf"
 ```
