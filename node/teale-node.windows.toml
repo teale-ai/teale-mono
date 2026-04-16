@@ -1,0 +1,28 @@
+# teale-node — Windows 16GB CPU-only configuration template
+# Copy this file to teale-node.toml and customize, or let deploy-windows.ps1 generate it.
+#
+# For 32GB machines: increase context_size to 8192 and consider a larger model
+# (e.g., Qwen3-14B Q4_K_M at ~8.5GB).
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[llama]
+# Path to llama-server binary (forward slashes work on Windows)
+binary = "C:/Teale/bin/llama-server.exe"
+# Path to GGUF model file
+model = "C:/Teale/models/qwen3-8b-q4_k_m.gguf"
+# CPU-only: no GPU layer offloading
+gpu_layers = 0
+# Conservative context for CPU inference on 16GB RAM
+context_size = 4096
+# Local port for llama-server HTTP API
+port = 11436
+# Threads = logical cores minus 2 (leave headroom for OS)
+# Adjust to match your CPU — deploy-windows.ps1 calculates this automatically
+extra_args = ["--threads", "6"]
+
+[node]
+display_name = "WIN-HOSTNAME"
+gpu_backend = "cpu"
+# gpu_vram_gb omitted — max_model_size_gb = 0.75 * total_ram_gb ≈ 12 GB

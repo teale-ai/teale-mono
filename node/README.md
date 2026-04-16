@@ -153,6 +153,18 @@ gpu_backend = "opencl"
 - **Smaller models**: Works well with Qwen3 0.6B and 1.7B which are ideal for 2–8GB phones
 - **No Google Play Services required**: Works on Huawei devices without GMS
 
+## Windows Fleet Deployment
+
+For deploying to multiple Windows machines (tested with 200+ nodes):
+
+```powershell
+# On each machine (or via Group Policy / PSRemoting):
+powershell -ExecutionPolicy Bypass -File \\share\teale\deploy-windows.ps1 `
+    -ModelSharePath "\\fileserver\teale\models\qwen3-8b-q4_k_m.gguf"
+```
+
+See [Fleet Deployment Guide](docs/fleet-deployment-windows.md) for detailed instructions including SCCM, Group Policy, and BranchCache strategies.
+
 ## Supported Platforms
 
 | Platform | GPU | Backend | Status |
