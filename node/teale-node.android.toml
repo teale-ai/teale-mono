@@ -1,0 +1,20 @@
+# teale-node — Android configuration (Pixel 9 Pro Fold)
+# Copy to device and edit paths as needed.
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[llama]
+# Termux path (if built in Termux):
+# binary = "/data/data/com.termux/files/usr/bin/llama-server"
+# ADB push path (if cross-compiled):
+binary = "/data/local/tmp/llama-server"
+model = "/storage/emulated/0/models/qwen3-4b-q4_k_m.gguf"
+gpu_layers = 999
+context_size = 2048
+port = 11436
+extra_args = ["--threads", "4"]
+
+[node]
+display_name = "Pixel 9 Pro Fold"
+gpu_backend = "vulkan"
