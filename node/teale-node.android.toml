@@ -1,5 +1,17 @@
 # teale-node — Android configuration (Pixel 9 Pro Fold)
 # Copy to device and edit paths as needed.
+#
+# Recommended model for Pixel 9 Pro Fold (Tensor G4, 16GB):
+#   Gemma 4 E4B GGUF — Google-optimized, 2.5GB Q4_K_M, vision + function calling
+#   https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF
+#
+#   Download:
+#     huggingface-cli download ggml-org/gemma-4-E4B-it-GGUF \
+#       gemma-4-E4B-it-Q4_K_M.gguf --local-dir /storage/emulated/0/models
+#
+# Alternative (non-Pixel Android phones):
+#   Qwen3.5 4B GGUF — https://huggingface.co/unsloth/Qwen3-4B-GGUF
+#   Or pre-built MNN format — https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN
 
 [relay]
 url = "wss://relay.teale.com/ws"
@@ -9,9 +21,9 @@ url = "wss://relay.teale.com/ws"
 # binary = "/data/data/com.termux/files/usr/bin/llama-server"
 # ADB push path (if cross-compiled):
 binary = "/data/local/tmp/llama-server"
-model = "/storage/emulated/0/models/qwen3-4b-q4_k_m.gguf"
+model = "/storage/emulated/0/models/Qwen3-4B-Q8_0.gguf"
 gpu_layers = 999
-context_size = 2048
+context_size = 4096
 port = 11436
 extra_args = ["--threads", "4"]
 

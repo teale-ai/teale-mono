@@ -28,14 +28,14 @@ display_name = "Linux GPU Server"
 # Discrete GPU VRAM in GB (omit for unified memory systems like Apple Silicon)
 # gpu_vram_gb = 24.0
 
-# ── Android (Termux) Example ──────────────────────────────────────────
-# For Google Pixel 9 Pro Fold or similar Android devices running Termux:
+# ── Android (Pixel / Tensor G4) Example ───────────────────────────────
+# For Google Pixel 9 Pro Fold (16GB, Tensor G4):
 #
 # [llama]
 # binary = "/data/data/com.termux/files/usr/bin/llama-server"
-# model = "/storage/emulated/0/models/qwen3-4b-q4_k_m.gguf"
+# model = "/storage/emulated/0/models/gemma-4-E4B-it-Q4_K_M.gguf"
 # gpu_layers = 999
-# context_size = 2048
+# context_size = 4096
 # port = 11436
 # extra_args = ["--threads", "4"]
 #
@@ -43,15 +43,15 @@ display_name = "Linux GPU Server"
 # display_name = "Pixel 9 Pro Fold"
 # gpu_backend = "vulkan"
 #
-# Recommended models for 16GB Android devices:
-#   Qwen3 4B Q4_K_M  (~2.5 GB) — best balance of speed and quality
-#   Qwen3 8B Q4_K_M  (~4.5 GB) — higher quality, slower
-#   Phi-3.5 Mini Q4   (~2.2 GB) — fast, good for chat
+# Recommended models for Pixel / Tensor devices (16GB):
+#   Gemma 4 E4B Q4_K_M (~2.5 GB) — Google-optimized, vision + function calling
+#     https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF
+#   Gemma 4 E2B Q8_0   (~5.0 GB) — smaller variant, still excellent
+#     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF
 #
-# Recommended settings:
-#   context_size: 2048 (safe) or 4096 (if model fits comfortably)
-#   gpu_layers:   999 (Vulkan offloads all layers on Mali-G715)
-#   threads:      4 (matches big core count on Tensor G4)
+# For non-Pixel Android phones:
+#   Qwen3.5 4B GGUF    (~2.5 GB) — best general-purpose
+#     https://huggingface.co/unsloth/Qwen3-4B-GGUF
 #
 # Environment variable overrides (if auto-detection fails):
 #   TEALE_CHIP_FAMILY=tensorG4 TEALE_CHIP_NAME="Google Tensor G4" teale-node ...
@@ -64,8 +64,8 @@ display_name = "Linux GPU Server"
 #
 # [mnn]
 # binary = "/data/data/com.termux/files/usr/bin/mnn_llm"
-# model_dir = "/storage/emulated/0/models/qwen3-0.6b-mnn"
-# model_id = "qwen3-0.6b"
+# model_dir = "/storage/emulated/0/models/qwen3.5-4b-mnn"
+# model_id = "qwen3.5-4b"
 # backend_type = "opencl"
 # context_size = 2048
 # port = 11437
@@ -75,11 +75,11 @@ display_name = "Linux GPU Server"
 # display_name = "Huawei Mate 60 Pro"
 # gpu_backend = "opencl"
 #
-# MNN model conversion (from Hugging Face):
-#   python3 MNN/transformers/llm/export/llm_export.py \
-#     --model Qwen/Qwen3-0.6B --quant_bit 4 --output_dir ./qwen3-0.6b-mnn
+# Pre-built MNN models (no conversion needed):
+#   Qwen3.5 4B: https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN
+#   Qwen3 4B:   https://huggingface.co/taobao-mnn/Qwen3-4B-MNN
 #
-# Recommended models for constrained Android devices:
-#   2-4 GB RAM: Qwen3 0.6B Q4  (~400 MB) — fast tool-calling
-#   4-8 GB RAM: Qwen3 1.7B Q4  (~1.1 GB) — best sub-4B quality
-#   8-12 GB RAM: Qwen3 1.7B Q8 (~1.9 GB) — highest reliability
+# Recommended MNN models by device RAM:
+#   8-16 GB: Qwen3.5 4B MNN (~2.5 GB) — best quality, hybrid architecture
+#   4-8 GB:  Qwen3 4B MNN   (~2.5 GB) — proven, wide language support
+#   2-4 GB:  Qwen3 0.6B     (~400 MB) — convert via llm_export
