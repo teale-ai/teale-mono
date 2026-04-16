@@ -74,25 +74,38 @@ cp target/release/teale-node $PREFIX/bin/
 
 ### Download a model
 
+For **Pixel 9 Pro Fold** (Tensor G4) — use Gemma 4 E4B, which is hardware-optimized for Tensor chips:
+
 ```bash
 pip install huggingface-hub
-huggingface-cli download Qwen/Qwen3-4B-GGUF qwen3-4b-q4_k_m.gguf \
-  --local-dir /storage/emulated/0/models
+# Recommended: Gemma 4 E4B (2.5GB Q4, vision + function calling)
+huggingface-cli download ggml-org/gemma-4-E4B-it-GGUF \
+  gemma-4-E4B-it-Q4_K_M.gguf --local-dir /storage/emulated/0/models
 ```
+
+For **non-Pixel Android phones** — use Qwen3.5 4B:
+
+```bash
+# Qwen3.5 4B GGUF (for llama-server)
+huggingface-cli download unsloth/Qwen3-4B-GGUF \
+  Qwen3-4B-Q4_K_M.gguf --local-dir /storage/emulated/0/models
+```
+
+See [Model Recommendations](#model-recommendations) below for the full breakdown by device and RAM.
 
 ### Configure and run
 
 ```bash
-cp teale-node.example.toml teale-node.toml
-# Edit for Android — see the Android example at the bottom of the example file
+cp teale-node.android.toml teale-node.toml
+# Edit paths as needed
 teale-node --config teale-node.toml
 ```
 
 Key settings for Pixel 9 Pro Fold (16GB):
 - `gpu_backend = "vulkan"` (Mali-G715 GPU)
-- `context_size = 2048` (or 4096 for smaller models)
+- `context_size = 4096` (E4B at 2.5GB leaves plenty of headroom)
 - `gpu_layers = 999` (full GPU offload via Vulkan)
-- Model: Qwen3 4B Q4_K_M (~2.5 GB) or Phi-3.5 Mini Q4 (~2.2 GB)
+- Model: [Gemma 4 E4B GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) (~2.5 GB Q4_K_M)
 
 ### Tips
 
@@ -116,9 +129,21 @@ cmake --build build -j4
 cp build/mnn_llm $PREFIX/bin/
 ```
 
-### Convert a model
+### Download a model
 
-MNN uses its own model format. Convert from Hugging Face:
+Pre-built MNN models are available from the Alibaba MNN team (no conversion needed):
+
+```bash
+# Qwen3.5 4B — recommended for 8-16GB phones
+huggingface-cli download taobao-mnn/Qwen3.5-4B-MNN \
+  --local-dir /storage/emulated/0/models/qwen3.5-4b-mnn
+
+# Qwen3 4B — alternative
+huggingface-cli download taobao-mnn/Qwen3-4B-MNN \
+  --local-dir /storage/emulated/0/models/qwen3-4b-mnn
+```
+
+To convert other models manually:
 
 ```bash
 python3 MNN/transformers/llm/export/llm_export.py \
@@ -135,8 +160,8 @@ backend = "mnn"
 
 [mnn]
 binary = "/data/data/com.termux/files/usr/bin/mnn_llm"
-model_dir = "/storage/emulated/0/models/qwen3-0.6b-mnn"
-model_id = "qwen3-0.6b"
+model_dir = "/storage/emulated/0/models/qwen3.5-4b-mnn"
+model_id = "qwen3.5-4b"
 backend_type = "opencl"
 context_size = 2048
 port = 11437
@@ -150,7 +175,7 @@ gpu_backend = "opencl"
 
 - **OpenCL**: MNN's OpenCL backend is significantly faster on Mali GPUs (Kirin, Exynos, MediaTek) than llama.cpp's Vulkan
 - **Optimized for mobile**: Built by Alibaba specifically for on-device inference
-- **Smaller models**: Works well with Qwen3 0.6B and 1.7B which are ideal for 2–8GB phones
+- **Pre-built models**: [Qwen3.5 4B MNN](https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN) and [Qwen3 4B MNN](https://huggingface.co/taobao-mnn/Qwen3-4B-MNN) are ready to deploy
 - **No Google Play Services required**: Works on Huawei devices without GMS
 
 ## Windows Fleet Deployment
@@ -164,6 +189,30 @@ powershell -ExecutionPolicy Bypass -File \\share\teale\deploy-windows.ps1 `
 ```
 
 See [Fleet Deployment Guide](docs/fleet-deployment-windows.md) for detailed instructions including SCCM, Group Policy, and BranchCache strategies.
+
+## Model Recommendations
+
+### Pixel / Tensor G4 devices (16GB)
+
+Use **Gemma 4 E4B** — Google-optimized for Tensor hardware with dedicated AI core acceleration.
+
+| Format | Model | Size | Link |
+|--------|-------|------|------|
+| GGUF (llama-server) | Gemma 4 E4B Q4_K_M | ~2.5 GB | [ggml-org/gemma-4-E4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF) |
+| GGUF (llama-server) | Gemma 4 E2B Q8_0 | ~5.0 GB | [ggml-org/gemma-4-E2B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF) |
+
+Gemma 4 E4B gives you vision + audio + function calling at 2.5GB, leaving massive headroom on 16GB. Use E4B over E2B — it has more effective parameters and multimodal support.
+
+### Non-Pixel Android (Snapdragon, Kirin, Exynos, MediaTek)
+
+| RAM | Backend | Model | Size | Link |
+|-----|---------|-------|------|------|
+| 8–16 GB | MNN | Qwen3.5 4B MNN | ~2.5 GB | [taobao-mnn/Qwen3.5-4B-MNN](https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN) |
+| 8–16 GB | llama-server | Qwen3 4B GGUF | ~2.5 GB | [unsloth/Qwen3-4B-GGUF](https://huggingface.co/unsloth/Qwen3-4B-GGUF) |
+| 4–8 GB | MNN | Qwen3 4B MNN | ~2.5 GB | [taobao-mnn/Qwen3-4B-MNN](https://huggingface.co/taobao-mnn/Qwen3-4B-MNN) |
+| 2–4 GB | MNN | Qwen3 0.6B | ~400 MB | Convert via llm_export |
+
+Qwen3.5 is a generation newer than Qwen3 with hybrid Gated Delta Networks + sparse MoE architecture and 201 language support. Prefer it over Qwen3 when RAM allows.
 
 ## Supported Platforms
 
