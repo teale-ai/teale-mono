@@ -30,11 +30,11 @@ cargo build --release
 .\scripts\deploy-windows.ps1
 ```
 
-This downloads llama-server, NSSM, and the default model (Qwen3-8B Q4_K_M), then installs and starts the TealeNode Windows Service.
+This downloads llama-server, NSSM, and the default model (Qwen3-4B Q4_K_M, ~2.8GB), then installs and starts the TealeNode Windows Service.
 
 ## Model Distribution (Fleet)
 
-Downloading a 5GB model individually on 200+ machines is slow and wasteful. Choose a strategy:
+Downloading the model individually on 200+ machines is wasteful. Choose a strategy:
 
 ### Option A: Network File Share (recommended for LAN)
 
@@ -46,7 +46,7 @@ mkdir \\fileserver\teale\models
 # Copy the GGUF model there
 
 # Deploy with share path:
-.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\qwen3-8b-q4_k_m.gguf"
+.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\qwen3-4b-q4_k_m.gguf"
 ```
 
 The script copies the model locally to `C:\Teale\models\`. For fast LANs, you could also point the config directly at the UNC path (requires the SYSTEM account to have read access to the share).
@@ -73,7 +73,7 @@ $machines = Get-Content .\machine-list.txt
 
 # Copy files to a share accessible from all machines, then:
 Invoke-Command -ComputerName $machines -ThrottleLimit 20 -FilePath \\share\teale\deploy-windows.ps1 -ArgumentList @(
-    "-ModelSharePath", "\\fileserver\teale\models\qwen3-8b-q4_k_m.gguf"
+    "-ModelSharePath", "\\fileserver\teale\models\qwen3-4b-q4_k_m.gguf"
 )
 ```
 
@@ -85,7 +85,7 @@ Use `-ThrottleLimit` to control concurrency and avoid saturating the network.
 2. Create a GPO: Computer Configuration > Policies > Windows Settings > Scripts > Startup
 3. Add the PowerShell script with parameters:
    ```
-   -TealeNodePath "\\share\teale\teale-node.exe" -ModelSharePath "\\share\teale\models\qwen3-8b-q4_k_m.gguf"
+   -TealeNodePath "\\share\teale\teale-node.exe" -ModelSharePath "\\share\teale\models\qwen3-4b-q4_k_m.gguf"
    ```
 4. Link the GPO to the OU containing target machines
 5. Machines execute on next reboot
@@ -98,14 +98,11 @@ Use `-ThrottleLimit` to control concurrency and avoid saturating the network.
 
 ## 32GB Test Machine
 
-For the test machine with more RAM, increase the context size and optionally use a larger model:
+For the test machine with more RAM, use a larger model for better quality:
 
 ```powershell
-# Same model, larger context:
-.\deploy-windows.ps1 -ContextSize 8192 -DisplayName "TestBench-32GB"
-
-# Or use a larger model (Qwen3-14B Q4_K_M, ~8.5GB):
-.\deploy-windows.ps1 -ContextSize 8192 -DisplayName "TestBench-32GB" `
+# Larger model with bigger context:
+.\deploy-windows.ps1 -ContextSize 16384 -DisplayName "TestBench-32GB" `
     -ModelUrl "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/qwen3-14b-q4_k_m.gguf"
 ```
 
@@ -202,5 +199,5 @@ C:\Teale\
 │   ├── teale-node-stdout.log # Application log
 │   └── teale-node-stderr.log # Error log
 └── models\
-    └── qwen3-8b-q4_k_m.gguf # GGUF model (~5GB)
+    └── qwen3-4b-q4_k_m.gguf # GGUF model (~2.8GB)
 ```
