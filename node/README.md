@@ -180,17 +180,16 @@ gpu_backend = "opencl"
 
 ## LiteRT-LM (Pixel / Tensor — In-Process)
 
-For Pixel devices with Tensor chips, LiteRT-LM runs inference **in-process** via FFI — no subprocess, no HTTP proxy, single binary. This uses Google's on-device runtime with GPU/NPU acceleration optimized for Gemma models.
+For Pixel devices with Tensor chips, LiteRT-LM uses Google's on-device runtime with GPU/NPU acceleration optimized for Gemma models.
 
-### Build with LiteRT-LM support
+### Build litert_lm_main
 
 ```bash
-# 1. Build the LiteRT-LM static library (one-time, requires Bazel + NDK)
+# One-time: build the LiteRT-LM binary + GPU plugins (requires Bazel + NDK)
 ./scripts/build-litert.sh
-
-# 2. Cross-compile teale-node with litert feature
-./scripts/build-android.sh --features litert
 ```
+
+This produces `lib/android_arm64/litert_lm_main` (15MB stripped) and GPU accelerator `.so` files.
 
 ### Download model
 
@@ -203,17 +202,19 @@ huggingface-cli download litert-community/gemma-4-E4B-it-litert-lm \
 
 ```bash
 adb push target/aarch64-linux-android/release/teale-node /data/local/tmp/
+adb push lib/android_arm64/litert_lm_main /data/local/tmp/
 adb push lib/android_arm64/*.so /data/local/tmp/lib/   # GPU accelerator plugins
 adb push teale-node.litert.toml /data/local/tmp/teale-node.toml
+adb shell chmod +x /data/local/tmp/teale-node /data/local/tmp/litert_lm_main
 adb shell /data/local/tmp/teale-node --config /data/local/tmp/teale-node.toml
 ```
 
 ### Why LiteRT-LM?
 
-- **Single binary**: No llama-server subprocess, no Python, no Node.js
 - **Hardware-optimized**: Tensor G4's dedicated AI cores accelerate Gemma models directly
-- **Smallest footprint**: One binary + model file + GPU plugins
-- **Multimodal**: Supports vision + audio input natively via the C API
+- **No Python/Node.js**: Just two binaries (teale-node + litert_lm_main) + model file
+- **Multimodal**: Supports vision + audio input natively
+- **GPU plugins**: Prebuilt OpenCL and GPU accelerators for maximum throughput
 
 ## Windows Fleet Deployment
 

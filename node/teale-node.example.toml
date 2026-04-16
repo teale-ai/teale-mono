@@ -85,13 +85,13 @@ display_name = "Linux GPU Server"
 #   2-4 GB:  Qwen3 0.6B     (~400 MB) — convert via llm_export
 
 # ── LiteRT-LM Backend (Pixel / Tensor devices) ──────────────────────
-# In-process inference via Google's LiteRT-LM runtime. Optimized for
-# Tensor G4 with GPU/NPU acceleration. No subprocess — single binary.
-# Requires: cargo build --features litert
+# Spawns litert_lm_main for on-device inference. Optimized for
+# Tensor G4 with GPU/NPU acceleration via Google's LiteRT-LM runtime.
 #
 # backend = "litert"
 #
 # [litert]
+# binary = "/data/local/tmp/litert_lm_main"
 # model = "/storage/emulated/0/models/gemma-4-E4B-it.litertlm"
 # model_id = "gemma-4-E4B-it"
 # backend_type = "gpu"    # "cpu", "gpu", or "npu"
@@ -102,5 +102,6 @@ display_name = "Linux GPU Server"
 # display_name = "Pixel 9 Pro Fold"
 # gpu_backend = "gpu"
 #
+# Build litert_lm_main: ./scripts/build-litert.sh
 # Model: https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm
 # See also: teale-node.litert.toml for a ready-to-use config

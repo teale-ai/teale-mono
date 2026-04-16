@@ -55,8 +55,10 @@ pub struct MnnConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields used via FFI when litert feature is enabled
 pub struct LiteRtConfig {
+    /// Path to litert_lm_main binary (defaults to searching PATH)
+    #[serde(default)]
+    pub binary: Option<String>,
     /// Path to .litertlm model file
     pub model: String,
     /// Model identifier reported to the network (defaults to model filename)

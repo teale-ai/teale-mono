@@ -4,7 +4,6 @@ mod config;
 mod hardware;
 mod identity;
 mod inference;
-#[cfg(feature = "litert")]
 mod litert;
 mod relay;
 
@@ -92,20 +91,11 @@ async fn main() -> anyhow::Result<()> {
 /// Returns the Backend and model_id string.
 async fn start_backend(config: &Config, args: &Args) -> anyhow::Result<(Backend, String)> {
     match config.backend.as_str() {
-        #[cfg(feature = "litert")]
         "litert" => {
             let litert_config = config.litert.as_ref().unwrap();
             let engine = litert::LiteRtEngine::new(litert_config)?;
             let model_id = engine.loaded_models().into_iter().next().unwrap_or_default();
             Ok((Backend::LiteRt(engine), model_id))
-        }
-
-        #[cfg(not(feature = "litert"))]
-        "litert" => {
-            anyhow::bail!(
-                "LiteRT-LM backend requires the 'litert' feature. \
-                 Rebuild with: cargo build --features litert"
-            );
         }
 
         backend_name => {
