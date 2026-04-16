@@ -75,17 +75,19 @@ impl LiteRtEngine {
         request: &ChatCompletionRequest,
     ) -> anyhow::Result<mpsc::UnboundedReceiver<Value>> {
         let prompt = format_chat_prompt(&request.messages);
-        let max_tokens = request.max_tokens.unwrap_or(self.context_size);
 
         let mut cmd = Command::new(&self.binary);
         cmd.arg("--model_path").arg(&self.model)
             .arg("--backend").arg(&self.backend_type)
-            .arg("--max_tokens").arg(max_tokens.to_string())
-            .arg("--prompt").arg(&prompt);
+            .arg("--input_prompt").arg(&prompt);
 
-        if let Some(ref cache_dir) = self.cache_dir {
-            cmd.arg("--cache_dir").arg(cache_dir);
-        }
+        // Set LD_LIBRARY_PATH so GPU plugins are found
+        let binary_dir = std::path::Path::new(&self.binary)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let lib_path = format!("{}/lib:{}", binary_dir, binary_dir);
+        cmd.env("LD_LIBRARY_PATH", &lib_path);
 
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
