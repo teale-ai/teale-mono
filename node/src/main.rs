@@ -25,7 +25,7 @@ use crate::cluster::NodeRuntimeState;
 use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
 use crate::identity::NodeIdentity;
-use crate::inference::{build_llama_command, build_mnn_command, InferenceProxy};
+use crate::inference::{build_llama_command, build_mnn_command, fetch_first_model, spawn_mesh_server, InferenceProxy};
 use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
 use crate::swap::{ModelSlot, SwapManager};
@@ -201,6 +201,44 @@ async fn start_backend(
             Ok((Backend::LiteRt(engine), model_id, None))
         }
 
+        "mesh" => {
+            // Mesh-LLM serves OpenAI-compat on its own port; we either spawn
+            // the subprocess under our Supervisor (for auto-restart) or
+            // attach to an externally-managed instance. Readiness is probed
+            // via `/v1/models` because mesh-llm has no `/health`.
+            let mesh = config.mesh.as_ref().unwrap().clone();
+            let base_url = mesh
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| format!("http://127.0.0.1:{}", mesh.port));
+
+            let supervisor_opt = match (&mesh.binary, args.no_backend) {
+                (Some(binary), false) => {
+                    let binary = binary.clone();
+                    let cfg = mesh.clone();
+                    Some(Supervisor::spawn("mesh-llm", move || {
+                        spawn_mesh_server(&cfg, &binary)
+                    }))
+                }
+                _ => {
+                    info!("Attaching to mesh-llm at {} (not spawning)", base_url);
+                    None
+                }
+            };
+
+            let bootstrap = InferenceProxy::with_base_url(&base_url, "", "/v1/models");
+            info!("Waiting for mesh-llm to become ready at {}...", base_url);
+            bootstrap.wait_for_health(120).await?;
+
+            let model_id = match mesh.model_id.clone() {
+                Some(id) => id,
+                None => fetch_first_model(&base_url).await?,
+            };
+            info!("mesh-llm serving model: {}", model_id);
+
+            let inference = InferenceProxy::with_base_url(&base_url, &model_id, "/v1/models");
+            return Ok((Backend::Http(inference), model_id, supervisor_opt));
+        }
         backend_name => {
             let (port, model_id) = match backend_name {
                 "mnn" => {

@@ -1,0 +1,46 @@
+# teale-node — Mesh-LLM configuration
+# https://github.com/Mesh-LLM/mesh-llm
+#
+# Mesh-LLM pools multiple machines' GPUs behind a single OpenAI-compatible
+# endpoint. Use this backend when one device cannot hold the model alone —
+# e.g. a group of phones collaborating to serve a larger model than any
+# single phone could host.
+#
+# Install mesh-llm (see upstream for platform specifics):
+#   curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | bash
+#
+# Primary mode: mesh-llm runs as its own service (e.g. `mesh-llm serve --auto`),
+# teale-node attaches to it. This keeps the mesh-llm web console at
+# http://localhost:3131 available for cluster topology / capacity monitoring.
+
+backend = "mesh"
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[mesh]
+# Full base URL of the mesh-llm OpenAI-compatible server. If this host runs
+# mesh-llm itself, keep it on localhost; if teale-node proxies for a mesh
+# head on another machine, point at that host.
+endpoint = "http://127.0.0.1:9337"
+
+# Explicit model id reported to the relay. If omitted, teale-node queries
+# /v1/models at startup and uses the first entry.
+# model_id = "llama-3.1-8b-instruct"
+
+[node]
+display_name = "mesh-head-01"
+# gpu_backend = "cuda"      # auto-detected if omitted
+# gpu_vram_gb = 24.0        # optional
+
+
+# ── Alt: let teale-node spawn mesh-llm ──────────────────────────────
+# Set `binary` to have teale-node launch and supervise the subprocess.
+# `serve_args` is passed through verbatim to `mesh-llm serve`. Make sure
+# any `--port` you pass here matches the `port` / `endpoint` above.
+#
+# [mesh]
+# binary = "mesh-llm"
+# port = 9337
+# serve_args = ["--auto"]
+# # serve_args = ["--model", "ggml-org/gemma-3-4B-it-GGUF"]
