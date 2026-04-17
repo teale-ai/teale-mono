@@ -6,7 +6,13 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::cluster::ChatCompletionRequest;
-use crate::config::LlamaConfig;
+use crate::config::{LlamaConfig, MnnConfig};
+
+fn is_mobile_environment() -> bool {
+    cfg!(target_os = "android")
+        || std::env::var("ANDROID_ROOT").is_ok()
+        || std::path::Path::new("/system/build.prop").exists()
+}
 
 /// Manages a llama-server subprocess and proxies inference requests to it.
 #[derive(Clone)]
@@ -128,6 +134,13 @@ pub fn spawn_llama_server(config: &LlamaConfig) -> anyhow::Result<Child> {
         config.binary, config.model, config.port, config.gpu_layers
     );
 
+    if config.context_size > 4096 && is_mobile_environment() {
+        tracing::warn!(
+            "Context size {} may cause memory pressure on mobile. Consider 2048-4096 for Android devices.",
+            config.context_size
+        );
+    }
+
     let mut cmd = Command::new(&config.binary);
     cmd.arg("--model").arg(&config.model)
         .arg("--port").arg(config.port.to_string())
@@ -152,6 +165,53 @@ pub fn spawn_llama_server(config: &LlamaConfig) -> anyhow::Result<Child> {
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 info!("[llama-server] {}", line);
+            }
+        });
+    }
+
+    Ok(child)
+}
+
+/// Spawn mnn_llm as a subprocess (MNN-LLM inference backend).
+pub fn spawn_mnn_server(config: &MnnConfig) -> anyhow::Result<Child> {
+    info!(
+        "Starting mnn_llm: binary={}, model_dir={}, port={}",
+        config.binary, config.model_dir, config.port
+    );
+
+    if config.context_size > 4096 && is_mobile_environment() {
+        tracing::warn!(
+            "Context size {} may cause memory pressure on mobile. Consider 1024-2048 for MNN on Android devices.",
+            config.context_size
+        );
+    }
+
+    let mut cmd = Command::new(&config.binary);
+    cmd.arg("--model_dir").arg(&config.model_dir)
+        .arg("--port").arg(config.port.to_string())
+        .arg("--max_length").arg(config.context_size.to_string());
+
+    if let Some(ref backend_type) = config.backend_type {
+        cmd.arg("--backend_type").arg(backend_type);
+    }
+
+    for arg in &config.extra_args {
+        cmd.arg(arg);
+    }
+
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn mnn_llm at '{}': {}", config.binary, e))?;
+
+    // Log stderr in background
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                info!("[mnn_llm] {}", line);
             }
         });
     }

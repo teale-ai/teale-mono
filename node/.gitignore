@@ -1,3 +1,9 @@
 target/
 *.swp
 .DS_Store
+.context/
+
+# Prebuilt LiteRT-LM artifacts (built by scripts/build-litert.sh)
+lib/android_arm64/*.so
+lib/android_arm64/*.a
+lib/android_arm64/litert_lm_main

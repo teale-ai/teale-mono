@@ -1,6 +1,9 @@
 # teale-node — Cross-platform TealeNet supply node configuration
 # Copy this file to teale-node.toml and customize.
 
+# Inference backend: "llama" (default) or "mnn"
+# backend = "llama"
+
 [relay]
 url = "wss://relay.teale.com/ws"
 
@@ -24,3 +27,81 @@ display_name = "Linux GPU Server"
 # gpu_backend = "cuda"
 # Discrete GPU VRAM in GB (omit for unified memory systems like Apple Silicon)
 # gpu_vram_gb = 24.0
+
+# ── Android (Pixel / Tensor G4) Example ───────────────────────────────
+# For Google Pixel 9 Pro Fold (16GB, Tensor G4):
+#
+# [llama]
+# binary = "/data/data/com.termux/files/usr/bin/llama-server"
+# model = "/storage/emulated/0/models/gemma-4-E4B-it-Q4_K_M.gguf"
+# gpu_layers = 999
+# context_size = 4096
+# port = 11436
+# extra_args = ["--threads", "4"]
+#
+# [node]
+# display_name = "Pixel 9 Pro Fold"
+# gpu_backend = "vulkan"
+#
+# Recommended models for Pixel / Tensor devices (16GB):
+#   Gemma 4 E4B Q4_K_M (~2.5 GB) — Google-optimized, vision + function calling
+#     https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF
+#   Gemma 4 E2B Q8_0   (~5.0 GB) — smaller variant, still excellent
+#     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF
+#
+# For non-Pixel Android phones:
+#   Qwen3.5 4B GGUF    (~2.5 GB) — best general-purpose
+#     https://huggingface.co/unsloth/Qwen3-4B-GGUF
+#
+# Environment variable overrides (if auto-detection fails):
+#   TEALE_CHIP_FAMILY=tensorG4 TEALE_CHIP_NAME="Google Tensor G4" teale-node ...
+
+# ── MNN-LLM Backend (Huawei / Mali GPU devices) ──────────────────────
+# For Huawei phones (Kirin SoC) or other devices where OpenCL is faster
+# than Vulkan. Set backend = "mnn" at the top of this file.
+#
+# backend = "mnn"
+#
+# [mnn]
+# binary = "/data/data/com.termux/files/usr/bin/mnn_llm"
+# model_dir = "/storage/emulated/0/models/qwen3.5-4b-mnn"
+# model_id = "qwen3.5-4b"
+# backend_type = "opencl"
+# context_size = 2048
+# port = 11437
+# # extra_args = ["--thread_num", "4"]
+#
+# [node]
+# display_name = "Huawei Mate 60 Pro"
+# gpu_backend = "opencl"
+#
+# Pre-built MNN models (no conversion needed):
+#   Qwen3.5 4B: https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN
+#   Qwen3 4B:   https://huggingface.co/taobao-mnn/Qwen3-4B-MNN
+#
+# Recommended MNN models by device RAM:
+#   8-16 GB: Qwen3.5 4B MNN (~2.5 GB) — best quality, hybrid architecture
+#   4-8 GB:  Qwen3 4B MNN   (~2.5 GB) — proven, wide language support
+#   2-4 GB:  Qwen3 0.6B     (~400 MB) — convert via llm_export
+
+# ── LiteRT-LM Backend (Pixel / Tensor devices) ──────────────────────
+# Spawns litert_lm_main for on-device inference. Optimized for
+# Tensor G4 with GPU/NPU acceleration via Google's LiteRT-LM runtime.
+#
+# backend = "litert"
+#
+# [litert]
+# binary = "/data/local/tmp/litert_lm_main"
+# model = "/storage/emulated/0/models/gemma-4-E4B-it.litertlm"
+# model_id = "gemma-4-E4B-it"
+# backend_type = "gpu"    # "cpu", "gpu", or "npu"
+# context_size = 4096
+# # cache_dir = "/data/local/tmp/litert-cache"
+#
+# [node]
+# display_name = "Pixel 9 Pro Fold"
+# gpu_backend = "gpu"
+#
+# Build litert_lm_main: ./scripts/build-litert.sh
+# Model: https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm
+# See also: teale-node.litert.toml for a ready-to-use config
