@@ -18,10 +18,10 @@
     .\deploy-windows.ps1
 
     # Install using a model from a network share (recommended for fleet):
-    .\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\qwen3-8b-q4_k_m.gguf"
+    .\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\qwen3-4b-q4_k_m.gguf"
 
-    # Install on 32GB test machine with larger context:
-    .\deploy-windows.ps1 -ContextSize 8192 -DisplayName "TestBench-32GB"
+    # Install on test machine:
+    .\deploy-windows.ps1 -DisplayName "TestBench-32GB"
 
     # Uninstall:
     .\deploy-windows.ps1 -Uninstall
@@ -39,13 +39,13 @@ param(
     [string]$ModelSharePath = "",
 
     # Direct download URL for the GGUF model
-    [string]$ModelUrl = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/qwen3-4b-q4_k_m.gguf",
+    [string]$ModelUrl = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
 
     # Model filename (derived from URL if not set)
     [string]$ModelFilename = "",
 
     # llama.cpp release tag for downloading llama-server
-    [string]$LlamaRelease = "b5200",
+    [string]$LlamaRelease = "b8815",
 
     # GPU layers to offload (0 = CPU-only, 999 = all)
     [int]$GpuLayers = 0,
@@ -100,7 +100,7 @@ if ($Uninstall) {
         }
         Write-Host "Service removed."
     } else {
-        Write-Host "Service not found — nothing to remove."
+        Write-Host "Service not found, nothing to remove."
     }
 
     if ($RemoveFiles -and (Test-Path $InstallDir)) {
@@ -149,17 +149,12 @@ if ($TealeNodePath -eq "") {
 }
 
 if ($TealeNodePath -eq "" -or -not (Test-Path $TealeNodePath)) {
-    Write-Error @"
-teale-node.exe not found. Provide the path with -TealeNodePath, or place it:
-  - Next to this script: $PSScriptRoot\teale-node.exe
-  - In the build output:  $PSScriptRoot\..\target\release\teale-node.exe
-
-Build it with: cargo build --release --target x86_64-pc-windows-gnu
-"@
+    $msg = "teale-node.exe not found. Use -TealeNodePath or place it next to this script: " + $PSScriptRoot + "\teale-node.exe"
+    Write-Error $msg
     exit 1
 }
 
-Write-Host "Using teale-node.exe: $TealeNodePath"
+Write-Host "Found teale-node.exe at $TealeNodePath"
 Copy-Item -Path $TealeNodePath -Destination $TealeExe -Force
 
 # --- Download NSSM ---
@@ -170,18 +165,19 @@ if (-not (Test-Path $NssmExe)) {
 
     Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $nssmZip -UseBasicParsing
     Expand-Archive -Path $nssmZip -DestinationPath $env:TEMP -Force
-    Copy-Item -Path (Join-Path $nssmExtract "win64\nssm.exe") -Destination $NssmExe -Force
+    $nssmSrc = Join-Path $nssmExtract "win64\nssm.exe"
+    Copy-Item -Path $nssmSrc -Destination $NssmExe -Force
 
     Remove-Item -Path $nssmZip -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $nssmExtract -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "NSSM installed: $NssmExe"
+    Write-Host "NSSM installed at $NssmExe"
 } else {
-    Write-Host "NSSM already present: $NssmExe"
+    Write-Host "NSSM already present at $NssmExe"
 }
 
 # --- Download llama-server ---
 if (-not (Test-Path $LlamaExe)) {
-    Write-Host "Downloading llama-server (CPU, release $LlamaRelease)..."
+    Write-Host "Downloading llama-server CPU release $LlamaRelease..."
     $llamaZip = Join-Path $env:TEMP "llama-server-win-cpu.zip"
     $llamaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaRelease/llama-$LlamaRelease-bin-win-cpu-x64.zip"
 
@@ -205,9 +201,9 @@ if (-not (Test-Path $LlamaExe)) {
 
     Remove-Item -Path $llamaZip -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $llamaExtract -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "llama-server installed: $LlamaExe"
+    Write-Host "llama-server installed at $LlamaExe"
 } else {
-    Write-Host "llama-server already present: $LlamaExe"
+    Write-Host "llama-server already present at $LlamaExe"
 }
 
 # --- Download or copy model ---
@@ -226,7 +222,7 @@ if (-not (Test-Path $ModelPath)) {
         Write-Host "Copying model from share: $ModelSharePath"
         Copy-Item -Path $ModelSharePath -Destination $ModelPath -Force
     } else {
-        Write-Host "Downloading model: $ModelFilename (this may take a while)..."
+        Write-Host "Downloading model: $ModelFilename  (this may take a while...)"
         # Use BITS for resumable download with progress
         try {
             Start-BitsTransfer -Source $ModelUrl -Destination $ModelPath -Description "Downloading $ModelFilename"
@@ -235,33 +231,34 @@ if (-not (Test-Path $ModelPath)) {
             Invoke-WebRequest -Uri $ModelUrl -OutFile $ModelPath -UseBasicParsing
         }
     }
-    $sizeMB = [math]::Round((Get-Item $ModelPath).Length / 1MB, 1)
-    Write-Host "Model ready: $ModelPath ($sizeMB MB)"
+    $fileSize = [math]::Round((Get-Item $ModelPath).Length / 1048576, 1)
+    Write-Host "Model ready at $ModelPath -- $fileSize megabytes"
 } else {
-    $sizeMB = [math]::Round((Get-Item $ModelPath).Length / 1MB, 1)
-    Write-Host "Model already present: $ModelPath ($sizeMB MB)"
+    $fileSize = [math]::Round((Get-Item $ModelPath).Length / 1048576, 1)
+    Write-Host "Model already present at $ModelPath -- $fileSize megabytes"
 }
 
 # --- Calculate thread count ---
 $logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
 $threads = [math]::Max(2, $logicalCores - 2)
-Write-Host "CPU: $logicalCores logical cores -> using $threads threads for inference"
+Write-Host "CPU: $logicalCores logical cores, using $threads threads for inference"
 
 # --- Generate teale-node.toml ---
 # Use forward slashes for TOML (Rust handles both on Windows)
 $llamaPath  = $LlamaExe.Replace('\', '/')
-$modelPath  = $ModelPath.Replace('\', '/')
+$modelToml  = $ModelPath.Replace('\', '/')
+$ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
 
 $tomlContent = @"
-# teale-node configuration — auto-generated by deploy-windows.ps1
-# Machine: $env:COMPUTERNAME | RAM: $([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)) GB | Cores: $logicalCores
+# teale-node configuration -- auto-generated by deploy-windows.ps1
+# Machine: $env:COMPUTERNAME | RAM: $ramGB GB | Cores: $logicalCores
 
 [relay]
 url = "$RelayUrl"
 
 [llama]
 binary = "$llamaPath"
-model = "$modelPath"
+model = "$modelToml"
 gpu_layers = $GpuLayers
 context_size = $ContextSize
 port = 11436
@@ -273,13 +270,13 @@ gpu_backend = "cpu"
 "@
 
 Set-Content -Path $ConfigFile -Value $tomlContent -Encoding UTF8
-Write-Host "Config written: $ConfigFile"
+Write-Host "Config written to $ConfigFile"
 
 # --- Install or update Windows Service via NSSM ---
 $existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 
 if ($existingService) {
-    Write-Host "Service already exists — stopping for update..."
+    Write-Host "Service already exists, stopping for update..."
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
     # Update the executable path (in case of upgrade)
@@ -294,13 +291,15 @@ if ($existingService) {
 # Configure service properties
 & $NssmExe set $ServiceName AppDirectory $InstallDir
 & $NssmExe set $ServiceName DisplayName "Teale Node"
-& $NssmExe set $ServiceName Description "TealeNet inference supply node — contributes CPU inference capacity to the Teale network."
+& $NssmExe set $ServiceName Description "TealeNet inference supply node"
 
 # Logging
-& $NssmExe set $ServiceName AppStdout (Join-Path $LogDir "teale-node-stdout.log")
-& $NssmExe set $ServiceName AppStderr (Join-Path $LogDir "teale-node-stderr.log")
+$stdoutLog = Join-Path $LogDir "teale-node-stdout.log"
+$stderrLog = Join-Path $LogDir "teale-node-stderr.log"
+& $NssmExe set $ServiceName AppStdout $stdoutLog
+& $NssmExe set $ServiceName AppStderr $stderrLog
 & $NssmExe set $ServiceName AppRotateFiles 1
-& $NssmExe set $ServiceName AppRotateBytes 10485760  # 10 MB log rotation
+& $NssmExe set $ServiceName AppRotateBytes 10485760
 
 # Restart on failure (5s delay)
 & $NssmExe set $ServiceName AppRestartDelay 5000
@@ -328,13 +327,13 @@ if ($svc.Status -eq "Running") {
     Write-Host "  Logs:           $LogDir"
     Write-Host "  Identity key:   $DataDir\Teale\wan-identity.key"
     Write-Host ""
-    Write-Host "Check logs:  Get-Content '$LogDir\teale-node-stdout.log' -Tail 20"
+    Write-Host "Check logs:  Get-Content $stdoutLog -Tail 20"
     Write-Host "Stop:        Stop-Service $ServiceName"
     Write-Host "Uninstall:   .\deploy-windows.ps1 -Uninstall"
 } else {
     Write-Host ""
     Write-Host "=== WARNING: Service not running ===" -ForegroundColor Red
     Write-Host "  Status: $($svc.Status)"
-    Write-Host "  Check logs: Get-Content '$LogDir\teale-node-stderr.log' -Tail 50"
+    Write-Host "  Check logs: Get-Content $stderrLog -Tail 50"
     exit 1
 }
