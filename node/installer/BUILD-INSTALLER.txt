@@ -1,0 +1,54 @@
+HOW TO BUILD Teale.exe
+===========================
+
+On your Windows test machine:
+
+1. Install Inno Setup (free):
+   https://jrsoftware.org/isdl.php
+   Download and run the installer, accept defaults.
+
+2. Copy binaries into this folder so you have:
+   - teale-node.exe       (already here from SD card)
+   - llama-server.exe     (copy from C:\Teale\bin\llama-server.exe)
+   - nssm.exe             (copy from C:\Teale\bin\nssm.exe)
+   - post-install.ps1     (already here)
+   - uninstall.ps1        (already here)
+   - check-update.ps1     (already here)
+   - teale-node-setup.iss (already here)
+
+   Also copy any .dll files from C:\Teale\bin\ into this folder.
+
+3. Double-click teale-node-setup.iss
+   It opens in Inno Setup Compiler.
+
+4. Click Build > Compile (or press Ctrl+F9)
+
+5. The output is in the "output" folder: Teale.exe
+   Upload this to Google Drive for your staff.
+
+WHAT STAFF DOES
+===============
+1. Download Teale.exe from Google Drive
+2. Double-click it
+3. Click through the installer (requires admin)
+4. Wait for model download (~2.5 GB)
+5. Done -- TealeNode service starts automatically
+
+The node uses the computer hostname as its display name,
+auto-generates a unique identity, and connects to the relay.
+It starts on boot automatically.
+
+AUTO-UPDATE
+===========
+On every login, a scheduled task checks GitHub for a newer release.
+If one exists, it shows a Windows toast notification and opens the
+browser to the GitHub release page where the user can download the
+new Teale.exe and run it to upgrade in place.
+
+TO PUBLISH AN UPDATE
+====================
+1. Bump the version in teale-node-setup.iss (#define AppVer)
+2. Rebuild Teale.exe with Inno Setup
+3. Create a GitHub release at teale-ai/teale-node with a tag like v0.2.0
+4. Attach Teale.exe as a release asset
+5. Machines will notify users on next login
