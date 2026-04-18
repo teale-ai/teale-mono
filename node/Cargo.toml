@@ -22,6 +22,7 @@ reqwest = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
+thiserror = { workspace = true }
 
 toml = "0.8"
 sysinfo = "0.32"

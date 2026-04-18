@@ -1868,6 +1868,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "teale-protocol",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
  "toml",

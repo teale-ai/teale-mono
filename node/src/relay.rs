@@ -15,6 +15,7 @@ pub use teale_protocol::{now_reference_seconds, RelayDataPayload, RelaySessionPa
 
 use crate::identity::NodeIdentity;
 
+#[derive(Clone)]
 pub struct RelayClient {
     node_id: String,
     #[allow(dead_code)]

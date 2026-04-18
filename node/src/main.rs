@@ -7,6 +7,7 @@ mod inference;
 mod litert;
 mod relay;
 mod supervisor;
+mod swap;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use crate::identity::NodeIdentity;
 use crate::inference::{build_llama_command, build_mnn_command, InferenceProxy};
 use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
+use crate::swap::{ModelSlot, SwapManager};
 
 #[derive(Parser)]
 #[command(name = "teale-node", about = "Cross-platform TealeNet supply node agent")]
@@ -78,11 +80,38 @@ async fn main() -> anyhow::Result<()> {
     // Start inference backend (supervised — restarts on crash).
     let (backend, model_id, supervisor_opt) = start_backend(&config, &args).await?;
 
+    // Build the SwapManager: owns the current backend + supervisor and can
+    // swap to any of `config.node.swappable_models` on `loadModel` requests.
+    // For non-Ultra nodes this is still constructed but with an empty
+    // whitelist — `loadModel` then always returns NotInWhitelist cleanly.
+    let llama_base = config.llama.clone().unwrap_or_else(default_llama_stub);
+    let swap_slots: Vec<ModelSlot> = config
+        .node
+        .swappable_models
+        .iter()
+        .map(|e| ModelSlot::parse(e))
+        .collect();
+    let swap_model_ids: Vec<String> =
+        swap_slots.iter().map(|s| s.model_id.clone()).collect();
+    let swap_manager = SwapManager::new(
+        backend,
+        supervisor_opt,
+        model_id.clone(),
+        llama_base,
+        swap_slots,
+        state.clone(),
+    );
+    info!(
+        "SwapManager ready (loaded={}, swappable={})",
+        model_id,
+        swap_model_ids.len()
+    );
+
     let capabilities = build_capabilities(
         hw,
         Some(&model_id),
         config.node.max_concurrent_requests,
-        config.node.swappable_models.clone(),
+        swap_model_ids,
     );
 
     let device_info = build_device_info(&config, &identity, &capabilities);
@@ -104,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
             &identity,
             &display_name,
             &capabilities,
-            &backend,
+            &swap_manager,
             &state,
             &device_info,
             shutdown_signal.clone(),
@@ -137,14 +166,26 @@ async fn main() -> anyhow::Result<()> {
     // Graceful shutdown: drain in-flight requests up to `shutdown_timeout_seconds`.
     drain_in_flight(&state, config.node.shutdown_timeout_seconds).await;
 
-    // Kill subprocess cleanly.
-    if let Some(supervisor) = supervisor_opt {
-        info!("Shutting down supervisor ({})", supervisor.name());
-        supervisor.shutdown().await;
-    }
+    // Kill the current subprocess cleanly via the swap manager.
+    info!("shutting down swap manager");
+    swap_manager.shutdown().await;
 
     info!("teale-node exited cleanly");
     Ok(())
+}
+
+fn default_llama_stub() -> config::LlamaConfig {
+    // Used only as a template when non-llama backends are active, so that
+    // SwapManager still constructs. It won't ever be used to spawn because
+    // the whitelist is empty for non-llama backends.
+    config::LlamaConfig {
+        binary: "llama-server".to_string(),
+        model: "".to_string(),
+        gpu_layers: 999,
+        context_size: 4096,
+        port: 11436,
+        extra_args: vec![],
+    }
 }
 
 async fn start_backend(
@@ -236,7 +277,7 @@ async fn run_relay_session(
     identity: &NodeIdentity,
     display_name: &str,
     capabilities: &teale_protocol::NodeCapabilities,
-    inference: &Backend,
+    swap: &Arc<SwapManager>,
     state: &Arc<NodeRuntimeState>,
     device_info: &Value,
     shutdown_signal: Arc<Notify>,
@@ -258,7 +299,7 @@ async fn run_relay_session(
         let capabilities = capabilities.clone();
         let interval = config.node.heartbeat_interval_seconds;
         let state = state.clone();
-        let inference_loaded = inference.loaded_models();
+        let swap = swap.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(interval));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -270,7 +311,7 @@ async fn run_relay_session(
                 }
                 // Rebuild capabilities snapshot with live model list + runtime state.
                 let mut snapshot = capabilities.clone();
-                snapshot.loaded_models = inference_loaded.clone();
+                snapshot.loaded_models = swap.loaded_models().await;
                 snapshot.is_available = !state.shutting_down.load(Ordering::Relaxed);
                 let payload = serde_json::json!({
                     "register": {
@@ -307,7 +348,7 @@ async fn run_relay_session(
                 let Some(msg) = msg_opt else {
                     break Err(anyhow::anyhow!("Relay connection lost"));
                 };
-                dispatch(&relay, msg, inference, state, device_info).await;
+                dispatch(&relay, msg, swap, state, device_info).await;
             }
         }
     };
@@ -319,7 +360,7 @@ async fn run_relay_session(
 async fn dispatch(
     relay: &Arc<RelayClient>,
     msg: IncomingRelayMessage,
-    inference: &Backend,
+    swap: &Arc<SwapManager>,
     state: &Arc<NodeRuntimeState>,
     device_info: &Value,
 ) {
@@ -348,7 +389,7 @@ async fn dispatch(
         }
 
         IncomingRelayMessage::RelayData(data) => {
-            cluster::handle_relay_data(relay, &data, inference, state, device_info).await;
+            cluster::handle_relay_data(relay, &data, swap, state, device_info).await;
         }
 
         IncomingRelayMessage::RelayClose(session) => {

@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "OpenAI-compatible gateway for TealeNet — fronts the relay and dispatches inference to the supply fleet"
 
+[lib]
+name = "teale_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "teale-gateway"
+path = "src/main.rs"
+
 [dependencies]
 teale-protocol = { workspace = true }
 

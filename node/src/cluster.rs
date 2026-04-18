@@ -21,8 +21,8 @@ use teale_protocol::{
 
 pub use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 
-use crate::backend::Backend;
 use crate::relay::{RelayClient, RelayDataPayload};
+use crate::swap::SwapManager;
 
 /// Shared, in-process node state surfaced into heartbeats.
 ///
@@ -112,7 +112,7 @@ fn ord_to_thermal(v: u32) -> ThermalLevel {
 pub async fn handle_relay_data(
     relay: &RelayClient,
     payload: &RelayDataPayload,
-    inference: &Backend,
+    swap: &Arc<SwapManager>,
     state: &Arc<NodeRuntimeState>,
     device_info_json: &Value,
 ) {
@@ -145,13 +145,14 @@ pub async fn handle_relay_data(
             let ack = ClusterMessage::HelloAck(HelloAckPayload {
                 device_info: device_info_json.clone(),
                 protocol_version: 1,
-                loaded_models: inference.loaded_models(),
+                loaded_models: swap.loaded_models().await,
             });
             send(relay, from, session, &ack);
         }
 
         ClusterMessage::Heartbeat(_) => {
-            let ack = ClusterMessage::HeartbeatAck(state.heartbeat_payload(inference.loaded_models()));
+            let loaded = swap.loaded_models().await;
+            let ack = ClusterMessage::HeartbeatAck(state.heartbeat_payload(loaded));
             send(relay, from, session, &ack);
         }
 
@@ -167,18 +168,31 @@ pub async fn handle_relay_data(
                 );
                 return;
             }
-            handle_inference_request(relay, from, session, req, inference, state).await;
+            handle_inference_request(relay, from, session, req, swap, state).await;
         }
 
         ClusterMessage::LoadModel(req) => {
-            // Swap-on-demand not implemented in this build — Ultra-only feature (Phase C2).
-            // We respond with ModelLoadError so the gateway falls through cleanly.
-            let err = ClusterMessage::ModelLoadError(teale_protocol::ModelLoadErrorPayload {
-                request_id: req.request_id.clone(),
-                model_id: req.model_id,
-                reason: "load_model not supported on this node (pinned-only)".into(),
+            let sm = swap.clone();
+            let relay_node = from.to_string();
+            let relay_session = session.to_string();
+            let relay_handle = relay.clone();
+            let request_id = req.request_id.clone();
+            let model_id = req.model_id.clone();
+            // Run the swap off the message-pump task so the relay keeps
+            // receiving other traffic. `swap` drains the queue and does a
+            // subprocess dance; it can take tens of seconds.
+            tokio::spawn(async move {
+                let reply = match sm.swap(request_id, model_id).await {
+                    Ok(loaded) => ClusterMessage::ModelLoaded(loaded),
+                    Err(err) => ClusterMessage::ModelLoadError(err),
+                };
+                let value = reply.to_value();
+                if let Err(e) =
+                    relay_handle.send_cluster_message(&relay_node, &relay_session, &value)
+                {
+                    error!("send swap result: {}", e);
+                }
             });
-            send(relay, from, session, &err);
         }
 
         ClusterMessage::Unknown { kind, .. } => {
@@ -197,7 +211,7 @@ async fn handle_inference_request(
     from: &str,
     session: &str,
     req: InferenceRequestPayload,
-    inference: &Backend,
+    swap: &Arc<SwapManager>,
     state: &Arc<NodeRuntimeState>,
 ) {
     let request_id = req.request_id.clone();
@@ -237,7 +251,7 @@ async fn handle_inference_request(
 
     // 2. Model pre-check: fail typed instead of hitting the backend with a wrong model.
     if let Some(requested_model) = req.request.model.as_deref() {
-        let loaded = inference.loaded_models();
+        let loaded = swap.loaded_models().await;
         if !model_matches_any(requested_model, &loaded) {
             warn!(
                 "Model pre-check failed: requested {} but loaded {:?}",
@@ -269,7 +283,7 @@ async fn handle_inference_request(
     let started = Instant::now();
     let mut token_count: u64 = 0;
 
-    match inference.stream_completion(&req.request).await {
+    match swap.stream_completion(&req.request).await {
         Ok(mut rx) => {
             while let Some(chunk_json) = rx.recv().await {
                 token_count += 1;

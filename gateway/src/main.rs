@@ -1,18 +1,6 @@
 //! teale-gateway: OpenAI-compatible HTTP gateway that fronts the TealeNet
 //! relay and dispatches inference to Mac supply nodes.
 
-mod auth;
-mod catalog;
-mod config;
-mod error;
-mod handlers;
-mod identity;
-mod metrics;
-mod registry;
-mod relay_client;
-mod scheduler;
-mod state;
-
 use std::sync::Arc;
 
 use axum::{
@@ -25,12 +13,13 @@ use tower_http::trace::TraceLayer;
 use tracing::{info, Level};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use crate::auth::TokenTable;
-use crate::config::Config;
-use crate::identity::GatewayIdentity;
-use crate::registry::Registry;
-use crate::scheduler::Scheduler;
-use crate::state::AppState;
+use teale_gateway::auth::TokenTable;
+use teale_gateway::config::Config;
+use teale_gateway::identity::GatewayIdentity;
+use teale_gateway::registry::Registry;
+use teale_gateway::scheduler::Scheduler;
+use teale_gateway::state::AppState;
+use teale_gateway::{auth, catalog, handlers, metrics, relay_client};
 
 #[derive(Parser)]
 #[command(name = "teale-gateway", about = "OpenAI-compatible gateway for TealeNet")]

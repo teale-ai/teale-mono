@@ -1,0 +1,43 @@
+# teale-node config for a 2-Mac exo/RPC cluster presenting as ONE node.
+#
+# Use this on the "head" Mac of a paired Mac Studio Ultra (512 GB each,
+# ~1 TB effective via exo sharding). The head Mac runs exo (or llama.cpp
+# RPC server), which spreads model weights across both machines. This
+# node-agent proxies OpenAI-style requests to the cluster's local HTTP
+# port. From the gateway's perspective it looks like a single very-large
+# supply node.
+#
+# See docs/cluster-runner.md for exo / llama.cpp RPC setup.
+
+backend = "llama"   # reuses HTTP-proxy codepath; the cluster runner exposes
+                    # OpenAI-compat on a local port just like llama-server does
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[llama]
+# Not actually llama-server — this points at the cluster-runner's OpenAI port.
+# Leave `binary` blank and pass `--no-backend` so teale-node doesn't try to
+# launch it (the cluster-runner is managed by launchd / systemd separately).
+binary = "/bin/true"
+model = "moonshotai/kimi-k2"  # advertised model id; matches the served model in exo
+port = 52415                   # exo's default OpenAI-compat port
+gpu_layers = 999
+context_size = 131072
+# extra_args unused (backend not spawned by teale-node)
+
+[node]
+display_name = "Ultra Studio cluster (2x M3 Ultra 512GB)"
+gpu_backend = "metal"
+max_concurrent_requests = 4
+# No swappable_models — cluster is pinned to its flagship model;
+# swapping a 1TB MoE is not feasible in under 30s.
+heartbeat_interval_seconds = 10
+shutdown_timeout_seconds = 60
+
+# Startup recipe:
+#   1. Start the cluster runner on the head Mac (see docs/cluster-runner.md):
+#        launchctl load ~/Library/LaunchAgents/com.teale.cluster-runner.plist
+#   2. Wait for health: `curl -s http://127.0.0.1:52415/v1/models`
+#   3. Start this teale-node with --no-backend:
+#        teale-node --config teale-node.cluster.toml --no-backend
