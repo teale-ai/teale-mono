@@ -147,24 +147,28 @@ impl Registry {
     /// Insert or update a device from its advertised capabilities.
     pub fn upsert_device(&self, node_id: String, display_name: String, caps: NodeCapabilities) {
         let now = Instant::now();
-        let mut entry = self
-            .devices
-            .entry(node_id.clone())
-            .or_insert_with(|| DeviceState {
-                node_id: node_id.clone(),
-                display_name: display_name.clone(),
-                capabilities: caps.clone(),
-                last_heartbeat: now,
-                last_seen: now,
-                quarantined_until: None,
-                ewma_tokens_per_second: hardware_tps_prior(&caps),
-                live: LiveStats::fresh(),
-            });
-        entry.display_name = display_name;
-        entry.capabilities = caps;
-        entry.last_seen = now;
+        // Scope the entry RefMut so it drops before we call rebuild_model_index_for,
+        // which would otherwise deadlock trying to re-acquire the same shard.
+        {
+            let mut entry = self
+                .devices
+                .entry(node_id.clone())
+                .or_insert_with(|| DeviceState {
+                    node_id: node_id.clone(),
+                    display_name: display_name.clone(),
+                    capabilities: caps.clone(),
+                    last_heartbeat: now,
+                    last_seen: now,
+                    quarantined_until: None,
+                    ewma_tokens_per_second: hardware_tps_prior(&caps),
+                    live: LiveStats::fresh(),
+                });
+            entry.display_name = display_name;
+            entry.capabilities = caps;
+            entry.last_seen = now;
+        }
 
-        // Rebuild reverse index for this node.
+        // Rebuild reverse index for this node (safe now that the shard guard is released).
         self.rebuild_model_index_for(&node_id);
     }
 
