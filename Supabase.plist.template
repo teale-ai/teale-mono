@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>SUPABASE_URL</key>
+    <string>https://YOUR_PROJECT_ID.supabase.co</string>
+    <key>SUPABASE_ANON_KEY</key>
+    <string>YOUR_ANON_KEY_HERE</string>
+    <key>SUPABASE_REDIRECT_URL</key>
+    <string>teale://auth/callback</string>
+</dict>
+</plist>

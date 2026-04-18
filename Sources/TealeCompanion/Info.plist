@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>TealeCompanion</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.teale.companion</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Teale</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Teale uses your local network to discover and connect to Mac inference nodes running on your LAN.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_teale._tcp</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.teale.companion</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>teale</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.o
+*.dylib
+*.dSYM
+.claude/
+Supabase.plist
+!Sources/AuthKit/Resources/Supabase.plist
+default.profraw
+node_modules/
