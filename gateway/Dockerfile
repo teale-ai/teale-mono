@@ -1,6 +1,6 @@
 # Multi-stage build for the teale-mono workspace.
 # Build context MUST be the monorepo root (passed via flyctl --dockerfile).
-FROM rust:1.84-slim AS builder
+FROM rust:1-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev ca-certificates \
