@@ -1,0 +1,30 @@
+[package]
+name = "teale-stress"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stress-test harness for the teale-gateway + supply fleet"
+
+[[bin]]
+name = "teale-stress"
+path = "src/main.rs"
+
+[dependencies]
+teale-protocol = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+clap = { workspace = true }
+futures-util = { workspace = true }
+
+toml = { workspace = true }
+hdrhistogram = "7"
+rand = { workspace = true }
+rand_distr = "0.4"
+parking_lot = { workspace = true }

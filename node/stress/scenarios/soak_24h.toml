@@ -1,0 +1,37 @@
+name = "soak_24h"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 86400
+rps = 1.0
+warmup_seconds = 60
+concurrency_cap = 64
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 5
+prompt_tokens_mean = 256
+prompt_tokens_stddev = 64
+max_tokens = 256
+streaming = true
+
+[[requests]]
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+weight = 3
+prompt_tokens_mean = 512
+prompt_tokens_stddev = 128
+max_tokens = 256
+streaming = true
+
+[[requests]]
+model = "meta-llama/llama-3.3-70b-instruct"
+weight = 1
+prompt_tokens_mean = 512
+prompt_tokens_stddev = 128
+max_tokens = 256
+streaming = true
+
+# Phase B pass criteria:
+#   success_rate >= 0.995 across full 24h
+#   gateway RSS growth <= 100 MB over run
+#   tokio active_tasks stable (no leak)
+#   no human intervention required

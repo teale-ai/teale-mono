@@ -1,0 +1,88 @@
+# Gateway model catalog — the 5–8 open-weight models we advertise to OpenRouter.
+# Sourced from .context/device-model-matrix.md top picks. Pricing is
+# placeholder USD per 1M tokens; update before submitting to OR.
+
+models:
+  - id: meta-llama/llama-3.1-8b-instruct
+    display_name: Llama 3.1 8B Instruct
+    owned_by: meta-llama
+    context_length: 16384
+    params_b: 8
+    pricing_prompt: "0.00000010"   # $0.10 / M tokens input
+    pricing_completion: "0.00000020" # $0.20 / M tokens output
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, frequency_penalty, presence_penalty]
+    description: "Meta Llama 3.1 8B, instruction-tuned. Universal 16GB+ supply."
+    aliases: [llama-3.1-8b-instruct, llama3.1-8b]
+
+  - id: qwen/qwen3-8b
+    display_name: Qwen 3 8B
+    owned_by: qwen
+    context_length: 40960
+    params_b: 8
+    pricing_prompt: "0.00000010"
+    pricing_completion: "0.00000020"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Qwen 3 8B dense. Strong reasoning, Apache-2.0."
+    aliases: [qwen3-8b]
+
+  - id: qwen/qwen3-30b-a3b-instruct-2507
+    display_name: Qwen 3 30B A3B Instruct (MoE)
+    owned_by: qwen
+    context_length: 262144
+    params_b: 30
+    pricing_prompt: "0.00000050"
+    pricing_completion: "0.00000100"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Qwen 3 30B/3B-active MoE. Best throughput-per-GB. 32GB+ required."
+    aliases: [qwen3-30b-a3b-instruct, qwen3-30b-a3b]
+
+  - id: mistralai/mistral-small-3.2-24b-instruct
+    display_name: Mistral Small 3.2 24B Instruct
+    owned_by: mistralai
+    context_length: 131072
+    params_b: 24
+    pricing_prompt: "0.00000040"
+    pricing_completion: "0.00000080"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice, response_format]
+    description: "Apache-2.0 Mistral Small. Excellent tool-use. 24GB+."
+    aliases: [mistral-small-3.2-24b, mistral-small-3.2]
+
+  - id: meta-llama/llama-3.3-70b-instruct
+    display_name: Llama 3.3 70B Instruct
+    owned_by: meta-llama
+    context_length: 65536
+    params_b: 70
+    pricing_prompt: "0.00000080"
+    pricing_completion: "0.00000160"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "The 70B flagship everyone asks for. 64GB+ unified RAM."
+    aliases: [llama-3.3-70b-instruct, llama3.3-70b]
+
+  - id: openai/gpt-oss-120b
+    display_name: gpt-oss 120B (MoE 117B/5.1B)
+    owned_by: openai
+    context_length: 131072
+    params_b: 117
+    pricing_prompt: "0.00000100"
+    pricing_completion: "0.00000200"
+    quantization: MXFP4
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "OpenAI Apache-2.0 release. 5.1B active = fast on Ultras. 128GB+ required."
+    aliases: [gpt-oss-120b]
+
+  - id: google/gemma-3-27b-it
+    display_name: Gemma 3 27B Instruct (multimodal)
+    owned_by: google
+    context_length: 131072
+    params_b: 27
+    pricing_prompt: "0.00000040"
+    pricing_completion: "0.00000080"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Gemma 3 27B with vision. 32GB+ required."
+    aliases: [gemma-3-27b-it, gemma3-27b]

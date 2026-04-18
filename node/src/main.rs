@@ -6,17 +6,27 @@ mod identity;
 mod inference;
 mod litert;
 mod relay;
+mod supervisor;
+
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use serde_json::Value;
+use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
+use teale_protocol::IncomingRelayMessage;
+
 use crate::backend::Backend;
+use crate::cluster::NodeRuntimeState;
 use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
 use crate::identity::NodeIdentity;
-use crate::inference::{spawn_llama_server, spawn_mnn_server, InferenceProxy};
-use crate::relay::{IncomingRelayMessage, RelayClient};
+use crate::inference::{build_llama_command, build_mnn_command, InferenceProxy};
+use crate::relay::RelayClient;
+use crate::supervisor::Supervisor;
 
 #[derive(Parser)]
 #[command(name = "teale-node", about = "Cross-platform TealeNet supply node agent")]
@@ -48,58 +58,108 @@ async fn main() -> anyhow::Result<()> {
 
     info!("teale-node v{}", env!("CARGO_PKG_VERSION"));
 
-    // 1. Load or generate identity
     let identity = NodeIdentity::load_or_create()?;
     info!("Node ID: {}", identity.node_id());
 
-    // 2. Detect hardware
     let hw = detect_hardware(&config.node);
     info!(
         "Hardware: {} ({}) — {:.1} GB RAM, tier {}",
         hw.chip_name, hw.chip_family, hw.total_ram_gb, hw.tier
     );
 
-    // 3. Start inference backend
-    let (backend, model_id) = start_backend(&config, &args).await?;
+    let state = Arc::new(NodeRuntimeState::new(config.node.max_concurrent_requests));
+    info!(
+        "Runtime: max_concurrent={}, heartbeat_every={}s, shutdown_timeout={}s",
+        config.node.max_concurrent_requests,
+        config.node.heartbeat_interval_seconds,
+        config.node.shutdown_timeout_seconds
+    );
 
-    // 4. Build capabilities
-    let capabilities = build_capabilities(hw, Some(&model_id));
+    // Start inference backend (supervised — restarts on crash).
+    let (backend, model_id, supervisor_opt) = start_backend(&config, &args).await?;
 
-    // 5. Build device info for hello/helloAck responses
+    let capabilities = build_capabilities(
+        hw,
+        Some(&model_id),
+        config.node.max_concurrent_requests,
+        config.node.swappable_models.clone(),
+    );
+
     let device_info = build_device_info(&config, &identity, &capabilities);
 
-    // 6. Connect to relay with reconnect loop
-    let display_name = args.name.unwrap_or(config.node.display_name.clone());
+    let display_name = args.name.unwrap_or_else(|| config.node.display_name.clone());
 
+    // Signal handling — set state.shutting_down on SIGINT/SIGTERM.
+    let shutdown_signal = Arc::new(Notify::new());
+    install_signal_handlers(state.clone(), shutdown_signal.clone());
+
+    // Reconnect loop
     loop {
-        match run_relay_session(&config.relay.url, &identity, &display_name, &capabilities, &backend, &device_info).await {
+        if state.shutting_down.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let session_result = run_relay_session(
+            &config,
+            &identity,
+            &display_name,
+            &capabilities,
+            &backend,
+            &state,
+            &device_info,
+            shutdown_signal.clone(),
+        )
+        .await;
+
+        if state.shutting_down.load(Ordering::Relaxed) {
+            info!("Shutdown requested — not reconnecting");
+            break;
+        }
+
+        match session_result {
             Ok(()) => {
                 info!("Relay session ended cleanly");
                 break;
             }
             Err(e) => {
                 error!("Relay session error: {}. Reconnecting in 5s...", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = shutdown_signal.notified() => {
+                        info!("Shutdown requested during backoff");
+                        break;
+                    }
+                }
             }
         }
     }
 
+    // Graceful shutdown: drain in-flight requests up to `shutdown_timeout_seconds`.
+    drain_in_flight(&state, config.node.shutdown_timeout_seconds).await;
+
+    // Kill subprocess cleanly.
+    if let Some(supervisor) = supervisor_opt {
+        info!("Shutting down supervisor ({})", supervisor.name());
+        supervisor.shutdown().await;
+    }
+
+    info!("teale-node exited cleanly");
     Ok(())
 }
 
-/// Initialize the inference backend based on config.
-/// Returns the Backend and model_id string.
-async fn start_backend(config: &Config, args: &Args) -> anyhow::Result<(Backend, String)> {
+async fn start_backend(
+    config: &Config,
+    args: &Args,
+) -> anyhow::Result<(Backend, String, Option<Supervisor>)> {
     match config.backend.as_str() {
         "litert" => {
             let litert_config = config.litert.as_ref().unwrap();
             let engine = litert::LiteRtEngine::new(litert_config)?;
             let model_id = engine.loaded_models().into_iter().next().unwrap_or_default();
-            Ok((Backend::LiteRt(engine), model_id))
+            Ok((Backend::LiteRt(engine), model_id, None))
         }
 
         backend_name => {
-            // HTTP proxy backends (llama-server, mnn_llm)
             let (port, model_id) = match backend_name {
                 "mnn" => {
                     let mnn = config.mnn.as_ref().unwrap();
@@ -119,114 +179,295 @@ async fn start_backend(config: &Config, args: &Args) -> anyhow::Result<(Backend,
 
             let inference = InferenceProxy::new(port, &model_id);
 
-            let _backend_child = if !args.no_backend {
-                let child = match backend_name {
-                    "mnn" => spawn_mnn_server(config.mnn.as_ref().unwrap())?,
-                    _ => spawn_llama_server(config.llama.as_ref().unwrap())?,
+            let supervisor_opt = if args.no_backend {
+                info!("--no-backend set, connecting to existing backend on port {}", port);
+                inference.wait_for_health(10).await?;
+                None
+            } else {
+                let sup = match backend_name {
+                    "mnn" => {
+                        let mnn = config.mnn.as_ref().unwrap().clone();
+                        Supervisor::spawn("mnn_llm", move || {
+                            let mut cmd = build_mnn_command(&mnn)?;
+                            let mut child = cmd.spawn().map_err(|e| {
+                                anyhow::anyhow!("spawn mnn_llm: {}", e)
+                            })?;
+                            attach_stderr_logger(&mut child, "mnn_llm");
+                            Ok(child)
+                        })
+                    }
+                    _ => {
+                        let llama = config.llama.as_ref().unwrap().clone();
+                        Supervisor::spawn("llama-server", move || {
+                            let mut cmd = build_llama_command(&llama)?;
+                            let mut child = cmd.spawn().map_err(|e| {
+                                anyhow::anyhow!("spawn llama-server: {}", e)
+                            })?;
+                            attach_stderr_logger(&mut child, "llama-server");
+                            Ok(child)
+                        })
+                    }
                 };
                 info!("Waiting for {} to become healthy...", backend_name);
                 inference.wait_for_health(120).await?;
-                Some(child)
-            } else {
-                info!("Skipping backend launch (--no-backend), connecting to port {}", port);
-                inference.wait_for_health(10).await?;
-                None
+                Some(sup)
             };
 
-            // Note: _backend_child is intentionally leaked here — the subprocess
-            // lives for the duration of the program. It's cleaned up on process exit.
-            std::mem::forget(_backend_child);
-
-            Ok((Backend::Http(inference), model_id))
+            Ok((Backend::Http(inference), model_id, supervisor_opt))
         }
+    }
+}
+
+fn attach_stderr_logger(child: &mut tokio::process::Child, tag: &'static str) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!("[{}] {}", tag, line);
+            }
+        });
     }
 }
 
 async fn run_relay_session(
-    relay_url: &str,
+    config: &Config,
     identity: &NodeIdentity,
     display_name: &str,
-    capabilities: &hardware::NodeCapabilities,
+    capabilities: &teale_protocol::NodeCapabilities,
     inference: &Backend,
+    state: &Arc<NodeRuntimeState>,
     device_info: &Value,
+    shutdown_signal: Arc<Notify>,
 ) -> anyhow::Result<()> {
-    let (relay, mut incoming) = RelayClient::connect(relay_url, identity).await?;
+    let (relay, mut incoming) = RelayClient::connect(&config.relay.url, identity).await?;
+    let relay = Arc::new(relay);
 
-    // Register with relay
     relay.register(identity, display_name, capabilities)?;
 
-    // Wait for registerAck, then discover
+    // Periodic re-register: keeps relay's capability cache fresh for the gateway's
+    // `discover` poll. Cheap (few hundred bytes per interval) and simpler than
+    // introducing a new broadcast message type the relay would have to understand.
+    let heartbeat_task = {
+        let relay = relay.clone();
+        let identity_hex = identity.node_id();
+        let signature = identity.sign_node_id();
+        let pubkey = identity.public_key_hex();
+        let display_name = display_name.to_string();
+        let capabilities = capabilities.clone();
+        let interval = config.node.heartbeat_interval_seconds;
+        let state = state.clone();
+        let inference_loaded = inference.loaded_models();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // consume the immediate first tick
+            loop {
+                ticker.tick().await;
+                if state.shutting_down.load(Ordering::Relaxed) {
+                    break;
+                }
+                // Rebuild capabilities snapshot with live model list + runtime state.
+                let mut snapshot = capabilities.clone();
+                snapshot.loaded_models = inference_loaded.clone();
+                snapshot.is_available = !state.shutting_down.load(Ordering::Relaxed);
+                let payload = serde_json::json!({
+                    "register": {
+                        "nodeID": identity_hex,
+                        "publicKey": pubkey,
+                        "displayName": display_name,
+                        "capabilities": snapshot,
+                        "signature": signature
+                    }
+                });
+                if let Err(e) = relay.send_cluster_message(&identity_hex, "", &payload) {
+                    tracing::warn!("heartbeat re-register send failed: {}", e);
+                    break;
+                }
+                tracing::trace!(
+                    "heartbeat tick: queue_depth={}, is_generating={}, ewma_tps={:?}",
+                    state.queue_depth.load(Ordering::Relaxed),
+                    state.is_generating.load(Ordering::Relaxed),
+                    state.ewma_tokens_per_second(),
+                );
+            }
+        })
+    };
+
     info!("Waiting for relay messages...");
 
-    while let Some(msg) = incoming.recv().await {
-        match msg {
-            IncomingRelayMessage::RegisterAck { node_id } => {
-                info!("Registered with relay (nodeID: {}...)", &node_id[..16.min(node_id.len())]);
-                relay.discover()?;
+    let result = loop {
+        tokio::select! {
+            _ = shutdown_signal.notified() => {
+                info!("Shutdown signal received inside relay loop");
+                break Ok(());
             }
-
-            IncomingRelayMessage::DiscoverResponse { peers } => {
-                info!("Discovered {} peer(s)", peers.len());
-                for peer in &peers {
-                    if let Some(name) = peer.get("displayName").and_then(|v| v.as_str()) {
-                        let node = peer.get("nodeID").and_then(|v| v.as_str()).unwrap_or("?");
-                        info!("  Peer: {} ({}...)", name, &node[..16.min(node.len())]);
-                    }
-                }
+            msg_opt = incoming.recv() => {
+                let Some(msg) = msg_opt else {
+                    break Err(anyhow::anyhow!("Relay connection lost"));
+                };
+                dispatch(&relay, msg, inference, state, device_info).await;
             }
-
-            IncomingRelayMessage::RelayOpen(session) => {
-                info!(
-                    "Relay session opened by {}... (session: {}...)",
-                    &session.from_node_id[..16.min(session.from_node_id.len())],
-                    &session.session_id[..8.min(session.session_id.len())]
-                );
-                // Accept the session
-                relay.send_relay_ready(&session.from_node_id, &session.session_id)?;
-            }
-
-            IncomingRelayMessage::RelayData(data) => {
-                cluster::handle_relay_data(&relay, &data, inference, device_info).await;
-            }
-
-            IncomingRelayMessage::RelayClose(session) => {
-                info!(
-                    "Relay session closed: {}...",
-                    &session.session_id[..8.min(session.session_id.len())]
-                );
-            }
-
-            IncomingRelayMessage::PeerJoined(peer) => {
-                info!("Peer joined: {} ({}...)", peer.display_name, &peer.node_id[..16.min(peer.node_id.len())]);
-            }
-
-            IncomingRelayMessage::PeerLeft(peer) => {
-                info!("Peer left: {} ({}...)", peer.display_name, &peer.node_id[..16.min(peer.node_id.len())]);
-            }
-
-            IncomingRelayMessage::Error(err) => {
-                error!("Relay error: {} — {}", err.code, err.message);
-            }
-
-            IncomingRelayMessage::Unknown(kind) => {
-                warn!("Unknown relay message type: {}", kind);
-            }
-
-            _ => {}
         }
-    }
+    };
 
-    Err(anyhow::anyhow!("Relay connection lost"))
+    heartbeat_task.abort();
+    result
 }
 
-fn build_device_info(config: &Config, _identity: &NodeIdentity, capabilities: &hardware::NodeCapabilities) -> Value {
+async fn dispatch(
+    relay: &Arc<RelayClient>,
+    msg: IncomingRelayMessage,
+    inference: &Backend,
+    state: &Arc<NodeRuntimeState>,
+    device_info: &Value,
+) {
+    match msg {
+        IncomingRelayMessage::RegisterAck { node_id } => {
+            info!(
+                "Registered with relay (nodeID: {}...)",
+                &node_id[..16.min(node_id.len())]
+            );
+            let _ = relay.discover();
+        }
+
+        IncomingRelayMessage::DiscoverResponse { peers } => {
+            info!("Discovered {} peer(s)", peers.len());
+        }
+
+        IncomingRelayMessage::RelayOpen(session) => {
+            info!(
+                "Relay session opened by {}... (session: {}...)",
+                &session.from_node_id[..16.min(session.from_node_id.len())],
+                &session.session_id[..8.min(session.session_id.len())]
+            );
+            if let Err(e) = relay.send_relay_ready(&session.from_node_id, &session.session_id) {
+                error!("send relayReady: {}", e);
+            }
+        }
+
+        IncomingRelayMessage::RelayData(data) => {
+            cluster::handle_relay_data(relay, &data, inference, state, device_info).await;
+        }
+
+        IncomingRelayMessage::RelayClose(session) => {
+            info!(
+                "Relay session closed: {}...",
+                &session.session_id[..8.min(session.session_id.len())]
+            );
+        }
+
+        IncomingRelayMessage::PeerJoined(peer) => {
+            info!(
+                "Peer joined: {} ({}...)",
+                peer.display_name,
+                &peer.node_id[..16.min(peer.node_id.len())]
+            );
+        }
+
+        IncomingRelayMessage::PeerLeft(peer) => {
+            info!(
+                "Peer left: {} ({}...)",
+                peer.display_name,
+                &peer.node_id[..16.min(peer.node_id.len())]
+            );
+        }
+
+        IncomingRelayMessage::Error(err) => {
+            error!("Relay error: {} — {}", err.code, err.message);
+        }
+
+        IncomingRelayMessage::Unknown(kind) => {
+            warn!("Unknown relay message type: {}", kind);
+        }
+
+        _ => {}
+    }
+}
+
+fn build_device_info(
+    config: &Config,
+    _identity: &NodeIdentity,
+    capabilities: &teale_protocol::NodeCapabilities,
+) -> Value {
     serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
         "name": config.node.display_name,
         "hardware": capabilities.hardware,
-        "registeredAt": cluster::now_reference_seconds(),
-        "lastSeenAt": cluster::now_reference_seconds(),
+        "registeredAt": teale_protocol::now_reference_seconds(),
+        "lastSeenAt": teale_protocol::now_reference_seconds(),
         "isCurrentDevice": true,
         "loadedModels": capabilities.loaded_models
     })
+}
+
+fn install_signal_handlers(state: Arc<NodeRuntimeState>, notify: Arc<Notify>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let state_sigint = state.clone();
+        let notify_sigint = notify.clone();
+        tokio::spawn(async move {
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to install SIGTERM handler: {}", e);
+                    return;
+                }
+            };
+            let mut sigint = match signal(SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to install SIGINT handler: {}", e);
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    warn!("SIGTERM received — initiating graceful shutdown");
+                }
+                _ = sigint.recv() => {
+                    warn!("SIGINT received — initiating graceful shutdown");
+                }
+            }
+            state_sigint.shutting_down.store(true, Ordering::SeqCst);
+            notify_sigint.notify_waiters();
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let state_win = state.clone();
+        let notify_win = notify.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                warn!("Ctrl-C received — initiating graceful shutdown");
+                state_win.shutting_down.store(true, Ordering::SeqCst);
+                notify_win.notify_waiters();
+            }
+        });
+    }
+}
+
+async fn drain_in_flight(state: &Arc<NodeRuntimeState>, timeout_seconds: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_seconds);
+    let mut poll = tokio::time::interval(Duration::from_millis(250));
+
+    loop {
+        let queue = state.queue_depth.load(Ordering::Relaxed);
+        if queue == 0 {
+            info!("No in-flight requests — shutdown complete");
+            return;
+        }
+        if tokio::time::Instant::now() > deadline {
+            warn!(
+                "Shutdown deadline reached with {} request(s) still in flight — forcing exit",
+                queue
+            );
+            return;
+        }
+        info!("Draining: {} request(s) in flight", queue);
+        poll.tick().await;
+    }
 }

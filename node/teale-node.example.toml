@@ -28,6 +28,32 @@ display_name = "Linux GPU Server"
 # Discrete GPU VRAM in GB (omit for unified memory systems like Apple Silicon)
 # gpu_vram_gb = 24.0
 
+# ── Reliability / scheduler tuning (Phase A2) ───────────────────────────
+# Maximum concurrent inference requests the node will accept. Requests above
+# this cap are rejected immediately with `queue_full` so the gateway can
+# route elsewhere. Guidelines:
+#   Mac mini M4 Pro 64 GB → 2
+#   MBP M4 Max 64 GB     → 4
+#   Mac Studio Ultra ≥128→ 4-6 (depends on active model)
+max_concurrent_requests = 2
+
+# Graceful shutdown budget in seconds. On SIGINT/SIGTERM the node stops
+# accepting new requests and waits up to this long for in-flight ones to
+# finish before killing subprocesses.
+shutdown_timeout_seconds = 30
+
+# How often we re-register with the relay (keeps the gateway's `discover`
+# cache fresh). 10 s is a good balance between freshness and bandwidth.
+heartbeat_interval_seconds = 10
+
+# Ultra-only: GGUF paths kept on disk and available for on-demand swap.
+# Phase C2 feature — leave empty on pinned-only nodes. When non-empty the
+# gateway may issue `loadModel` to swap to any of these.
+# swappable_models = [
+#     "/models/llama-3.3-70b-q4_k_m.gguf",
+#     "/models/gpt-oss-120b-mxfp4.gguf",
+# ]
+
 # ── Android (Pixel / Tensor G4) Example ───────────────────────────────
 # For Google Pixel 9 Pro Fold (16GB, Tensor G4):
 #

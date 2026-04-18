@@ -1,0 +1,27 @@
+name = "burst_5min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 300
+rps = 20.0       # 10× baseline
+warmup_seconds = 15
+concurrency_cap = 256
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 5
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 128
+streaming = true
+
+[[requests]]
+model = "qwen/qwen3-8b"
+weight = 3
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 128
+streaming = true
+
+# Pass criteria:
+#   success_rate >= 0.97
+#   gateway memory growth <= 100 MB over run

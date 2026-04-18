@@ -1,0 +1,29 @@
+# teale-gateway config — deployed at gateway.teale.com.
+#
+# Secret bearer tokens are loaded from the GATEWAY_TOKENS env var at startup
+# (format: "tok_abc:openrouter,tok_dev:internal"). Rotate via `fly secrets set`.
+
+bind = "0.0.0.0:8080"
+display_name = "teale-gateway"
+identity_path = "/data/gateway-identity.key"
+models_yaml = "/app/models.yaml"
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[scheduler]
+max_queue_depth = 8
+swap_penalty = 0.3
+tps_weight = 1.0
+
+[scheduler.per_model_floor]
+large = 3    # models ≥50B params need at least 3 healthy devices before we list them
+small = 2    # smaller models need 2
+
+[reliability]
+request_timeout_seconds = 300
+ttft_deadline_seconds = 10
+max_retries = 1
+heartbeat_stale_seconds = 30
+quarantine_seconds = 30
+discover_interval_seconds = 10

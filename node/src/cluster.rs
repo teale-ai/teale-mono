@@ -1,127 +1,133 @@
-use base64::Engine;
-use serde::{Deserialize, Serialize};
+//! Node-side cluster message handlers.
+//!
+//! Types are in `teale_protocol::cluster`; this file wires the node's
+//! behaviour when an `inferenceRequest` / `heartbeat` / `hello` arrives.
+//!
+//! Reliability primitives live here too: bounded channels, concurrency cap,
+//! model pre-check, real heartbeat state.
+
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+
 use serde_json::Value;
-use tracing::{error, info, warn};
+use tokio::sync::Semaphore;
+use tracing::{debug, error, info, warn};
+
+use teale_protocol::{
+    decode_relay_data, now_reference_seconds, ClusterMessage, HeartbeatPayload, HelloAckPayload,
+    InferenceErrorCode, InferenceErrorPayload, InferenceRequestPayload, ThermalLevel,
+};
+
+pub use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 
 use crate::backend::Backend;
 use crate::relay::{RelayClient, RelayDataPayload};
 
-/// Decode the `data` field from a relayData payload.
-/// Swift encodes `Data` as base64 by default in JSON.
-pub fn decode_relay_data(data_value: &Value) -> Option<Vec<u8>> {
-    match data_value {
-        Value::String(s) => {
-            // Try base64 first (Swift's default Data encoding)
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(s) {
-                return Some(bytes);
-            }
-            // Maybe it's raw JSON string
-            Some(s.as_bytes().to_vec())
+/// Shared, in-process node state surfaced into heartbeats.
+///
+/// Invariants: atomics are the source of truth; `HeartbeatPayload`
+/// rendered from them matches protocol expectations.
+pub struct NodeRuntimeState {
+    pub device_id: String,
+    pub queue_depth: AtomicU32,
+    pub is_generating: AtomicBool,
+    pub throttle_level: AtomicU32,       // 0 (paused) .. 100 (full)
+    pub thermal_level: AtomicU32,        // encoded ThermalLevel ordinal
+    pub completed_requests: AtomicU64,
+    pub failed_requests: AtomicU64,
+    pub total_completion_tokens: AtomicU64,
+    pub total_completion_seconds_micros: AtomicU64, // sum of completion durations in microseconds
+    pub shutting_down: AtomicBool,
+    pub semaphore: Arc<Semaphore>,
+}
+
+impl NodeRuntimeState {
+    pub fn new(max_concurrent: u32) -> Self {
+        Self {
+            device_id: uuid::Uuid::new_v4().to_string(),
+            queue_depth: AtomicU32::new(0),
+            is_generating: AtomicBool::new(false),
+            throttle_level: AtomicU32::new(100),
+            thermal_level: AtomicU32::new(thermal_to_ord(ThermalLevel::Nominal)),
+            completed_requests: AtomicU64::new(0),
+            failed_requests: AtomicU64::new(0),
+            total_completion_tokens: AtomicU64::new(0),
+            total_completion_seconds_micros: AtomicU64::new(0),
+            shutting_down: AtomicBool::new(false),
+            semaphore: Arc::new(Semaphore::new(max_concurrent as usize)),
         }
-        Value::Array(arr) => {
-            // Could be byte array [1, 2, 3, ...]
-            let bytes: Option<Vec<u8>> = arr.iter().map(|v| v.as_u64().map(|n| n as u8)).collect();
-            bytes
+    }
+
+    pub fn ewma_tokens_per_second(&self) -> Option<f64> {
+        let tokens = self.total_completion_tokens.load(Ordering::Relaxed) as f64;
+        let secs = self.total_completion_seconds_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        if secs < 0.001 || tokens < 1.0 {
+            return None;
         }
-        _ => None,
+        Some(tokens / secs)
+    }
+
+    pub fn thermal_level(&self) -> ThermalLevel {
+        ord_to_thermal(self.thermal_level.load(Ordering::Relaxed))
+    }
+
+    pub fn set_thermal_level(&self, level: ThermalLevel) {
+        self.thermal_level.store(thermal_to_ord(level), Ordering::Relaxed);
+    }
+
+    pub fn heartbeat_payload(&self, loaded_models: Vec<String>) -> HeartbeatPayload {
+        HeartbeatPayload {
+            device_id: self.device_id.clone(),
+            timestamp: now_reference_seconds(),
+            thermal_level: self.thermal_level(),
+            throttle_level: self.throttle_level.load(Ordering::Relaxed),
+            loaded_models,
+            is_generating: self.is_generating.load(Ordering::Relaxed),
+            queue_depth: self.queue_depth.load(Ordering::Relaxed),
+            ewma_tokens_per_second: self.ewma_tokens_per_second(),
+        }
     }
 }
 
-/// Parse a ClusterMessage from JSON bytes.
-pub fn parse_cluster_message(data: &[u8]) -> Option<ClusterMessageKind> {
-    let v: Value = serde_json::from_slice(data).ok()?;
-    let obj = v.as_object()?;
-
-    if obj.contains_key("hello") {
-        return Some(ClusterMessageKind::Hello(v.clone()));
+fn thermal_to_ord(t: ThermalLevel) -> u32 {
+    match t {
+        ThermalLevel::Nominal => 0,
+        ThermalLevel::Fair => 1,
+        ThermalLevel::Serious => 2,
+        ThermalLevel::Critical => 3,
     }
-    if obj.contains_key("helloAck") {
-        return Some(ClusterMessageKind::HelloAck);
-    }
-    if obj.contains_key("heartbeat") {
-        return Some(ClusterMessageKind::Heartbeat(v.clone()));
-    }
-    if obj.contains_key("heartbeatAck") {
-        return Some(ClusterMessageKind::HeartbeatAck);
-    }
-    if let Some(payload) = obj.get("inferenceRequest") {
-        let p: InferenceRequestPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(ClusterMessageKind::InferenceRequest(p));
-    }
-    if let Some(_) = obj.get("inferenceChunk") {
-        return Some(ClusterMessageKind::InferenceChunk);
-    }
-    if let Some(_) = obj.get("inferenceComplete") {
-        return Some(ClusterMessageKind::InferenceComplete);
-    }
-    if let Some(_) = obj.get("inferenceError") {
-        return Some(ClusterMessageKind::InferenceError);
-    }
-
-    let kind = obj.keys().next()?.to_string();
-    Some(ClusterMessageKind::Unknown(kind))
 }
 
-#[derive(Debug)]
-pub enum ClusterMessageKind {
-    Hello(Value),
-    HelloAck,
-    Heartbeat(Value),
-    HeartbeatAck,
-    InferenceRequest(InferenceRequestPayload),
-    InferenceChunk,
-    InferenceComplete,
-    InferenceError,
-    Unknown(String),
+fn ord_to_thermal(v: u32) -> ThermalLevel {
+    match v {
+        1 => ThermalLevel::Fair,
+        2 => ThermalLevel::Serious,
+        3 => ThermalLevel::Critical,
+        _ => ThermalLevel::Nominal,
+    }
 }
 
-// ── Inference payloads ──
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InferenceRequestPayload {
-    #[serde(rename = "requestID")]
-    pub request_id: String,
-    pub request: ChatCompletionRequest,
-    #[serde(default)]
-    pub streaming: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ChatCompletionRequest {
-    pub model: Option<String>,
-    pub messages: Vec<ApiMessage>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub max_tokens: Option<u32>,
-    pub stream: Option<bool>,
-    pub stop: Option<Vec<String>>,
-    pub presence_penalty: Option<f64>,
-    pub frequency_penalty: Option<f64>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ApiMessage {
-    pub role: String,
-    pub content: String,
-}
-
-/// Handle a relayData message: decode, parse ClusterMessage, process.
+/// Dispatch a decoded relayData payload.
 pub async fn handle_relay_data(
     relay: &RelayClient,
     payload: &RelayDataPayload,
     inference: &Backend,
+    state: &Arc<NodeRuntimeState>,
     device_info_json: &Value,
 ) {
     let data_bytes = match decode_relay_data(&payload.data) {
         Some(b) => b,
         None => {
-            warn!("Failed to decode relay data from {}", &payload.from_node_id[..16.min(payload.from_node_id.len())]);
+            warn!(
+                "Failed to decode relay data from {}",
+                &payload.from_node_id[..16.min(payload.from_node_id.len())]
+            );
             return;
         }
     };
 
-    let message = match parse_cluster_message(&data_bytes) {
+    let message = match ClusterMessage::parse(&data_bytes) {
         Some(m) => m,
         None => {
             let preview = String::from_utf8_lossy(&data_bytes[..200.min(data_bytes.len())]);
@@ -134,44 +140,54 @@ pub async fn handle_relay_data(
     let session = &payload.session_id;
 
     match message {
-        ClusterMessageKind::Hello(_) => {
-            info!("Received hello from {}, sending helloAck", &from[..16.min(from.len())]);
-            let ack = serde_json::json!({
-                "helloAck": {
-                    "deviceInfo": device_info_json,
-                    "protocolVersion": 1,
-                    "loadedModels": inference.loaded_models()
-                }
+        ClusterMessage::Hello(_) => {
+            info!("Received hello from {}, sending helloAck", short(from));
+            let ack = ClusterMessage::HelloAck(HelloAckPayload {
+                device_info: device_info_json.clone(),
+                protocol_version: 1,
+                loaded_models: inference.loaded_models(),
             });
-            send_cluster_message(relay, from, session, &ack);
+            send(relay, from, session, &ack);
         }
 
-        ClusterMessageKind::Heartbeat(_) => {
-            let ack = serde_json::json!({
-                "heartbeatAck": {
-                    "deviceID": uuid::Uuid::new_v4().to_string(),
-                    "timestamp": crate::relay::now_reference_seconds(),
-                    "thermalLevel": "nominal",
-                    "throttleLevel": 100,
-                    "loadedModels": inference.loaded_models(),
-                    "isGenerating": false,
-                    "queueDepth": 0
-                }
+        ClusterMessage::Heartbeat(_) => {
+            let ack = ClusterMessage::HeartbeatAck(state.heartbeat_payload(inference.loaded_models()));
+            send(relay, from, session, &ack);
+        }
+
+        ClusterMessage::InferenceRequest(req) => {
+            if state.shutting_down.load(Ordering::Relaxed) {
+                reply_err(
+                    relay,
+                    from,
+                    session,
+                    &req.request_id,
+                    "node is shutting down",
+                    Some(InferenceErrorCode::Unavailable),
+                );
+                return;
+            }
+            handle_inference_request(relay, from, session, req, inference, state).await;
+        }
+
+        ClusterMessage::LoadModel(req) => {
+            // Swap-on-demand not implemented in this build — Ultra-only feature (Phase C2).
+            // We respond with ModelLoadError so the gateway falls through cleanly.
+            let err = ClusterMessage::ModelLoadError(teale_protocol::ModelLoadErrorPayload {
+                request_id: req.request_id.clone(),
+                model_id: req.model_id,
+                reason: "load_model not supported on this node (pinned-only)".into(),
             });
-            send_cluster_message(relay, from, session, &ack);
+            send(relay, from, session, &err);
         }
 
-        ClusterMessageKind::InferenceRequest(req) => {
-            info!("Inference request {} from {}", &req.request_id, &from[..16.min(from.len())]);
-            handle_inference_request(relay, from, session, req, inference).await;
-        }
-
-        ClusterMessageKind::Unknown(kind) => {
-            info!("Ignoring unknown cluster message type: {}", kind);
+        ClusterMessage::Unknown { kind, .. } => {
+            debug!("Ignoring unknown cluster message type: {}", kind);
         }
 
         _ => {
-            // HelloAck, HeartbeatAck, InferenceChunk/Complete/Error are responses — we don't expect them as a supply node
+            // HelloAck / HeartbeatAck / InferenceChunk/Complete/Error / ModelLoaded*
+            // are responses — a supply node doesn't expect to receive them.
         }
     }
 }
@@ -182,47 +198,166 @@ async fn handle_inference_request(
     session: &str,
     req: InferenceRequestPayload,
     inference: &Backend,
+    state: &Arc<NodeRuntimeState>,
 ) {
-    let request_id = &req.request_id;
+    let request_id = req.request_id.clone();
+
+    // 1. Concurrency cap: fail fast if full.
+    let permit = match state.semaphore.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            warn!("Queue full — dropping request {}", request_id);
+            state.failed_requests.fetch_add(1, Ordering::Relaxed);
+            reply_err(
+                relay,
+                from,
+                session,
+                &request_id,
+                "queue full",
+                Some(InferenceErrorCode::QueueFull),
+            );
+            return;
+        }
+    };
+
+    state.queue_depth.fetch_add(1, Ordering::Relaxed);
+    state.is_generating.store(true, Ordering::Relaxed);
+
+    // Guard decrements on drop — covers error paths.
+    struct QueueGuard<'a>(&'a NodeRuntimeState);
+    impl<'a> Drop for QueueGuard<'a> {
+        fn drop(&mut self) {
+            self.0.queue_depth.fetch_sub(1, Ordering::Relaxed);
+            if self.0.queue_depth.load(Ordering::Relaxed) == 0 {
+                self.0.is_generating.store(false, Ordering::Relaxed);
+            }
+        }
+    }
+    let _guard = QueueGuard(state);
+
+    // 2. Model pre-check: fail typed instead of hitting the backend with a wrong model.
+    if let Some(requested_model) = req.request.model.as_deref() {
+        let loaded = inference.loaded_models();
+        if !model_matches_any(requested_model, &loaded) {
+            warn!(
+                "Model pre-check failed: requested {} but loaded {:?}",
+                requested_model, loaded
+            );
+            state.failed_requests.fetch_add(1, Ordering::Relaxed);
+            reply_err(
+                relay,
+                from,
+                session,
+                &request_id,
+                &format!(
+                    "model '{}' not loaded on this node (loaded: {:?})",
+                    requested_model, loaded
+                ),
+                Some(InferenceErrorCode::ModelNotLoaded),
+            );
+            return;
+        }
+    }
+
+    info!(
+        "Inference request {} from {} (queue_depth={})",
+        request_id,
+        short(from),
+        state.queue_depth.load(Ordering::Relaxed)
+    );
+
+    let started = Instant::now();
+    let mut token_count: u64 = 0;
 
     match inference.stream_completion(&req.request).await {
         Ok(mut rx) => {
             while let Some(chunk_json) = rx.recv().await {
-                let msg = serde_json::json!({
-                    "inferenceChunk": {
-                        "requestID": request_id,
-                        "chunk": chunk_json
-                    }
+                token_count += 1;
+                let msg = ClusterMessage::InferenceChunk(teale_protocol::InferenceChunkPayload {
+                    request_id: request_id.clone(),
+                    chunk: chunk_json,
                 });
-                send_cluster_message(relay, from, session, &msg);
+                send(relay, from, session, &msg);
             }
 
-            let complete = serde_json::json!({
-                "inferenceComplete": {
-                    "requestID": request_id
-                }
+            let elapsed = started.elapsed();
+            state
+                .total_completion_tokens
+                .fetch_add(token_count, Ordering::Relaxed);
+            state
+                .total_completion_seconds_micros
+                .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+            state.completed_requests.fetch_add(1, Ordering::Relaxed);
+
+            let done = ClusterMessage::InferenceComplete(teale_protocol::InferenceCompletePayload {
+                request_id: request_id.clone(),
+                tokens_in: None,
+                tokens_out: Some(token_count as u32),
             });
-            send_cluster_message(relay, from, session, &complete);
-            info!("Inference request {} completed", request_id);
+            send(relay, from, session, &done);
+            info!(
+                "Inference request {} completed ({} tokens in {:?})",
+                request_id, token_count, elapsed
+            );
         }
         Err(e) => {
             error!("Inference error for {}: {}", request_id, e);
-            let err_msg = serde_json::json!({
-                "inferenceError": {
-                    "requestID": request_id,
-                    "errorMessage": e.to_string()
-                }
-            });
-            send_cluster_message(relay, from, session, &err_msg);
+            state.failed_requests.fetch_add(1, Ordering::Relaxed);
+            reply_err(
+                relay,
+                from,
+                session,
+                &request_id,
+                &e.to_string(),
+                Some(InferenceErrorCode::InternalError),
+            );
         }
     }
+
+    drop(permit);
 }
 
-fn send_cluster_message(relay: &RelayClient, to_node_id: &str, session_id: &str, message: &Value) {
-    let json_bytes = serde_json::to_vec(message).unwrap_or_default();
-    if let Err(e) = relay.send_relay_data(to_node_id, session_id, &json_bytes) {
+/// Tolerant match: accept `owner/name` and bare `name` variants because
+/// OpenRouter/HF/llama-server all use different forms.
+fn model_matches_any(requested: &str, loaded: &[String]) -> bool {
+    let requested_norm = normalize_model_id(requested);
+    loaded
+        .iter()
+        .any(|loaded| normalize_model_id(loaded) == requested_norm || loaded_contains(loaded, requested))
+}
+
+fn loaded_contains(loaded: &str, requested: &str) -> bool {
+    // llama-server often serves with a file path as model id; allow substring match.
+    loaded.contains(requested) || requested.contains(loaded)
+}
+
+fn normalize_model_id(id: &str) -> String {
+    id.rsplit('/').next().unwrap_or(id).trim().to_lowercase()
+}
+
+fn reply_err(
+    relay: &RelayClient,
+    to: &str,
+    session: &str,
+    request_id: &str,
+    message: &str,
+    code: Option<InferenceErrorCode>,
+) {
+    let err = ClusterMessage::InferenceError(InferenceErrorPayload {
+        request_id: request_id.to_string(),
+        error_message: message.to_string(),
+        code,
+    });
+    send(relay, to, session, &err);
+}
+
+fn send(relay: &RelayClient, to_node_id: &str, session_id: &str, message: &ClusterMessage) {
+    let value = message.to_value();
+    if let Err(e) = relay.send_cluster_message(to_node_id, session_id, &value) {
         error!("Failed to send cluster message: {}", e);
     }
 }
 
-pub use crate::relay::now_reference_seconds;
+fn short(node_id: &str) -> &str {
+    &node_id[..16.min(node_id.len())]
+}

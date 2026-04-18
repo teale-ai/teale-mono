@@ -1,156 +1,29 @@
+//! WebSocket client for the TealeNet relay.
+//!
+//! Protocol types live in `teale_protocol::relay`. This file is the node's
+//! WS transport, register/discover helpers, and ping/keepalive logic.
+
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info};
 
-use crate::hardware::NodeCapabilities;
+use teale_protocol::{IncomingRelayMessage, NodeCapabilities};
+
+pub use teale_protocol::{now_reference_seconds, RelayDataPayload, RelaySessionPayload};
+
 use crate::identity::NodeIdentity;
-
-/// Apple reference date offset: seconds between Unix epoch and 2001-01-01.
-const APPLE_REFERENCE_OFFSET: f64 = 978307200.0;
-
-pub fn now_reference_seconds() -> f64 {
-    let unix_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64();
-    unix_secs - APPLE_REFERENCE_OFFSET
-}
-
-// ── Relay message types ──
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum OutgoingRelayMessage {
-    Register { register: RegisterPayload },
-    Discover { discover: DiscoverPayload },
-    RelayOpen { #[serde(rename = "relayOpen")] relay_open: RelaySessionPayload },
-    RelayReady { #[serde(rename = "relayReady")] relay_ready: RelaySessionPayload },
-    RelayData { #[serde(rename = "relayData")] relay_data: RelayDataPayload },
-    RelayClose { #[serde(rename = "relayClose")] relay_close: RelaySessionPayload },
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterPayload {
-    pub node_id: String,
-    pub public_key: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wg_public_key: Option<String>,
-    pub display_name: String,
-    pub capabilities: NodeCapabilities,
-    pub signature: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscoverPayload {
-    pub requesting_node_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RelaySessionPayload {
-    pub from_node_id: String,
-    pub to_node_id: String,
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RelayDataPayload {
-    pub from_node_id: String,
-    pub to_node_id: String,
-    pub session_id: String,
-    pub data: serde_json::Value,  // base64-encoded bytes from Swift
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerNotificationPayload {
-    #[serde(rename = "nodeID")]
-    pub node_id: String,
-    #[serde(rename = "displayName")]
-    pub display_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelayErrorPayload {
-    pub code: String,
-    pub message: String,
-}
-
-/// Parsed incoming relay message.
-#[derive(Debug, Clone)]
-pub enum IncomingRelayMessage {
-    RegisterAck { node_id: String },
-    DiscoverResponse { peers: Vec<Value> },
-    RelayOpen(RelaySessionPayload),
-    RelayReady(RelaySessionPayload),
-    RelayData(RelayDataPayload),
-    RelayClose(RelaySessionPayload),
-    PeerJoined(PeerNotificationPayload),
-    PeerLeft(PeerNotificationPayload),
-    Error(RelayErrorPayload),
-    Unknown(String),
-}
-
-fn parse_incoming(raw: &str) -> Option<IncomingRelayMessage> {
-    let v: Value = serde_json::from_str(raw).ok()?;
-    let obj = v.as_object()?;
-
-    if let Some(payload) = obj.get("registerAck") {
-        let node_id = payload.get("nodeID")?.as_str()?.to_string();
-        return Some(IncomingRelayMessage::RegisterAck { node_id });
-    }
-    if let Some(payload) = obj.get("discoverResponse") {
-        let peers = payload.get("peers")?.as_array()?.clone();
-        return Some(IncomingRelayMessage::DiscoverResponse { peers });
-    }
-    if let Some(payload) = obj.get("relayOpen") {
-        let p: RelaySessionPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::RelayOpen(p));
-    }
-    if let Some(payload) = obj.get("relayReady") {
-        let p: RelaySessionPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::RelayReady(p));
-    }
-    if let Some(payload) = obj.get("relayData") {
-        let p: RelayDataPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::RelayData(p));
-    }
-    if let Some(payload) = obj.get("relayClose") {
-        let p: RelaySessionPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::RelayClose(p));
-    }
-    if let Some(payload) = obj.get("peerJoined") {
-        let p: PeerNotificationPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::PeerJoined(p));
-    }
-    if let Some(payload) = obj.get("peerLeft") {
-        let p: PeerNotificationPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::PeerLeft(p));
-    }
-    if let Some(payload) = obj.get("error") {
-        let p: RelayErrorPayload = serde_json::from_value(payload.clone()).ok()?;
-        return Some(IncomingRelayMessage::Error(p));
-    }
-
-    let kind = obj.keys().next()?.to_string();
-    Some(IncomingRelayMessage::Unknown(kind))
-}
-
-// ── Relay Client ──
 
 pub struct RelayClient {
     node_id: String,
+    #[allow(dead_code)]
     relay_url: String,
     write_tx: mpsc::UnboundedSender<Message>,
 }
 
 impl RelayClient {
-    /// Connect to relay, returns (client, receiver for incoming messages).
+    /// Connect to relay. Returns (client, receiver for incoming messages).
     pub async fn connect(
         relay_url: &str,
         identity: &NodeIdentity,
@@ -159,7 +32,8 @@ impl RelayClient {
         let url_with_node = format!("{}?node={}", relay_url, node_id);
 
         info!("Connecting to relay: {}", relay_url);
-        let (ws_stream, _) = connect_async(&url_with_node).await
+        let (ws_stream, _) = connect_async(&url_with_node)
+            .await
             .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
         info!("Connected to relay");
 
@@ -179,14 +53,14 @@ impl RelayClient {
             }
         });
 
-        // Read task: parse incoming messages and forward to channel
+        // Read task
         let ping_tx = write_tx.clone();
         tokio::spawn(async move {
             let mut read = read;
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
-                        if let Some(msg) = parse_incoming(&text) {
+                        if let Some(msg) = IncomingRelayMessage::parse(&text) {
                             if incoming_tx.send(msg).is_err() {
                                 break;
                             }
@@ -194,7 +68,7 @@ impl RelayClient {
                     }
                     Ok(Message::Binary(data)) => {
                         if let Ok(text) = String::from_utf8(data.to_vec()) {
-                            if let Some(msg) = parse_incoming(&text) {
+                            if let Some(msg) = IncomingRelayMessage::parse(&text) {
                                 if incoming_tx.send(msg).is_err() {
                                     break;
                                 }
@@ -217,7 +91,7 @@ impl RelayClient {
             }
         });
 
-        // Ping task: send ping every 25s
+        // Ping task: every 25s
         let ping_write_tx = write_tx.clone();
         tokio::spawn(async move {
             loop {
@@ -244,12 +118,18 @@ impl RelayClient {
 
     fn send_json(&self, value: &Value) -> anyhow::Result<()> {
         let text = serde_json::to_string(value)?;
-        self.write_tx.send(Message::Text(text))
+        self.write_tx
+            .send(Message::Text(text.into()))
             .map_err(|_| anyhow::anyhow!("WebSocket channel closed"))?;
         Ok(())
     }
 
-    pub fn register(&self, identity: &NodeIdentity, display_name: &str, capabilities: &NodeCapabilities) -> anyhow::Result<()> {
+    pub fn register(
+        &self,
+        identity: &NodeIdentity,
+        display_name: &str,
+        capabilities: &NodeCapabilities,
+    ) -> anyhow::Result<()> {
         let signature = identity.sign_node_id();
 
         let payload = serde_json::json!({
@@ -308,5 +188,16 @@ impl RelayClient {
             }
         });
         self.send_json(&payload)
+    }
+
+    /// Send arbitrary cluster message (ClusterMessage wrapped in relayData).
+    pub fn send_cluster_message(
+        &self,
+        to_node_id: &str,
+        session_id: &str,
+        message: &Value,
+    ) -> anyhow::Result<()> {
+        let json_bytes = serde_json::to_vec(message)?;
+        self.send_relay_data(to_node_id, session_id, &json_bytes)
     }
 }

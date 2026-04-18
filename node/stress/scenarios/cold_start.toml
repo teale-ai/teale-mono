@@ -1,0 +1,27 @@
+name = "cold_start"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 120
+rps = 1.0
+warmup_seconds = 0
+concurrency_cap = 8
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 2
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 128
+streaming = true
+
+[[requests]]
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+weight = 1
+prompt_tokens_mean = 256
+prompt_tokens_stddev = 64
+max_tokens = 256
+streaming = true
+
+# Pass criteria (checked in summary.json):
+#   success_rate >= 0.995  (first 100 requests)
+#   ttft_ms.p95 <= 5000    (device discovery adds first-request latency)

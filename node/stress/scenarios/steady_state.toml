@@ -1,0 +1,36 @@
+name = "steady_state_30min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 1800
+rps = 2.0
+warmup_seconds = 30
+concurrency_cap = 64
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 5
+prompt_tokens_mean = 256
+prompt_tokens_stddev = 64
+max_tokens = 256
+streaming = true
+
+[[requests]]
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+weight = 3
+prompt_tokens_mean = 512
+prompt_tokens_stddev = 128
+max_tokens = 256
+streaming = true
+
+[[requests]]
+model = "meta-llama/llama-3.3-70b-instruct"
+weight = 1
+prompt_tokens_mean = 512
+prompt_tokens_stddev = 128
+max_tokens = 256
+streaming = true
+
+# Phase A pass criteria:
+#   success_rate >= 0.995
+#   ttft_ms.p95 <= 2000 for small models, <= 5000 for 70B
+#   total_latency p99 <= 3 * p95

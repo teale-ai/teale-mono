@@ -1,0 +1,33 @@
+app = "teale-gateway"
+primary_region = "sjc"
+kill_signal = "SIGINT"
+kill_timeout = 30
+
+[build]
+dockerfile = "Dockerfile"
+
+[env]
+RUST_LOG = "info,teale_gateway=debug"
+
+[[mounts]]
+source = "gateway_data"
+destination = "/data"
+
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = false
+auto_start_machines = true
+min_machines_running = 2   # HA redundancy — OR probe traffic hits both
+
+[http_service.checks.health]
+grace_period = "10s"
+interval = "15s"
+method = "GET"
+timeout = "3s"
+path = "/health"
+
+[[vm]]
+cpu_kind = "shared"
+cpus = 1
+memory_mb = 512

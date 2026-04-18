@@ -1,0 +1,31 @@
+name = "fault_kill_backend"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 600
+rps = 1.0
+warmup_seconds = 30
+concurrency_cap = 16
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 1
+prompt_tokens_mean = 256
+prompt_tokens_stddev = 64
+max_tokens = 256
+streaming = true
+
+[[faults]]
+kind = "kill_backend"
+at_seconds = 120
+target = "ssh-host-1"
+duration_seconds = 30
+
+[[faults]]
+kind = "kill_backend"
+at_seconds = 300
+target = "ssh-host-2"
+duration_seconds = 30
+
+# Pass criteria:
+#   recovery_ttr <= 30s (node supervisor restarts llama-server within 30s)
+#   success_rate during fault window >= 0.80  (in-flight requests may fail; new ones route to other nodes)
