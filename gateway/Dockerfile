@@ -1,4 +1,5 @@
-# Multi-stage build: Rust builder + slim runtime.
+# Multi-stage build for the teale-mono workspace.
+# Build context MUST be the monorepo root (passed via flyctl --dockerfile).
 FROM rust:1.84-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -6,22 +7,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-# Copy workspace files
+# teale-mono flat layout: Cargo.toml at root; crates as siblings.
 COPY Cargo.toml Cargo.lock ./
 COPY protocol protocol
+COPY node node
 COPY gateway gateway
 COPY stress stress
-COPY src src
 
-# Build only the gateway binary. The other workspace members are pulled in
-# as dependencies where needed (protocol).
 RUN cargo build --release -p teale-gateway
 
 
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -r -u 10001 teale && mkdir -p /data && chown teale:teale /data
