@@ -1,0 +1,25 @@
+name: mac-app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mac-app/**"
+      - ".github/workflows/mac-app.yml"
+  pull_request:
+    paths:
+      - "mac-app/**"
+      - ".github/workflows/mac-app.yml"
+
+jobs:
+  swift-build:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: mac-app
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build
+        run: swift build
+      - name: swift test
+        run: swift test

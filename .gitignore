@@ -12,3 +12,16 @@ Supabase.plist
 !Sources/AuthKit/Resources/Supabase.plist
 default.profraw
 node_modules/
+
+# Rust
+target/
+Cargo.lock.bak
+
+# Dev scratch
+.context/
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

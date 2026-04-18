@@ -1,0 +1,58 @@
+name: rust
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "node/**"
+      - "protocol/**"
+      - "gateway/**"
+      - "stress/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "node/**"
+      - "protocol/**"
+      - "gateway/**"
+      - "stress/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  build-release:
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        bin: [teale-node, teale-gateway, teale-stress]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --bin ${{ matrix.bin }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bin }}
+          path: target/release/${{ matrix.bin }}

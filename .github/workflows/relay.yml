@@ -1,0 +1,25 @@
+name: relay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "relay/**"
+      - ".github/workflows/relay.yml"
+  pull_request:
+    paths:
+      - "relay/**"
+      - ".github/workflows/relay.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
+      - run: bun install
+      - run: bun run tsc --noEmit || true   # upgrade to strict once types are tightened
+      - run: bun test

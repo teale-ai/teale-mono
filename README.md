@@ -1,46 +1,96 @@
-# teale-mac-app
+# teale-mono
 
-Native macOS and iOS app for [Teale](https://teale.com) — decentralized AI inference on Apple Silicon.
+Monorepo for Teale's OpenRouter provider stack. Four deployable components
+plus one shared protocol crate.
 
-## What it does
+## Layout
 
-- Run LLMs locally on your Mac using MLX (Apple's ML framework)
-- Discover and connect to other Macs on your LAN for distributed inference
-- Join the TealeNet WAN for peer-to-peer inference across the internet
-- Earn credits by sharing your idle compute, spend them on remote inference
-- OpenAI-compatible API at `localhost:11435`
-
-## Platforms
-
-- **macOS 14+** (Sonoma) — MenuBarExtra app
-- **iOS 17+** — Companion app with on-device and remote inference
-
-## Build
-
-Requires Xcode (SwiftPM can't compile Metal shaders).
-
-```bash
-# CLI tool
-swift build --product teale
-
-# Full app — open in Xcode
-open Package.swift
+```
+teale-mono/
+├── protocol/   # Rust crate — wire types shared across node, gateway, relay
+├── node/       # Rust binary — supply-side agent that runs on each Mac (and Linux/Windows/Android)
+├── gateway/    # Rust binary — OpenAI-compat HTTP gateway at gateway.teale.com
+├── stress/     # Rust binary — load + fault-injection test runner
+├── relay/      # TypeScript (Bun) — WebSocket rendezvous server at relay.teale.com
+└── mac-app/    # Swift — macOS/iOS client app
 ```
 
-## Architecture
+Rust components form one Cargo workspace (`cargo build --workspace` at root).
+Relay is a pnpm/bun package. Mac-app is a SwiftPM package (`swift build` from
+`mac-app/`).
 
-13 Swift modules: SharedTypes, HardwareProfile, MLXInference, ModelManager, InferenceEngine, ClusterKit, WANKit, CreditKit, AgentKit, AuthKit, LocalAPI, InferencePoolApp, TealeCompanion.
+## Quick start
 
-See [TEALE.md](TEALE.md) for detailed architecture and module documentation.
+```bash
+# Build every Rust binary
+cargo build --workspace --release
 
-## Dependencies
+# Run the gateway locally (expects a running relay + nodes)
+GATEWAY_TOKENS=tok_dev:internal cargo run -p teale-gateway -- --config gateway/gateway.toml
 
-- [mlx-swift](https://github.com/ml-explore/mlx-swift) — Apple's ML framework for Apple Silicon
-- [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm) — LLM/VLM model loading and generation
-- [swift-transformers](https://github.com/huggingface/swift-transformers) — Tokenizer + HuggingFace Hub
-- [hummingbird](https://github.com/hummingbird-project/hummingbird) — HTTP server
-- [supabase-swift](https://github.com/supabase/supabase-swift) — Auth and database
+# Run a stress scenario against a deployed gateway
+export GATEWAY_DEV_TOKEN=tok_dev_xxx
+cargo run -p teale-stress --release -- run \
+  --scenario stress/scenarios/steady_state.toml --out runs/
 
-## License
+# Node + backend (local)
+cargo run -p teale-node -- --config node/teale-node.example.toml
 
-[AGPL-3.0](LICENSE)
+# Relay
+cd relay && bun install && bun run server.ts
+
+# Mac app
+cd mac-app && swift build
+```
+
+## CI
+
+Path-filtered — a Rust-only PR does NOT trigger the Swift build.
+
+| Path                                         | Workflow                         |
+|----------------------------------------------|----------------------------------|
+| `protocol/`, `node/`, `gateway/`, `stress/`  | `.github/workflows/rust.yml`     |
+| `relay/`                                     | `.github/workflows/relay.yml`    |
+| `mac-app/`                                   | `.github/workflows/mac-app.yml`  |
+| `gateway/`, `protocol/`  → Fly.io auto-deploy on `main` | `.github/workflows/gateway-deploy.yml` |
+
+## Deploying
+
+### gateway.teale.com
+
+```bash
+cd gateway
+flyctl launch                                  # first time
+flyctl secrets set GATEWAY_TOKENS="tok_...:openrouter,tok_...:dev"
+flyctl deploy
+```
+
+### relay.teale.com
+
+```bash
+cd relay
+flyctl deploy
+```
+
+### Supply nodes (Mac)
+
+```bash
+brew install teale-ai/teale/teale-node        # (formula TBD)
+# or from source:
+cargo build --release -p teale-node
+# then point at a teale-node.toml with your config
+```
+
+## Docs
+
+Research and planning artifacts live in `.context/` (gitignored in the
+source repos; consolidated here under `docs/`).
+
+- `docs/openrouter-open-weight-catalog.md` — demand side (162 open-weight models)
+- `docs/mac-fleet-configurations.md` — supply side (chip × RAM × bandwidth)
+- `docs/device-model-matrix.md` — routing source of truth
+- `docs/device-earnings-cards.md` — recruiting pitch (per-config $/mo)
+- `docs/openrouter-provider-gap-analysis.md` — applicable-requirements tracker
+- `docs/openrouter-application-rehearsal.md` — submission draft
+- `docs/openrouter-oncall-runbook.md` — first-2-weeks playbook
+- `docs/protocol.md` — relay + cluster wire protocol spec
