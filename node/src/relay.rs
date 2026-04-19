@@ -167,7 +167,12 @@ impl RelayClient {
         self.send_json(&payload)
     }
 
-    pub fn send_relay_data(&self, to_node_id: &str, session_id: &str, data: &[u8]) -> anyhow::Result<()> {
+    pub fn send_relay_data(
+        &self,
+        to_node_id: &str,
+        session_id: &str,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data);
         let payload = serde_json::json!({
             "relayData": {

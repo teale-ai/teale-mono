@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, Signer};
+use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 use std::path::PathBuf;
 use tracing::info;
@@ -41,11 +41,18 @@ impl NodeIdentity {
         if path.exists() {
             let data = std::fs::read(&path)?;
             if data.len() != 32 {
-                anyhow::bail!("Identity file has wrong size (expected 32 bytes, got {})", data.len());
+                anyhow::bail!(
+                    "Identity file has wrong size (expected 32 bytes, got {})",
+                    data.len()
+                );
             }
             let bytes: [u8; 32] = data.try_into().unwrap();
             let signing_key = SigningKey::from_bytes(&bytes);
-            info!("Loaded identity from {:?}, nodeID={}", path, hex::encode(signing_key.verifying_key().as_bytes()));
+            info!(
+                "Loaded identity from {:?}, nodeID={}",
+                path,
+                hex::encode(signing_key.verifying_key().as_bytes())
+            );
             Ok(Self { signing_key })
         } else {
             let signing_key = SigningKey::generate(&mut OsRng);
@@ -60,7 +67,11 @@ impl NodeIdentity {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             }
-            info!("Generated new identity at {:?}, nodeID={}", path, hex::encode(signing_key.verifying_key().as_bytes()));
+            info!(
+                "Generated new identity at {:?}, nodeID={}",
+                path,
+                hex::encode(signing_key.verifying_key().as_bytes())
+            );
             Ok(Self { signing_key })
         }
     }
@@ -80,7 +91,9 @@ fn identity_file_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(appdata).join("Teale").join("wan-identity.key")
+        PathBuf::from(appdata)
+            .join("Teale")
+            .join("wan-identity.key")
     }
     #[cfg(target_os = "android")]
     {

@@ -200,7 +200,8 @@ impl Registry {
 
     pub fn quarantine(&self, node_id: &str, duration_secs: u64) {
         if let Some(mut dev) = self.devices.get_mut(node_id) {
-            dev.quarantined_until = Some(Instant::now() + std::time::Duration::from_secs(duration_secs));
+            dev.quarantined_until =
+                Some(Instant::now() + std::time::Duration::from_secs(duration_secs));
             tracing::warn!(node = node_id, "device quarantined for {}s", duration_secs);
         }
     }
@@ -232,7 +233,8 @@ impl Registry {
             .iter()
             .filter_map(|r| {
                 let st = r.value();
-                match st.is_eligible_for(model_id, self.reliability.quarantine_seconds as u32 * 100) {
+                match st.is_eligible_for(model_id, self.reliability.quarantine_seconds as u32 * 100)
+                {
                     Eligibility::Loaded | Eligibility::Swappable => Some(st.clone()),
                     _ => None,
                 }
@@ -263,9 +265,16 @@ impl Registry {
             Some(d) => d.clone(),
             None => return,
         };
-        for m in dev.capabilities.loaded_models.iter().chain(dev.capabilities.swappable_models.iter()) {
+        for m in dev
+            .capabilities
+            .loaded_models
+            .iter()
+            .chain(dev.capabilities.swappable_models.iter())
+        {
             let key = normalize_model_id(m);
-            idx.entry(key).or_insert_with(HashSet::new).insert(node_id.to_string());
+            idx.entry(key)
+                .or_insert_with(HashSet::new)
+                .insert(node_id.to_string());
         }
     }
 }
@@ -276,9 +285,9 @@ pub fn normalize_model_id(id: &str) -> String {
 
 pub fn model_matches_any(requested: &str, loaded: &[String]) -> bool {
     let req_norm = normalize_model_id(requested);
-    loaded
-        .iter()
-        .any(|m| normalize_model_id(m) == req_norm || m.contains(requested) || requested.contains(m))
+    loaded.iter().any(|m| {
+        normalize_model_id(m) == req_norm || m.contains(requested) || requested.contains(m)
+    })
 }
 
 /// Prior estimate for tokens/sec given a device's hardware (used until a

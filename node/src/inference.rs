@@ -180,9 +180,9 @@ pub fn spawn_llama_server(config: &LlamaConfig) -> anyhow::Result<Child> {
         config.binary, config.model, config.port, config.gpu_layers
     );
     let mut cmd = build_llama_command(config)?;
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn llama-server at '{}': {}", config.binary, e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        anyhow::anyhow!("Failed to spawn llama-server at '{}': {}", config.binary, e)
+    })?;
 
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {

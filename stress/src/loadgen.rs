@@ -16,7 +16,10 @@ use crate::record::{now_ms, RecordWriter, RequestRecord};
 use crate::scenario::{RequestMix, Scenario};
 
 pub async fn run(scenario: Scenario, writer: Arc<RecordWriter>) -> anyhow::Result<Stats> {
-    info!("scenario '{}' starting: {}s @ {:.2} rps", scenario.name, scenario.duration_seconds, scenario.rps);
+    info!(
+        "scenario '{}' starting: {}s @ {:.2} rps",
+        scenario.name, scenario.duration_seconds, scenario.rps
+    );
 
     let client = Client::builder()
         .timeout(Duration::from_secs(600))
@@ -63,12 +66,23 @@ pub async fn run(scenario: Scenario, writer: Arc<RecordWriter>) -> anyhow::Resul
         let url = scenario.gateway_url.clone();
         let token = scenario.token.clone();
         let run_id = writer.run_id().to_string();
-        let prompt_tokens = sample_normal_u32(&mut rng, mix.prompt_tokens_mean, mix.prompt_tokens_stddev);
+        let prompt_tokens =
+            sample_normal_u32(&mut rng, mix.prompt_tokens_mean, mix.prompt_tokens_stddev);
         let stats_sh = stats_shared.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
-            run_one(&client_c, &url, &token, &mix, prompt_tokens, &writer_c, &run_id, &stats_sh).await;
+            run_one(
+                &client_c,
+                &url,
+                &token,
+                &mix,
+                prompt_tokens,
+                &writer_c,
+                &run_id,
+                &stats_sh,
+            )
+            .await;
         });
         handles.push(handle);
     }
@@ -106,7 +120,10 @@ async fn run_one(
 
     let started = Instant::now();
     let resp = client
-        .post(format!("{}/v1/chat/completions", gateway_url.trim_end_matches('/')))
+        .post(format!(
+            "{}/v1/chat/completions",
+            gateway_url.trim_end_matches('/')
+        ))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -221,7 +238,11 @@ async fn run_one(
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                                 if v.get("error").is_some() {
                                     errored = Some(data.to_string());
-                                } else if v.pointer("/choices/0/delta/content").and_then(|x| x.as_str()).is_some() {
+                                } else if v
+                                    .pointer("/choices/0/delta/content")
+                                    .and_then(|x| x.as_str())
+                                    .is_some()
+                                {
                                     tokens += 1;
                                 }
                             }
@@ -236,7 +257,11 @@ async fn run_one(
         }
     }
 
-    let status = if errored.is_some() { "stream_error" } else { "ok" };
+    let status = if errored.is_some() {
+        "stream_error"
+    } else {
+        "ok"
+    };
     record_and_stat(
         writer,
         stats,

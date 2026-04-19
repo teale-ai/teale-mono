@@ -11,12 +11,28 @@ use crate::hardware::NodeCapabilities;
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum OutgoingRelayMessage {
-    Register { register: RegisterPayload },
-    Discover { discover: DiscoverPayload },
-    RelayOpen { #[serde(rename = "relayOpen")] relay_open: RelaySessionPayload },
-    RelayReady { #[serde(rename = "relayReady")] relay_ready: RelaySessionPayload },
-    RelayData { #[serde(rename = "relayData")] relay_data: RelayDataPayload },
-    RelayClose { #[serde(rename = "relayClose")] relay_close: RelaySessionPayload },
+    Register {
+        register: RegisterPayload,
+    },
+    Discover {
+        discover: DiscoverPayload,
+    },
+    RelayOpen {
+        #[serde(rename = "relayOpen")]
+        relay_open: RelaySessionPayload,
+    },
+    RelayReady {
+        #[serde(rename = "relayReady")]
+        relay_ready: RelaySessionPayload,
+    },
+    RelayData {
+        #[serde(rename = "relayData")]
+        relay_data: RelayDataPayload,
+    },
+    RelayClose {
+        #[serde(rename = "relayClose")]
+        relay_close: RelaySessionPayload,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +41,11 @@ pub struct RegisterPayload {
     #[serde(rename = "nodeID")]
     pub node_id: String,
     pub public_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "wgPublicKey")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "wgPublicKey"
+    )]
     pub wg_public_key: Option<String>,
     pub display_name: String,
     pub capabilities: NodeCapabilities,

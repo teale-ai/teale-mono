@@ -42,8 +42,13 @@ pub struct PendingSession {
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     Chunk(serde_json::Value),
-    Complete { tokens_out: Option<u32> },
-    Error { message: String, code: Option<String> },
+    Complete {
+        tokens_out: Option<u32>,
+    },
+    Error {
+        message: String,
+        code: Option<String>,
+    },
     /// Relay session or upstream node dropped — treat as failure.
     Disconnect(String),
 }
@@ -117,7 +122,8 @@ impl RelayHandle {
         message: &ClusterMessage,
     ) -> anyhow::Result<()> {
         let data_bytes = serde_json::to_vec(&message.to_value())?;
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data_bytes);
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data_bytes);
         let payload = serde_json::json!({
             "relayData": {
                 "fromNodeID": self.node_id,
@@ -189,14 +195,18 @@ pub async fn spawn(
                     Ok((ws_stream, _)) => {
                         info!("Connected to relay");
                         backoff = Duration::from_secs(1);
-                        metrics::WS_RECONNECTS_TOTAL.with_label_values(&["connect_success"]).inc();
+                        metrics::WS_RECONNECTS_TOTAL
+                            .with_label_values(&["connect_success"])
+                            .inc();
 
                         let (mut write, read) = ws_stream.split();
 
                         // writer task
-                        let (local_outbox_tx, mut local_outbox_rx) = mpsc::unbounded_channel::<Message>();
+                        let (local_outbox_tx, mut local_outbox_rx) =
+                            mpsc::unbounded_channel::<Message>();
                         let drain_task = {
-                            let mut main_rx = std::mem::replace(&mut outbox_rx, mpsc::unbounded_channel().1);
+                            let mut main_rx =
+                                std::mem::replace(&mut outbox_rx, mpsc::unbounded_channel().1);
                             tokio::spawn(async move {
                                 while let Some(m) = main_rx.recv().await {
                                     if local_outbox_tx.send(m).is_err() {
@@ -294,9 +304,9 @@ pub async fn spawn(
 
                         // Fail in-flight sessions.
                         for mut entry in sessions.iter_mut() {
-                            let _ = entry.chunks_tx.try_send(SessionEvent::Disconnect(
-                                "relay disconnected".into(),
-                            ));
+                            let _ = entry
+                                .chunks_tx
+                                .try_send(SessionEvent::Disconnect("relay disconnected".into()));
                         }
                         sessions.clear();
                         ready_waiters.lock().clear();
@@ -360,14 +370,20 @@ async fn handle_incoming(
         IncomingRelayMessage::DiscoverResponse { peers } => {
             debug!("discover response: {} peer(s)", peers.len());
             for peer in peers {
-                let Some(obj) = peer.as_object() else { continue };
-                let Some(node_id) = obj.get("nodeID").and_then(|v| v.as_str()) else { continue };
+                let Some(obj) = peer.as_object() else {
+                    continue;
+                };
+                let Some(node_id) = obj.get("nodeID").and_then(|v| v.as_str()) else {
+                    continue;
+                };
                 let display_name = obj
                     .get("displayName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                let Some(caps_json) = obj.get("capabilities") else { continue };
+                let Some(caps_json) = obj.get("capabilities") else {
+                    continue;
+                };
                 let caps = match serde_json::from_value::<NodeCapabilities>(caps_json.clone()) {
                     Ok(c) => c,
                     Err(e) => {
@@ -436,9 +452,9 @@ async fn dispatch_cluster(
         }
         ClusterMessage::InferenceComplete(p) => {
             if let Some((_, entry)) = sessions.remove(session_id) {
-                let _ = entry
-                    .chunks_tx
-                    .try_send(SessionEvent::Complete { tokens_out: p.tokens_out });
+                let _ = entry.chunks_tx.try_send(SessionEvent::Complete {
+                    tokens_out: p.tokens_out,
+                });
             }
         }
         ClusterMessage::InferenceError(p) => {
@@ -470,7 +486,9 @@ fn update_eligible_gauges(registry: &Arc<Registry>) {
         }
     }
     for (m, n) in per_model {
-        metrics::DEVICES_ELIGIBLE.with_label_values(&[&m]).set(n as f64);
+        metrics::DEVICES_ELIGIBLE
+            .with_label_values(&[&m])
+            .set(n as f64);
     }
 }
 

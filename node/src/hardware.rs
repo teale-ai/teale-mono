@@ -190,30 +190,74 @@ fn detect_arm_soc() -> Option<(String, String, u32, f64)> {
     let hw = hardware.as_deref().unwrap_or("");
     let soc = soc_id.as_deref().unwrap_or("");
 
-    if hw.contains("tensor") || hw.contains("zuma") || hw.contains("ripcurrent") || soc.contains("zuma") {
+    if hw.contains("tensor")
+        || hw.contains("zuma")
+        || hw.contains("ripcurrent")
+        || soc.contains("zuma")
+    {
         if hw.contains("g4") || hw.contains("zuma pro") {
-            return Some(("tensorG4".to_string(), "Google Tensor G4".to_string(), 7, 51.0));
+            return Some((
+                "tensorG4".to_string(),
+                "Google Tensor G4".to_string(),
+                7,
+                51.0,
+            ));
         }
         if hw.contains("g3") || hw.contains("zuma") {
-            return Some(("tensorG3".to_string(), "Google Tensor G3".to_string(), 7, 51.0));
+            return Some((
+                "tensorG3".to_string(),
+                "Google Tensor G3".to_string(),
+                7,
+                51.0,
+            ));
         }
-        return Some(("tensorGeneric".to_string(), "Google Tensor".to_string(), 7, 40.0));
+        return Some((
+            "tensorGeneric".to_string(),
+            "Google Tensor".to_string(),
+            7,
+            40.0,
+        ));
     }
 
-    if hw.contains("snapdragon") || hw.contains("qcom") || hw.contains("sm8") || soc.contains("sm8") || soc.contains("qcom") {
-        return Some(("snapdragon".to_string(), format!("Qualcomm {}", hw), 0, 44.0));
+    if hw.contains("snapdragon")
+        || hw.contains("qcom")
+        || hw.contains("sm8")
+        || soc.contains("sm8")
+        || soc.contains("qcom")
+    {
+        return Some((
+            "snapdragon".to_string(),
+            format!("Qualcomm {}", hw),
+            0,
+            44.0,
+        ));
     }
 
     if hw.contains("exynos") || soc.contains("exynos") {
-        return Some(("exynos".to_string(), format!("Samsung Exynos ({})", hw), 0, 35.0));
+        return Some((
+            "exynos".to_string(),
+            format!("Samsung Exynos ({})", hw),
+            0,
+            35.0,
+        ));
     }
 
     if hw.contains("kirin") || hw.contains("hisilicon") || soc.contains("kirin") {
-        return Some(("kirin".to_string(), format!("Huawei Kirin ({})", hw), 0, 35.0));
+        return Some((
+            "kirin".to_string(),
+            format!("Huawei Kirin ({})", hw),
+            0,
+            35.0,
+        ));
     }
 
     if hw.contains("mediatek") || hw.contains("dimensity") || soc.contains("mt6") {
-        return Some(("mediatek".to_string(), format!("MediaTek ({})", hw), 0, 35.0));
+        return Some((
+            "mediatek".to_string(),
+            format!("MediaTek ({})", hw),
+            0,
+            35.0,
+        ));
     }
 
     None
@@ -241,7 +285,12 @@ fn current_platform() -> &'static str {
     {
         "android"
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "android"
+    )))]
     {
         "unknown"
     }

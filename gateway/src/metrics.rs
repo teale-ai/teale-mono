@@ -56,8 +56,11 @@ pub static DEVICES_ELIGIBLE: Lazy<GaugeVec> = Lazy::new(|| {
 });
 
 pub static DEVICES_CONNECTED: Lazy<IntGauge> = Lazy::new(|| {
-    register_int_gauge!("gateway_devices_connected", "Total devices connected to relay")
-        .expect("metric init")
+    register_int_gauge!(
+        "gateway_devices_connected",
+        "Total devices connected to relay"
+    )
+    .expect("metric init")
 });
 
 pub static WS_RECONNECTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {

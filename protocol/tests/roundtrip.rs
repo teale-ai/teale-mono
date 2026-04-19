@@ -5,13 +5,13 @@
 //! of at 3 am during a streaming fault.
 
 use serde_json::{json, Value};
+use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 use teale_protocol::{
     now_reference_seconds, ClusterMessage, HardwareCapability, HeartbeatPayload,
     InferenceChunkPayload, InferenceCompletePayload, InferenceErrorCode, InferenceErrorPayload,
     InferenceRequestPayload, LoadModelPayload, ModelLoadErrorPayload, ModelLoadedPayload,
     NodeCapabilities, ThermalLevel,
 };
-use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 
 fn sample_capabilities() -> NodeCapabilities {
     NodeCapabilities {
@@ -125,11 +125,13 @@ fn inference_chunk_roundtrip() {
 
 #[test]
 fn inference_complete_roundtrip() {
-    assert_round_trip(ClusterMessage::InferenceComplete(InferenceCompletePayload {
-        request_id: "req-abc".into(),
-        tokens_in: Some(12),
-        tokens_out: Some(34),
-    }));
+    assert_round_trip(ClusterMessage::InferenceComplete(
+        InferenceCompletePayload {
+            request_id: "req-abc".into(),
+            tokens_in: Some(12),
+            tokens_out: Some(34),
+        },
+    ));
 }
 
 #[test]

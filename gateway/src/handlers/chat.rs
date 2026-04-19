@@ -27,9 +27,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use teale_protocol::{
-    openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload,
-};
+use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
@@ -58,7 +56,11 @@ pub async fn chat_completions(
 
     // Per-model fleet floor: if we don't have enough healthy devices, 503.
     let floor = &state.config.scheduler.per_model_floor;
-    let required = if is_large(catalog_model.params_b) { floor.large } else { floor.small };
+    let required = if is_large(catalog_model.params_b) {
+        floor.large
+    } else {
+        floor.small
+    };
     if state.registry.loaded_count(&catalog_model.id) < required {
         metrics::REQUESTS_TOTAL
             .with_label_values(&[&catalog_model.id, "no_supply"])
@@ -336,7 +338,11 @@ async fn run_buffered(
         let mut err_message: Option<String> = None;
 
         loop {
-            let deadline = if got_first { request_timeout } else { ttft_deadline };
+            let deadline = if got_first {
+                request_timeout
+            } else {
+                ttft_deadline
+            };
             let next = tokio::time::timeout(deadline, rx.recv()).await;
             match next {
                 Ok(Some(SessionEvent::Chunk(chunk))) => {
@@ -375,7 +381,11 @@ async fn run_buffered(
                     break;
                 }
                 Err(_) => {
-                    err_message = Some(if got_first { "timeout mid-stream".into() } else { "ttft timeout".into() });
+                    err_message = Some(if got_first {
+                        "timeout mid-stream".into()
+                    } else {
+                        "ttft timeout".into()
+                    });
                     if !got_first && tried <= max_retries {
                         retriable = true;
                     }
@@ -397,7 +407,12 @@ async fn run_buffered(
                 .with_label_values(&[&model_id])
                 .inc_by(tokens_out as f64);
 
-            let reply = build_non_stream_response(&model_id, &accumulated_text, &last_chunk_obj, tokens_out);
+            let reply = build_non_stream_response(
+                &model_id,
+                &accumulated_text,
+                &last_chunk_obj,
+                tokens_out,
+            );
             return Ok(Json(reply));
         }
 

@@ -41,9 +41,7 @@ impl ClusterMessage {
         // so the Rust side can deserialize the payload directly.
         // Rust-origin messages (from the gateway) don't have the wrapper;
         // tolerate both shapes.
-        let unwrap_0 = |p: &Value| -> Value {
-            p.get("_0").cloned().unwrap_or_else(|| p.clone())
-        };
+        let unwrap_0 = |p: &Value| -> Value { p.get("_0").cloned().unwrap_or_else(|| p.clone()) };
 
         macro_rules! try_variant {
             ($key:expr, $payload:ty, $variant:ident) => {
@@ -60,16 +58,27 @@ impl ClusterMessage {
         try_variant!("helloAck", HelloAckPayload, HelloAck);
         try_variant!("heartbeat", HeartbeatPayload, Heartbeat);
         try_variant!("heartbeatAck", HeartbeatPayload, HeartbeatAck);
-        try_variant!("inferenceRequest", InferenceRequestPayload, InferenceRequest);
+        try_variant!(
+            "inferenceRequest",
+            InferenceRequestPayload,
+            InferenceRequest
+        );
         try_variant!("inferenceChunk", InferenceChunkPayload, InferenceChunk);
-        try_variant!("inferenceComplete", InferenceCompletePayload, InferenceComplete);
+        try_variant!(
+            "inferenceComplete",
+            InferenceCompletePayload,
+            InferenceComplete
+        );
         try_variant!("inferenceError", InferenceErrorPayload, InferenceError);
         try_variant!("loadModel", LoadModelPayload, LoadModel);
         try_variant!("modelLoaded", ModelLoadedPayload, ModelLoaded);
         try_variant!("modelLoadError", ModelLoadErrorPayload, ModelLoadError);
 
         let kind = obj.keys().next()?.to_string();
-        Some(Self::Unknown { kind, raw: v.clone() })
+        Some(Self::Unknown {
+            kind,
+            raw: v.clone(),
+        })
     }
 
     /// Serialize to the wire-format JSON Value.
@@ -105,10 +114,7 @@ pub fn decode_relay_data(data_value: &Value) -> Option<Vec<u8>> {
             }
             Some(s.as_bytes().to_vec())
         }
-        Value::Array(arr) => arr
-            .iter()
-            .map(|v| v.as_u64().map(|n| n as u8))
-            .collect(),
+        Value::Array(arr) => arr.iter().map(|v| v.as_u64().map(|n| n as u8)).collect(),
         _ => None,
     }
 }

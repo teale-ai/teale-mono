@@ -32,8 +32,8 @@ pub struct NodeRuntimeState {
     pub device_id: String,
     pub queue_depth: AtomicU32,
     pub is_generating: AtomicBool,
-    pub throttle_level: AtomicU32,       // 0 (paused) .. 100 (full)
-    pub thermal_level: AtomicU32,        // encoded ThermalLevel ordinal
+    pub throttle_level: AtomicU32, // 0 (paused) .. 100 (full)
+    pub thermal_level: AtomicU32,  // encoded ThermalLevel ordinal
     pub completed_requests: AtomicU64,
     pub failed_requests: AtomicU64,
     pub total_completion_tokens: AtomicU64,
@@ -61,7 +61,8 @@ impl NodeRuntimeState {
 
     pub fn ewma_tokens_per_second(&self) -> Option<f64> {
         let tokens = self.total_completion_tokens.load(Ordering::Relaxed) as f64;
-        let secs = self.total_completion_seconds_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let secs =
+            self.total_completion_seconds_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
         if secs < 0.001 || tokens < 1.0 {
             return None;
         }
@@ -73,7 +74,8 @@ impl NodeRuntimeState {
     }
 
     pub fn set_thermal_level(&self, level: ThermalLevel) {
-        self.thermal_level.store(thermal_to_ord(level), Ordering::Relaxed);
+        self.thermal_level
+            .store(thermal_to_ord(level), Ordering::Relaxed);
     }
 
     pub fn heartbeat_payload(&self, loaded_models: Vec<String>) -> HeartbeatPayload {
@@ -303,11 +305,12 @@ async fn handle_inference_request(
                 .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
             state.completed_requests.fetch_add(1, Ordering::Relaxed);
 
-            let done = ClusterMessage::InferenceComplete(teale_protocol::InferenceCompletePayload {
-                request_id: request_id.clone(),
-                tokens_in: None,
-                tokens_out: Some(token_count as u32),
-            });
+            let done =
+                ClusterMessage::InferenceComplete(teale_protocol::InferenceCompletePayload {
+                    request_id: request_id.clone(),
+                    tokens_in: None,
+                    tokens_out: Some(token_count as u32),
+                });
             send(relay, from, session, &done);
             info!(
                 "Inference request {} completed ({} tokens in {:?})",
@@ -335,9 +338,9 @@ async fn handle_inference_request(
 /// OpenRouter/HF/llama-server all use different forms.
 fn model_matches_any(requested: &str, loaded: &[String]) -> bool {
     let requested_norm = normalize_model_id(requested);
-    loaded
-        .iter()
-        .any(|loaded| normalize_model_id(loaded) == requested_norm || loaded_contains(loaded, requested))
+    loaded.iter().any(|loaded| {
+        normalize_model_id(loaded) == requested_norm || loaded_contains(loaded, requested)
+    })
 }
 
 fn loaded_contains(loaded: &str, requested: &str) -> bool {

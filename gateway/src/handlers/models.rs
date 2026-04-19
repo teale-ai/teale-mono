@@ -11,7 +11,11 @@ pub async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> 
         .iter()
         .filter(|m| {
             // Enforce per-model fleet floor: hide models we can't serve healthily.
-            let min = if is_large(m.params_b) { floor.large } else { floor.small };
+            let min = if is_large(m.params_b) {
+                floor.large
+            } else {
+                floor.small
+            };
             state.registry.loaded_count(&m.id) >= min
         })
         .map(|m| m.to_entry())

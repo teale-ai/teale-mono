@@ -13,14 +13,14 @@ pub mod hardware;
 pub mod openai;
 pub mod relay;
 
-pub use apple_date::{now_reference_seconds, unix_to_reference, reference_to_unix};
+pub use apple_date::{now_reference_seconds, reference_to_unix, unix_to_reference};
 pub use cluster::{
     decode_relay_data, ClusterMessage, HeartbeatPayload, HelloAckPayload, HelloPayload,
     InferenceChunkPayload, InferenceCompletePayload, InferenceErrorCode, InferenceErrorPayload,
     InferenceRequestPayload, LoadModelPayload, ModelLoadErrorPayload, ModelLoadedPayload,
     ThermalLevel,
 };
-pub use hardware::{HardwareCapability, NodeCapabilities, Tier, GpuBackend};
+pub use hardware::{GpuBackend, HardwareCapability, NodeCapabilities, Tier};
 pub use openai::{ApiMessage, ChatCompletionRequest, ModelEntry, ModelsResponse, Pricing};
 pub use relay::{
     DiscoverPayload, IncomingRelayMessage, OutgoingRelayMessage, PeerNotificationPayload,

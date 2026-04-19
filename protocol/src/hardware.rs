@@ -18,7 +18,11 @@ pub struct HardwareCapability {
     #[serde(rename = "memoryBandwidthGBs")]
     pub memory_bandwidth_gbs: f64,
     pub tier: u32,
-    #[serde(rename = "gpuBackend", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "gpuBackend",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub gpu_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
@@ -39,10 +43,18 @@ pub struct NodeCapabilities {
     pub ptn_ids: Option<Vec<String>>,
     /// Models on disk that can be swapped in via `loadModel` (Ultras only).
     /// Additive field — older relays/nodes ignore it gracefully.
-    #[serde(rename = "swappableModels", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "swappableModels",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub swappable_models: Vec<String>,
     /// Max concurrent inference requests the node will accept.
-    #[serde(rename = "maxConcurrentRequests", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "maxConcurrentRequests",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_concurrent_requests: Option<u32>,
 }
 
