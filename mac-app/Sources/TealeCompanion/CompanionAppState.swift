@@ -566,7 +566,7 @@ final class CompanionAppState {
 
                 // Sync loaded models to WAN (model may have loaded before WAN was enabled)
                 let currentModels: [String] = await MainActor.run {
-                    self.localModel.map { [$0.huggingFaceRepo] } ?? []
+                    self.localModel.flatMap { $0.advertisedId.map { [$0] } } ?? []
                 }
                 await self.wanManager.updateLocalLoadedModels(currentModels)
 

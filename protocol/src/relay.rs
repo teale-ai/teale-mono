@@ -8,23 +8,46 @@ use crate::hardware::NodeCapabilities;
 
 // ── Outgoing ────────────────────────────────────────────────────────
 
+// Register carries a NodeCapabilities which itself embeds HardwareCapability
+// (~300 bytes). Box it so the enum doesn't pay that size on every variant.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum OutgoingRelayMessage {
-    Register { register: RegisterPayload },
-    Discover { discover: DiscoverPayload },
-    RelayOpen { #[serde(rename = "relayOpen")] relay_open: RelaySessionPayload },
-    RelayReady { #[serde(rename = "relayReady")] relay_ready: RelaySessionPayload },
-    RelayData { #[serde(rename = "relayData")] relay_data: RelayDataPayload },
-    RelayClose { #[serde(rename = "relayClose")] relay_close: RelaySessionPayload },
+    Register {
+        register: Box<RegisterPayload>,
+    },
+    Discover {
+        discover: DiscoverPayload,
+    },
+    RelayOpen {
+        #[serde(rename = "relayOpen")]
+        relay_open: RelaySessionPayload,
+    },
+    RelayReady {
+        #[serde(rename = "relayReady")]
+        relay_ready: RelaySessionPayload,
+    },
+    RelayData {
+        #[serde(rename = "relayData")]
+        relay_data: RelayDataPayload,
+    },
+    RelayClose {
+        #[serde(rename = "relayClose")]
+        relay_close: RelaySessionPayload,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterPayload {
+    #[serde(rename = "nodeID")]
     pub node_id: String,
     pub public_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "wgPublicKey"
+    )]
     pub wg_public_key: Option<String>,
     pub display_name: String,
     pub capabilities: NodeCapabilities,
@@ -34,6 +57,7 @@ pub struct RegisterPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverPayload {
+    #[serde(rename = "requestingNodeID")]
     pub requesting_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<DiscoverFilter>,
@@ -51,18 +75,25 @@ pub struct DiscoverFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RelaySessionPayload {
+    // Swift encodes `nodeID`/`sessionID` with CAP-ID (Apple naming) rather
+    // than default camelCase `nodeId`/`sessionId`. Keep these renames
+    // explicit so the Rust side wire-matches the Mac app.
+    #[serde(rename = "fromNodeID")]
     pub from_node_id: String,
+    #[serde(rename = "toNodeID")]
     pub to_node_id: String,
+    #[serde(rename = "sessionID")]
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RelayDataPayload {
+    #[serde(rename = "fromNodeID")]
     pub from_node_id: String,
+    #[serde(rename = "toNodeID")]
     pub to_node_id: String,
+    #[serde(rename = "sessionID")]
     pub session_id: String,
     /// Base64-encoded JSON ClusterMessage (Swift `Data` default encoding).
     pub data: Value,

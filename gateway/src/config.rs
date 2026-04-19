@@ -167,7 +167,9 @@ impl Config {
         Self {
             bind: default_bind(),
             display_name: default_display_name(),
-            relay: RelayConfig { url: default_relay_url() },
+            relay: RelayConfig {
+                url: default_relay_url(),
+            },
             identity_path: default_identity_path(),
             models_yaml: default_models_yaml(),
             scheduler: SchedulerConfig::default(),

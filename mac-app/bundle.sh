@@ -22,16 +22,16 @@ if [ -x scripts/generate-version.sh ]; then
     scripts/generate-version.sh
 fi
 
-echo "Building InferencePoolApp (Release via xcodebuild)..."
+echo "Building Teale (Release via xcodebuild)..."
 xcodebuild \
-    -scheme InferencePoolApp \
+    -scheme Teale \
     -configuration Release \
     -derivedDataPath "${DERIVED_DATA}" \
     -destination 'platform=macOS' \
     build \
     2>&1 | tail -5
 
-BINARY="${DERIVED_DATA}/Build/Products/Release/InferencePoolApp"
+BINARY="${DERIVED_DATA}/Build/Products/Release/Teale"
 METALLIB_BUNDLE="${DERIVED_DATA}/Build/Products/Release/mlx-swift_Cmlx.bundle"
 
 if [ ! -f "${BINARY}" ]; then
@@ -45,8 +45,8 @@ mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 
 # Copy binary and strip debug symbols
-cp "${BINARY}" "${MACOS_DIR}/InferencePoolApp"
-strip "${MACOS_DIR}/InferencePoolApp"
+cp "${BINARY}" "${MACOS_DIR}/Teale"
+strip "${MACOS_DIR}/Teale"
 
 RELEASE_PRODUCTS_DIR="${DERIVED_DATA}/Build/Products/Release"
 

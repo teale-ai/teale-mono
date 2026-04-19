@@ -30,7 +30,10 @@ pub struct LiteRtEngine {
 
 impl LiteRtEngine {
     pub fn new(config: &LiteRtConfig) -> anyhow::Result<Self> {
-        let binary = config.binary.clone().unwrap_or_else(|| "litert_lm_main".to_string());
+        let binary = config
+            .binary
+            .clone()
+            .unwrap_or_else(|| "litert_lm_main".to_string());
 
         if !std::path::Path::new(&binary).exists() && which::which(&binary).is_err() {
             anyhow::bail!(
@@ -57,7 +60,10 @@ impl LiteRtEngine {
             binary,
             model: config.model.clone(),
             model_id,
-            backend_type: config.backend_type.clone().unwrap_or_else(|| "cpu".to_string()),
+            backend_type: config
+                .backend_type
+                .clone()
+                .unwrap_or_else(|| "cpu".to_string()),
             context_size: config.context_size,
             cache_dir: config.cache_dir.clone(),
         })
@@ -91,7 +97,9 @@ impl LiteRtEngine {
         let lib_path = format!("{}/lib:{}", binary_dir, binary_dir);
         cmd.env("LD_LIBRARY_PATH", &lib_path);
 
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
 
         let mut child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!("Failed to spawn litert_lm_main at '{}': {}", self.binary, e)
@@ -166,8 +174,13 @@ fn format_chat_prompt(messages: &[ApiMessage]) -> String {
         match msg.role.as_str() {
             "system" => prompt.push_str(&format!("<start_of_turn>system\n{}<end_of_turn>\n", text)),
             "user" => prompt.push_str(&format!("<start_of_turn>user\n{}<end_of_turn>\n", text)),
-            "assistant" => prompt.push_str(&format!("<start_of_turn>model\n{}<end_of_turn>\n", text)),
-            other => prompt.push_str(&format!("<start_of_turn>{}\n{}<end_of_turn>\n", other, text)),
+            "assistant" => {
+                prompt.push_str(&format!("<start_of_turn>model\n{}<end_of_turn>\n", text))
+            }
+            other => prompt.push_str(&format!(
+                "<start_of_turn>{}\n{}<end_of_turn>\n",
+                other, text
+            )),
         }
     }
     prompt.push_str("<start_of_turn>model\n");

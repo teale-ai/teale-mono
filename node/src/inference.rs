@@ -114,8 +114,7 @@ impl InferenceProxy {
                             let line = buffer[..line_end].trim().to_string();
                             buffer = buffer[line_end + 1..].to_string();
 
-                            if line.starts_with("data: ") {
-                                let data = &line[6..];
+                            if let Some(data) = line.strip_prefix("data: ") {
                                 if data == "[DONE]" {
                                     return;
                                 }
@@ -180,9 +179,9 @@ pub fn spawn_llama_server(config: &LlamaConfig) -> anyhow::Result<Child> {
         config.binary, config.model, config.port, config.gpu_layers
     );
     let mut cmd = build_llama_command(config)?;
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn llama-server at '{}': {}", config.binary, e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        anyhow::anyhow!("Failed to spawn llama-server at '{}': {}", config.binary, e)
+    })?;
 
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {

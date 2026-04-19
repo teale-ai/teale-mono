@@ -226,7 +226,7 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             appState.loadingProgress = nil
             appState.engineStatus = .ready(descriptor)
             if appState.wanEnabled {
-                await appState.wanManager.updateLocalLoadedModels([descriptor.huggingFaceRepo])
+                await appState.wanManager.updateLocalLoadedModels(descriptor.advertisedId.map { [$0] } ?? [])
             }
             await appState.refreshDownloadedModels()
         } catch {

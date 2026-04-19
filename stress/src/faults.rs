@@ -25,13 +25,17 @@ async fn apply(f: &FaultSchedule) -> anyhow::Result<()> {
     let target = f.target.as_deref().unwrap_or("localhost");
     info!(kind=?f.kind, target, "applying fault");
     match f.kind {
-        FaultKind::KillBackend => ssh(target, "pkill -TERM -x llama-server || pkill -TERM -x mnn_llm || true").await,
+        FaultKind::KillBackend => {
+            ssh(
+                target,
+                "pkill -TERM -x llama-server || pkill -TERM -x mnn_llm || true",
+            )
+            .await
+        }
         FaultKind::KillNode => ssh(target, "pkill -TERM -x teale-node || true").await,
         FaultKind::BlockWs => {
             // Outbound TCP to :443 blocked for duration. macOS/pfctl vs Linux/iptables.
-            let pf = format!(
-                "sudo pfctl -a teale-stress -f - <<'EOF'\nblock out proto tcp from any to any port 443\nEOF\nsudo pfctl -e || true"
-            );
+            let pf = "sudo pfctl -a teale-stress -f - <<'EOF'\nblock out proto tcp from any to any port 443\nEOF\nsudo pfctl -e || true".to_string();
             ssh(target, &pf).await?;
             tokio::time::sleep(Duration::from_secs(f.duration_seconds)).await;
             ssh(target, "sudo pfctl -a teale-stress -F rules || true").await?;

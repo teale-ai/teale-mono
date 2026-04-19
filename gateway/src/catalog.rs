@@ -66,8 +66,8 @@ impl CatalogModel {
 }
 
 pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("read {}: {}", path, e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("read {}: {}", path, e))?;
     let file: CatalogFile = serde_yaml::from_str(&content)?;
     Ok(file.models)
 }

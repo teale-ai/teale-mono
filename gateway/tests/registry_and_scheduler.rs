@@ -2,13 +2,11 @@
 //! that determine whether a request lands on the right device, the per-model
 //! fleet floor, and thermal / quarantine handling.
 
-use std::time::Duration;
-
 use teale_protocol::{HardwareCapability, HeartbeatPayload, NodeCapabilities, ThermalLevel};
 
 use teale_gateway::catalog::{self, CatalogModel};
 use teale_gateway::config::{PerModelFloor, ReliabilityConfig, SchedulerConfig};
-use teale_gateway::registry::{Eligibility, Registry};
+use teale_gateway::registry::Registry;
 use teale_gateway::scheduler::Scheduler;
 
 fn reliability() -> ReliabilityConfig {
@@ -101,7 +99,12 @@ fn scheduler_excludes_failed_device() {
     r.upsert_device(
         "node-b".into(),
         "B".into(),
-        caps(&["meta-llama/llama-3.3-70b-instruct"], &[], "m3Ultra", 128.0),
+        caps(
+            &["meta-llama/llama-3.3-70b-instruct"],
+            &[],
+            "m3Ultra",
+            128.0,
+        ),
     );
 
     let els = r.eligible_devices("meta-llama/llama-3.3-70b-instruct");
@@ -114,10 +117,13 @@ fn scheduler_excludes_failed_device() {
         .pick(
             &els,
             "meta-llama/llama-3.3-70b-instruct",
-            &[first.node_id.clone()],
+            std::slice::from_ref(&first.node_id),
         )
         .unwrap();
-    assert_ne!(first.node_id, retry.node_id, "retry should pick a different device");
+    assert_ne!(
+        first.node_id, retry.node_id,
+        "retry should pick a different device"
+    );
 }
 
 #[test]
@@ -188,7 +194,12 @@ fn fleet_floor_large_threshold() {
     r.upsert_device(
         "node-b".into(),
         "B".into(),
-        caps(&["meta-llama/llama-3.3-70b-instruct"], &[], "m3Ultra", 128.0),
+        caps(
+            &["meta-llama/llama-3.3-70b-instruct"],
+            &[],
+            "m3Ultra",
+            128.0,
+        ),
     );
     assert_eq!(r.loaded_count("meta-llama/llama-3.3-70b-instruct"), 2);
     // Caller (handler_models) compares vs floor.large=3 and hides the entry.

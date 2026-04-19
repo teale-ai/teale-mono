@@ -42,7 +42,9 @@ impl TokenTable {
         } else {
             tracing::info!("Loaded {} bearer token(s) from {}", map.len(), var);
         }
-        Self { tokens: Arc::new(map) }
+        Self {
+            tokens: Arc::new(map),
+        }
     }
 
     pub fn is_valid(&self, token: &str) -> bool {

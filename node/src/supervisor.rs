@@ -47,7 +47,10 @@ impl Supervisor {
                 let mut child = match child_result {
                     Ok(c) => c,
                     Err(e) => {
-                        error!("[{}] failed to spawn: {}. retrying in {:?}", task_name, e, backoff);
+                        error!(
+                            "[{}] failed to spawn: {}. retrying in {:?}",
+                            task_name, e, backoff
+                        );
                         healthy_flag.store(false, Ordering::SeqCst);
                         tokio::select! {
                             _ = tokio::time::sleep(backoff) => {}
@@ -80,10 +83,16 @@ impl Supervisor {
                 match wait_result {
                     None => return, // clean shutdown
                     Some(Ok(status)) => {
-                        warn!("[{}] subprocess exited: {}. restarting in {:?}", task_name, status, backoff);
+                        warn!(
+                            "[{}] subprocess exited: {}. restarting in {:?}",
+                            task_name, status, backoff
+                        );
                     }
                     Some(Err(e)) => {
-                        error!("[{}] wait error: {}. restarting in {:?}", task_name, e, backoff);
+                        error!(
+                            "[{}] wait error: {}. restarting in {:?}",
+                            task_name, e, backoff
+                        );
                     }
                 }
 

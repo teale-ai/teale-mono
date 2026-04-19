@@ -173,7 +173,10 @@ impl Config {
                 }
             }
             other => {
-                anyhow::bail!("Unknown backend '{}'. Supported: \"llama\", \"mnn\", \"litert\"", other);
+                anyhow::bail!(
+                    "Unknown backend '{}'. Supported: \"llama\", \"mnn\", \"litert\"",
+                    other
+                );
             }
         }
 

@@ -9,13 +9,16 @@ use crate::openai::ChatCompletionRequest;
 
 /// Top-level cluster message. Encoded as a JSON object with exactly one
 /// top-level key naming the variant (matches Swift's Codable union encoding).
+///
+/// `InferenceRequest` carries a full `ChatCompletionRequest` (~320 bytes);
+/// box it so the enum's size isn't dominated by a single variant.
 #[derive(Debug, Clone)]
 pub enum ClusterMessage {
     Hello(HelloPayload),
     HelloAck(HelloAckPayload),
     Heartbeat(HeartbeatPayload),
     HeartbeatAck(HeartbeatPayload),
-    InferenceRequest(InferenceRequestPayload),
+    InferenceRequest(Box<InferenceRequestPayload>),
     InferenceChunk(InferenceChunkPayload),
     InferenceComplete(InferenceCompletePayload),
     InferenceError(InferenceErrorPayload),
@@ -35,11 +38,28 @@ impl ClusterMessage {
     pub fn from_value(v: &Value) -> Option<Self> {
         let obj = v.as_object()?;
 
+        // Mac-app's ClusterMessage uses default Swift Codable, which
+        // serializes `enum Foo { case bar(Payload) }` as
+        // `{"bar": {"_0": {...payload...}}}`. Unwrap that extra `_0` here
+        // so the Rust side can deserialize the payload directly.
+        // Rust-origin messages (from the gateway) don't have the wrapper;
+        // tolerate both shapes.
+        let unwrap_0 = |p: &Value| -> Value { p.get("_0").cloned().unwrap_or_else(|| p.clone()) };
+
         macro_rules! try_variant {
             ($key:expr, $payload:ty, $variant:ident) => {
                 if let Some(p) = obj.get($key) {
-                    if let Ok(parsed) = serde_json::from_value::<$payload>(p.clone()) {
+                    let inner = unwrap_0(p);
+                    if let Ok(parsed) = serde_json::from_value::<$payload>(inner) {
                         return Some(Self::$variant(parsed));
+                    }
+                }
+            };
+            (boxed $key:expr, $payload:ty, $variant:ident) => {
+                if let Some(p) = obj.get($key) {
+                    let inner = unwrap_0(p);
+                    if let Ok(parsed) = serde_json::from_value::<$payload>(inner) {
+                        return Some(Self::$variant(Box::new(parsed)));
                     }
                 }
             };
@@ -49,32 +69,48 @@ impl ClusterMessage {
         try_variant!("helloAck", HelloAckPayload, HelloAck);
         try_variant!("heartbeat", HeartbeatPayload, Heartbeat);
         try_variant!("heartbeatAck", HeartbeatPayload, HeartbeatAck);
-        try_variant!("inferenceRequest", InferenceRequestPayload, InferenceRequest);
+        try_variant!(
+            boxed
+            "inferenceRequest",
+            InferenceRequestPayload,
+            InferenceRequest
+        );
         try_variant!("inferenceChunk", InferenceChunkPayload, InferenceChunk);
-        try_variant!("inferenceComplete", InferenceCompletePayload, InferenceComplete);
+        try_variant!(
+            "inferenceComplete",
+            InferenceCompletePayload,
+            InferenceComplete
+        );
         try_variant!("inferenceError", InferenceErrorPayload, InferenceError);
         try_variant!("loadModel", LoadModelPayload, LoadModel);
         try_variant!("modelLoaded", ModelLoadedPayload, ModelLoaded);
         try_variant!("modelLoadError", ModelLoadErrorPayload, ModelLoadError);
 
         let kind = obj.keys().next()?.to_string();
-        Some(Self::Unknown { kind, raw: v.clone() })
+        Some(Self::Unknown {
+            kind,
+            raw: v.clone(),
+        })
     }
 
     /// Serialize to the wire-format JSON Value.
+    ///
+    /// Wrapping each payload in `_0` matches Swift's default Codable
+    /// encoding for `enum Case(Payload)`, so messages we emit round-trip
+    /// with the Mac app's `ClusterMessage` (which uses default Codable).
     pub fn to_value(&self) -> Value {
         match self {
-            Self::Hello(p) => serde_json::json!({ "hello": p }),
-            Self::HelloAck(p) => serde_json::json!({ "helloAck": p }),
-            Self::Heartbeat(p) => serde_json::json!({ "heartbeat": p }),
-            Self::HeartbeatAck(p) => serde_json::json!({ "heartbeatAck": p }),
-            Self::InferenceRequest(p) => serde_json::json!({ "inferenceRequest": p }),
-            Self::InferenceChunk(p) => serde_json::json!({ "inferenceChunk": p }),
-            Self::InferenceComplete(p) => serde_json::json!({ "inferenceComplete": p }),
-            Self::InferenceError(p) => serde_json::json!({ "inferenceError": p }),
-            Self::LoadModel(p) => serde_json::json!({ "loadModel": p }),
-            Self::ModelLoaded(p) => serde_json::json!({ "modelLoaded": p }),
-            Self::ModelLoadError(p) => serde_json::json!({ "modelLoadError": p }),
+            Self::Hello(p) => serde_json::json!({ "hello": { "_0": p } }),
+            Self::HelloAck(p) => serde_json::json!({ "helloAck": { "_0": p } }),
+            Self::Heartbeat(p) => serde_json::json!({ "heartbeat": { "_0": p } }),
+            Self::HeartbeatAck(p) => serde_json::json!({ "heartbeatAck": { "_0": p } }),
+            Self::InferenceRequest(p) => serde_json::json!({ "inferenceRequest": { "_0": p } }),
+            Self::InferenceChunk(p) => serde_json::json!({ "inferenceChunk": { "_0": p } }),
+            Self::InferenceComplete(p) => serde_json::json!({ "inferenceComplete": { "_0": p } }),
+            Self::InferenceError(p) => serde_json::json!({ "inferenceError": { "_0": p } }),
+            Self::LoadModel(p) => serde_json::json!({ "loadModel": { "_0": p } }),
+            Self::ModelLoaded(p) => serde_json::json!({ "modelLoaded": { "_0": p } }),
+            Self::ModelLoadError(p) => serde_json::json!({ "modelLoadError": { "_0": p } }),
             Self::Unknown { raw, .. } => raw.clone(),
         }
     }
@@ -90,10 +126,7 @@ pub fn decode_relay_data(data_value: &Value) -> Option<Vec<u8>> {
             }
             Some(s.as_bytes().to_vec())
         }
-        Value::Array(arr) => arr
-            .iter()
-            .map(|v| v.as_u64().map(|n| n as u8))
-            .collect(),
+        Value::Array(arr) => arr.iter().map(|v| v.as_u64().map(|n| n as u8)).collect(),
         _ => None,
     }
 }

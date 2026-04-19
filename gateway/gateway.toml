@@ -17,8 +17,11 @@ swap_penalty = 0.3
 tps_weight = 1.0
 
 [scheduler.per_model_floor]
-large = 3    # models ≥50B params need at least 3 healthy devices before we list them
-small = 2    # smaller models need 2
+# Relaxed during WAN-inference bring-up (2026-04-18). Restore to large=3,
+# small=2 before opening the gateway to OpenRouter traffic at scale — the
+# original values are what demand-side reliability was designed around.
+large = 1
+small = 1
 
 [reliability]
 request_timeout_seconds = 300
