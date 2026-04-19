@@ -160,6 +160,34 @@ public final class AppState {
     public var contributeCompute: Bool = UserDefaults.standard.object(forKey: "teale.contributeCompute") as? Bool ?? true {
         didSet { UserDefaults.standard.set(contributeCompute, forKey: "teale.contributeCompute") }
     }
+
+    /// What the user picked in the welcome flow (or `.full` as fallback for
+    /// pre-onboarding users migrated in-place). Drives sidebar visibility and
+    /// default landing view.
+    public var userMode: UserMode = UserMode(
+        rawValue: UserDefaults.standard.string(forKey: "teale.userMode") ?? UserMode.full.rawValue
+    ) ?? .full {
+        didSet { UserDefaults.standard.set(userMode.rawValue, forKey: "teale.userMode") }
+    }
+
+    /// True once the user has completed (or been migrated past) the welcome
+    /// flow. Existing installs with a stable_node_id already set are migrated
+    /// silently to skip the sheet.
+    public var onboardingCompleted: Bool = AppState.resolveOnboardingCompleted() {
+        didSet { UserDefaults.standard.set(onboardingCompleted, forKey: "teale.onboardingCompleted") }
+    }
+
+    private static func resolveOnboardingCompleted() -> Bool {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "teale.onboardingCompleted") != nil {
+            return defaults.bool(forKey: "teale.onboardingCompleted")
+        }
+        // Pre-existing installs: if we've ever generated a stable node ID, the
+        // user has launched before and shouldn't see the welcome sheet.
+        let hasPriorInstall = defaults.string(forKey: "teale.stable_node_id") != nil
+        defaults.set(hasPriorInstall, forKey: "teale.onboardingCompleted")
+        return hasPriorInstall
+    }
     public let apiKeyStore = APIKeyStore()
 
     // Chat (ChatKit — unified 1:1 + group storage with E2E P2P crypto)
@@ -177,7 +205,15 @@ public final class AppState {
     public var activeDownloads: [String: Double] = [:]
     /// Models that just finished downloading — prompt user to load
     public var justDownloadedModel: ModelDescriptor?
-    public var currentView: AppView = .chat
+    public var currentView: AppView = AppState.initialLandingView()
+
+    /// Chat is only offered in `.full` mode, so supply-only installs land on
+    /// Dashboard instead. Computed once at init from the persisted UserMode.
+    private static func initialLandingView() -> AppView {
+        let raw = UserDefaults.standard.string(forKey: "teale.userMode") ?? UserMode.full.rawValue
+        let mode = UserMode(rawValue: raw) ?? .full
+        return mode.chatEnabled ? .chat : .dashboard
+    }
     public var showSignIn: Bool = false
     public var loadingPhase: String = ""
     public var loadingProgress: Double?
@@ -1525,6 +1561,26 @@ public enum AppView: Hashable {
     case agents
     case devices
     case settings
+}
+
+// MARK: - User Mode
+
+/// How the user wants to engage with Teale. Picked in the welcome flow on first
+/// launch; determines whether the chat UI is shown and whether this Mac
+/// contributes compute back to the network.
+public enum UserMode: String, CaseIterable, Hashable, Sendable, Codable {
+    /// Earn-only. This Mac supplies compute; chat UI is hidden. Default for
+    /// someone who installed Teale because they want to sell idle cycles.
+    case supplyOnly
+    /// Supply + local OpenAI-compatible API on port 11435. Chat UI hidden —
+    /// for developers using their Mac as a backend without needing the chat
+    /// surface.
+    case supplyAndAPI
+    /// The full experience: supply + chat + API. What pre-onboarding users had.
+    case full
+
+    public var chatEnabled: Bool { self == .full }
+    public var suppliesCompute: Bool { true }   // all three modes supply by default
 }
 
 public enum AppAppearance: String, CaseIterable, Hashable, Identifiable, Sendable {

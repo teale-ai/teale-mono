@@ -197,13 +197,25 @@ struct MainWindowView: View {
                 LoginWindowController.shared.show(authManager: authManager, appState: appState)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { !appState.onboardingCompleted },
+            set: { _ in }
+        )) {
+            WelcomeView()
+                .environment(appState)
+                .interactiveDismissDisabled()
+        }
     }
 
     @ViewBuilder
     private var detailContent: some View {
         switch appState.currentView {
         case .chat:
-            ChatView()
+            if appState.userMode.chatEnabled {
+                ChatView()
+            } else {
+                DashboardView()
+            }
         case .dashboard:
             DashboardView()
         case .models:
@@ -245,8 +257,10 @@ struct MainSidebar: View {
         @Bindable var state = appState
 
         List(selection: Binding(get: { appState.currentView }, set: { appState.currentView = $0 })) {
-            Label(appState.loc("sidebar.chat"), systemImage: "bubble.left.and.bubble.right")
-                .tag(AppView.chat)
+            if appState.userMode.chatEnabled {
+                Label(appState.loc("sidebar.chat"), systemImage: "bubble.left.and.bubble.right")
+                    .tag(AppView.chat)
+            }
             Label(appState.loc("sidebar.dashboard"), systemImage: "gauge")
                 .tag(AppView.dashboard)
             Label(appState.loc("sidebar.models"), systemImage: "square.stack.3d.up")

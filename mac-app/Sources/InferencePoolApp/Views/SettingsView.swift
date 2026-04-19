@@ -112,6 +112,15 @@ struct SettingsView: View {
                      : "This Mac will use Teale as a chat client only and will not respond to incoming inference requests.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+
+                Picker("Experience", selection: $state.userMode) {
+                    Text("Supply only").tag(UserMode.supplyOnly)
+                    Text("Supply + local API").tag(UserMode.supplyAndAPI)
+                    Text("Full (with chat)").tag(UserMode.full)
+                }
+                Text(userModeBlurb)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
             Section("Inference Backend") {
@@ -473,6 +482,17 @@ struct SettingsView: View {
 
     private var displayVersion: String {
         BuildVersion.display
+    }
+
+    private var userModeBlurb: String {
+        switch appState.userMode {
+        case .supplyOnly:
+            return "Chat UI is hidden. You supply compute and see your earnings on the dashboard."
+        case .supplyAndAPI:
+            return "Chat UI is hidden. You supply compute and can use your Mac as a local OpenAI-compatible endpoint."
+        case .full:
+            return "You supply compute, use the local API, and can chat inside the app."
+        }
     }
 
     private var tierDescription: String {
