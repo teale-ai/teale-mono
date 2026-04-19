@@ -1,0 +1,17 @@
+name = "or_llama8b_burst_2rps_10min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 600
+rps = 2.0
+warmup_seconds = 30
+concurrency_cap = 16
+
+# Higher-load: 10 min @ 2 RPS = 1200 requests. Fleet floor must hold.
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 1
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 64
+streaming = true
