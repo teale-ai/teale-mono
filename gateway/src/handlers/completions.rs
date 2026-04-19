@@ -17,16 +17,18 @@
 use axum::{
     extract::State,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde_json::Value;
 
+use crate::auth::AuthPrincipal;
 use crate::error::GatewayError;
 use crate::handlers::chat::chat_completions;
 use crate::state::AppState;
 
 pub async fn completions(
     State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<Value>,
 ) -> Result<Response, GatewayError> {
     let obj = req
@@ -74,7 +76,8 @@ pub async fn completions(
 
     // Delegate to the chat handler (which handles auth, catalog lookup,
     // fleet floor, dispatch, retries, and streaming-usage emission).
-    let response = chat_completions(State(state), Json(chat_body)).await?;
+    let response =
+        chat_completions(State(state), Extension(principal), Json(chat_body)).await?;
 
     // Transform the chat response back to legacy /v1/completions shape.
     // For streaming (SSE) we leave the content mostly as-is — OR's

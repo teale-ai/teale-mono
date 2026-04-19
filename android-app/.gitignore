@@ -1,0 +1,21 @@
+# Gradle + Android build artifacts
+.gradle/
+build/
+**/build/
+local.properties
+*.iml
+.idea/
+
+# Native binaries are pushed via `scripts/deploy-pixel.sh`, not committed.
+# Their total weight (~30 MB) is larger than the rest of the app combined,
+# and each Pixel build of llama.cpp ships fresh releases — pulling from
+# GitHub at deploy time keeps the tree lean and in-sync.
+app/src/main/jniLibs/
+
+# Local keystores & signing. The pre-release keystore is intentionally
+# committed (password in build.gradle.kts) so sideload builds are
+# reproducible across dev machines — swap for a cold-stored Play Store key
+# before v1.0.
+*.keystore
+!teale-release.keystore
+keystore.properties

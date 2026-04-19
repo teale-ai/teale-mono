@@ -46,6 +46,9 @@ prometheus = { workspace = true }
 
 serde_yaml = "0.9"
 url = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+time = { version = "0.3", features = ["serde"] }
+futures = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true }

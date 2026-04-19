@@ -19,7 +19,7 @@ use axum::{
     extract::State,
     http::{header, HeaderMap},
     response::{sse::Event, IntoResponse, Response, Sse},
-    Json,
+    Extension, Json,
 };
 use futures_util::stream::Stream;
 use serde_json::Value;
@@ -29,14 +29,17 @@ use uuid::Uuid;
 
 use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
+use crate::auth::AuthPrincipal;
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
+use crate::ledger;
 use crate::metrics;
 use crate::relay_client::{PendingSession, SessionEvent};
 use crate::state::AppState;
 
 pub async fn chat_completions(
     State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<Value>,
 ) -> Result<Response, GatewayError> {
     // Parse the inbound request loosely so we can copy pass-through fields.
@@ -69,12 +72,13 @@ pub async fn chat_completions(
     }
 
     let streaming = parsed.stream.unwrap_or(false);
+    let consumer_device_id = principal.device_id().map(|s| s.to_string());
 
     if streaming {
-        let stream = run_streaming(state, catalog_model, req).await?;
+        let stream = run_streaming(state, catalog_model, req, consumer_device_id).await?;
         Ok(stream.into_response())
     } else {
-        let json = run_buffered(state, catalog_model, req).await?;
+        let json = run_buffered(state, catalog_model, req, consumer_device_id).await?;
         Ok(json.into_response())
     }
 }
@@ -141,6 +145,7 @@ async fn run_streaming(
     state: AppState,
     catalog_model: CatalogModel,
     req_body: Value,
+    consumer_device_id: Option<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -160,6 +165,8 @@ async fn run_streaming(
         let mut request_id: Option<String> = None;
         let mut final_status = "error";
         let mut tried = 0u32;
+        let mut served_by: Option<String> = None;
+        let mut reported_tokens: Option<u32> = None;
 
         loop {
             tried += 1;
@@ -230,6 +237,7 @@ async fn run_streaming(
                     }
                     Ok(Some(SessionEvent::Complete { tokens_out: t })) => {
                         completed = true;
+                        reported_tokens = t;
                         if let Some(t) = t {
                             metrics::TOKENS_OUT_TOTAL
                                 .with_label_values(&[&model_id])
@@ -305,7 +313,11 @@ async fn run_streaming(
 
             state.relay.close_session(&target_node, &session_id);
 
-            if completed || !retriable_failure {
+            if completed {
+                served_by = Some(target_node);
+                break;
+            }
+            if !retriable_failure {
                 break;
             }
 
@@ -346,6 +358,37 @@ async fn run_streaming(
 
         yield Ok(done_event());
 
+        // Settle Teale Credit ledger on success.
+        if final_status == "ok" {
+            if let (Some(provider), Some(consumer), Some(pool)) = (
+                served_by.as_ref(),
+                consumer_device_id.as_ref(),
+                state.db.as_ref(),
+            ) {
+                let final_tokens = reported_tokens.map(|t| t as u64).unwrap_or(tokens_out).max(1);
+                let cost = ledger::cost_credits(
+                    final_tokens,
+                    catalog_model.params_b,
+                    catalog_model.quantization.as_deref(),
+                );
+                let online: Vec<String> = state.registry.snapshot_devices()
+                    .into_iter()
+                    .map(|d| d.node_id)
+                    .collect();
+                let request_id = Uuid::new_v4().to_string();
+                match ledger::settle_request(pool, consumer, Some(provider.as_str()), &online, cost, &request_id, &model_id) {
+                    Ok(()) => info!(
+                        consumer=%consumer,
+                        provider=%provider,
+                        tokens=%final_tokens,
+                        cost=%cost,
+                        "settled chat (Teale Credits)"
+                    ),
+                    Err(e) => warn!("settle_request failed: {}", e),
+                }
+            }
+        }
+
         metrics::REQUESTS_TOTAL
             .with_label_values(&[&model_id, final_status])
             .inc();
@@ -372,6 +415,7 @@ async fn run_buffered(
     state: AppState,
     catalog_model: CatalogModel,
     req_body: Value,
+    consumer_device_id: Option<String>,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -465,6 +509,35 @@ async fn run_buffered(
             metrics::TOKENS_OUT_TOTAL
                 .with_label_values(&[&model_id])
                 .inc_by(tokens_out as f64);
+
+            // Settle Teale Credit ledger.
+            if let (Some(consumer), Some(pool)) =
+                (consumer_device_id.as_ref(), state.db.as_ref())
+            {
+                let cost = ledger::cost_credits(
+                    tokens_out.max(1),
+                    catalog_model.params_b,
+                    catalog_model.quantization.as_deref(),
+                );
+                let online: Vec<String> = state
+                    .registry
+                    .snapshot_devices()
+                    .into_iter()
+                    .map(|d| d.node_id)
+                    .collect();
+                let request_id = Uuid::new_v4().to_string();
+                if let Err(e) = ledger::settle_request(
+                    pool,
+                    consumer,
+                    Some(target_node.as_str()),
+                    &online,
+                    cost,
+                    &request_id,
+                    &model_id,
+                ) {
+                    warn!("settle_request failed: {}", e);
+                }
+            }
 
             let reply = build_non_stream_response(
                 &model_id,

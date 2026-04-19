@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares the locales this app ships translations for. On Android 13+ the
+  system reads this and exposes per-app language in Settings → System →
+  Languages. Older Android only uses the in-app picker (SettingsScreen).
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="pt-BR" />
+    <locale android:name="zh-CN" />
+    <locale android:name="fil" />
+    <locale android:name="es" />
+</locale-config>

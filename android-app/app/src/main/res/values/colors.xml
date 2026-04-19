@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand -->
+    <color name="teale_primary">#009999</color>
+    <color name="teale_primary_dark">#007272</color>
+    <color name="teale_on_primary">#FFFFFF</color>
+
+    <!-- Surfaces (bootstrap only; Compose overrides at runtime) -->
+    <color name="background">#FAFAFA</color>
+    <color name="background_dark">#0A0F11</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="on_surface">#0F1720</color>
+    <color name="outline">#D1D9DC</color>
+</resources>

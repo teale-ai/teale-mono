@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bottom-nav tabs -->
+    <string name="tab_chats">Chats</string>
+    <string name="tab_groups">Mga Grupo</string>
+    <string name="tab_wallet">Wallet</string>
+    <string name="tab_settings">Mga Setting</string>
+
+    <!-- Chat tab -->
+    <string name="chat_hint">Mag-message kay Teale</string>
+    <string name="chat_presence_online">AI online · Teale WAN</string>
+    <string name="chat_typing">nagta-type…</string>
+
+    <!-- Generic actions -->
+    <string name="action_send">Ipadala</string>
+    <string name="action_dismiss">Isara</string>
+    <string name="action_cancel">Kanselahin</string>
+    <string name="action_create">Gumawa</string>
+    <string name="action_back">Bumalik</string>
+
+    <!-- Groups list -->
+    <string name="groups_new">Bagong grupo</string>
+    <string name="groups_empty_title">Wala pang grupo</string>
+    <string name="groups_empty_desc">I-tap ang + para gumawa ng grupo. I-mention ang @teale para isali ang AI sa kahit anong mensahe.</string>
+    <string name="groups_title_label">Pamagat</string>
+    <plurals name="groups_member_count">
+        <item quantity="one">%1$d miyembro</item>
+        <item quantity="other">%1$d na miyembro</item>
+    </plurals>
+
+    <!-- Group chat -->
+    <string name="group_chat_title">Group chat</string>
+    <string name="group_chat_hint">Mensahe · subukan ang @teale …</string>
+
+    <!-- Wallet -->
+    <string name="wallet_credits">Teale Credits</string>
+    <string name="wallet_earned">Kinita</string>
+    <string name="wallet_spent">Nagastos</string>
+    <string name="wallet_usdc">USDC</string>
+    <string name="wallet_transactions">Mga Transaksyon</string>
+    <string name="wallet_empty">Wala pang transaksyon.</string>
+
+    <!-- Settings -->
+    <string name="settings_device_id">Device ID</string>
+    <string name="settings_username_label">Username (opsyonal na alias)</string>
+    <string name="settings_phone_label">Telepono (para sa imbitasyon)</string>
+    <string name="settings_model_label">Gustong modelo</string>
+    <string name="settings_model_supporting">hal. nousresearch/hermes-3-llama-3.1-8b, google/gemma-3-1b-it</string>
+    <string name="settings_supply_title">Mag-supply ng inference</string>
+    <string name="settings_supply_on">Kumikita ng Teale Credits — gumagana ang llama-server at teale-node</string>
+    <string name="settings_supply_off">Kapag naka-on, sasali ang phone na ito sa Teale WAN at kikita ng credits.</string>
+    <string name="settings_invite">Mag-imbita ng kaibigan via SMS</string>
+    <string name="settings_scale_title">Distributed inference na malakihan</string>
+    <string name="settings_scale_body">Nag-sa-scale ang Teale sa paraang request-level parallelism: bawat online na phone ay nagpapatakbo ng buong maliit na modelo (Gemma 3 1B, Qwen 2.5 1.5B). Ini-ruta ng gateway ang bawat request sa isang phone. Libu-libong phone = libu-libong sabay-sabay na inference. Ang phone-mesh sharding para sa mas malalaking modelo ay uunang bumaba sa mga LAN-local na peer (iisang Wi-Fi).</string>
+    <string name="settings_language_title">Wika</string>
+    <string name="settings_language_system">Default ng system</string>
+
+    <string name="invite_sms_body">Samahan mo ako sa Teale — multiplayer chat na may AI presence. I-download: https://teale.com/a · invite code: %1$s</string>
+
+    <!-- Supply foreground-service -->
+    <string name="supply_tile_label">Teale supply</string>
+    <string name="supply_notification_channel">Teale supply</string>
+    <string name="supply_notification_title">Teale: kumikita ng credits</string>
+    <string name="supply_notification_text">Online ang inference node</string>
+
+    <!-- Calendar skill -->
+    <string name="calendar_permission_not_granted">hindi pa naka-grant ang calendar permission</string>
+    <string name="calendar_event_no_title">(walang pamagat)</string>
+    <string name="calendar_event_all_day">buong araw</string>
+    <string name="calendar_empty_events">walang event sa susunod na %1$d araw</string>
+    <string name="calendar_reference_header">Mga nalalapit na event (sa susunod na %1$d araw):\n%2$s</string>
+    <string name="calendar_permission_hint">Nagtanong ang user tungkol sa kanilang calendar pero wala pang calendar permission ang app. Pakisabi sa kanilang i-grant sa Settings → Apps → Teale.</string>
+
+    <string name="group_ai_system_prompt">Ikaw si Teale, isang AI participant sa isang group chat. Panatilihing maikli ang mga reply (1–3 pangungusap) at nakakatulong. Tinatawag ka sa pamamagitan ng @teale mentions. Sumagot sa parehong wika kung saan nagsusulat ang user.</string>
+</resources>
