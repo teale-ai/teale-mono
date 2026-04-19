@@ -1175,6 +1175,27 @@ public final class AppState {
             loadedModels = []
         }
 
+        // On the exo backend, a Teale instance is a thin proxy to a cluster
+        // that may be hosting multiple models simultaneously. Advertise ALL
+        // of them to the gateway, not just the one ExoProvider happens to
+        // have selected via exo_preferred_model_id — otherwise the fleet
+        // sees only one supplier even when two or more are available.
+        if inferenceBackend == .exo {
+            Task {
+                let runningSlugs = await self.exoAdvertisedRunningModelSlugs()
+                let merged = Array(Set(loadedModels + runningSlugs)).sorted()
+                self.clusterManager.updateLocalLoadedModels(merged)
+                if self.wanEnabled {
+                    Self.wanLog("syncAdvertised: exo merged models to WAN: \(merged) (engine=\(loadedModels), exo_running=\(runningSlugs))")
+                    await self.wanManager.updateLocalLoadedModels(merged)
+                } else {
+                    Self.wanLog("syncAdvertised: exo merged but WAN disabled (models=\(merged))")
+                }
+                await self.refreshCompilerModels()
+            }
+            return
+        }
+
         clusterManager.updateLocalLoadedModels(loadedModels)
         if wanEnabled {
             let models = loadedModels
@@ -1188,6 +1209,18 @@ public final class AppState {
 
         // Refresh compiler's available models whenever local/peer models change
         Task { await refreshCompilerModels() }
+    }
+
+    /// Returns canonical OpenRouter slugs for every model the local exo is
+    /// currently running, dropping models that don't resolve to a catalog
+    /// entry (because advertising a non-canonical slug would mismatch
+    /// gateway-side per_model_floor matching). Used by syncAdvertisedLoadedModels
+    /// in exo mode to advertise the full set.
+    private func exoAdvertisedRunningModelSlugs() async -> [String] {
+        let runningIDs = await exoProvider.runningModelIDs
+        return runningIDs.compactMap { modelID in
+            modelDescriptorForExternalID(modelID).openrouterId
+        }
     }
 
     private func recordRemoteInferenceSettlement(_ record: ClusterProvider.RemoteGenerationRecord) async {

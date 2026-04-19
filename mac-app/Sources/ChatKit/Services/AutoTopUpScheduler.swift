@@ -21,7 +21,8 @@ public final class AutoTopUpScheduler {
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.interval ?? 300))
+                let seconds = UInt64(self?.interval ?? 300)
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                 await self?.runPass()
             }
         }

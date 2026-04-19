@@ -557,7 +557,7 @@ public final class AuthManager {
         lastSeenTimer?.cancel()
         lastSeenTimer = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(300)) // 5 minutes
+                try? await Task.sleep(nanoseconds: 300 * 1_000_000_000) // 5 minutes
                 guard !Task.isCancelled, let deviceID = currentDeviceID else { continue }
                 struct LastSeenUpdate: Encodable {
                     let last_seen: String

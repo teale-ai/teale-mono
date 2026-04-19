@@ -194,7 +194,7 @@ public actor WANProvider: InferenceProvider {
         return try await withThrowingTaskGroup(of: ChatCompletionResponse.self) { group in
             // Timeout task
             group.addTask {
-                try await Task.sleep(for: .seconds(self.wanTimeoutSeconds))
+                try await Task.sleep(nanoseconds: UInt64(self.wanTimeoutSeconds) * 1_000_000_000)
                 throw WANError.timeout
             }
 
@@ -280,7 +280,7 @@ public actor WANProvider: InferenceProvider {
         try await withThrowingTaskGroup(of: Void.self) { group in
             // Timeout task
             group.addTask {
-                try await Task.sleep(for: .seconds(self.wanTimeoutSeconds))
+                try await Task.sleep(nanoseconds: UInt64(self.wanTimeoutSeconds) * 1_000_000_000)
                 throw WANError.timeout
             }
 

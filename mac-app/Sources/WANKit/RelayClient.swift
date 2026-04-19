@@ -613,7 +613,7 @@ public actor RelayClient {
                 guard let self = self else { return }
                 let backoff = await self.currentBackoff
 
-                try? await Task.sleep(for: .seconds(backoff))
+                try? await Task.sleep(nanoseconds: UInt64(backoff) * 1_000_000_000)
                 guard !Task.isCancelled else { return }
 
                 do {
@@ -672,7 +672,7 @@ public actor RelayClient {
             relayReadyWaiters[sessionID] = continuation
 
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeoutSeconds))
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 await self?.timeoutRelayReadyWaiter(sessionID: sessionID, expectedNodeID: fromNodeID)
             }
         }
@@ -754,7 +754,7 @@ public actor RelayClient {
         pingTask?.cancel()
         pingTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(25))
+                try? await Task.sleep(nanoseconds: 25 * 1_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 let ws = await self.webSocketTask
                 ws?.sendPing { error in

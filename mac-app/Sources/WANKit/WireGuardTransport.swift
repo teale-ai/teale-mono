@@ -161,7 +161,7 @@ public actor WireGuardPeerConnection {
     private func startKeepaliveLoop() {
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Self.keepaliveIntervalSeconds))
+                try? await Task.sleep(nanoseconds: UInt64(Self.keepaliveIntervalSeconds) * 1_000_000_000)
                 guard let self, case .connected = await self.connectionState else { return }
 
                 let elapsed = Date().timeIntervalSince(await self.lastSendTime)
@@ -277,7 +277,7 @@ public actor WireGuardPeerConnection {
                 }
             }
             group.addTask {
-                try await Task.sleep(for: .seconds(timeout))
+                try await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
                 throw WANError.timeout
             }
 

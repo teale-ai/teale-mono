@@ -221,7 +221,7 @@ public final class TealeContributor {
     private func startContributionLoop() {
         contributionTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                 guard let self = self else { return }
                 await self.updateContributionState()
             }
