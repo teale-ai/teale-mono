@@ -1,26 +1,62 @@
 //! Bearer-token auth middleware.
 //!
-//! Tokens are loaded from env (`GATEWAY_TOKENS`) at startup. Format is
-//! comma-separated `token:scope` pairs, e.g.:
-//!   GATEWAY_TOKENS=tok_abc:openrouter,tok_dev:internal
+//! Two token paths are supported in parallel:
 //!
-//! Scopes aren't checked today — the presence of any valid token is enough.
-//! When we need to gate by scope (e.g. admin endpoints), extend here.
+//! 1. **Static tokens** from env (`GATEWAY_TOKENS`), loaded at startup. Format
+//!    is comma-separated `token:scope` pairs, e.g.:
+//!      `GATEWAY_TOKENS=tok_abc:openrouter,tok_dev:internal`
+//!    These keep existing OpenRouter / internal integrations working.
+//!
+//! 2. **Device tokens** issued by `/v1/auth/device/exchange`, persisted in
+//!    SQLite. The middleware queries the DB for these after the static table
+//!    misses. Valid device tokens are also bound to a `deviceID` which we
+//!    stash in a request extension so downstream handlers can attribute
+//!    spend / earn.
+//!
+//! On success, the middleware attaches an `AuthPrincipal` request extension.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{header, StatusCode},
     middleware::Next,
     response::Response,
 };
 
+use crate::ledger;
+use crate::state::AppState;
+
 #[derive(Debug, Clone, Default)]
 pub struct TokenTable {
     /// Map: token → scope (tag).
     tokens: Arc<HashMap<String, String>>,
+}
+
+/// Identity resolved from a bearer token. Stashed in the request extensions
+/// by the `require_bearer` middleware so handlers can call
+/// `req.extensions().get::<AuthPrincipal>()`.
+#[derive(Debug, Clone)]
+pub struct AuthPrincipal {
+    pub kind: PrincipalKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum PrincipalKind {
+    /// Static token (from GATEWAY_TOKENS env)
+    Static { scope: String },
+    /// Device-bound token issued by /v1/auth/device/exchange
+    Device { device_id: String },
+}
+
+impl AuthPrincipal {
+    pub fn device_id(&self) -> Option<&str> {
+        match &self.kind {
+            PrincipalKind::Device { device_id } => Some(device_id),
+            _ => None,
+        }
+    }
 }
 
 impl TokenTable {
@@ -36,47 +72,74 @@ impl TokenTable {
         }
         if map.is_empty() {
             tracing::warn!(
-                "{} is empty — gateway will accept any bearer token. DO NOT run this in production.",
+                "{} is empty — static-token path disabled; only device-issued \
+                 tokens will be accepted (and anonymous fallback for dev).",
                 var
             );
         } else {
-            tracing::info!("Loaded {} bearer token(s) from {}", map.len(), var);
+            tracing::info!("Loaded {} static bearer token(s) from {}", map.len(), var);
         }
         Self {
             tokens: Arc::new(map),
         }
     }
 
-    pub fn is_valid(&self, token: &str) -> bool {
-        if self.tokens.is_empty() {
-            return true; // permissive for dev (logged warning at startup)
-        }
-        self.tokens.contains_key(token)
+    pub fn lookup_static(&self, token: &str) -> Option<String> {
+        self.tokens.get(token).cloned()
     }
 
-    pub fn scope(&self, token: &str) -> Option<&str> {
-        self.tokens.get(token).map(String::as_str)
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
     }
 }
 
-/// Axum middleware: require `Authorization: Bearer <token>` where token is
-/// in the TokenTable. Rejects with 401 otherwise.
+/// Axum middleware: require a valid bearer (static OR device token). On
+/// success, attaches an `AuthPrincipal` extension to the request.
 pub async fn require_bearer(
-    axum::extract::State(table): axum::extract::State<TokenTable>,
-    req: Request,
+    State(state): State<AppState>,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let header = req
+    let header_val = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
+    let token = header_val.strip_prefix("Bearer ").unwrap_or("").trim();
 
-    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
-
-    if token.is_empty() || !table.is_valid(token) {
+    if token.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    Ok(next.run(req).await)
+    // 1) Static-token match
+    if let Some(scope) = state.tokens.lookup_static(token) {
+        req.extensions_mut().insert(AuthPrincipal {
+            kind: PrincipalKind::Static { scope },
+        });
+        return Ok(next.run(req).await);
+    }
+
+    // 2) Device-token match (via DB)
+    if let Some(pool) = state.db.as_ref() {
+        if let Some(device_id) = ledger::resolve_token(pool, token) {
+            req.extensions_mut().insert(AuthPrincipal {
+                kind: PrincipalKind::Device { device_id },
+            });
+            return Ok(next.run(req).await);
+        }
+    }
+
+    // 3) Dev fallback: if *no* static tokens are configured at all, accept
+    //    any non-empty bearer (matches previous permissive behaviour). Real
+    //    deployments should set GATEWAY_TOKENS or require device auth.
+    if state.tokens.is_empty() && state.db.is_none() {
+        req.extensions_mut().insert(AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: "dev-open".into(),
+            },
+        });
+        return Ok(next.run(req).await);
+    }
+
+    Err(StatusCode::UNAUTHORIZED)
 }

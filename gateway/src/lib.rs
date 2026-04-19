@@ -4,9 +4,11 @@
 pub mod auth;
 pub mod catalog;
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod handlers;
 pub mod identity;
+pub mod ledger;
 pub mod metrics;
 pub mod registry;
 pub mod relay_client;

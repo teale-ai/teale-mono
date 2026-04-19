@@ -149,3 +149,70 @@ models:
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
     description: "DeepSeek V3.2 MoE (671B total, ~37B active). 704 GB on disk at 8-bit; requires multi-Ultra exo cluster."
     aliases: [deepseek-v3.2, deepseek-v3-2, deepseek-v3.2-8bit]
+
+  # --- Phone-class entries for Android (Pixel) + HarmonyOS (Huawei) supply ---
+
+  - id: google/gemma-4-1b-it
+    display_name: Gemma 4 1B Instruct (phone-class)
+    owned_by: google
+    context_length: 8192
+    max_output_tokens: 4096
+    params_b: 1.0
+    pricing_prompt: "0.00000002"
+    pricing_completion: "0.00000004"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Gemma 4 1B instruction-tuned — runs on phones (Android / HarmonyOS) via llama.cpp."
+    aliases: [gemma-4-1b-it, gemma4-1b, gemma-4-1b]
+
+  - id: google/gemma-3-1b-it
+    display_name: Gemma 3 1B Instruct (phone fallback)
+    owned_by: google
+    context_length: 8192
+    max_output_tokens: 4096
+    params_b: 1.0
+    pricing_prompt: "0.00000002"
+    pricing_completion: "0.00000004"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Gemma 3 1B — fallback phone-class model when Gemma 4 GGUFs aren't published yet."
+    aliases: [gemma-3-1b-it, gemma3-1b]
+
+  - id: qwen/qwen2.5-0.5b-instruct
+    display_name: Qwen 2.5 0.5B Instruct (HarmonyOS low-end)
+    owned_by: qwen
+    context_length: 32768
+    max_output_tokens: 4096
+    params_b: 0.5
+    pricing_prompt: "0.00000001"
+    pricing_completion: "0.00000002"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Qwen 2.5 0.5B — tiny, fits low-RAM HarmonyOS/Android via MNN-LLM or llama.cpp."
+    aliases: [qwen2.5-0.5b-instruct, qwen2.5-0.5b]
+
+  - id: qwen/qwen2.5-1.5b-instruct
+    display_name: Qwen 2.5 1.5B Instruct (HarmonyOS mid)
+    owned_by: qwen
+    context_length: 32768
+    max_output_tokens: 4096
+    params_b: 1.5
+    pricing_prompt: "0.00000002"
+    pricing_completion: "0.00000004"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Qwen 2.5 1.5B — natural fit for Huawei Kirin + Android mid-tier via MNN-LLM."
+    aliases: [qwen2.5-1.5b-instruct, qwen2.5-1.5b]
+
+  - id: qwen/qwen2.5-3b-instruct
+    display_name: Qwen 2.5 3B Instruct (HarmonyOS high)
+    owned_by: qwen
+    context_length: 32768
+    max_output_tokens: 4096
+    params_b: 3.0
+    pricing_prompt: "0.00000004"
+    pricing_completion: "0.00000008"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Qwen 2.5 3B — flagship Android/Huawei phone-class model."
+    aliases: [qwen2.5-3b-instruct, qwen2.5-3b]
