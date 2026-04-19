@@ -180,10 +180,13 @@ public struct ModelCatalog: Sendable {
             .replacingOccurrences(of: ".", with: "-")
 
         // Look up against catalog — match by each entry's tail (post-slash).
+        // Normalize the tail the same way as `norm` so e.g. "qwen3-32b"
+        // matches the normalized "qwen3-32b-q8-0" form of a GGUF.
         for model in allModels {
             guard let or = model.openrouterId else { continue }
             let tail = or.split(separator: "/").last.map(String.init) ?? or
-            if norm.contains(tail.lowercased()) {
+            let normTail = normalizeForMatch(tail)
+            if norm.contains(normTail) {
                 return or
             }
         }
@@ -191,6 +194,7 @@ public struct ModelCatalog: Sendable {
         // Extended heuristics for popular non-catalog variants we still
         // want to route to catalog models. Keep narrow — adding entries
         // here lies to the gateway about what we can serve.
+        // Keys are normalized the same way as the filename.
         let heuristics: [(String, String)] = [
             ("hermes-3-llama-3.1-8b", "nousresearch/hermes-3-llama-3.1-8b"),
             ("hermes-3-llama-3.1-70b", "nousresearch/hermes-3-llama-3.1-70b"),
@@ -201,10 +205,18 @@ public struct ModelCatalog: Sendable {
             ("gpt-oss-20b", "openai/gpt-oss-20b"),
         ]
         for (needle, or) in heuristics {
-            if norm.contains(needle) {
+            if norm.contains(normalizeForMatch(needle)) {
                 return or
             }
         }
         return nil
+    }
+
+    /// Shared normalization for both GGUF filename input and catalog/heuristic
+    /// keys so substring matching isn't derailed by `.` vs `-` separators.
+    private static func normalizeForMatch(_ s: String) -> String {
+        s.lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
     }
 }

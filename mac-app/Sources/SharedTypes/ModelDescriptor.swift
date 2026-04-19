@@ -63,12 +63,59 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
         self.openrouterId = openrouterId
     }
 
-    /// The id to advertise on the wire to the gateway/relay. Prefers
-    /// `openrouterId` when set (canonical slug), falls back to the
-    /// HuggingFace repo id, which in turn may be a local filesystem
-    /// path for devices running scanned GGUFs.
-    public var advertisedId: String {
-        openrouterId ?? huggingFaceRepo
+    /// The id to advertise on the wire to the gateway/relay: the
+    /// canonical OpenRouter slug if we resolved one, else `nil`. We
+    /// deliberately do NOT fall back to `huggingFaceRepo` — for scanned
+    /// local GGUFs that would leak a filesystem path, and for catalog
+    /// entries the huggingFaceRepo (e.g. `mlx-community/...-4bit`) is
+    /// not a canonical slug OpenRouter clients can match.
+    public var advertisedId: String? {
+        openrouterId
+    }
+}
+
+/// Resolve a canonical OpenRouter slug from a GGUF filename. Lives in
+/// SharedTypes so both ModelManager's `ModelCatalog` and LlamaCppKit's
+/// `GGUFScanner` can populate `ModelDescriptor.openrouterId` without
+/// ModelManager becoming a dependency of LlamaCppKit.
+///
+/// Keep this table in sync with `gateway/models.yaml`; an entry here is
+/// a claim that a file matching `needle` actually serves the model
+/// identified by the slug, and the gateway will route OpenRouter
+/// demand to that slug to any node that advertises it.
+public enum OpenRouterIdResolver {
+    /// Substring heuristics against a normalized GGUF filename.
+    /// Keys MUST use the same `-` separator convention as the normalized
+    /// filename (see `normalize(_:)`), so dotted forms like `3.1` are
+    /// written as `3-1`.
+    private static let heuristics: [(needle: String, slug: String)] = [
+        ("hermes-3-llama-3-1-8b", "nousresearch/hermes-3-llama-3.1-8b"),
+        ("hermes-3-llama-3-1-70b", "nousresearch/hermes-3-llama-3.1-70b"),
+        ("llama-3-3-70b-instruct", "meta-llama/llama-3.3-70b-instruct"),
+        ("llama-3-1-70b-instruct", "meta-llama/llama-3.1-70b-instruct"),
+        ("llama-3-1-8b-instruct", "meta-llama/llama-3.1-8b-instruct"),
+        ("qwen3-30b-a3b", "qwen/qwen3-30b-a3b-instruct-2507"),
+        ("qwen3-32b", "qwen/qwen3-32b"),
+        ("qwen3-8b", "qwen/qwen3-8b"),
+        ("gpt-oss-120b", "openai/gpt-oss-120b"),
+        ("gpt-oss-20b", "openai/gpt-oss-20b"),
+        ("mistral-small-3-2-24b", "mistralai/mistral-small-3.2-24b-instruct"),
+        ("gemma-3-27b-it", "google/gemma-3-27b-it"),
+    ]
+
+    public static func resolve(filename: String) -> String? {
+        let norm = normalize(filename)
+        for (needle, slug) in heuristics where norm.contains(needle) {
+            return slug
+        }
+        return nil
+    }
+
+    public static func normalize(_ s: String) -> String {
+        s.lowercased()
+            .replacingOccurrences(of: ".gguf", with: "")
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
     }
 }
 

@@ -144,7 +144,8 @@ public struct GGUFModelInfo: Identifiable, Sendable {
             estimatedSizeGB: sizeGB,
             requiredRAMGB: sizeGB * 1.3,  // GGUF models need ~1.3x file size in RAM
             family: inferFamily(),
-            description: "GGUF model from \(source.rawValue)"
+            description: "GGUF model from \(source.rawValue)",
+            openrouterId: OpenRouterIdResolver.resolve(filename: path.lastPathComponent)
         )
     }
 
