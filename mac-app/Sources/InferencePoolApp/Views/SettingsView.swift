@@ -191,6 +191,84 @@ struct SettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+
+                if appState.inferenceBackend == .meshLLM {
+                    HStack {
+                        Text("Endpoint")
+                        TextField("http://127.0.0.1:9337", text: Binding(
+                            get: { appState.meshLLMEndpoint },
+                            set: { appState.meshLLMEndpoint = $0 }
+                        ))
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    HStack {
+                        Text("Port")
+                        TextField("9337", value: Binding(
+                            get: { appState.meshLLMPort },
+                            set: { appState.meshLLMPort = $0 }
+                        ), format: .number.grouping(.never))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                            .disabled(!appState.meshLLMEndpoint.isEmpty)
+                    }
+
+                    HStack {
+                        Text("Model ID")
+                        TextField("auto (discover from /v1/models)", text: Binding(
+                            get: { appState.meshLLMModelID },
+                            set: { appState.meshLLMModelID = $0 }
+                        ))
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    HStack {
+                        Text("Binary Path")
+                        TextField("leave empty to attach to a running mesh-llm", text: Binding(
+                            get: { appState.meshLLMBinaryPath },
+                            set: { appState.meshLLMBinaryPath = $0 }
+                        ))
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    if !appState.meshLLMBinaryPath.isEmpty {
+                        HStack {
+                            Text("Serve Args")
+                            TextField("--auto, --model, ggml-org/gemma-3-4B-it-GGUF", text: Binding(
+                                get: { appState.meshLLMServeArgs },
+                                set: { appState.meshLLMServeArgs = $0 }
+                            ))
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(appState.engineStatus.isReady ? .green : .orange)
+                            .frame(width: 8, height: 8)
+                        Text(appState.meshLLMStatusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let discovered = appState.meshLLMDiscoveredModelID, !discovered.isEmpty {
+                        LabeledContent("Resolved model", value: discovered)
+                            .font(.caption)
+                    }
+
+                    Button("Probe Mesh-LLM") {
+                        Task { await appState.refreshMeshLLMStatus() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Link("Open Mesh-LLM console", destination: URL(string: "http://localhost:3131")!)
+                        .font(.caption)
+
+                    Text("Mesh-LLM runs as a separate service. Install: curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | bash  •  Start: mesh-llm serve --auto (public mesh) or mesh-llm serve --model <name> (single node)  •  Download catalog: mesh-llm download <name>")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             // Connect Your Agent

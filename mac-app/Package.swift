@@ -70,6 +70,14 @@ let package = Package(
             ]
         ),
 
+        // MARK: - MeshLLMKit (Mesh-LLM cluster HTTP provider + optional subprocess)
+        .target(
+            name: "MeshLLMKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
         // MARK: - TealeNetKit (Private TealeNet membership & certificates)
         .target(
             name: "TealeNetKit",
@@ -181,6 +189,7 @@ let package = Package(
                 "HardwareProfile",
                 "MLXInference",
                 "LlamaCppKit",
+                "MeshLLMKit",
                 "TealeNetKit",
                 "InferenceEngine",
                 "ModelManager",
@@ -220,6 +229,7 @@ let package = Package(
                 "InferenceEngine",
                 "ModelManager",
                 "LlamaCppKit",
+                "MeshLLMKit",
                 "TealeNetKit",
                 "LocalAPI",
                 "ClusterKit",
