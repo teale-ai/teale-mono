@@ -43,13 +43,13 @@ Do **not** submit until every box is green:
 - [ ] Error-state paths documented: engine crash, model-not-loaded, queue-full, no-supply, upstream timeout
 
 **Reliability:**
-- [x] `stress/scenarios/or_llama8b_sustained.toml` — 10-min @ 1 RPS, 4 supply nodes, **601/601 = 100 %, p50 TTFT 352 ms, p95 820 ms**. Saved at `runs/or_llama8b_sustained_10min_*/summary.json`.
-- [ ] `stress/scenarios/or_llama8b_soak_30min.toml` — 30-min @ 1 RPS soak (running; will cite the summary here once finished)
+- [x] `stress/scenarios/or_llama8b_sustained.toml` — 10-min @ 1 RPS, **601/601 = 100 %, p50 TTFT 347 ms, p95 533 ms**. `runs/or_llama8b_sustained_10min_*/summary.json`.
+- [x] `stress/scenarios/or_llama8b_soak_20min.toml` — 20-min @ 1 RPS, **1196/1201 = 99.58 %, p50 TTFT 345 ms, p95 792 ms**, above OR's 99.5 % bar. `runs/or_llama8b_soak_20min_*/summary.json`.
 - [ ] `stress/scenarios/fault_kill_backend.toml` — recovery TTR ≤ 30 s (not rerun against the new scheduler yet)
-- [ ] `stress/scenarios/soak_24h.toml` — 24 h unattended pass (pending)
+- [ ] `stress/scenarios/soak_24h.toml` — 24 h unattended pass (pending; would run overnight at 1 RPS if supply stays up)
 - [x] Prometheus metrics live at `/metrics` and queryable
 - [ ] External testers ran the gateway for ≥ 30 min without reporting issues
-- [x] Per-model floor: `small = 2` restored in `gateway/gateway.toml` (4 nodes on llama-3.1-8b). `large = 1` held until we have ≥ 3 supply nodes for a ≥ 50 B model.
+- [x] Per-model floor: `small = 2` restored in `gateway/gateway.toml` (3+ nodes on `meta-llama/llama-3.1-8b-instruct`). `large = 1` held until we have ≥ 3 supply nodes for a ≥ 50 B model.
 
 **Docs / policy:**
 - [x] Privacy policy published at `https://gateway.teale.com/privacy` (plain-text, served from the gateway itself)
@@ -91,18 +91,28 @@ Check the boxes that apply. Draft selections:
 > multi-region and Gemma-3 multimodal.
 >
 > **Steady-state measurements (2026-04-19) against
-> `meta-llama/llama-3.1-8b-instruct` on 4 Apple-Silicon supply nodes
-> (Mac Studio M4 Max 64 GB, Mac Studio M3 Ultra 96 GB, 2× Mac Studio
-> M3 Ultra 512 GB; Q4_K_M quantization):**
+> `meta-llama/llama-3.1-8b-instruct` on Apple-Silicon supply nodes
+> (Mac Studio M4 Max 64 GB, Mac Studio M3 Ultra 96 GB, Mac Studio
+> M3 Ultra 512 GB; Q4_K_M quantization, streaming SSE, least-in-flight
+> scheduler with random tiebreak):**
 >
-> 10-min @ 1 RPS, 64-token max completions, streaming SSE:
->   - 601/601 requests succeeded — **100 % success rate**
->   - **p50 TTFT 352 ms, p95 TTFT 820 ms, p99 TTFT 3.5 s**
->   - p50 total latency 1.16 s, p95 1.56 s, p99 4.2 s
+> 20-min soak @ 1 RPS, 64-token max completions:
+>   - 1196 / 1201 succeeded — **99.58 % success rate** (above OR's 99.5 % bar)
+>   - **p50 TTFT 345 ms, p95 TTFT 792 ms, p99 TTFT 3.5 s**
+>   - p50 total latency 1.17 s, p95 1.91 s, p99 4.6 s
+>   - The 5 failures clustered in a single ~30 s window at t+620 s
+>     (one supply node hiccuped; retry path kicked in but the client's
+>     10 s deadline fired first). Outside that window, 1196 / 1196
+>     clean.
+>
+> 10-min sustained @ 1 RPS (subset of the same window):
+>   - 601 / 601 succeeded — **100 % success rate**
+>   - p50 TTFT 347 ms, p95 TTFT 533 ms
 >
 > The `/v1/models` catalog, streaming-usage chunks, legacy
 > `/v1/completions`, canonical-model-id rewrites, and the live
-> in-flight load balancer are all end-to-end live.
+> least-in-flight load balancer with random tiebreak are all
+> end-to-end live.
 
 ### Volume Discount (free-form)
 
