@@ -98,6 +98,12 @@ async fn pick_and_dispatch(
     let mut outbound: ChatCompletionRequest = serde_json::from_value(req_body.clone())
         .map_err(|e| GatewayError::BadRequest(format!("{}", e)))?;
     outbound.model = Some(catalog_model.id.clone());
+    // OpenRouter explicitly requires the `usage` block on every response,
+    // including streamed ones. Force `stream_options.include_usage=true` on
+    // the outbound request so upstream emits a final usage chunk we can
+    // forward — overriding any value the caller sent (we don't want clients
+    // opting out of the thing OR needs).
+    outbound.stream_options = Some(serde_json::json!({ "include_usage": true }));
 
     // Open a relay session.
     let open_timeout = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
@@ -147,6 +153,11 @@ async fn run_streaming(
         let mut excluded: Vec<String> = Vec::new();
         let mut first_token_at: Option<Instant> = None;
         let mut tokens_out: u64 = 0;
+        // If upstream includes a `usage` object in any chunk (stream_options
+        // .include_usage=true was set on the outbound request), keep the
+        // most recent one so we can emit it in our own final event.
+        let mut captured_usage: Option<Value> = None;
+        let mut request_id: Option<String> = None;
         let mut final_status = "error";
         let mut tried = 0u32;
 
@@ -184,13 +195,34 @@ async fn run_streaming(
                 };
                 let next = tokio::time::timeout(deadline, rx.recv()).await;
                 match next {
-                    Ok(Some(SessionEvent::Chunk(chunk))) => {
+                    Ok(Some(SessionEvent::Chunk(mut chunk))) => {
                         if !got_first_token {
                             got_first_token = true;
                             first_token_at = Some(Instant::now());
                             metrics::TTFT_SECONDS
                                 .with_label_values(&[&model_id])
                                 .observe(started.elapsed().as_secs_f64());
+                        }
+                        // Normalize the chunk so downstream clients see:
+                        //  - canonical OpenRouter id in `model` (upstream
+                        //    llama-server sometimes leaks the local GGUF
+                        //    filename here),
+                        //  - a stable chunk `id` across the whole stream
+                        //    (capture the first id upstream assigns and
+                        //    reuse it if we need to synthesize a trailing
+                        //    usage event).
+                        if let Some(obj) = chunk.as_object_mut() {
+                            obj.insert("model".into(), Value::String(model_id.clone()));
+                            if request_id.is_none() {
+                                if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
+                                    request_id = Some(id.to_string());
+                                }
+                            }
+                            if let Some(u) = obj.get("usage").cloned() {
+                                if !u.is_null() {
+                                    captured_usage = Some(u);
+                                }
+                            }
                         }
                         tokens_out += 1;
                         let data = serde_json::to_string(&chunk).unwrap_or_default();
@@ -283,6 +315,33 @@ async fn run_streaming(
             );
             state.registry.quarantine(&target_node, state.config.reliability.quarantine_seconds);
             excluded.push(target_node);
+        }
+
+        // OpenRouter requires `usage` in every response — including streams.
+        // Emit a final chunk carrying the usage block before [DONE]. If
+        // upstream already reported usage in one of the chunks (via
+        // stream_options.include_usage=true) use that; otherwise synthesize
+        // a chunk with our locally-observed completion_tokens.
+        if final_status == "ok" {
+            let usage = captured_usage.unwrap_or_else(|| serde_json::json!({
+                "prompt_tokens": 0,
+                "completion_tokens": tokens_out,
+                "total_tokens": tokens_out,
+            }));
+            let created = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let id = request_id.clone().unwrap_or_else(|| format!("chatcmpl-{}", Uuid::new_v4()));
+            let final_chunk = serde_json::json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [],
+                "usage": usage,
+            });
+            yield Ok(Event::default().data(serde_json::to_string(&final_chunk).unwrap_or_default()));
         }
 
         yield Ok(done_event());

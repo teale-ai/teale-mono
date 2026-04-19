@@ -10,15 +10,17 @@ paste from, not a finished submission — double-check every answer the day of._
 These are the non-negotiables OpenRouter states explicitly. Every other
 answer must stay consistent with them:
 
-- **OpenRouter sends only streaming requests to providers.** Our
-  non-streaming path exists for internal use but is not what OR will exercise.
+- **OpenRouter sends only streaming requests to providers.** Our streaming
+  path is the primary code path and carries a trailing `usage` event.
 - **Every response must include a `usage` block**, both for streaming and
-  non-streaming. Today the gateway emits `usage` on non-streaming responses
-  but **not** on streaming — this is a pre-submission gap (see checklist).
-- `/completions` and `/chat/completions` must be **OpenAI-compliant**.
-- `/models` schema should resemble `https://openrouter.ai/api/v1/models`
-  and must include **max output tokens per model** alongside `context_length`.
-  Our `models.yaml` currently carries `context_length` only — see checklist.
+  non-streaming. Both paths emit it as of 2026-04-18 (streaming emits a
+  final `chat.completion.chunk` with `choices:[]` and a populated `usage`
+  object right before `[DONE]`).
+- `/completions` and `/chat/completions` must be **OpenAI-compliant** —
+  both exist; `/completions` wraps `prompt` into a single-message chat
+  request and translates the response back to `text_completion` shape.
+- `/models` schema resembles `https://openrouter.ai/api/v1/models` and
+  carries `max_output_tokens` per model alongside `context_length`.
 - Never submit sensitive personal data through Notion Forms (per form footer).
 
 ## Pre-submission checklist
@@ -26,32 +28,32 @@ answer must stay consistent with them:
 Do **not** submit until every box is green:
 
 **Build / deploy:**
-- [ ] `cargo build --workspace --release` clean
+- [x] `cargo build --workspace --release` clean (and `cargo clippy --all-targets -- -D warnings` passes)
 - [x] `teale-gateway` deployed at `gateway.teale.com` with HTTPS + Fly-managed cert (Let's Encrypt via Fly, status Issued 2026-04-18)
-- [ ] At least 5 Mac supply nodes online with pinned models covering every entry in `models.yaml`
+- [ ] At least 5 Mac supply nodes online with pinned catalog models (tailor16 serving Hermes-3-8B, tailor64 → Qwen3-32B, tailor96 → Llama-3.3-70B as of 2026-04-18; adding 2 more is pending)
 
 **API completeness:**
-- [ ] `/v1/chat/completions` streaming emits `usage` in the final SSE event (currently only in the non-stream path — must fix for OR)
-- [ ] `/v1/completions` route exists (currently only `/v1/chat/completions` — confirm whether OR will accept chat-only before submitting; if not, stub the `/v1/completions` route or note as limitation)
-- [ ] `/v1/models` response includes a `max_output_tokens` field per model (add to `models.yaml` + catalog.rs before submitting)
-- [ ] `/v1/models` response schema cross-checked against `https://openrouter.ai/api/v1/models` field-by-field
-- [ ] Streaming chunks carry the canonical OpenRouter `model` id (today they sometimes pass through the backing GGUF filename)
-- [ ] `finish_reason` values documented (only `stop` / `length` emitted today — confirm what OR expects)
-- [ ] Mid-stream cancel path tested: abort the client connection mid-completion and confirm we stop charging / free the slot cleanly
+- [x] `/v1/chat/completions` streaming emits a trailing `usage` SSE event before `[DONE]`
+- [x] `/v1/completions` legacy route exists (wraps into chat, returns `text_completion` shape)
+- [x] `/v1/models` response includes `max_output_tokens` per model
+- [x] Streaming chunks carry the canonical OpenRouter `model` id (gateway rewrites the field on every chunk)
+- [ ] `/v1/models` response schema cross-checked against `https://openrouter.ai/api/v1/models` field-by-field (we match `id/object/created/owned_by/context_length/max_output_tokens/pricing/supported_parameters/quantization/description` — confirm no field OR requires is missing)
+- [ ] `finish_reason` values double-checked against OR's expected set (we emit `stop`, `length`, `tool_calls` from llama-server; no `content_filter`)
+- [ ] Mid-stream cancel path tested: abort the client connection mid-completion and confirm we stop billing / free the slot cleanly
 - [ ] Error-state paths documented: engine crash, model-not-loaded, queue-full, no-supply, upstream timeout
 
 **Reliability:**
 - [ ] `stress/scenarios/steady_state.toml` — 30 min run clean (success ≥ 99.5 %, p95 TTFT within budget)
 - [ ] `stress/scenarios/fault_kill_backend.toml` — recovery TTR ≤ 30 s
 - [ ] `stress/scenarios/soak_24h.toml` — 24 h unattended pass
-- [ ] Prometheus metrics live at `/metrics` and queryable
+- [x] Prometheus metrics live at `/metrics` and queryable
 - [ ] External testers ran the gateway for ≥ 30 min without reporting issues
-- [ ] Per-model floor restored to `large = 3, small = 2` in `gateway/gateway.toml` (was lowered to 1/1 during bring-up)
+- [ ] Per-model floor restored to `large = 3, small = 2` in `gateway/gateway.toml` (currently 1/1 for bring-up; restore once we have ≥ 3 nodes serving each large model and ≥ 2 for small models)
 
 **Docs / policy:**
-- [ ] Privacy policy published at a public URL we can paste into the form
-- [ ] Data policy answer drafted (prompt/completion retention, training opt-out)
-- [ ] `.context/openrouter-provider-gap-analysis.md` — every ✗ / ◐ row flipped to ✓ or knowingly accepted as "defer"
+- [x] Privacy policy published at `https://gateway.teale.com/privacy` (plain-text, served from the gateway itself)
+- [x] Data policy answer drafted (prompt/completion retention, training opt-out)
+- [ ] `docs/openrouter-provider-gap-analysis.md` — every ✗ / ◐ row flipped to ✓ or knowingly accepted as "defer"
 
 ## Form-field draft answers
 
@@ -85,6 +87,13 @@ Check the boxes that apply. Draft selections:
 > from listing a model when supply is thin. MVP target: stable `llama-3.1-8b`
 > through `gpt-oss-120b` with single-region latency matching major providers;
 > Phase C expands to multi-region and Gemma-3 multimodal.
+>
+> Steady-state as of 2026-04-18 against `nousresearch/hermes-3-llama-3.1-8b`
+> on a single supply node: p50 TTFT 448 ms, p95 TTFT 597 ms, p50 total
+> latency 1.7 s for 32 output tokens — streaming SSE, standard Apple
+> Silicon Q5_K_M quantization. The `/v1/models` catalog, streaming-usage
+> chunks, legacy `/v1/completions`, and canonical-model-id rewrites are
+> all end-to-end live.
 
 ### Volume Discount (free-form)
 
@@ -122,17 +131,21 @@ The form's explicit questions under this heading:
 
 ### URL to /completions API
 
-> `https://gateway.teale.com/v1/completions` — **NOTE (pre-submission):
-> this route is not yet implemented.** Today only `/v1/chat/completions`
-> is live; OR's form asks for both. Decide before submitting: (a) stub
-> `/v1/completions` as a legacy alias, or (b) answer "chat-only" and
-> confirm it's acceptable. Most modern providers are chat-only.
+`https://gateway.teale.com/v1/completions` — OpenAI-compliant legacy
+text-completion endpoint. Accepts `prompt` (string or array), streaming
++ non-streaming, emits `text_completion` objects with `choices[].text`.
+Internally the gateway wraps the prompt into a single-message chat
+request so both URLs share the same dispatch / retry / usage
+pipeline. Tool-calling, tools, and `response_format` are rejected with
+a 400 since they're chat-only features.
 
 ### URL to /chat/completions API
 
 `https://gateway.teale.com/v1/chat/completions` — OpenAI-compliant,
-streaming SSE (the mode OR will use), `usage` in trailing event (once
-the streaming-usage gap is closed — see checklist).
+streaming SSE is the primary path. Every stream emits a trailing
+`chat.completion.chunk` with `choices: []` and a populated `usage`
+object just before `data: [DONE]`. Non-streaming responses carry the
+same `usage` shape in the body.
 
 ### Failure states — cancellable (free-form)
 
@@ -165,20 +178,22 @@ the streaming-usage gap is closed — see checklist).
 
 ### URL to /models API
 
-`https://gateway.teale.com/v1/models` — schema close to
-`openrouter.ai/api/v1/models`: `{"object":"list","data":[{"id",
-"object":"model","created","owned_by","context_length","pricing",
-"supported_parameters","quantization","description"}]}`. **Pre-submission
-gap:** add `max_output_tokens` per entry (OR explicitly requires this);
-fix in `gateway/models.yaml` + `catalog.rs` before pointing OR at the
-URL.
+`https://gateway.teale.com/v1/models` — schema:
+`{"object":"list","data":[{"id","object":"model","created","owned_by",
+"context_length","max_output_tokens","pricing","supported_parameters",
+"quantization","description"}]}`. `max_output_tokens` is the hard cap
+we accept for `max_tokens` per model (separate from `context_length`,
+which is prompt + completion combined). Only models currently served by
+enough healthy supply nodes appear in the response (per-model fleet
+floor).
 
 ### URL to Privacy Policy
 
-`https://teale.com/privacy` — **to publish before submission**. Draft
-points: no long-term logging of prompts or completions, no training on
-customer traffic, metadata-only retention (model, latency, status) for
-≤ 90 days, incident disclosure via OR Slack channel.
+`https://gateway.teale.com/privacy` — plain-text policy served from the
+gateway. Covers: no training on customer data, no retention of prompt
+or completion content, 90-day metadata-only retention (model,
+latency, status), sanitized headers on the supply path, TLS 1.2+
+enforced, 72-hour incident disclosure.
 
 ### Data Policy (free-form)
 

@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
         )
+        .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/models", get(handlers::models::list_models))
         .layer(middleware::from_fn_with_state(
             tokens.clone(),
@@ -94,7 +95,8 @@ async fn main() -> anyhow::Result<()> {
 
     let public = Router::new()
         .route("/health", get(handlers::health::health))
-        .route("/metrics", get(handlers::metrics::metrics));
+        .route("/metrics", get(handlers::metrics::metrics))
+        .route("/privacy", get(handlers::privacy::privacy));
 
     let app = Router::new()
         .merge(protected)

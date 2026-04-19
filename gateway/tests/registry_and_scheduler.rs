@@ -239,6 +239,7 @@ fn catalog_aliases_match() {
         display_name: "Llama 3.1 8B".into(),
         owned_by: "meta-llama".into(),
         context_length: 16384,
+        max_output_tokens: 8192,
         params_b: 8.0,
         pricing_prompt: "0.0".into(),
         pricing_completion: "0.0".into(),

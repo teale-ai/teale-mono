@@ -15,6 +15,10 @@ pub struct ChatCompletionRequest {
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// OpenAI-style `stream_options`. When `include_usage=true`, the upstream
+    /// emits a final chunk carrying a `usage` object — required by OpenRouter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +66,10 @@ pub struct ModelEntry {
     pub owned_by: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
+    /// Max output tokens we will accept for `max_tokens` on this model.
+    /// OpenRouter's provider form explicitly requires this field on /models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<Pricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

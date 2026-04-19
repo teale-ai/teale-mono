@@ -1,0 +1,41 @@
+name = "or_readiness_5min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 300
+rps = 0.3
+warmup_seconds = 15
+concurrency_cap = 4
+
+# Weighted mix across the three canonical models the live fleet advertises
+# as of 2026-04-18. Matches the OpenRouter-acceptance readiness check: a
+# 5-minute window at 1 RPS ≈ 300 requests, fanned across 2× small supply
+# and 1× 70B supply.
+
+[[requests]]
+model = "nousresearch/hermes-3-llama-3.1-8b"
+weight = 5
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 64
+streaming = true
+
+[[requests]]
+model = "qwen/qwen3-32b"
+weight = 3
+prompt_tokens_mean = 256
+prompt_tokens_stddev = 64
+max_tokens = 64
+streaming = true
+
+[[requests]]
+model = "meta-llama/llama-3.3-70b-instruct"
+weight = 1
+prompt_tokens_mean = 256
+prompt_tokens_stddev = 64
+max_tokens = 48
+streaming = true
+
+# Pass criteria (same budget as steady_state, scaled to a short window):
+#   success_rate >= 0.995
+#   p95 TTFT <= 5000 ms for 70B, <= 2500 ms for <= 32B
+#   p99 total_latency <= 3 * p95

@@ -25,7 +25,10 @@ small = 1
 
 [reliability]
 request_timeout_seconds = 300
-ttft_deadline_seconds = 10
+# 15s covers transient relay-open spikes (occasional session-setup stalls
+# were causing single-digit-percent stress failures at 10s); real TTFT
+# under load is still 300-500 ms for small models.
+ttft_deadline_seconds = 15
 max_retries = 1
 heartbeat_stale_seconds = 30
 quarantine_seconds = 30

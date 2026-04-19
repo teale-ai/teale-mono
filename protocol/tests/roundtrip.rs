@@ -64,6 +64,7 @@ fn sample_request() -> InferenceRequestPayload {
             top_p: Some(0.9),
             max_tokens: Some(256),
             stream: Some(true),
+            stream_options: None,
             stop: None,
             presence_penalty: None,
             frequency_penalty: None,

@@ -1,12 +1,17 @@
 # Gateway model catalog — the 5–8 open-weight models we advertise to OpenRouter.
-# Sourced from .context/device-model-matrix.md top picks. Pricing is
+# Sourced from docs/device-model-matrix.md top picks. Pricing is
 # placeholder USD per 1M tokens; update before submitting to OR.
+#
+# max_output_tokens is the hard ceiling we accept for `max_tokens` on each
+# model — OpenRouter's /models schema requires this, separate from
+# context_length (which is prompt+completion combined).
 
 models:
   - id: meta-llama/llama-3.1-8b-instruct
     display_name: Llama 3.1 8B Instruct
     owned_by: meta-llama
     context_length: 16384
+    max_output_tokens: 8192
     params_b: 8
     pricing_prompt: "0.00000010"   # $0.10 / M tokens input
     pricing_completion: "0.00000020" # $0.20 / M tokens output
@@ -19,6 +24,7 @@ models:
     display_name: Qwen 3 8B
     owned_by: qwen
     context_length: 40960
+    max_output_tokens: 16384
     params_b: 8
     pricing_prompt: "0.00000010"
     pricing_completion: "0.00000020"
@@ -31,6 +37,7 @@ models:
     display_name: Qwen 3 30B A3B Instruct (MoE)
     owned_by: qwen
     context_length: 262144
+    max_output_tokens: 32768
     params_b: 30
     pricing_prompt: "0.00000050"
     pricing_completion: "0.00000100"
@@ -43,6 +50,7 @@ models:
     display_name: Mistral Small 3.2 24B Instruct
     owned_by: mistralai
     context_length: 131072
+    max_output_tokens: 16384
     params_b: 24
     pricing_prompt: "0.00000040"
     pricing_completion: "0.00000080"
@@ -55,6 +63,7 @@ models:
     display_name: Llama 3.3 70B Instruct
     owned_by: meta-llama
     context_length: 65536
+    max_output_tokens: 16384
     params_b: 70
     pricing_prompt: "0.00000080"
     pricing_completion: "0.00000160"
@@ -67,6 +76,7 @@ models:
     display_name: gpt-oss 120B (MoE 117B/5.1B)
     owned_by: openai
     context_length: 131072
+    max_output_tokens: 32768
     params_b: 117
     pricing_prompt: "0.00000100"
     pricing_completion: "0.00000200"
@@ -79,6 +89,7 @@ models:
     display_name: Gemma 3 27B Instruct (multimodal)
     owned_by: google
     context_length: 131072
+    max_output_tokens: 16384
     params_b: 27
     pricing_prompt: "0.00000040"
     pricing_completion: "0.00000080"
@@ -91,6 +102,7 @@ models:
     display_name: Hermes 3 (Llama 3.1 8B)
     owned_by: nousresearch
     context_length: 32768
+    max_output_tokens: 8192
     params_b: 8
     pricing_prompt: "0.00000010"
     pricing_completion: "0.00000020"
@@ -103,6 +115,7 @@ models:
     display_name: Qwen 3 32B Dense
     owned_by: qwen
     context_length: 40960
+    max_output_tokens: 16384
     params_b: 32
     pricing_prompt: "0.00000030"
     pricing_completion: "0.00000060"
