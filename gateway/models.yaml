@@ -86,3 +86,27 @@ models:
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
     description: "Gemma 3 27B with vision. 32GB+ required."
     aliases: [gemma-3-27b-it, gemma3-27b]
+
+  - id: nousresearch/hermes-3-llama-3.1-8b
+    display_name: Hermes 3 (Llama 3.1 8B)
+    owned_by: nousresearch
+    context_length: 32768
+    params_b: 8
+    pricing_prompt: "0.00000010"
+    pricing_completion: "0.00000020"
+    quantization: Q5_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "NousResearch Hermes 3 fine-tune of Llama 3.1 8B."
+    aliases: [hermes-3-llama-3.1-8b, hermes-3-8b]
+
+  - id: qwen/qwen3-32b
+    display_name: Qwen 3 32B Dense
+    owned_by: qwen
+    context_length: 40960
+    params_b: 32
+    pricing_prompt: "0.00000030"
+    pricing_completion: "0.00000060"
+    quantization: Q8_0
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Qwen 3 32B dense model."
+    aliases: [qwen3-32b]
