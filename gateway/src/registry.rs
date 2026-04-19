@@ -124,6 +124,12 @@ pub struct Registry {
     /// swappable_models. `RwLock` inner for batch updates during
     /// discover responses.
     model_to_devices: RwLock<dashmap::DashMap<String, HashSet<String>>>,
+    /// Live in-flight request count per node. Incremented when the
+    /// gateway dispatches an inference request to the node, decremented
+    /// when the session closes. This is the scheduler's real picture
+    /// of load — heartbeat-reported queue_depth is ≥10s stale and
+    /// caused the "hot-spot one node" behaviour under rapid dispatch.
+    in_flight: DashMap<String, std::sync::atomic::AtomicU32>,
     reliability: ReliabilityConfig,
 }
 
@@ -132,6 +138,7 @@ impl Registry {
         Arc::new(Self {
             devices: DashMap::new(),
             model_to_devices: RwLock::new(DashMap::new()),
+            in_flight: DashMap::new(),
             reliability,
         })
     }
@@ -142,6 +149,38 @@ impl Registry {
 
     pub fn snapshot_devices(&self) -> Vec<DeviceState> {
         self.devices.iter().map(|r| r.value().clone()).collect()
+    }
+
+    /// Bump the live in-flight counter for a node. Paired with
+    /// `dec_in_flight` on session close.
+    pub fn inc_in_flight(&self, node_id: &str) -> u32 {
+        self.in_flight
+            .entry(node_id.to_string())
+            .or_insert_with(|| std::sync::atomic::AtomicU32::new(0))
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    pub fn dec_in_flight(&self, node_id: &str) -> u32 {
+        if let Some(c) = self.in_flight.get(node_id) {
+            let prev = c.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if prev == 0 {
+                // Shouldn't happen — reset to 0 to avoid wrap-around.
+                c.store(0, std::sync::atomic::Ordering::SeqCst);
+                0
+            } else {
+                prev - 1
+            }
+        } else {
+            0
+        }
+    }
+
+    pub fn in_flight(&self, node_id: &str) -> u32 {
+        self.in_flight
+            .get(node_id)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     /// Insert or update a device from its advertised capabilities.

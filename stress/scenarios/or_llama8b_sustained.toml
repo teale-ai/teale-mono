@@ -1,0 +1,18 @@
+name = "or_llama8b_sustained_10min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 600
+rps = 1.0
+warmup_seconds = 30
+concurrency_cap = 8
+
+# Sustained: 10 min @ 1 RPS = 600 requests. Each node (4-way) gets
+# ~150 = 1.5 RPS/node, well within llama.cpp parallel slots.
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 1
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 64
+streaming = true

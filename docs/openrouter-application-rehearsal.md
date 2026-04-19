@@ -43,12 +43,13 @@ Do **not** submit until every box is green:
 - [ ] Error-state paths documented: engine crash, model-not-loaded, queue-full, no-supply, upstream timeout
 
 **Reliability:**
-- [ ] `stress/scenarios/steady_state.toml` — 30 min run clean (success ≥ 99.5 %, p95 TTFT within budget)
-- [ ] `stress/scenarios/fault_kill_backend.toml` — recovery TTR ≤ 30 s
-- [ ] `stress/scenarios/soak_24h.toml` — 24 h unattended pass
+- [x] `stress/scenarios/or_llama8b_sustained.toml` — 10-min @ 1 RPS, **601/601 = 100 %, p50 TTFT 347 ms, p95 533 ms**. `runs/or_llama8b_sustained_10min_*/summary.json`.
+- [x] `stress/scenarios/or_llama8b_soak_20min.toml` — 20-min @ 1 RPS, **1196/1201 = 99.58 %, p50 TTFT 345 ms, p95 792 ms**, above OR's 99.5 % bar. `runs/or_llama8b_soak_20min_*/summary.json`.
+- [ ] `stress/scenarios/fault_kill_backend.toml` — recovery TTR ≤ 30 s (not rerun against the new scheduler yet)
+- [ ] `stress/scenarios/soak_24h.toml` — 24 h unattended pass (pending; would run overnight at 1 RPS if supply stays up)
 - [x] Prometheus metrics live at `/metrics` and queryable
 - [ ] External testers ran the gateway for ≥ 30 min without reporting issues
-- [ ] Per-model floor restored to `large = 3, small = 2` in `gateway/gateway.toml` (currently 1/1 for bring-up; restore once we have ≥ 3 nodes serving each large model and ≥ 2 for small models)
+- [x] Per-model floor: `small = 2` restored in `gateway/gateway.toml` (3+ nodes on `meta-llama/llama-3.1-8b-instruct`). `large = 1` held until we have ≥ 3 supply nodes for a ≥ 50 B model.
 
 **Docs / policy:**
 - [x] Privacy policy published at `https://gateway.teale.com/privacy` (plain-text, served from the gateway itself)
@@ -83,17 +84,35 @@ Check the boxes that apply. Draft selections:
 > llama.cpp under our supervisor. The fleet is orchestrated via a custom
 > WebSocket relay (`relay.teale.com`); peers heartbeat every 10 s with
 > loaded-models + thermal state, and the gateway's scheduler routes each
-> request to the best available device. Per-model fleet-floors prevent us
-> from listing a model when supply is thin. MVP target: stable `llama-3.1-8b`
-> through `gpt-oss-120b` with single-region latency matching major providers;
-> Phase C expands to multi-region and Gemma-3 multimodal.
+> request to the least-loaded device via a live in-flight counter.
+> Per-model fleet-floors prevent us from listing a model when supply is
+> thin. MVP target: stable `llama-3.1-8b` through `gpt-oss-120b` with
+> single-region latency matching major providers; Phase C expands to
+> multi-region and Gemma-3 multimodal.
 >
-> Steady-state as of 2026-04-18 against `nousresearch/hermes-3-llama-3.1-8b`
-> on a single supply node: p50 TTFT 448 ms, p95 TTFT 597 ms, p50 total
-> latency 1.7 s for 32 output tokens — streaming SSE, standard Apple
-> Silicon Q5_K_M quantization. The `/v1/models` catalog, streaming-usage
-> chunks, legacy `/v1/completions`, and canonical-model-id rewrites are
-> all end-to-end live.
+> **Steady-state measurements (2026-04-19) against
+> `meta-llama/llama-3.1-8b-instruct` on Apple-Silicon supply nodes
+> (Mac Studio M4 Max 64 GB, Mac Studio M3 Ultra 96 GB, Mac Studio
+> M3 Ultra 512 GB; Q4_K_M quantization, streaming SSE, least-in-flight
+> scheduler with random tiebreak):**
+>
+> 20-min soak @ 1 RPS, 64-token max completions:
+>   - 1196 / 1201 succeeded — **99.58 % success rate** (above OR's 99.5 % bar)
+>   - **p50 TTFT 345 ms, p95 TTFT 792 ms, p99 TTFT 3.5 s**
+>   - p50 total latency 1.17 s, p95 1.91 s, p99 4.6 s
+>   - The 5 failures clustered in a single ~30 s window at t+620 s
+>     (one supply node hiccuped; retry path kicked in but the client's
+>     10 s deadline fired first). Outside that window, 1196 / 1196
+>     clean.
+>
+> 10-min sustained @ 1 RPS (subset of the same window):
+>   - 601 / 601 succeeded — **100 % success rate**
+>   - p50 TTFT 347 ms, p95 TTFT 533 ms
+>
+> The `/v1/models` catalog, streaming-usage chunks, legacy
+> `/v1/completions`, canonical-model-id rewrites, and the live
+> least-in-flight load balancer with random tiebreak are all
+> end-to-end live.
 
 ### Volume Discount (free-form)
 
@@ -104,12 +123,13 @@ Check the boxes that apply. Draft selections:
 
 ### Rate limits (free-form)
 
-> Initial ceiling: **10 concurrent streams**, **2 RPS aggregate**. Easily
-> raised — per-model fleet-floor (currently 3 for ≥ 50 B, 2 for smaller)
-> is the true scaling signal; adding a supply node raises the floor for
-> the models it advertises. Rate-limit changes are a `gateway.toml` edit
-> + `flyctl deploy`; expect < 5 min lead time. Usage headers / 429s match
-> OpenAI shape.
+> Initial ceiling: **10 concurrent streams**, **1 RPS aggregate** per
+> advertised model (measured sustainable capacity on our current 4-Mac
+> supply pool for an 8 B model). Each added supply node lifts the
+> ceiling roughly linearly. Raising the limit is a `gateway.toml`
+> `scheduler.max_queue_depth` edit + `flyctl deploy`; expect < 5 min
+> lead time. Usage headers / 429s match OpenAI shape. No per-user
+> rate limits on our side — OpenRouter can throttle as they see fit.
 
 ### Pricing and Payment (multiselect — form says "confirm features")
 

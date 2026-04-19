@@ -1,0 +1,20 @@
+name = "or_llama8b_baseline_5min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 300
+rps = 0.5
+warmup_seconds = 15
+concurrency_cap = 4
+
+# Baseline: 5 min @ 0.5 RPS = ~150 requests. With 4 supply nodes for
+# meta-llama/llama-3.1-8b-instruct, the scheduler spreads load across
+# them; each node takes ~40 requests. Comfortable for TTFT p95 target
+# of sub-1s.
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 1
+prompt_tokens_mean = 64
+prompt_tokens_stddev = 16
+max_tokens = 32
+streaming = true

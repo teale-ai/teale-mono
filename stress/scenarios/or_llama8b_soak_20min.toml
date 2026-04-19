@@ -1,0 +1,20 @@
+name = "or_llama8b_soak_20min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 1200
+rps = 1.0
+warmup_seconds = 30
+concurrency_cap = 8
+
+# 20-min sustained. Longest soak we can guarantee within the current
+# fleet's reliability envelope (tailor512g8 occasionally flaps when
+# Mac login session goes idle). On 3 always-up nodes this gives us a
+# 1 200-request application-grade result.
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 1
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 64
+streaming = true

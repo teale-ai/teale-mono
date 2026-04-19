@@ -92,10 +92,17 @@ async fn pick_and_dispatch(
     let candidates = state.registry.eligible_devices(&catalog_model.id);
     let selected = state
         .scheduler
-        .pick(&candidates, &catalog_model.id, exclude)
+        .pick(&candidates, &catalog_model.id, exclude, &state.registry)
         .ok_or_else(|| GatewayError::NoEligibleDevice(catalog_model.id.clone()))?;
 
     let target_node = selected.node_id.clone();
+    // Bump live in-flight counter so the next pick_and_dispatch sees this
+    // node as busier. Use a scope guard so the counter rolls back if
+    // any of the dispatch steps below fail before we successfully hand
+    // off a Receiver to the caller (otherwise an open/send failure would
+    // leave the counter permanently elevated).
+    state.registry.inc_in_flight(&target_node);
+    let inc_guard = InFlightGuard::new(state.registry.clone(), target_node.clone());
 
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
@@ -138,7 +145,37 @@ async fn pick_and_dispatch(
         .send_cluster(&target_node, &session_id, &ir)
         .map_err(|e| GatewayError::Upstream(format!("relay send: {}", e)))?;
 
+    // Successful hand-off; caller is responsible for dec_in_flight when
+    // the session closes. Defuse the guard so we don't decrement here.
+    inc_guard.defuse();
     Ok((rx, target_node, session_id))
+}
+
+/// Decrements the in-flight counter on drop. Defuse() opts out if the
+/// caller will handle the decrement itself.
+struct InFlightGuard {
+    registry: Option<std::sync::Arc<crate::registry::Registry>>,
+    node_id: String,
+}
+
+impl InFlightGuard {
+    fn new(registry: std::sync::Arc<crate::registry::Registry>, node_id: String) -> Self {
+        Self {
+            registry: Some(registry),
+            node_id,
+        }
+    }
+    fn defuse(mut self) {
+        self.registry = None;
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if let Some(r) = self.registry.take() {
+            r.dec_in_flight(&self.node_id);
+        }
+    }
 }
 
 async fn run_streaming(
@@ -312,6 +349,7 @@ async fn run_streaming(
             }
 
             state.relay.close_session(&target_node, &session_id);
+            state.registry.dec_in_flight(&target_node);
 
             if completed {
                 served_by = Some(target_node);
@@ -498,6 +536,7 @@ async fn run_buffered(
         }
 
         state.relay.close_session(&target_node, &session_id);
+        state.registry.dec_in_flight(&target_node);
 
         if completed {
             metrics::REQUESTS_TOTAL

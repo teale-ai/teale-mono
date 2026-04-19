@@ -82,7 +82,7 @@ fn upsert_and_eligible_picks_loaded_device() {
 
     let sched = scheduler();
     let picked = sched
-        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[])
+        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[], &r)
         .expect("device");
     // node-a is loaded → should win against node-b's swap penalty.
     assert_eq!(picked.node_id, "node-a");
@@ -111,13 +111,14 @@ fn scheduler_excludes_failed_device() {
     let sched = scheduler();
 
     let first = sched
-        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[])
+        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[], &r)
         .unwrap();
     let retry = sched
         .pick(
             &els,
             "meta-llama/llama-3.3-70b-instruct",
             std::slice::from_ref(&first.node_id),
+            &r,
         )
         .unwrap();
     assert_ne!(
