@@ -166,6 +166,14 @@ impl Registry {
             entry.display_name = display_name;
             entry.capabilities = caps;
             entry.last_seen = now;
+            // Treat an inbound discover response (which only arrives because
+            // the relay heard from this peer recently) as a liveness signal.
+            // Without this, a peer that doesn't actively send heartbeat
+            // messages to the gateway is marked stale after a few dozen
+            // seconds even though it's perfectly reachable — and the Mac
+            // app supply path currently only re-registers via discover,
+            // never via explicit heartbeat.
+            entry.last_heartbeat = now;
         }
 
         // Rebuild reverse index for this node (safe now that the shard guard is released).
