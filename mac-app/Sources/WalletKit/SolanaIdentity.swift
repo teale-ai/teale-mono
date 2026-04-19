@@ -3,9 +3,10 @@ import CryptoKit
 
 // MARK: - Solana Wallet Identity (Ed25519 keypair via CryptoKit)
 
-/// A Solana-compatible Ed25519 keypair stored in the Keychain.
-/// Uses the same CryptoKit Curve25519.Signing as WANKit, but with a
-/// separate Keychain entry and stricter access control since this key controls funds.
+/// A Solana-compatible Ed25519 keypair stored on disk.
+/// Uses file-based storage to avoid macOS Keychain prompts on ad-hoc signed apps.
+/// The key file is stored at ~/Library/Application Support/Teale/wallet-key
+/// with restrictive file permissions (owner-only read/write).
 public struct SolanaIdentity: Sendable {
     public let privateKey: Curve25519.Signing.PrivateKey
     public let publicKey: Curve25519.Signing.PublicKey
@@ -44,23 +45,61 @@ public struct SolanaIdentity: Sendable {
         return key
     }
 
-    // MARK: - Keychain Persistence
+    // MARK: - File-based Persistence (avoids Keychain prompts on unsigned/ad-hoc apps)
+
+    private static var keyFileURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("Teale/wallet-key", isDirectory: false)
+    }
+
+    /// Load identity from disk, migrate from Keychain if needed, or generate a new one
+    public static func loadOrCreate() throws -> SolanaIdentity {
+        // Try file-based storage first
+        if let existing = try? loadFromFile() {
+            return existing
+        }
+
+        // Migrate from Keychain if an existing key is there (one-time migration)
+        if let migrated = try? loadFromKeychain() {
+            try? saveToFile(migrated)
+            // Clean up the old Keychain entry so it won't prompt again
+            deleteFromKeychain()
+            return migrated
+        }
+
+        // Generate new
+        let identity = SolanaIdentity()
+        try saveToFile(identity)
+        return identity
+    }
+
+    // MARK: - File Storage
+
+    private static func loadFromFile() throws -> SolanaIdentity {
+        let data = try Data(contentsOf: keyFileURL)
+        return try SolanaIdentity(privateKeyData: data)
+    }
+
+    private static func saveToFile(_ identity: SolanaIdentity) throws {
+        let data = identity.privateKey.rawRepresentation
+        let dir = keyFileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try data.write(to: keyFileURL, options: [.atomic, .completeFileProtection])
+        // Restrict to owner read/write only
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFileURL.path)
+    }
+
+    /// Check if a Solana wallet exists (file or Keychain)
+    public static func exists() -> Bool {
+        FileManager.default.fileExists(atPath: keyFileURL.path) || keychainExists()
+    }
+
+    // MARK: - Legacy Keychain (migration only)
 
     private static let keychainService = "com.teale.app"
     private static let keychainAccount = "solana-wallet-key"
 
-    /// Load identity from Keychain, or generate and store a new one
-    public static func loadOrCreate() throws -> SolanaIdentity {
-        if let existing = try? loadFromKeychain() {
-            return existing
-        }
-        let identity = SolanaIdentity()
-        try saveToKeychain(identity)
-        return identity
-    }
-
-    /// Load the private key from Keychain
-    public static func loadFromKeychain() throws -> SolanaIdentity {
+    private static func loadFromKeychain() throws -> SolanaIdentity {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -76,35 +115,16 @@ public struct SolanaIdentity: Sendable {
         return try SolanaIdentity(privateKeyData: data)
     }
 
-    /// Save the private key to Keychain
-    public static func saveToKeychain(_ identity: SolanaIdentity) throws {
-        let data = identity.privateKey.rawRepresentation
-
-        // Delete existing if present
-        let deleteQuery: [String: Any] = [
+    private static func deleteFromKeychain() {
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainAccount,
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
-
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecValueData as String: data,
-            // Stricter than WANKit's kSecAttrAccessibleAfterFirstUnlock — this key controls funds
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        ]
-
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw WalletKitError.keychainSaveFailed
-        }
+        SecItemDelete(query as CFDictionary)
     }
 
-    /// Check if a Solana wallet exists in Keychain without loading it
-    public static func exists() -> Bool {
+    private static func keychainExists() -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,

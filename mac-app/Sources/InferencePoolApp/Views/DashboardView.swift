@@ -34,6 +34,11 @@ struct DashboardView: View {
 
                 Divider()
 
+                // Inference Stats
+                InferenceStatsSection()
+
+                Divider()
+
                 // Credit Balance
                 CreditBalanceSection()
 
@@ -338,6 +343,39 @@ private struct WANSummarySection: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Inference Stats
+
+private struct InferenceStatsSection: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Inference Stats")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                InfoPill(
+                    icon: "arrow.up.arrow.down",
+                    text: "\(appState.totalRequestsServed) requests served",
+                    color: appState.totalRequestsServed > 0 ? .blue : .secondary
+                )
+                InfoPill(
+                    icon: "text.word.spacing",
+                    text: formatTokens(appState.totalTokensGenerated) + " tokens",
+                    color: appState.totalTokensGenerated > 0 ? .blue : .secondary
+                )
+            }
+        }
+    }
+
+    private func formatTokens(_ count: Int) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.1fK", Double(count) / 1_000) }
+        return "\(count)"
     }
 }
 

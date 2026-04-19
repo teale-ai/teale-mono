@@ -2,46 +2,81 @@
 set -e
 
 REPO="taylorhou/teale-mac-app"
-INSTALL_DIR="/usr/local/bin"
-BINARY_NAME="teale"
+APP_NAME="Teale"
+APP_DIR="/Applications/${APP_NAME}.app"
 
-echo "Installing Teale..."
+echo ""
+echo "  Installing Teale..."
+echo ""
 
-# Check macOS
+# ── Preflight ──
+
 if [ "$(uname)" != "Darwin" ]; then
-    echo "Error: Teale only runs on macOS (Apple Silicon)."
+    echo "Error: Teale requires macOS. See https://github.com/$REPO for other platforms."
     exit 1
 fi
 
-# Check Apple Silicon
 ARCH=$(uname -m)
 if [ "$ARCH" != "arm64" ]; then
-    echo "Warning: Teale is optimized for Apple Silicon. Performance on $ARCH may be limited."
+    echo "Error: Teale requires Apple Silicon (M1 or later)."
+    echo "Your architecture: $ARCH"
+    exit 1
 fi
 
-# Try downloading pre-built binary from GitHub releases
-LATEST=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+OS_VERSION=$(sw_vers -productVersion | cut -d. -f1)
+if [ "$OS_VERSION" -lt 14 ] 2>/dev/null; then
+    echo "Error: Teale requires macOS 14 Sonoma or later."
+    echo "Your version: $(sw_vers -productVersion)"
+    exit 1
+fi
+
+# ── Download from GitHub Releases ──
+
+LATEST=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || true)
 
 if [ -n "$LATEST" ]; then
-    URL="https://github.com/$REPO/releases/download/$LATEST/teale-macos-${ARCH}"
-    echo "Downloading Teale $LATEST..."
-    if curl -fsSL "$URL" -o /tmp/teale 2>/dev/null; then
-        chmod +x /tmp/teale
-        sudo mv /tmp/teale "$INSTALL_DIR/$BINARY_NAME"
+    URL="https://github.com/$REPO/releases/download/$LATEST/Teale.zip"
+    echo "  Downloading Teale $LATEST..."
+
+    TMPDIR=$(mktemp -d)
+    trap "rm -rf $TMPDIR" EXIT
+
+    if curl -fsSL "$URL" -o "$TMPDIR/Teale.zip" 2>/dev/null; then
+        echo "  Installing to $APP_DIR..."
+
+        # Remove previous install
+        if [ -d "$APP_DIR" ]; then
+            rm -rf "$APP_DIR"
+        fi
+
+        # Unzip preserving macOS metadata
+        ditto -x -k "$TMPDIR/Teale.zip" /Applications
+
+        # Strip quarantine flag (safety net for edge cases)
+        xattr -cr "$APP_DIR" 2>/dev/null || true
+
         echo ""
-        echo "Teale $LATEST installed to $INSTALL_DIR/$BINARY_NAME"
-        print_quickstart
+        echo "  Teale $LATEST installed."
+        echo ""
+        echo "  Launching..."
+        open "$APP_DIR"
+        echo ""
+        echo "  Look for the brain icon in your menu bar (top-right)."
+        echo ""
         exit 0
     fi
 fi
 
-# Fallback: build from source
-echo "No pre-built binary available. Building from source..."
-echo "This requires Xcode Command Line Tools and takes ~2 minutes."
+# ── Fallback: build from source ──
 
-if ! command -v swift >/dev/null 2>&1; then
-    echo "Error: Swift not found. Install Xcode Command Line Tools:"
-    echo "  xcode-select --install"
+echo "  No pre-built release found. Building from source..."
+echo "  This requires Xcode and takes a few minutes."
+echo ""
+
+if ! command -v xcodebuild >/dev/null 2>&1; then
+    echo "Error: Xcode is required to build from source."
+    echo "Install it from the App Store, then retry."
     exit 1
 fi
 
@@ -50,17 +85,25 @@ trap "rm -rf $TMPDIR" EXIT
 
 git clone --depth 1 "https://github.com/$REPO.git" "$TMPDIR/teale"
 cd "$TMPDIR/teale"
-swift build -c release --product teale 2>&1 | tail -5
 
-sudo mkdir -p "$INSTALL_DIR"
-sudo cp ".build/release/teale" "$INSTALL_DIR/$BINARY_NAME"
+echo "  Building (this takes a few minutes)..."
+./bundle.sh
 
-echo ""
-echo "Teale installed to $INSTALL_DIR/$BINARY_NAME"
-echo ""
-echo "Get started:"
-echo "  teale up                      # Start your node"
-echo "  teale login                   # Optional: link to your account"
-echo "  teale up --maximize-earnings  # Earn more credits"
-echo "  teale status                  # Check node status"
-echo ""
+if [ -d ".build/Teale.app" ]; then
+    rm -rf "$APP_DIR" 2>/dev/null || true
+    cp -R ".build/Teale.app" "$APP_DIR"
+    xattr -cr "$APP_DIR" 2>/dev/null || true
+
+    echo ""
+    echo "  Teale installed."
+    echo ""
+    echo "  Launching..."
+    open "$APP_DIR"
+    echo ""
+    echo "  Look for the brain icon in your menu bar (top-right)."
+    echo ""
+else
+    echo "Error: Build failed. Please open an issue at:"
+    echo "  https://github.com/$REPO/issues"
+    exit 1
+fi

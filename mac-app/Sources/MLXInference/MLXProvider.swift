@@ -180,7 +180,7 @@ public actor MLXProvider: InferenceProvider {
 
         let chatId = "chatcmpl-\(UUID().uuidString.prefix(12))"
         var tokenCount = 0
-        let maxTokens = request.maxTokens ?? 2048
+        let maxTokens = request.maxTokens ?? 8192
         let temperature = Float(request.temperature ?? 0.7)
         let modelName = descriptor.huggingFaceRepo
 

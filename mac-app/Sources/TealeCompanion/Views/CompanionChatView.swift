@@ -2,180 +2,109 @@ import SwiftUI
 import SharedTypes
 import ChatKit
 
+// MARK: - Companion 1:1 Chat (with Teale AI)
+
 struct CompanionChatView: View {
     var appState: CompanionAppState
     @State private var inputText = ""
-    @State private var isGenerating = false
+    @State private var isSending = false
+
+    private var chatService: ChatService { appState.chatService }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Status indicator
-                statusBanner
-
-                // Messages
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            if appState.conversationStore.activeMessages.isEmpty {
-                                emptyStateView
-                            } else {
-                                ForEach(appState.conversationStore.activeMessages) { message in
-                                    MessageBubbleView(message: message)
-                                        .id(message.id)
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-                    .onChange(of: appState.conversationStore.activeMessages.count) {
-                        if let last = appState.conversationStore.activeMessages.last {
-                            withAnimation {
-                                proxy.scrollTo(last.id, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-
-                Divider()
-
-                // Input bar
-                inputBar
-            }
-            .navigationTitle("Chat")
+        VStack(spacing: 0) {
+            statusBanner
+            messagesScroll
+            Divider()
+            composer
+        }
+        .navigationTitle("Teale AI")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            ToolbarItem(placement: .topBarLeading) {
+                modePicker
+            }
+            #else
+            ToolbarItem(placement: .automatic) {
+                modePicker
+            }
             #endif
-            .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) {
-                    modePicker
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    Task { await newChat() }
+                } label: {
+                    Image(systemName: "square.and.pencil")
                 }
-                #else
-                ToolbarItem(placement: .automatic) {
-                    modePicker
-                }
-                #endif
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        _ = appState.conversationStore.createConversation(title: "New Chat")
-                        appState.conversationStore.activeConversation = appState.conversationStore.conversations.first
-                    } label: {
-                        Image(systemName: "square.and.pencil")
-                    }
-                }
+            }
+        }
+        .task {
+            if chatService.activeConversation == nil,
+               let first = chatService.conversations.first {
+                await chatService.openConversation(first)
             }
         }
     }
 
-    // MARK: - Status Banner
+    // MARK: - Status banner
 
     private var statusBanner: some View {
         Group {
             switch appState.inferenceMode {
             case .local:
                 if let model = appState.localModel {
-                    HStack {
-                        Image(systemName: "cpu")
-                            .foregroundStyle(.green)
-                            .font(.caption2)
-                        Text("On-device: \(model.name)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-                    .background(.green.opacity(0.1))
+                    banner(icon: "cpu", tint: .green, text: "On-device: \(model.name)")
                 } else if appState.isLoadingModel {
-                    HStack {
-                        ProgressView()
-                            .controlSize(.mini)
-                        Text(appState.loadingPhase.isEmpty ? "Loading model..." : appState.loadingPhase)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text(appState.loadingPhase.isEmpty ? "Loading model…" : appState.loadingPhase)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-                    .background(.blue.opacity(0.1))
+                    .padding(.vertical, 6)
+                    .background(Color.teale.opacity(0.08))
                 } else {
-                    HStack {
-                        Image(systemName: "cpu")
-                            .foregroundStyle(.orange)
-                            .font(.caption2)
-                        Text("No model loaded — go to Models tab")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-                    .background(.orange.opacity(0.1))
+                    banner(icon: "cpu", tint: .orange, text: "No model loaded — go to Models tab")
                 }
-
             case .remote:
-                remoteStatusBanner
+                remoteBanner
             }
         }
     }
 
-    private var remoteStatusBanner: some View {
-        Group {
-            switch appState.connectionStatus {
-            case .connected(let name):
-                HStack {
-                    Image(systemName: "circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.caption2)
-                    Text("Connected to \(name)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .background(.green.opacity(0.1))
+    private func banner(icon: String, tint: Color, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(tint).font(.caption2)
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .background(tint.opacity(0.08))
+    }
 
-            case .disconnected:
-                HStack {
-                    Image(systemName: "circle.fill")
-                        .foregroundStyle(.red)
-                        .font(.caption2)
-                    Text("Not connected — go to Network tab")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .background(.red.opacity(0.1))
-
-            case .connecting:
-                HStack {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text("Connecting...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .background(.yellow.opacity(0.1))
-
-            case .error(let msg):
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption2)
-                    Text(msg)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .background(.orange.opacity(0.1))
+    @ViewBuilder private var remoteBanner: some View {
+        switch appState.connectionStatus {
+        case .connected(let name):
+            banner(icon: "circle.fill", tint: .green, text: "Connected to \(name)")
+        case .disconnected:
+            banner(icon: "circle.fill", tint: .red, text: "Not connected — go to Network tab")
+        case .connecting:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Connecting…").font(.caption).foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(Color.yellow.opacity(0.1))
+        case .error(let msg):
+            banner(icon: "exclamationmark.triangle.fill", tint: .orange, text: msg)
         }
     }
 
-    // MARK: - Mode Picker
+    // MARK: - Mode picker
 
     private var modePicker: some View {
         Menu {
@@ -193,7 +122,6 @@ struct CompanionChatView: View {
                     }
                 }
             }
-
             if appState.inferenceMode == .remote {
                 Section("Remote Models") {
                     ForEach(appState.availableModels, id: \.self) { model in
@@ -213,143 +141,191 @@ struct CompanionChatView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: appState.inferenceMode == .local ? "cpu" : "network")
-                Text(appState.selectedModel ?? "No Model")
+                Text(appState.selectedModel ?? "Pick model")
                     .font(.caption)
                     .lineLimit(1)
             }
         }
     }
 
-    // MARK: - Empty State
+    // MARK: - Messages
 
-    private var emptyStateView: some View {
+    private var messagesScroll: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if chatService.activeMessages.isEmpty {
+                        emptyState
+                    } else {
+                        ForEach(Array(chatService.activeMessages.enumerated()), id: \.element.id) { idx, message in
+                            renderMessage(message, previous: idx > 0 ? chatService.activeMessages[idx - 1] : nil)
+                        }
+                    }
+
+                    if chatService.aiParticipant.isGenerating {
+                        typingIndicator
+                            .id("typing")
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            .onChange(of: chatService.activeMessages.count) {
+                if let last = chatService.activeMessages.last {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: chatService.aiParticipant.streamingText) {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    proxy.scrollTo("typing", anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func renderMessage(_ message: DecryptedMessage, previous: DecryptedMessage?) -> some View {
+        switch message.messageType {
+        case .text, .aiResponse:
+            let role: BubbleRole = message.isFromAgent ? .ai : .me
+            let isFirstInRun = previous?.isFromAgent != message.isFromAgent
+            ChatBubble(
+                content: message.content,
+                role: role,
+                senderLabel: isFirstInRun && role == .ai ? "Teale" : nil,
+                timestamp: message.createdAt,
+                isFirstInRun: isFirstInRun,
+                isLastInRun: true
+            )
+            .id(message.id)
+        case .toolCall:
+            ToolCallInlineRow(content: message.content).id(message.id)
+        case .toolResult:
+            ToolResultInlineRow(content: message.content).id(message.id)
+        case .walletEntry:
+            WalletEntryChip(content: message.content, currentUserID: appState.currentUserID)
+                .id(message.id)
+        case .agentRequest:
+            AgentExchangeChip(content: message.content, incoming: false).id(message.id)
+        case .agentResponse:
+            AgentExchangeChip(content: message.content, incoming: true).id(message.id)
+        case .disclosureConsent:
+            DisclosureConsentChip(content: message.content).id(message.id)
+        case .system:
+            HStack {
+                Spacer()
+                Text(message.content)
+                    .font(.caption2.italic())
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.vertical, 8)
+            .id(message.id)
+        }
+    }
+
+    private var emptyState: some View {
         VStack(spacing: 16) {
-            Spacer()
-                .frame(height: 60)
+            Spacer().frame(height: 60)
             Image(systemName: "sparkles")
                 .font(.system(size: 44))
                 .foregroundStyle(Color.teale)
             Text("Chat with Teale")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-
             if !appState.canInfer {
                 Text(appState.inferenceMode == .local
-                     ? "Download and load a model in the Models tab"
-                     : "Connect to a Mac node in the Network tab")
+                     ? "Download a model in Models, or connect to a Mac running Teale."
+                     : "Connect to a Mac node in the Network tab.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
             } else {
-                Text("Ask me anything — or better yet, start a group chat and I can help plan trips, meals, events, and more with your friends and family.")
+                Text("Ask anything. In a group chat, @teale to bring the AI in.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
             }
-
-            // Group nudge
-            groupNudgeBanner
         }
     }
 
-    private var groupNudgeBanner: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "person.3.fill")
-                    .foregroundStyle(Color.teale)
-                Text("I'm even better with groups")
-                    .font(.subheadline.weight(.medium))
+    private var typingIndicator: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(0..<3) { _ in
+                    Circle()
+                        .fill(Color.teale)
+                        .frame(width: 6, height: 6)
+                        .opacity(0.6)
+                }
             }
-            Text("Plan trips, coordinate calendars, split tasks — @teale in any group chat.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color.tealeLight, in: Capsule())
+            Spacer()
         }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(Color.tealeLight, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 24)
-        .padding(.top, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 2)
     }
 
-    // MARK: - Input Bar
+    // MARK: - Composer
 
-    private var inputBar: some View {
-        HStack(spacing: 8) {
-            TextField("Message...", text: $inputText, axis: .vertical)
+    private var composer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Message", text: $inputText, axis: .vertical)
                 .textFieldStyle(.plain)
-                .lineLimit(1...5)
-                .padding(10)
-                .background(Color.gray.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                .disabled(isGenerating)
+                .lineLimit(1...6)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.gray.opacity(0.12), in: Capsule())
+                .disabled(isSending)
 
             Button {
-                sendMessage()
+                send()
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(canSend ? Color.teale : .gray)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(canSend ? Color.teale : Color.gray.opacity(0.35), in: Circle())
             }
             .disabled(!canSend)
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }
 
     private var canSend: Bool {
         !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && appState.canInfer
-        && !isGenerating
+        && !isSending
     }
 
-    private func sendMessage() {
+    private func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         inputText = ""
-        isGenerating = true
-
+        isSending = true
         Task {
             await appState.sendMessage(text)
-            isGenerating = false
-        }
-    }
-}
-
-// MARK: - Message Bubble
-
-private struct MessageBubbleView: View {
-    let message: CompanionMessage
-
-    var body: some View {
-        HStack {
-            if message.role == .user { Spacer(minLength: 48) }
-
-            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                Text(message.content)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(bubbleBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .foregroundStyle(message.role == .user ? .white : .primary)
-
-                Text(message.timestamp, style: .time)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-
-            if message.role == .assistant { Spacer(minLength: 48) }
+            isSending = false
         }
     }
 
-    private var bubbleBackground: some ShapeStyle {
-        if message.role == .user {
-            return AnyShapeStyle(Color.teale)
-        } else {
-            return AnyShapeStyle(Color.gray.opacity(0.15))
+    private func newChat() async {
+        let created = await chatService.createDM(
+            with: UUID(),
+            title: "New Chat",
+            agentConfig: AgentConfig(
+                autoRespond: true,
+                mentionOnly: false,
+                persona: "assistant"
+            )
+        )
+        if let created {
+            await chatService.openConversation(created)
         }
     }
 }

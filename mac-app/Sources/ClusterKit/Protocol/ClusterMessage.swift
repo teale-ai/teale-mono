@@ -38,6 +38,10 @@ public enum ClusterMessage: Codable, Sendable {
     case groupSyncRequest(GroupSyncRequestTransportPayload)
     case groupSyncResponse(GroupSyncResponseTransportPayload)
     case groupConfigUpdate(GroupConfigUpdateTransportPayload)
+
+    // PTN (Private TealeNet) membership
+    case ptnJoinRequest(PTNJoinRequestTransportPayload)
+    case ptnJoinResponse(PTNJoinResponseTransportPayload)
 }
 
 // MARK: - Group Key Exchange Payload (transport wrapper)
@@ -73,6 +77,20 @@ public struct GroupSyncResponseTransportPayload: Codable, Sendable {
 /// Group config update (admin-signed MD files).
 public struct GroupConfigUpdateTransportPayload: Codable, Sendable {
     public var data: Data // JSON-encoded GroupConfigUpdatePayload
+    public init(data: Data) { self.data = data }
+}
+
+// MARK: - PTN Transport Payloads
+
+/// PTN join request (joiner → inviter).
+public struct PTNJoinRequestTransportPayload: Codable, Sendable {
+    public var data: Data // JSON-encoded PTNJoinRequestPayload
+    public init(data: Data) { self.data = data }
+}
+
+/// PTN join response (inviter → joiner, contains signed certificate).
+public struct PTNJoinResponseTransportPayload: Codable, Sendable {
+    public var data: Data // JSON-encoded PTNJoinResponsePayload
     public init(data: Data) { self.data = data }
 }
 

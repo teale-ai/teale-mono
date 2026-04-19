@@ -45,6 +45,7 @@ struct Status: AsyncParsableCommand {
             print("  Model:    (none loaded)")
         }
 
+        print("  Backend:  \(s.settings.inferenceBackend)")
         print("  Cluster:  \(s.settings.clusterEnabled ? "enabled" : "disabled")")
         print("  WAN:      \(s.settings.wanEnabled ? "enabled" : "disabled")")
         if let err = s.settings.wanLastError {
@@ -55,6 +56,7 @@ struct Status: AsyncParsableCommand {
         let downloaded = s.models.filter({ $0.downloaded }).count
         let total = s.models.count
         print("  Models:   \(downloaded)/\(total) downloaded")
+        print("  Pricing:  $\(String(format: "%.4f", s.settings.electricityCostPerKWh))/kWh × \(String(format: "%.1f", s.settings.electricityMarginMultiplier))×")
     }
 }
 

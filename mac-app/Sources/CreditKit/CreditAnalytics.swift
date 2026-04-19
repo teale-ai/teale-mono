@@ -112,7 +112,7 @@ public struct USDCAnalytics: Sendable {
                     peerEarnings[peer, default: 0] += tx.amount.value
                 }
 
-            case .bonus, .adjustment, .transfer:
+            case .bonus, .adjustment, .transfer, .platformFee:
                 break
             }
         }

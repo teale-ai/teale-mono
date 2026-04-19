@@ -120,12 +120,12 @@ final class CompanionAppState {
     var availableModels: [String] = []
     var selectedModel: String?
 
-    // Chat (legacy single-user)
-    var conversationStore = CompanionConversationStore()
-
-    // Group Chat (ChatKit)
-    var chatService: ChatService?
-    var currentUserID: UUID = UUID()
+    // Chat (ChatKit — single source of truth for 1:1 + group)
+    let chatService: ChatService
+    let currentUserID: UUID
+    let toolRegistry: ToolRegistry
+    private(set) var heartbeatScheduler: HeartbeatScheduler?
+    private(set) var autoTopUpScheduler: AutoTopUpScheduler?
 
     // Wallet
     var walletBalance: Double = 0.0
@@ -158,6 +158,19 @@ final class CompanionAppState {
         self.hardware = hw
         self.modelManager = ModelManagerService(hardware: hw, maxStorageGB: 20.0)
 
+        // Stable local chat user ID — upgraded to authenticated user ID if/when Supabase auth resolves.
+        let chatUserID: UUID
+        if let raw = UserDefaults.standard.string(forKey: "teale.chatUserID"),
+           let uuid = UUID(uuidString: raw) {
+            chatUserID = uuid
+        } else {
+            chatUserID = UUID()
+            UserDefaults.standard.set(chatUserID.uuidString, forKey: "teale.chatUserID")
+        }
+        self.currentUserID = chatUserID
+        self.chatService = ChatService(currentUserID: chatUserID, localNodeID: UUID().uuidString)
+        self.toolRegistry = ToolRegistry()
+
         // Migrate stale relay URLs from previous versions
         if wanRelayURL.contains("teale.network") || wanRelayURL.isEmpty {
             wanRelayURL = "wss://relay.teale.com/ws"
@@ -180,21 +193,68 @@ final class CompanionAppState {
             let manager = AuthManager(config: config)
             self.authManager = manager
             await manager.checkSession()
-
-            // Initialize ChatKit after auth
-            if let user = manager.currentUser {
-                currentUserID = user.id
-                let service = ChatService(currentUserID: user.id, localNodeID: UUID().uuidString)
-                // Wire inference for AI agent responses
-                service.aiParticipant.onInferenceRequest = { [weak self] request in
-                    guard let self else {
-                        return AsyncThrowingStream { $0.finish() }
-                    }
-                    return self.createInferenceStream(for: request)
-                }
-                self.chatService = service
-            }
         }
+
+        // Wire AI inference routing (dual-mode: local MLX or remote Mac node).
+        let inferenceStream: @Sendable (ChatCompletionRequest) -> AsyncThrowingStream<String, Error> = { [weak self] request in
+            guard let self else {
+                return AsyncThrowingStream { $0.finish() }
+            }
+            return self.createInferenceStream(for: request)
+        }
+
+        // Register orchestrator tools and wire the tool registry.
+        toolRegistry.register(CalendarToolHandler())
+        toolRegistry.register(SubAgentDispatchHandler(inferenceStream: inferenceStream))
+        toolRegistry.register(RememberTool(memoryStore: chatService.memoryStore, context: chatService))
+        toolRegistry.register(RecallTool(memoryStore: chatService.memoryStore, context: chatService))
+        toolRegistry.register(SearchHistoryTool(context: chatService))
+        toolRegistry.register(SetPreferenceTool(preferenceStore: chatService.preferenceStore))
+        toolRegistry.register(GetPreferencesTool(preferenceStore: chatService.preferenceStore))
+        chatService.aiParticipant.toolRegistry = toolRegistry
+        chatService.aiParticipant.memoryStore = chatService.memoryStore
+        chatService.aiParticipant.preferenceStore = chatService.preferenceStore
+        chatService.aiParticipant.onInferenceRequest = inferenceStream
+
+        // Personal-wallet → group-wallet debits. Companion keeps a simple local
+        // balance via `walletBalance`, so we just subtract and succeed.
+        chatService.onPersonalWalletDebit = { [weak self] amount, _, _ in
+            guard let self else { return false }
+            guard self.walletBalance >= amount else { return false }
+            self.walletBalance -= amount
+            return true
+        }
+
+        // Start proactive heartbeat scheduler on iOS too (mostly a no-op when
+        // the app is backgrounded, but works while in the foreground).
+        let scheduler = HeartbeatScheduler(chatService: chatService)
+        heartbeatScheduler = scheduler
+        scheduler.start()
+
+        // Start auto-top-up scheduler.
+        let topUp = AutoTopUpScheduler(chatService: chatService)
+        autoTopUpScheduler = topUp
+        topUp.start()
+
+        // Load saved conversations; seed a default DM so the user always has one to open.
+        await chatService.loadConversations()
+        if chatService.conversations.isEmpty {
+            _ = await chatService.createDM(
+                with: UUID(),
+                title: "Teale",
+                agentConfig: AgentConfig(
+                    autoRespond: true,
+                    mentionOnly: false,
+                    persona: "assistant"
+                )
+            )
+        }
+
+        // Seed the X-ready agent-to-agent reservation demo.
+        _ = await DemoReservationDriver.ensureConversationExists(
+            chatService: chatService,
+            currentUserID: currentUserID
+        )
 
         // Scan for already-downloaded models
         await refreshDownloadedModels()
@@ -397,82 +457,52 @@ final class CompanionAppState {
         }
     }
 
-    // MARK: - Chat (dual-mode: local or remote)
+    // MARK: - Chat (dual-mode: local or remote, routed via ChatKit)
 
     @MainActor
     func sendMessage(_ content: String) async {
-        let conversation = conversationStore.activeConversation
-        ?? conversationStore.createConversation(title: String(content.prefix(40)))
-        conversationStore.activeConversation = conversation
-
-        let userMessage = CompanionMessage(role: .user, content: content)
-        conversationStore.addMessage(userMessage, to: conversation.id)
-
-        let assistantMessage = CompanionMessage(role: .assistant, content: "")
-        conversationStore.addMessage(assistantMessage, to: conversation.id)
-
-        // Build API messages from conversation history
-        let messages = conversationStore.messages(for: conversation.id).compactMap { msg -> APIMessage? in
-            guard msg.id != assistantMessage.id else { return nil }
-            return APIMessage(role: msg.role.rawValue, content: msg.content)
-        }
-
-        let request = ChatCompletionRequest(
-            model: selectedModel,
-            messages: messages,
-            stream: true
-        )
-
-        switch inferenceMode {
-        case .local:
-            await sendLocalMessage(request: request, assistantMessage: assistantMessage, conversationID: conversation.id)
-        case .remote:
-            await sendRemoteMessage(request: request, assistantMessage: assistantMessage, conversationID: conversation.id)
-        }
-    }
-
-    // MARK: - Local Generation
-
-    @MainActor
-    private func sendLocalMessage(request: ChatCompletionRequest, assistantMessage: CompanionMessage, conversationID: UUID) async {
-        guard localModel != nil else { return }
-        isGenerating = true
-
-        do {
-            let stream = localProvider.generate(request: request)
-            for try await chunk in stream {
-                if let content = chunk.choices.first?.delta.content {
-                    conversationStore.appendToMessage(assistantMessage.id, in: conversationID, content: content)
+        // Ensure an active conversation exists (seeded in initialize()).
+        if chatService.activeConversation == nil {
+            if let first = chatService.conversations.first {
+                await chatService.openConversation(first)
+            } else {
+                let created = await chatService.createDM(
+                    with: UUID(),
+                    title: String(content.prefix(40)),
+                    agentConfig: AgentConfig(
+                        autoRespond: true,
+                        mentionOnly: false,
+                        persona: "assistant"
+                    )
+                )
+                if let created {
+                    await chatService.openConversation(created)
                 }
             }
-        } catch {
-            conversationStore.appendToMessage(
-                assistantMessage.id,
-                in: conversationID,
-                content: "\n\n[Error: \(error.localizedDescription)]"
-            )
         }
 
-        isGenerating = false
-    }
+        guard let conversation = chatService.activeConversation else { return }
 
-    // MARK: - Remote Generation
+        isGenerating = true
+        defer { isGenerating = false }
 
-    @MainActor
-    private func sendRemoteMessage(request: ChatCompletionRequest, assistantMessage: CompanionMessage, conversationID: UUID) async {
-        guard connectionStatus.isConnected else { return }
+        await chatService.sendMessage(content)
 
-        do {
-            for try await token in client.streamCompletion(request: request) {
-                conversationStore.appendToMessage(assistantMessage.id, in: conversationID, content: token)
-            }
-        } catch {
-            conversationStore.appendToMessage(
-                assistantMessage.id,
-                in: conversationID,
-                content: "\n\n[Error: \(error.localizedDescription)]"
-            )
+        guard let lastMessage = chatService.activeMessages.last,
+              chatService.aiParticipant.shouldRespond(
+                to: lastMessage,
+                config: conversation.agentConfig,
+                currentUserID: currentUserID
+              )
+        else {
+            return
         }
+
+        await chatService.aiParticipant.runTurn(
+            conversation: conversation,
+            chatService: chatService,
+            participants: chatService.activeParticipants
+        )
     }
 
     // MARK: - WAN P2P

@@ -56,6 +56,22 @@ public final class USDCWallet: @unchecked Sendable {
             tokenCount: tokens
         )
         await ledger.debit(amount: amount, transaction: transaction)
+
+        // Track the 1.8% platform fee as a separate ledger entry
+        let earning = InferencePricing.earning(tokenCount: tokens, model: model)
+        let fee = amount - earning
+        if fee.value > 0 {
+            let feeTransaction = USDCTransaction(
+                type: .platformFee,
+                amount: fee,
+                description: "Network fee (1.8%) on \(model.name)",
+                peerNodeID: peer,
+                modelID: model.id,
+                tokenCount: tokens
+            )
+            await ledger.record(transaction: feeTransaction)
+        }
+
         await refreshBalance()
     }
 

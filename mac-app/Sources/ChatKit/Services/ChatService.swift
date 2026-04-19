@@ -20,7 +20,7 @@ public final class ChatService {
 
     // MARK: - Dependencies
 
-    private let currentUserID: UUID
+    public let currentUserID: UUID
     private let localNodeID: String
     public let keyManager: GroupKeyManager
     public let messageStore: MessageStore
@@ -28,6 +28,14 @@ public final class ChatService {
     public let syncService: MessageSyncService
     public let configStore: GroupConfigStore
     public let aiParticipant: AIParticipant
+    public let memoryStore: GroupMemoryStore
+    public let preferenceStore: UserPreferenceStore
+    public let walletStore: GroupWalletStore
+
+    /// Callback fired when a personal-wallet debit is needed to fund a group
+    /// wallet contribution. Wired by the app layer to the USDC wallet.
+    /// Return `true` iff the debit succeeded.
+    public var onPersonalWalletDebit: ((_ amount: Double, _ conversationID: UUID, _ memo: String) async -> Bool)?
 
     /// Callback to broadcast a message to connected group peers.
     /// Set by the app layer (wired to ClusterKit/WANKit transport).
@@ -44,6 +52,9 @@ public final class ChatService {
         self.syncService = MessageSyncService(messageStore: messageStore, outbox: outbox)
         self.configStore = GroupConfigStore()
         self.aiParticipant = AIParticipant()
+        self.memoryStore = GroupMemoryStore()
+        self.preferenceStore = UserPreferenceStore()
+        self.walletStore = GroupWalletStore()
     }
 
     // MARK: - Conversation List
@@ -82,6 +93,15 @@ public final class ChatService {
         let stored = await messageStore.loadMessages(groupID: conversation.id)
         activeMessages = await decryptMessages(stored, groupID: conversation.id)
         isLoadingMessages = false
+
+        // Replay any `.walletEntry` messages into the wallet store — dedups by
+        // entry.id, so this is safe to run on every open.
+        for msg in activeMessages where msg.messageType == .walletEntry {
+            if let data = msg.content.data(using: .utf8),
+               let entry = try? JSONDecoder().decode(WalletLedgerEntry.self, from: data) {
+                walletStore.append(entry)
+            }
+        }
     }
 
     /// Close the current conversation.
@@ -144,6 +164,156 @@ public final class ChatService {
         }
     }
 
+    // MARK: - Group Wallet
+
+    /// Contribute to the group wallet — debits the local user's personal wallet,
+    /// then appends an encrypted `.walletEntry` to the group's ledger.
+    public func contributeToGroupWallet(
+        amount: Double,
+        conversationID: UUID,
+        memo: String? = nil
+    ) async -> Bool {
+        guard amount > 0 else { return false }
+        let debitMemo = memo ?? "Group wallet contribution"
+        if let onPersonalWalletDebit,
+           await !onPersonalWalletDebit(amount, conversationID, debitMemo) {
+            return false
+        }
+
+        let entry = WalletLedgerEntry(
+            conversationID: conversationID,
+            authorID: currentUserID,
+            kind: .contribution,
+            amount: amount,
+            memo: memo
+        )
+        await broadcastWalletEntry(entry)
+        return true
+    }
+
+    /// Debit the group wallet to pay for something (typically an inference node).
+    /// Caller is responsible for enforcing `GroupWalletPolicy.autoApproveDebitLimit`
+    /// before calling this.
+    public func debitGroupWallet(
+        amount: Double,
+        conversationID: UUID,
+        memo: String? = nil,
+        payeeNodeID: String? = nil,
+        modelID: String? = nil,
+        tokenCount: Int? = nil
+    ) async {
+        guard amount > 0 else { return }
+        let entry = WalletLedgerEntry(
+            conversationID: conversationID,
+            authorID: currentUserID,
+            kind: .debit,
+            amount: amount,
+            memo: memo,
+            payeeNodeID: payeeNodeID,
+            modelID: modelID,
+            tokenCount: tokenCount
+        )
+        await broadcastWalletEntry(entry)
+    }
+
+    /// Encrypt and broadcast a ledger entry on the group's P2P channel.
+    private func broadcastWalletEntry(_ entry: WalletLedgerEntry) async {
+        // Apply locally first so the UI reflects it immediately.
+        walletStore.append(entry)
+
+        guard let data = try? JSONEncoder().encode(entry),
+              let content = String(data: data, encoding: .utf8) else {
+            return
+        }
+        await insertAgentMessage(
+            content: content,
+            messageType: .walletEntry,
+            conversationID: entry.conversationID
+        )
+    }
+
+    /// Encrypt and broadcast a tool-call message originating from the AI.
+    /// Content is JSON-encoded so remote participants can re-render it.
+    public func insertToolCall(_ call: ToolCall, conversationID: UUID) async {
+        let data = (try? JSONEncoder().encode(call)) ?? Data()
+        let content = String(data: data, encoding: .utf8) ?? "{}"
+        await insertAgentMessage(content: content, messageType: .toolCall, conversationID: conversationID)
+    }
+
+    /// Encrypt and broadcast a tool-result message originating from the AI.
+    public func insertToolResult(_ outcome: ToolOutcome, conversationID: UUID) async {
+        let data = (try? JSONEncoder().encode(outcome)) ?? Data()
+        let content = String(data: data, encoding: .utf8) ?? "{}"
+        await insertAgentMessage(content: content, messageType: .toolResult, conversationID: conversationID)
+    }
+
+    /// Shared encryption + broadcast path for agent-originated messages.
+    private func insertAgentMessage(
+        content: String,
+        messageType: MessageType,
+        conversationID: UUID
+    ) async {
+        do {
+            var senderKey = await keyManager.mySenderKey(for: conversationID)
+            let payload = try GroupCrypto.encrypt(content, using: &senderKey)
+            await keyManager.storeSenderKey(senderKey, for: conversationID)
+
+            let stored = StoredMessage(
+                conversationID: conversationID,
+                senderNodeID: localNodeID,
+                senderID: nil,
+                payload: payload,
+                messageType: messageType
+            )
+
+            await messageStore.append(stored, groupID: conversationID)
+            let data = try JSONEncoder().encode(GroupMessagePayload(message: stored))
+            await onBroadcast?(data, conversationID)
+
+            if activeConversation?.id == conversationID {
+                let decrypted = DecryptedMessage(message: stored.toMessage(), content: content)
+                if !activeMessages.contains(where: { $0.id == stored.id }) {
+                    activeMessages.append(decrypted)
+                }
+            }
+        } catch {
+            // Agent message encryption/broadcast failed — swallow silently.
+        }
+    }
+
+    /// Insert a message into the *in-memory* active UI only — never persisted,
+    /// never broadcast. Used by the scripted reservation demo so the
+    /// conversation replays cleanly every time instead of accumulating a
+    /// growing log of unrecoverable "missing key" stubs.
+    public func insertDemoMessage(
+        text: String,
+        senderID: UUID?,
+        messageType: MessageType,
+        conversationID: UUID
+    ) async {
+        guard activeConversation?.id == conversationID else { return }
+        // Construct a Message purely for display — no StoredMessage, no disk.
+        let message = Message(
+            id: UUID(),
+            conversationID: conversationID,
+            senderID: senderID,
+            encryptedContent: "",
+            encryptionKeyID: "demo",
+            messageType: messageType,
+            createdAt: Date()
+        )
+        let decrypted = DecryptedMessage(message: message, content: text)
+        activeMessages.append(decrypted)
+    }
+
+    /// Wipe the persisted log + in-memory messages for a conversation (demo reset).
+    public func resetConversationMessages(conversationID: UUID) async {
+        await messageStore.clearMessages(groupID: conversationID)
+        if activeConversation?.id == conversationID {
+            activeMessages = []
+        }
+    }
+
     /// Encrypt and broadcast an AI response.
     public func insertAIMessage(_ content: String, conversationID: UUID) async {
         do {
@@ -196,18 +366,35 @@ public final class ChatService {
         if activeConversation?.id == message.conversationID {
             if let decrypted = await decryptMessage(message, groupID: message.conversationID) {
                 activeMessages.append(decrypted)
+                if decrypted.messageType == .walletEntry,
+                   let data = decrypted.content.data(using: .utf8),
+                   let entry = try? JSONDecoder().decode(WalletLedgerEntry.self, from: data) {
+                    walletStore.append(entry)
+                }
             }
+        } else if message.messageType == .walletEntry,
+                  let decrypted = await decryptMessage(message, groupID: message.conversationID),
+                  let data = decrypted.content.data(using: .utf8),
+                  let entry = try? JSONDecoder().decode(WalletLedgerEntry.self, from: data) {
+            // Wallet entries must replicate into the store even when the
+            // conversation isn't currently open in the UI.
+            walletStore.append(entry)
         }
     }
 
     // MARK: - Create Conversation
 
     /// Create a new group conversation (stored locally).
-    public func createGroup(title: String, memberIDs: [UUID]) async -> Conversation? {
+    public func createGroup(
+        title: String,
+        memberIDs: [UUID],
+        agentConfig: AgentConfig = .default
+    ) async -> Conversation? {
         let conversation = Conversation(
             type: .group,
             title: title,
-            createdBy: currentUserID
+            createdBy: currentUserID,
+            agentConfig: agentConfig
         )
         conversations.insert(conversation, at: 0)
         saveConversations()
@@ -215,14 +402,42 @@ public final class ChatService {
     }
 
     /// Create a DM conversation (stored locally).
-    public func createDM(with otherUserID: UUID) async -> Conversation? {
+    public func createDM(
+        with otherUserID: UUID,
+        title: String? = nil,
+        agentConfig: AgentConfig = .default
+    ) async -> Conversation? {
         let conversation = Conversation(
             type: .dm,
-            createdBy: currentUserID
+            title: title,
+            createdBy: currentUserID,
+            agentConfig: agentConfig
         )
         conversations.insert(conversation, at: 0)
         saveConversations()
         return conversation
+    }
+
+    // MARK: - Update
+
+    /// Update a conversation's title, agent config, and optional heartbeat flag.
+    public func updateConversation(
+        id: UUID,
+        title: String?,
+        agentConfig: AgentConfig,
+        heartbeatsEnabled: Bool? = nil
+    ) async {
+        guard let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[idx].title = title
+        conversations[idx].agentConfig = agentConfig
+        if let heartbeatsEnabled {
+            conversations[idx].heartbeatsEnabled = heartbeatsEnabled
+        }
+        conversations[idx].updatedAt = Date()
+        if activeConversation?.id == id {
+            activeConversation = conversations[idx]
+        }
+        saveConversations()
     }
 
     // MARK: - Leave
@@ -276,6 +491,30 @@ public final class ChatService {
     private static var conversationsFile: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("Teale/groups/conversations.json")
+    }
+}
+
+// MARK: - Group Intelligence Context Conformance
+
+extension ChatService: GroupIntelligenceContext {
+    public var activeConversationID: UUID? {
+        activeConversation?.id
+    }
+
+    public var activeMessageContents: [(id: UUID, content: String, senderName: String?, isFromAgent: Bool, createdAt: Date)] {
+        activeMessages.compactMap { msg in
+            // Only text and AI responses are worth searching — tool call/result
+            // payloads are structured JSON noise from the user's perspective.
+            guard msg.messageType == .text || msg.messageType == .aiResponse else { return nil }
+            let senderName = activeParticipants.first { $0.participant.userID == msg.senderID }?.displayName
+            return (
+                id: msg.id,
+                content: msg.content,
+                senderName: senderName,
+                isFromAgent: msg.isFromAgent,
+                createdAt: msg.createdAt
+            )
+        }
     }
 }
 

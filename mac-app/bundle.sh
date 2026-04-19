@@ -73,8 +73,12 @@ find "${DERIVED_DATA}/Build/Products/Release" -maxdepth 1 -name '*.bundle' -type
     cp -R "${bundle}" "${RESOURCES_DIR}/"
 done
 
-# Copy Info.plist
+# Copy Info.plist and app icon
 cp Sources/InferencePoolApp/Info.plist "${CONTENTS_DIR}/Info.plist"
+if [ -f "Sources/InferencePoolApp/AppIcon.icns" ]; then
+    cp Sources/InferencePoolApp/AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
+    echo "  Included app icon"
+fi
 
 BUILD_DATE="$(date '+%Y.%m.%d')"
 BUILD_TIME="$(date '+%H:%M')"

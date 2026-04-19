@@ -8,6 +8,7 @@ import CreditKit
 import LocalAPI
 import InferenceEngine
 import AuthKit
+import TealeNetKit
 import WalletKit
 
 struct SettingsView: View {
@@ -94,8 +95,21 @@ struct SettingsView: View {
                     }
                 }
 
+                Picker("Appearance", selection: $state.appearance) {
+                    ForEach(AppAppearance.allCases) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+
                 Toggle(appState.loc("settings.keepAwake"), isOn: $state.keepAwake)
                 Text(appState.loc("settings.keepAwakeHelp"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                Toggle("Contribute compute to the Teale network", isOn: $state.contributeCompute)
+                Text(appState.contributeCompute
+                     ? "This Mac will serve inference to LAN and WAN peers when it has spare capacity."
+                     : "This Mac will use Teale as a chat client only and will not respond to incoming inference requests.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -159,6 +173,21 @@ struct SettingsView: View {
                     .controlSize(.small)
 
                     Text("Teale will proxy inference through Exo on this Mac. Start and shard the model in Exo itself, then use Teale for chat, credits, and peer routing.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if appState.inferenceBackend == .llamaCpp {
+                    HStack {
+                        Text("Binary Path")
+                        TextField("llama-server", text: Binding(
+                            get: { appState.llamaCppBinaryPath },
+                            set: { appState.llamaCppBinaryPath = $0 }
+                        ))
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    Text("Path to llama-server binary. Install via Homebrew (`brew install llama.cpp`) or set an absolute path. Load a GGUF model from the Models tab.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -266,6 +295,97 @@ struct SettingsView: View {
                 .controlSize(.small)
             }
 
+            // Electricity Cost
+            Section("Electricity Cost") {
+                HStack {
+                    Text("Cost per kWh")
+                    TextField("0.12", value: Binding(
+                        get: { appState.electricityCostPerKWh },
+                        set: { appState.electricityCostPerKWh = $0 }
+                    ), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+
+                    Picker("", selection: Binding(
+                        get: { appState.electricityCurrency },
+                        set: { appState.electricityCurrency = $0 }
+                    )) {
+                        Text("USD").tag("USD")
+                        Text("EUR").tag("EUR")
+                        Text("GBP").tag("GBP")
+                        Text("JPY").tag("JPY")
+                        Text("CNY").tag("CNY")
+                        Text("KRW").tag("KRW")
+                        Text("CAD").tag("CAD")
+                        Text("AUD").tag("AUD")
+                        Text("INR").tag("INR")
+                        Text("BRL").tag("BRL")
+                    }
+                    .frame(width: 80)
+                }
+
+                HStack(spacing: 8) {
+                    Text("Device power draw:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("\(Int(appState.hardware.estimatedInferenceWatts))W (\(appState.hardware.chipName))")
+                        .font(.caption.weight(.medium))
+                }
+
+                HStack {
+                    Text("Margin multiplier")
+                    TextField("1.2", value: Binding(
+                        get: { appState.electricityMarginMultiplier },
+                        set: { appState.electricityMarginMultiplier = max(0, $0) }
+                    ), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                    Text("×")
+                    Text(marginLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Multiplier over electricity cost. 0× = free, 1× = break even, 1.2× = 20% profit. No cap — free market pricing. Unreasonably high values simply won't attract requests.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Private TealeNet
+            Section("Private TealeNet (PTN)") {
+                PTNSettingsSection()
+            }
+
+            // Solana Wallet
+            Section("Solana Wallet") {
+                Toggle("Enable Solana Wallet", isOn: $state.solanaWalletEnabled)
+                Text("Connect an on-chain Solana wallet for USDC deposits and withdrawals.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                if appState.solanaWalletEnabled {
+                    if UserDefaults.standard.bool(forKey: "teale.showDevnetOption") {
+                        Picker("Network", selection: $state.solanaNetwork) {
+                            Text("Devnet (test)").tag("devnet")
+                            Text("Mainnet (real USDC)").tag("mainnet")
+                        }
+                    } else {
+                        LabeledContent("Network", value: appState.solanaNetwork == "mainnet" ? "Mainnet" : "Devnet")
+                    }
+
+                    if let bridge = appState.walletBridge {
+                        LabeledContent("Address", value: String(bridge.solanaAddress.prefix(8)) + "..." + String(bridge.solanaAddress.suffix(4)))
+                        LabeledContent("On-chain USDC", value: bridge.usdcBalanceFormatted)
+                    }
+
+                    if appState.solanaNetwork == "mainnet" {
+                        Label("Connected to Solana mainnet — real USDC", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
             // Model Management
             Section(appState.loc("settings.modelStorage")) {
                 Toggle("Auto-manage models", isOn: $state.autoManageModels)
@@ -296,6 +416,26 @@ struct SettingsView: View {
                 LabeledContent(appState.loc("settings.version"), value: displayVersion)
                 LabeledContent(appState.loc("settings.engine"), value: appState.inferenceEngineName)
                 Link(appState.loc("settings.sourceCode"), destination: URL(string: "https://github.com/taylorhou/teale-mac-app")!)
+
+                if appState.updateChecker.updateAvailable, let tag = appState.updateChecker.latestTag {
+                    HStack {
+                        Label("Update available: \(tag)", systemImage: "arrow.down.circle.fill")
+                            .foregroundStyle(.green)
+                        Spacer()
+                        Button("Update") {
+                            Task { await appState.updateChecker.installUpdate() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        Button("Skip") {
+                            appState.updateChecker.dismissUpdate()
+                        }
+                    }
+                }
+                Button(appState.updateChecker.checking ? "Checking..." : "Check for Updates") {
+                    Task { await appState.updateChecker.check() }
+                }
+                .disabled(appState.updateChecker.checking)
             }
 
             // Quit
@@ -313,6 +453,21 @@ struct SettingsView: View {
             wanRelayURL = appState.wanRelayURL
             exoBaseURL = appState.exoBaseURL
             exoPreferredModelID = appState.exoPreferredModelID
+            maxStorage = appState.maxStorageGB
+        }
+    }
+
+    private var marginLabel: String {
+        let m = appState.electricityMarginMultiplier
+        if m == 0 {
+            return "0.0× (free)"
+        } else if m < 1.0 {
+            return String(format: "%.1f× (donate)", m)
+        } else if m == 1.0 {
+            return "1.0× (break even)"
+        } else {
+            let pct = Int((m - 1.0) * 100)
+            return String(format: "%.1f× (+%d%%)", m, pct)
         }
     }
 

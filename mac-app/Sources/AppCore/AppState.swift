@@ -13,6 +13,10 @@ import CreditKit
 import AgentKit
 import AuthKit
 import WalletKit
+import LlamaCppKit
+import TealeNetKit
+import CompilerKit
+import ChatKit
 
 // MARK: - App State
 
@@ -23,6 +27,7 @@ public final class AppState {
         static let maxStorageGB = "teale.maxStorageGB"
         static let wanRelayURL = "teale.wanRelayURL"
         static let installNodeID = "teale.installNodeID"
+        static let lastLoadedModelID = "teale.lastLoadedModelID"
     }
 
     private static let stableNodeIDKey = "teale.stable_node_id"
@@ -30,6 +35,7 @@ public final class AppState {
     private static let exoBaseURLKey = "teale.exo_base_url"
     private static let exoPreferredModelIDKey = "teale.exo_preferred_model_id"
     private static let wanRelayURLKey = "teale.wan_relay_url"
+    private static let llamaCppBinaryPathKey = "teale.llamacpp_binary_path"
 
     // Hardware
     public let hardware: HardwareCapability
@@ -37,10 +43,15 @@ public final class AppState {
 
     // Engine
     public let engine: InferenceEngineManager
+    public let requestScheduler: RequestScheduler
 
-    // Local inference provider
+    // Local inference providers
     private let localProvider: MLXProvider
     private let exoProvider: ExoProvider
+    private let llamaCppProvider: LlamaCppProvider
+
+    // Compiler (Mixture of Models)
+    private var compiler: Compiler?
 
     // Models
     public let modelManager: ModelManagerService
@@ -49,13 +60,20 @@ public final class AppState {
     // Cluster (LAN)
     public let clusterManager: ClusterManager
     public var clusterEnabled: Bool = false {
-        didSet { toggleCluster() }
+        didSet {
+            UserDefaults.standard.set(clusterEnabled, forKey: "teale.clusterEnabled")
+            toggleCluster()
+        }
     }
+
+    // PTN (Private TealeNet)
+    public let ptnManager: PTNManager
 
     // WAN P2P
     public let wanManager: WANManager
     public var wanEnabled: Bool = false {
         didSet {
+            UserDefaults.standard.set(wanEnabled, forKey: "teale.wanEnabled")
             guard !isUpdatingWANToggle else { return }
             toggleWAN()
         }
@@ -74,8 +92,39 @@ public final class AppState {
             Task { await toggleSolanaWallet() }
         }
     }
-    public var solanaNetwork: String = UserDefaults.standard.string(forKey: "teale.solanaNetwork") ?? "devnet" {
-        didSet { UserDefaults.standard.set(solanaNetwork, forKey: "teale.solanaNetwork") }
+    public var solanaNetwork: String = AppState.resolvedSolanaNetwork() {
+        didSet {
+            UserDefaults.standard.set(solanaNetwork, forKey: "teale.solanaNetwork")
+            if solanaWalletEnabled {
+                Task { await toggleSolanaWallet() }
+            }
+        }
+    }
+
+    /// One-time migration from devnet default to mainnet.
+    /// Users who actively used devnet (wallet enabled) keep their choice.
+    private static func resolvedSolanaNetwork() -> String {
+        let defaults = UserDefaults.standard
+        let migrationKey = "teale.solanaNetworkMigratedToMainnet"
+
+        if defaults.bool(forKey: migrationKey) {
+            return defaults.string(forKey: "teale.solanaNetwork") ?? "mainnet"
+        }
+
+        defaults.set(true, forKey: migrationKey)
+
+        guard defaults.object(forKey: "teale.solanaNetwork") != nil else {
+            defaults.set("mainnet", forKey: "teale.solanaNetwork")
+            return "mainnet"
+        }
+
+        let saved = defaults.string(forKey: "teale.solanaNetwork") ?? "devnet"
+        if saved == "devnet" && !defaults.bool(forKey: "teale.solanaWalletEnabled") {
+            defaults.set("mainnet", forKey: "teale.solanaNetwork")
+            return "mainnet"
+        }
+
+        return saved
     }
 
     // Auth
@@ -88,15 +137,32 @@ public final class AppState {
     // Local model discovery
     public let localModelScanner = LocalModelScanner()
     public var scannedLocalModels: [LocalModelInfo] = []
+    public let ggufScanner = GGUFScanner()
+    public var scannedGGUFModels: [GGUFModelInfo] = []
+
+    // Stats (all network tiers)
+    public var totalRequestsServed: Int = 0
+    public var totalTokensGenerated: Int = 0
 
     // Server & API Keys
     public var serverPort: Int = 11435
     public var isServerRunning: Bool = false
-    public var allowNetworkAccess: Bool = false
+    public var allowNetworkAccess: Bool = UserDefaults.standard.bool(forKey: "teale.allowNetworkAccess") {
+        didSet { UserDefaults.standard.set(allowNetworkAccess, forKey: "teale.allowNetworkAccess") }
+    }
+    /// Master opt-out for serving inference to other nodes. When false, this Mac acts purely as a chat client
+    /// and will not respond to incoming LAN/WAN inference requests. Default true so existing nodes keep contributing.
+    public var contributeCompute: Bool = UserDefaults.standard.object(forKey: "teale.contributeCompute") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(contributeCompute, forKey: "teale.contributeCompute") }
+    }
     public let apiKeyStore = APIKeyStore()
 
-    // Chat
-    public let conversationStore = ConversationStore()
+    // Chat (ChatKit — unified 1:1 + group storage with E2E P2P crypto)
+    public let chatService: ChatService
+    public let currentUserID: UUID
+    public let toolRegistry = ToolRegistry()
+    public private(set) var heartbeatScheduler: HeartbeatScheduler?
+    public private(set) var autoTopUpScheduler: AutoTopUpScheduler?
 
     // UI State
     public var selectedModel: ModelDescriptor?
@@ -106,11 +172,14 @@ public final class AppState {
     public var activeDownloads: [String: Double] = [:]
     /// Models that just finished downloading — prompt user to load
     public var justDownloadedModel: ModelDescriptor?
-    public var currentView: AppView = .dashboard
+    public var currentView: AppView = .chat
     public var showSignIn: Bool = false
     public var loadingPhase: String = ""
     public var loadingProgress: Double?
     public var pendingWalletTransferPeerID: UUID?
+
+    // Auto-updater
+    public let updateChecker = UpdateChecker()
 
     // Settings
     public var launchAtLogin: Bool = false
@@ -137,6 +206,12 @@ public final class AppState {
     public var exoAvailableModels: [String] = []
     public var exoRunningModels: [String] = []
     public var exoStatusMessage: String = "Exo not configured"
+    public var llamaCppBinaryPath: String = UserDefaults.standard.string(forKey: llamaCppBinaryPathKey) ?? "llama-server" {
+        didSet {
+            UserDefaults.standard.set(llamaCppBinaryPath, forKey: Self.llamaCppBinaryPathKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
     public var maxStorageGB: Double = UserDefaults.standard.object(forKey: Preferences.maxStorageGB) as? Double ?? 50.0 {
         didSet {
             UserDefaults.standard.set(maxStorageGB, forKey: Preferences.maxStorageGB)
@@ -147,7 +222,20 @@ public final class AppState {
         didSet { UserDefaults.standard.set(wanRelayURL, forKey: "teale.wan_relay_url") }
     }
     public var autoManageModels: Bool = false {
-        didSet { demandTracker.autoManageEnabled = autoManageModels }
+        didSet {
+            UserDefaults.standard.set(autoManageModels, forKey: "teale.autoManageModels")
+            demandTracker.autoManageEnabled = autoManageModels
+        }
+    }
+    public var electricityCostPerKWh: Double = UserDefaults.standard.object(forKey: "teale.electricityCostPerKWh") as? Double ?? 0.12 {
+        didSet { UserDefaults.standard.set(electricityCostPerKWh, forKey: "teale.electricityCostPerKWh") }
+    }
+    public var electricityCurrency: String = UserDefaults.standard.string(forKey: "teale.electricityCurrency") ?? "USD" {
+        didSet { UserDefaults.standard.set(electricityCurrency, forKey: "teale.electricityCurrency") }
+    }
+    /// Margin multiplier over electricity cost. 1.0 = break even, 1.3 = 30% profit, <1.0 = willing to subsidize.
+    public var electricityMarginMultiplier: Double = UserDefaults.standard.object(forKey: "teale.electricityMarginMultiplier") as? Double ?? 1.2 {
+        didSet { UserDefaults.standard.set(electricityMarginMultiplier, forKey: "teale.electricityMarginMultiplier") }
     }
 
     private var isUpdatingWANToggle: Bool = false
@@ -187,6 +275,13 @@ public final class AppState {
         didSet { UserDefaults.standard.set(language.rawValue, forKey: "teale.language") }
     }
 
+    /// User-chosen UI appearance: follow system, force light, or force dark.
+    public var appearance: AppAppearance = AppAppearance(
+        rawValue: UserDefaults.standard.string(forKey: "teale.appearance") ?? "system"
+    ) ?? .system {
+        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "teale.appearance") }
+    }
+
     public func loc(_ key: String) -> String {
         L.string(key, language: language)
     }
@@ -195,6 +290,8 @@ public final class AppState {
         switch inferenceBackend {
         case .localMLX:
             return "MLX"
+        case .llamaCpp:
+            return "llama.cpp"
         case .exo:
             return "Exo"
         }
@@ -236,19 +333,43 @@ public final class AppState {
             preferredModelID: UserDefaults.standard.string(forKey: Self.exoPreferredModelIDKey)
         )
         self.exoProvider = exoProvider
+        let defaultProfile = DeviceModelProfileResolver.resolve(
+            hardware: hw,
+            userOverrides: UserProfileOverrides.load()
+        )
+        let llamaCppProvider = LlamaCppProvider(
+            binaryPath: UserDefaults.standard.string(forKey: Self.llamaCppBinaryPathKey) ?? "llama-server",
+            gpuLayers: defaultProfile.gpuLayers ?? 999,
+            contextSize: defaultProfile.contextSize ?? 32768,
+            parallelSlots: defaultProfile.parallelSlots ?? 1,
+            batchSize: defaultProfile.batchSize ?? 4096,
+            kvCacheType: defaultProfile.kvCacheType ?? "q8_0",
+            flashAttn: defaultProfile.flashAttn ?? false,
+            mmap: defaultProfile.mmap ?? false,
+            host: "0.0.0.0"
+        )
+        self.llamaCppProvider = llamaCppProvider
         let initialProvider: any InferenceProvider
-        if initialBackend == .exo {
+        switch initialBackend {
+        case .exo:
             initialProvider = exoProvider
-        } else {
+        case .llamaCpp:
+            initialProvider = llamaCppProvider
+        case .localMLX:
             initialProvider = mlxProvider
         }
         self.engine = InferenceEngineManager(provider: initialProvider, throttler: throttler)
+        self.requestScheduler = RequestScheduler()
         self.modelManager = ModelManagerService(hardware: hw, maxStorageGB: persistedMaxStorage)
         self.demandTracker = ModelDemandTracker(catalog: modelManager.catalog, hardware: hw)
 
         let hostname = ProcessInfo.processInfo.hostName
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
         self.clusterManager = ClusterManager(localDeviceInfo: deviceInfo)
+        self.ptnManager = PTNManager(
+            localNodeID: Self.stableNodeID(),
+            localDisplayName: hostname
+        )
         self.wanManager = WANManager()
         if let config = SupabaseConfig.default {
             self.authManager = AuthManager(config: config)
@@ -256,6 +377,19 @@ public final class AppState {
             self.authManager = nil
         }
         self.agentManager = AgentManager()
+
+        // Chat — stable local user ID for ChatKit messaging.
+        // Upgraded to the authenticated user ID once Supabase auth resolves.
+        let chatUserID: UUID
+        if let raw = UserDefaults.standard.string(forKey: "teale.chatUserID"),
+           let uuid = UUID(uuidString: raw) {
+            chatUserID = uuid
+        } else {
+            chatUserID = UUID()
+            UserDefaults.standard.set(chatUserID.uuidString, forKey: "teale.chatUserID")
+        }
+        self.currentUserID = chatUserID
+        self.chatService = ChatService(currentUserID: chatUserID, localNodeID: Self.stableNodeID())
 
         // Wallet placeholder — replaced async on launch
         self.wallet = USDCWallet.placeholder()
@@ -276,19 +410,36 @@ public final class AppState {
         self.clusterManager.onInferenceRequest = { [weak self, clusterManager] payload, peer in
             guard let self else { return }
 
+            // Honor the master "Contribute compute" opt-out.
+            if !self.contributeCompute {
+                let response = InferenceErrorPayload(
+                    requestID: payload.requestID,
+                    errorMessage: "This node is not contributing compute."
+                )
+                try? await peer.connection.send(.inferenceError(response))
+                return
+            }
+
             clusterManager.beginServingInference()
             defer { clusterManager.endServingInference() }
 
+            var tokenCount = 0
             do {
                 let provider = self.currentServingProvider()
                 let stream = provider.generate(request: payload.request)
                 for try await chunk in stream {
+                    tokenCount += 1
                     let response = InferenceChunkPayload(requestID: payload.requestID, chunk: chunk)
                     try await peer.connection.send(.inferenceChunk(response))
                 }
 
                 let complete = InferenceCompletePayload(requestID: payload.requestID)
                 try await peer.connection.send(.inferenceComplete(complete))
+
+                await MainActor.run {
+                    self.totalRequestsServed += 1
+                    self.totalTokensGenerated += tokenCount
+                }
             } catch {
                 let response = InferenceErrorPayload(
                     requestID: payload.requestID,
@@ -301,17 +452,54 @@ public final class AppState {
         self.wanManager.onInferenceRequest = { [weak self] payload, connection in
             guard let self else { return }
 
+            // Honor the master "Contribute compute" opt-out.
+            if !self.contributeCompute {
+                let response = InferenceErrorPayload(
+                    requestID: payload.requestID,
+                    errorMessage: "This node is not contributing compute."
+                )
+                try? await connection.send(.inferenceError(response))
+                return
+            }
+
+            // Determine request source for WFQ scheduling
+            let source: RequestScheduler.RequestSource
+            if let groupID = payload.request.groupID,
+               self.ptnManager.isMember(of: groupID) {
+                source = .ptn(groupID)
+            } else {
+                source = .wwtn
+            }
+
+            var tokenCount = 0
             do {
+                // Queue the request — suspends until the scheduler grants a slot
+                try await self.requestScheduler.enqueue(
+                    request: payload.request,
+                    source: source,
+                    bidAmount: nil  // TODO: extract bid from request metadata
+                )
+
                 let provider = self.currentServingProvider()
                 let stream = provider.generate(request: payload.request)
                 for try await chunk in stream {
+                    tokenCount += 1
                     let response = InferenceChunkPayload(requestID: payload.requestID, chunk: chunk)
                     try await connection.send(.inferenceChunk(response))
                 }
 
                 let complete = InferenceCompletePayload(requestID: payload.requestID)
                 try await connection.send(.inferenceComplete(complete))
+
+                // Release the scheduler slot
+                await self.requestScheduler.complete()
+
+                await MainActor.run {
+                    self.totalRequestsServed += 1
+                    self.totalTokensGenerated += tokenCount
+                }
             } catch {
+                await self.requestScheduler.complete()
                 let response = InferenceErrorPayload(
                     requestID: payload.requestID,
                     errorMessage: error.localizedDescription
@@ -319,15 +507,140 @@ public final class AppState {
                 try? await connection.send(.inferenceError(response))
             }
         }
+
+        // Handle PTN join requests from remote peers
+        self.wanManager.onPTNJoinRequest = { [weak self] payload, connection in
+            guard let self else { return }
+            do {
+                let joinRequest = try JSONDecoder().decode(PTNJoinRequestPayload.self, from: payload.data)
+                let response = try await self.ptnManager.handleJoinRequest(joinRequest)
+                let responseData = try JSONEncoder().encode(response)
+                try await connection.send(.ptnJoinResponse(PTNJoinResponseTransportPayload(data: responseData)))
+            } catch {
+                FileHandle.standardError.write(Data("[PTN] Join request handling failed: \(error.localizedDescription)\n".utf8))
+            }
+        }
+
+        // Route AI agent inference through the shared engine (local + LAN + WAN).
+        let inferenceStream: @Sendable (ChatCompletionRequest) -> AsyncThrowingStream<String, Error> = { [weak self] request in
+            AsyncThrowingStream { continuation in
+                Task { @MainActor [weak self] in
+                    guard let self else {
+                        continuation.finish()
+                        return
+                    }
+                    do {
+                        let stream = self.engine.generate(request: request)
+                        for try await chunk in stream {
+                            if let content = chunk.choices.first?.delta.content {
+                                continuation.yield(content)
+                            }
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+        }
+
+        // Register orchestrator tools.
+        self.toolRegistry.register(CalendarToolHandler())
+        self.toolRegistry.register(SubAgentDispatchHandler(inferenceStream: inferenceStream))
+        self.toolRegistry.register(RememberTool(memoryStore: self.chatService.memoryStore, context: self.chatService))
+        self.toolRegistry.register(RecallTool(memoryStore: self.chatService.memoryStore, context: self.chatService))
+        self.toolRegistry.register(SearchHistoryTool(context: self.chatService))
+        self.toolRegistry.register(SetPreferenceTool(preferenceStore: self.chatService.preferenceStore))
+        self.toolRegistry.register(GetPreferencesTool(preferenceStore: self.chatService.preferenceStore))
+        self.chatService.aiParticipant.toolRegistry = self.toolRegistry
+        self.chatService.aiParticipant.memoryStore = self.chatService.memoryStore
+        self.chatService.aiParticipant.preferenceStore = self.chatService.preferenceStore
+        self.chatService.aiParticipant.onInferenceRequest = inferenceStream
+
+        // Wire personal-wallet → group-wallet debits.
+        self.chatService.onPersonalWalletDebit = { [weak self] amount, _, memo in
+            guard let self else { return false }
+            // Peer ID is the "group wallet" — we tag with the conversation-scoped memo.
+            await self.wallet.recordTransferDebit(
+                amount: USDCAmount(amount),
+                toPeer: "group-wallet",
+                description: memo
+            )
+            return true
+        }
+
+        // Start proactive heartbeat scheduler.
+        let scheduler = HeartbeatScheduler(chatService: self.chatService)
+        self.heartbeatScheduler = scheduler
+        scheduler.start()
+
+        // Start auto-top-up scheduler.
+        let topUp = AutoTopUpScheduler(chatService: self.chatService)
+        self.autoTopUpScheduler = topUp
+        topUp.start()
     }
 
     /// Call once at app launch to initialize async components (auth, credit ledger, agent)
     public func initializeAsync() async {
+        // Load PTN memberships
+        await ptnManager.loadMemberships()
+
+        // Load saved chat conversations; ensure a default DM with the AI exists
+        // so the user always has a conversation to open.
+        await chatService.loadConversations()
+        if chatService.conversations.isEmpty {
+            _ = await chatService.createDM(
+                with: UUID(),
+                title: "Teale",
+                agentConfig: AgentConfig(
+                    autoRespond: true,
+                    mentionOnly: false,
+                    persona: "assistant"
+                )
+            )
+        }
+
+        // Seed the X-ready agent-to-agent reservation demo if it doesn't exist.
+        _ = await DemoReservationDriver.ensureConversationExists(
+            chatService: chatService,
+            currentUserID: currentUserID
+        )
+
         // Restore power assertion if keep-awake was enabled
         if keepAwake { updatePowerAssertion() }
 
         // Scan which models are already downloaded
         await refreshDownloadedModels()
+
+        // Reload the last loaded model (skip on first-ever launch)
+        if let lastModelID = UserDefaults.standard.string(forKey: Preferences.lastLoadedModelID) {
+            if inferenceBackend == .llamaCpp,
+               lastModelID.hasPrefix("gguf-") {
+                // Scan for GGUF models and try to auto-load the last one
+                scanLocalModels()
+                if let ggufModel = scannedGGUFModels.first(where: { "gguf-\($0.filename)" == lastModelID }) {
+                    // Load directly on the provider (before engine wrapping)
+                    let descriptor = ggufModel.toDescriptor()
+                    selectedModel = descriptor
+                    engineStatus = .loadingModel(descriptor)
+                    loadingPhase = "Starting llama-server..."
+                    do {
+                        try await llamaCppProvider.loadModel(descriptor)
+                        engineStatus = .ready(descriptor)
+                        loadingPhase = ""
+                    } catch {
+                        let msg = "[GGUF] Auto-load failed: \(error.localizedDescription)"
+                        FileHandle.standardError.write(Data((msg + "\n").utf8))
+                        engineStatus = .error(error.localizedDescription)
+                        loadingPhase = ""
+                    }
+                }
+            } else if let descriptor = ModelCatalog.allModels.first(where: { $0.id == lastModelID }),
+                      downloadedModelIDs.contains(lastModelID) {
+                await loadModel(descriptor)
+            }
+        }
+
         let nodeID = Self.stableNodeID()
 
         // Check auth session (skip if Supabase not configured)
@@ -385,6 +698,15 @@ public final class AppState {
             Task { @MainActor in
                 await self.downloadModel(model)
             }
+        }
+
+        // Restore persisted toggle states
+        autoManageModels = UserDefaults.standard.bool(forKey: "teale.autoManageModels")
+        if UserDefaults.standard.bool(forKey: "teale.clusterEnabled") {
+            clusterEnabled = true
+        }
+        if UserDefaults.standard.bool(forKey: "teale.wanEnabled") {
+            wanEnabled = true
         }
 
         // Initialize Solana wallet bridge if enabled
@@ -538,6 +860,7 @@ public final class AppState {
             loadingProgress = nil
             engineStatus = .ready(descriptor)
             Self.wanLog("Model loaded successfully: \(descriptor.huggingFaceRepo), calling syncAdvertised...")
+            UserDefaults.standard.set(descriptor.id, forKey: Preferences.lastLoadedModelID)
             syncAdvertisedLoadedModels()
             await refreshDownloadedModels()
         } catch {
@@ -571,6 +894,66 @@ public final class AppState {
             loadingPhase = ""
             loadingProgress = nil
             engineStatus = .ready(descriptor)
+            UserDefaults.standard.set(descriptor.id, forKey: Preferences.lastLoadedModelID)
+            if wanEnabled {
+                await wanManager.updateLocalLoadedModels([descriptor.huggingFaceRepo])
+            }
+        } catch {
+            loadingPhase = ""
+            loadingProgress = nil
+            engineStatus = .error(error.localizedDescription)
+        }
+    }
+
+    /// Load a GGUF model via llama.cpp backend.
+    public func loadGGUFModel(_ ggufModel: GGUFModelInfo) async {
+        let descriptor = ggufModel.toDescriptor()
+
+        // Switch backend without triggering the didSet's async applyInferenceBackendSelection
+        // by checking first. If already llamaCpp, no didSet fires.
+        if inferenceBackend != .llamaCpp {
+            // Temporarily set the raw UserDefaults value to avoid double-apply
+            UserDefaults.standard.set(InferenceBackend.llamaCpp.rawValue, forKey: Self.inferenceBackendKey)
+            inferenceBackend = .llamaCpp
+        }
+
+        do {
+            if case .ready = engineStatus {
+                await engine.unloadModel()
+            }
+
+            selectedModel = descriptor
+            engineStatus = .loadingModel(descriptor)
+            loadingPhase = "Starting llama-server..."
+            loadingProgress = nil
+
+            // Apply model-specific profile before loading
+            let profile = DeviceModelProfileResolver.resolve(
+                hardware: hardware, model: descriptor,
+                userOverrides: UserProfileOverrides.load()
+            )
+            await llamaCppProvider.updateConfiguration(
+                gpuLayers: profile.gpuLayers,
+                contextSize: profile.contextSize,
+                parallelSlots: profile.parallelSlots,
+                batchSize: profile.batchSize,
+                reasoningOff: profile.reasoningOff,
+                kvCacheType: profile.kvCacheType,
+                threads: profile.threads,
+                flashAttn: profile.flashAttn,
+                mmap: profile.mmap
+            )
+
+            // Load directly on the llama.cpp provider, then update the engine's provider chain
+            try await llamaCppProvider.loadModel(descriptor)
+            let provider = buildActiveInferenceProvider()
+            await engine.setProvider(provider)
+
+            loadingPhase = ""
+            loadingProgress = nil
+            engineStatus = .ready(descriptor)
+            UserDefaults.standard.set(descriptor.id, forKey: Preferences.lastLoadedModelID)
+            syncAdvertisedLoadedModels()
             if wanEnabled {
                 await wanManager.updateLocalLoadedModels([descriptor.huggingFaceRepo])
             }
@@ -584,6 +967,7 @@ public final class AppState {
     /// Scan for MLX-compatible models in known local directories.
     public func scanLocalModels() {
         scannedLocalModels = localModelScanner.scanAll()
+        scannedGGUFModels = ggufScanner.scanAll()
     }
 
     public func refreshDownloadedModels() async {
@@ -605,18 +989,41 @@ public final class AppState {
         await engine.unloadModel()
         selectedModel = nil
         engineStatus = .idle
+        UserDefaults.standard.removeObject(forKey: Preferences.lastLoadedModelID)
         syncAdvertisedLoadedModels()
     }
 
     public func startServer() async {
         guard !isServerRunning else { return }
         isServerRunning = true
+        let wanMgr = self.wanManager
+        let clusterMgr = self.clusterManager
         let server = LocalHTTPServer(
             engine: engine,
             port: serverPort,
             apiKeyStore: apiKeyStore,
             allowNetworkAccess: allowNetworkAccess,
-            controller: RemoteControlBridge(appState: self)
+            controller: RemoteControlBridge(appState: self),
+            peerModelProvider: {
+                var models: [(id: String, ownedBy: String)] = []
+                for peer in wanMgr.state.connectedPeers {
+                    for model in peer.loadedModels {
+                        models.append((id: model, ownedBy: "wan:\(peer.displayName)"))
+                    }
+                }
+                for peer in await clusterMgr.topology.connectedPeers {
+                    for model in peer.loadedModels {
+                        models.append((id: model, ownedBy: "lan:\(peer.deviceInfo.name)"))
+                    }
+                }
+                return models
+            },
+            onRequestCompleted: { [weak self] tokenCount in
+                await MainActor.run {
+                    self?.totalRequestsServed += 1
+                    self?.totalTokensGenerated += tokenCount
+                }
+            }
         )
         Task.detached {
             try? await server.start()
@@ -694,10 +1101,7 @@ public final class AppState {
         let loadedModels: [String]
         switch engineStatus {
         case .ready(let descriptor):
-            // Prefer the canonical OpenRouter slug so the gateway's
-            // catalog + per-model fleet floor match this device correctly.
-            // Falls back to the HF repo (or local path) for non-catalog models.
-            loadedModels = [descriptor.advertisedId]
+            loadedModels = [descriptor.huggingFaceRepo]
         default:
             loadedModels = []
         }
@@ -712,6 +1116,9 @@ public final class AppState {
         } else {
             Self.wanLog("syncAdvertised: WAN not enabled, skipping (models=\(loadedModels))")
         }
+
+        // Refresh compiler's available models whenever local/peer models change
+        Task { await refreshCompilerModels() }
     }
 
     private func recordRemoteInferenceSettlement(_ record: ClusterProvider.RemoteGenerationRecord) async {
@@ -802,7 +1209,7 @@ public final class AppState {
 
     /// Tell WANManager which peers are reachable on LAN so it skips them for WAN auto-connect.
     private func syncLANPeersToWAN() {
-        let lanIDs = Set(clusterManager.peers.keys.map(\.uuidString))
+        let lanIDs = Set(clusterManager.peerIDs().map(\.uuidString))
         wanManager.lanPeerNodeIDs = lanIDs
     }
 
@@ -859,10 +1266,10 @@ public final class AppState {
                     if relayStatus == .connected {
                         self.wanLastError = nil
                     } else {
-                        // Surface the actual problem instead of silently pretending it worked
-                        let failedSteps = diagnostics.filter { $0.contains("FAILED") }
-                        if !failedSteps.isEmpty {
-                            self.wanLastError = failedSteps.joined(separator: "; ")
+                        // Only surface relay failures — STUN failures are non-fatal (relay fallback works)
+                        let relayFailures = diagnostics.filter { $0.contains("FAILED") && $0.contains("Relay") }
+                        if !relayFailures.isEmpty {
+                            self.wanLastError = relayFailures.joined(separator: "; ")
                         } else {
                             self.wanLastError = "Relay not connected (\(relayStatus.rawValue))"
                         }
@@ -954,33 +1361,117 @@ public final class AppState {
             return localProvider
         case .exo:
             return exoProvider
+        case .llamaCpp:
+            return llamaCppProvider
         }
     }
 
     private func buildActiveInferenceProvider() -> any InferenceProvider {
         var provider: any InferenceProvider = currentBaseProvider
 
+        var clusterProvider: ClusterProvider?
         if clusterEnabled {
-            provider = ClusterProvider(
+            let cp = ClusterProvider(
                 localProvider: provider,
                 clusterManager: clusterManager,
                 onRemoteGenerationCompleted: { [weak self] record in
                     await self?.recordRemoteInferenceSettlement(record)
                 }
             )
+            clusterProvider = cp
+            provider = cp
         }
 
+        var wanProvider: WANProvider?
         if wanEnabled {
-            provider = WANProvider(localProvider: provider, wanManager: wanManager)
+            let wp = WANProvider(localProvider: provider, wanManager: wanManager)
+            wanProvider = wp
+            provider = wp
+        }
+
+        // Wrap in Compiler for model-agnostic inference
+        let localBase = currentBaseProvider
+        let capturedClusterProvider = clusterProvider
+        let capturedWANProvider = wanProvider
+        let capturedWANManager = wanManager
+
+        let dispatchFn: TargetedDispatchFn = { request, model in
+            if model.deviceID == nil {
+                // Local device
+                return try await localBase.generateFull(request: request)
+            }
+
+            // Try LAN peer
+            if let cp = capturedClusterProvider,
+               let peer = await cp.peer(byID: model.deviceID!) {
+                return try await cp.generateFull(onPeer: peer, request: request)
+            }
+
+            // Try WAN peer
+            if let wp = capturedWANProvider {
+                let nodeID = model.deviceID!.uuidString.lowercased()
+                if capturedWANManager.connectedPeers(byNodeID: nodeID) != nil {
+                    return try await wp.generateFull(onPeerNodeID: nodeID, request: request)
+                }
+            }
+
+            // Peer not found — let the chain handle it
+            throw CompilationError.subTaskFailed(subTaskID: UUID(), error: "Device \(model.deviceID?.uuidString ?? "unknown") not reachable")
+        }
+
+        let comp = Compiler(
+            compilerProvider: localBase,
+            fallbackProvider: provider,
+            synthesisProvider: provider,
+            dispatchFn: dispatchFn,
+            onCompilationCompleted: { [weak self] contributions in
+                await self?.recordCompilationContributions(contributions)
+            }
+        )
+        self.compiler = comp
+        provider = comp
+
+        // Refresh available models for the compiler
+        Task { [weak self] in
+            await self?.refreshCompilerModels()
         }
 
         return provider
+    }
+
+    // MARK: - Compiler Model Refresh
+
+    private func refreshCompilerModels() async {
+        guard let compiler else { return }
+
+        let localModel = await engine.loadedModel
+        let lanPeers = Array(clusterManager.topology.connectedPeers)
+        let wanPeers = wanManager.state.connectedPeers
+
+        let models = NetworkModelCollector.collect(
+            localModel: localModel,
+            localHardware: hardware,
+            lanPeers: lanPeers,
+            wanPeers: wanPeers
+        )
+
+        await compiler.updateAvailableModels(models)
+    }
+
+    private func recordCompilationContributions(_ contributions: [ContributionRecord]) {
+        // Log compilation contributions for future credit settlement
+        for contribution in contributions {
+            totalTokensGenerated += contribution.tokenCount
+        }
     }
 
     private func applyInferenceBackendSelection() async {
         await exoProvider.updateConfiguration(
             baseURLString: exoBaseURL,
             preferredModelID: normalizedExoPreferredModelID
+        )
+        await llamaCppProvider.updateConfiguration(
+            binaryPath: llamaCppBinaryPath
         )
         let provider = buildActiveInferenceProvider()
         await engine.setProvider(provider)
@@ -1002,8 +1493,25 @@ public enum AppView: Hashable {
     case settings
 }
 
+public enum AppAppearance: String, CaseIterable, Hashable, Identifiable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+}
+
 public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
     case localMLX = "local_mlx"
+    case llamaCpp = "llama_cpp"
     case exo = "exo"
 
     public var id: String { rawValue }
@@ -1012,6 +1520,8 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .localMLX:
             return "Local MLX"
+        case .llamaCpp:
+            return "llama.cpp"
         case .exo:
             return "Exo Gateway"
         }

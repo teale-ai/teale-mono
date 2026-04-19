@@ -38,8 +38,12 @@ struct Serve: AsyncParsableCommand {
         await appState.initializeAsync()
 
         // Enable WAN after initialization (needs identity)
+        // Only set if not already enabled from persisted defaults (avoids double toggleWAN)
         if wan {
-            await MainActor.run { appState.wanEnabled = true }
+            let alreadyEnabled = await MainActor.run { appState.wanEnabled }
+            if !alreadyEnabled {
+                await MainActor.run { appState.wanEnabled = true }
+            }
         }
 
         // Auto-load model if specified

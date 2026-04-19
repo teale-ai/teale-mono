@@ -15,7 +15,7 @@ public actor DepositMonitor {
     /// Called when a new deposit is detected
     public var onDeposit: (@Sendable (OnChainTransfer) async -> Void)?
 
-    public init(rpc: SolanaRPCService, address: String, config: WalletKitConfig = .devnet) {
+    public init(rpc: SolanaRPCService, address: String, config: WalletKitConfig = .mainnet) {
         self.rpc = rpc
         self.address = address
         self.config = config

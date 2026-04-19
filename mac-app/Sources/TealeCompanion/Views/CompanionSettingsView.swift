@@ -125,7 +125,7 @@ struct CompanionSettingsView: View {
                             .foregroundStyle(appState.connectionStatus.isConnected ? .green : .secondary)
                     }
                     LabeledContent("Available Models", value: "\(appState.availableModels.count)")
-                    LabeledContent("Conversations", value: "\(appState.conversationStore.conversations.count)")
+                    LabeledContent("Conversations", value: "\(appState.chatService.conversations.count)")
                 }
 
                 // About
@@ -157,7 +157,11 @@ struct CompanionSettingsView: View {
                 titleVisibility: .visible
             ) {
                 Button("Reset", role: .destructive) {
-                    appState.conversationStore.clearAll()
+                    Task {
+                        for convo in appState.chatService.conversations {
+                            await appState.chatService.leaveConversation(convo.id)
+                        }
+                    }
                     appState.disconnect()
                     appState.walletBalance = 0
                     appState.transactions = []

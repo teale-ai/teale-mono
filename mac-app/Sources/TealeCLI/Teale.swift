@@ -5,6 +5,6 @@ struct Teale: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "teale",
         abstract: "Teale decentralized AI inference node",
-        subcommands: [Up.self, Down.self, Login.self, Serve.self, Status.self, Models.self, Chat.self]
+        subcommands: [Up.self, Down.self, Login.self, Serve.self, Status.self, Models.self, Chat.self, Config.self, PTN.self, APIKeys.self, Wallet.self, Peers.self, Agent.self]
     )
 }

@@ -1,46 +1,30 @@
-# teale-mac-app
+# teale-mac-app (archived)
 
-Native macOS and iOS app for [Teale](https://teale.com) — decentralized AI inference on Apple Silicon.
+> **This repository has been consolidated into
+> [teale-ai/teale-mono](https://github.com/teale-ai/teale-mono).**
+>
+> All history was preserved in the new repo via `git filter-repo`:
+>
+> - Swift macOS + iOS app sources → [`teale-mono/mac-app/`](https://github.com/teale-ai/teale-mono/tree/main/mac-app)
+> - Relay server (Bun/TypeScript) → [`teale-mono/relay/`](https://github.com/teale-ai/teale-mono/tree/main/relay)
+>
+> `git log --follow` in `teale-mono` on any moved file traces back to the
+> original commits here.
+>
+> The monorepo also adds new Rust components (protocol, node supply agent,
+> OpenAI-compatible gateway, stress harness) alongside the Swift and
+> TypeScript code. See the [teale-mono README](https://github.com/teale-ai/teale-mono#readme).
+>
+> Open issues / PRs here are read-only. Continue new work in `teale-mono`.
 
-## What it does
+---
 
-- Run LLMs locally on your Mac using MLX (Apple's ML framework)
-- Discover and connect to other Macs on your LAN for distributed inference
-- Join the TealeNet WAN for peer-to-peer inference across the internet
-- Earn credits by sharing your idle compute, spend them on remote inference
-- OpenAI-compatible API at `localhost:11435`
+## Former README (for reference)
 
-## Platforms
+Native macOS and iOS app for [Teale](https://teale.com) — decentralized AI
+inference on Apple Silicon. 13 Swift modules powering on-device MLX inference,
+LAN cluster discovery, WAN relay peer-to-peer, wallet + credits, and an
+OpenAI-compatible local API.
 
-- **macOS 14+** (Sonoma) — MenuBarExtra app
-- **iOS 17+** — Companion app with on-device and remote inference
-
-## Build
-
-Requires Xcode (SwiftPM can't compile Metal shaders).
-
-```bash
-# CLI tool
-swift build --product teale
-
-# Full app — open in Xcode
-open Package.swift
-```
-
-## Architecture
-
-13 Swift modules: SharedTypes, HardwareProfile, MLXInference, ModelManager, InferenceEngine, ClusterKit, WANKit, CreditKit, AgentKit, AuthKit, LocalAPI, InferencePoolApp, TealeCompanion.
-
-See [TEALE.md](TEALE.md) for detailed architecture and module documentation.
-
-## Dependencies
-
-- [mlx-swift](https://github.com/ml-explore/mlx-swift) — Apple's ML framework for Apple Silicon
-- [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm) — LLM/VLM model loading and generation
-- [swift-transformers](https://github.com/huggingface/swift-transformers) — Tokenizer + HuggingFace Hub
-- [hummingbird](https://github.com/hummingbird-project/hummingbird) — HTTP server
-- [supabase-swift](https://github.com/supabase/supabase-swift) — Auth and database
-
-## License
-
-[AGPL-3.0](LICENSE)
+See [`teale-mono/mac-app/TEALE.md`](https://github.com/teale-ai/teale-mono/blob/main/mac-app/TEALE.md)
+for the detailed architecture doc (moved from this repo's root).

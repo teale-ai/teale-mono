@@ -54,6 +54,9 @@ public struct Conversation: Codable, Sendable, Identifiable, Equatable {
     public var isArchived: Bool
     /// Key rotation epoch — incremented when a member leaves and keys rotate.
     public var groupKeyVersion: Int
+    /// When true, the heartbeat scheduler is allowed to post proactive nudges
+    /// (upcoming dates, stale plans, unanswered questions) to this conversation.
+    public var heartbeatsEnabled: Bool
 
     public init(
         id: UUID = UUID(),
@@ -66,7 +69,8 @@ public struct Conversation: Codable, Sendable, Identifiable, Equatable {
         lastMessageAt: Date? = nil,
         lastMessagePreview: String? = nil,
         isArchived: Bool = false,
-        groupKeyVersion: Int = 1
+        groupKeyVersion: Int = 1,
+        heartbeatsEnabled: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -79,6 +83,7 @@ public struct Conversation: Codable, Sendable, Identifiable, Equatable {
         self.lastMessagePreview = lastMessagePreview
         self.isArchived = isArchived
         self.groupKeyVersion = groupKeyVersion
+        self.heartbeatsEnabled = heartbeatsEnabled
     }
 
     /// Display title — for DMs, derive from the other participant's name
@@ -102,5 +107,23 @@ public struct Conversation: Codable, Sendable, Identifiable, Equatable {
         case lastMessagePreview = "last_message_preview"
         case isArchived = "is_archived"
         case groupKeyVersion = "group_key_version"
+        case heartbeatsEnabled = "heartbeats_enabled"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.type = try container.decode(ConversationType.self, forKey: .type)
+        self.title = try container.decodeIfPresent(String.self, forKey: .title)
+        self.createdBy = try container.decode(UUID.self, forKey: .createdBy)
+        self.agentConfig = try container.decodeIfPresent(AgentConfig.self, forKey: .agentConfig) ?? .default
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        self.lastMessageAt = try container.decodeIfPresent(Date.self, forKey: .lastMessageAt)
+        self.lastMessagePreview = try container.decodeIfPresent(String.self, forKey: .lastMessagePreview)
+        self.isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        self.groupKeyVersion = try container.decodeIfPresent(Int.self, forKey: .groupKeyVersion) ?? 1
+        // Older persisted conversations won't have this key — default to false.
+        self.heartbeatsEnabled = try container.decodeIfPresent(Bool.self, forKey: .heartbeatsEnabled) ?? false
     }
 }

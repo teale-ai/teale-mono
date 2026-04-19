@@ -5,12 +5,16 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>InferencePoolApp</string>
+	<string>Teale</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.teale.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleName</key>
+	<string>Teale</string>
+	<key>CFBundleDisplayName</key>
 	<string>Teale</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
@@ -21,9 +25,11 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Teale reads your calendar events when you ask the AI about your schedule or to plan around existing commitments.</string>
 	<key>NSMainNibFile</key>
 	<string></string>
 	<key>NSPrincipalClass</key>

@@ -426,6 +426,7 @@ private struct TransactionRow: View {
         case .bonus: return "gift.fill"
         case .adjustment: return "arrow.left.arrow.right"
         case .transfer: return isSentTransfer ? "arrow.up.right.circle.fill" : "arrow.down.left.circle.fill"
+        case .platformFee: return "percent"
         }
     }
 
@@ -435,6 +436,7 @@ private struct TransactionRow: View {
         case .spent: return .red
         case .adjustment: return .blue
         case .transfer: return isSentTransfer ? .orange : .blue
+        case .platformFee: return .secondary
         }
     }
 

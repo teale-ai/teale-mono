@@ -27,12 +27,7 @@ struct WANView: View {
 
                     Divider()
 
-                    // Discoverable peers
-                    WANDiscoveredPeersSection()
-
-                    Divider()
-
-                    // Connected WAN Peers
+                    // All WAN Peers (connected + discovered, auto-connected)
                     WANPeersSection()
                 } else {
                     VStack(spacing: 12) {
@@ -89,8 +84,8 @@ private struct WANStatusSection: View {
                     color: wanState.natType.canHolePunch ? .green : .yellow
                 )
                 WANStatPill(
-                    icon: "person.2",
-                    value: "\(wanState.connectedPeers.count) connected",
+                    icon: "desktopcomputer",
+                    value: "\(wanState.connectedPeers.count) device\(wanState.connectedPeers.count == 1 ? "" : "s")",
                     color: wanState.connectedPeers.isEmpty ? .secondary : .green
                 )
             }
@@ -108,7 +103,7 @@ private struct WANStatusSection: View {
             HStack(spacing: 4) {
                 Image(systemName: "binoculars")
                     .foregroundStyle(.secondary)
-                Text("\(wanState.discoveredPeerCount) peers discovered on network")
+                Text("\(wanState.discoveredPeerCount) devices on network")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -144,70 +139,64 @@ private struct WANStatusSection: View {
     }
 }
 
-// MARK: - WAN Peers
+// MARK: - Model Availability
+
+/// Groups WAN peers by loaded model to show aggregate availability
+private struct WANModelAvailability: Identifiable {
+    var id: String { modelID }
+    let modelID: String
+    let deviceCount: Int
+    let totalRAMGB: Double
+    let chipNames: [String: Int]  // chip name -> count
+}
+
+private func buildModelAvailability(from peers: [WANPeerSummary]) -> [WANModelAvailability] {
+    // Group by model
+    var modelDevices: [String: [WANPeerSummary]] = [:]
+    for peer in peers {
+        for model in peer.loadedModels {
+            modelDevices[model, default: []].append(peer)
+        }
+    }
+
+    return modelDevices.map { modelID, devices in
+        var chipCounts: [String: Int] = [:]
+        for device in devices {
+            chipCounts[device.hardware.chipName, default: 0] += 1
+        }
+        return WANModelAvailability(
+            modelID: modelID,
+            deviceCount: devices.count,
+            totalRAMGB: devices.reduce(0) { $0 + $1.hardware.totalRAMGB },
+            chipNames: chipCounts
+        )
+    }
+    .sorted { $0.deviceCount > $1.deviceCount }
+}
 
 private struct WANPeersSection: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        let peers = appState.wanManager.state.connectedPeers
+        let wanState = appState.wanManager.state
+        let connectedPeers = wanState.connectedPeers
+        let models = buildModelAvailability(from: connectedPeers)
+        // Peers with no loaded models
+        let idlePeerCount = connectedPeers.filter { $0.loadedModels.isEmpty }.count
 
         VStack(alignment: .leading, spacing: 8) {
-            Text("Connected Peers")
+            Text("Available Models")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            if peers.isEmpty {
+            if models.isEmpty && connectedPeers.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
+                    Image(systemName: "globe")
                         .font(.title2)
                         .foregroundStyle(.secondary)
-                    Text("No WAN peers connected yet")
+                    Text("No WAN models available yet")
                         .foregroundStyle(.secondary)
-                    Text("Peers will appear as they join the network")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-            } else {
-                ForEach(peers) { peer in
-                    WANPeerCard(peer: peer)
-                }
-            }
-        }
-    }
-}
-
-private struct WANDiscoveredPeersSection: View {
-    @Environment(AppState.self) private var appState
-
-    var body: some View {
-        let peers = appState.wanManager.state.discoveredPeers
-
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Discoverable Peers")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Refresh") {
-                    Task {
-                        try? await appState.wanManager.refreshDiscovery()
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            if peers.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                    Text("No discoverable WAN peers yet")
-                        .foregroundStyle(.secondary)
-                    Text("Once another Teale node registers with the relay, connect to it here.")
+                    Text("Models will appear as devices join the network")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
@@ -215,104 +204,69 @@ private struct WANDiscoveredPeersSection: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
             } else {
-                ForEach(peers) { peer in
-                    WANDiscoveredPeerCard(peer: peer)
+                ForEach(models) { model in
+                    WANModelCard(model: model)
+                }
+
+                if idlePeerCount > 0 {
+                    HStack(spacing: 6) {
+                        Image(systemName: "desktopcomputer")
+                            .foregroundStyle(.secondary)
+                        Text("\(idlePeerCount) device\(idlePeerCount == 1 ? "" : "s") connected, no models loaded")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 4)
                 }
             }
         }
     }
 }
 
-// MARK: - WAN Peer Card
+// MARK: - Model Card
 
-private struct WANPeerCard: View {
-    let peer: WANPeerSummary
+private struct WANModelCard: View {
+    let model: WANModelAvailability
+
+    private var shortModelName: String {
+        cleanModelDisplayName(model.modelID)
+    }
+
+    private var hardwareSummary: String {
+        model.chipNames
+            .sorted { $0.value > $1.value }
+            .map { name, count in count > 1 ? "\(count)x \(name)" : name }
+            .joined(separator: ", ")
+    }
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "globe")
+            Image(systemName: "cube.fill")
                 .font(.title2)
                 .foregroundStyle(.blue)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(peer.displayName)
+                Text(shortModelName)
                     .font(.body.bold())
 
                 HStack(spacing: 8) {
-                    Text(peer.hardware.chipName)
-                    Text("\(Int(peer.hardware.totalRAMGB)) GB")
-                    Text(peer.connectionType == .direct ? "Direct" : "Relayed")
-                        .foregroundStyle(peer.connectionType == .direct ? .green : .orange)
+                    Label("\(model.deviceCount)", systemImage: "desktopcomputer")
+                    Text("\(Int(model.totalRAMGB)) GB total")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                if !peer.loadedModels.isEmpty {
-                    Text("Models: \(peer.loadedModels.joined(separator: ", "))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                Text(hardwareSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Circle()
-                    .fill(.green)
-                    .frame(width: 8, height: 8)
-                if let latency = peer.latencyMs {
-                    Text("\(Int(latency))ms")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(12)
-        .background(.quaternary.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct WANDiscoveredPeerCard: View {
-    @Environment(AppState.self) private var appState
-    let peer: WANPeerInfo
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "globe.badge.chevron.backward")
-                .font(.title2)
-                .foregroundStyle(.teal)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(peer.displayName)
-                    .font(.body.bold())
-
-                HStack(spacing: 8) {
-                    Text(peer.capabilities.hardware.chipName)
-                    Text("\(Int(peer.capabilities.hardware.totalRAMGB)) GB")
-                    Text(peer.natType.displayName)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if !peer.capabilities.loadedModels.isEmpty {
-                    Text("Models: \(peer.capabilities.loadedModels.joined(separator: ", "))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer()
-
-            Button("Connect") {
-                Task {
-                    try? await appState.wanManager.connectToPeer(nodeID: peer.nodeID)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            Circle()
+                .fill(.green)
+                .frame(width: 8, height: 8)
         }
         .padding(12)
         .background(.quaternary.opacity(0.5))

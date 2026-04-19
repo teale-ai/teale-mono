@@ -65,6 +65,13 @@ public actor MessageStore {
         loadMessages(groupID: groupID).contains { $0.id == id }
     }
 
+    /// Delete the entire persisted message log for a conversation. Used for
+    /// the demo conversation, which is ephemeral by design.
+    public func clearMessages(groupID: UUID) {
+        let file = messagesFile(for: groupID)
+        try? FileManager.default.removeItem(at: file)
+    }
+
     // MARK: - Sync Support
 
     /// Get messages newer than a given timestamp (for catch-up sync).

@@ -37,23 +37,6 @@ public struct LoginView: View {
             }
             .padding(.bottom, 40)
 
-            // Sign in with Google
-            Button {
-                Task { await handleOAuth(provider: .google) }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "globe")
-                        .font(.title3)
-                    Text("Sign in with Google")
-                        .fontWeight(.medium)
-                }
-                .frame(maxWidth: 300)
-                .frame(height: 50)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.blue)
-            .disabled(isLoading)
-
             // Sign in with GitHub
             Button {
                 Task { await handleOAuth(provider: .github) }
@@ -67,9 +50,9 @@ public struct LoginView: View {
                 .frame(maxWidth: 300)
                 .frame(height: 50)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
             .disabled(isLoading)
-            .padding(.top, 6)
 
             // Divider
             HStack {

@@ -17,58 +17,87 @@ struct TealeCompanionApp: App {
                                 Label("Chats", systemImage: "bubble.left.and.bubble.right.fill")
                             }
 
-                        NavigationStack {
-                            LocalModelsView()
-                        }
-                        .environment(appState)
-                        .tabItem {
-                            Label("Models", systemImage: "cpu")
-                        }
-
-                        NetworkView(appState: appState)
-                            .tabItem {
-                                Label("Network", systemImage: "network")
-                            }
-
                         CompanionWalletView(appState: appState)
                             .tabItem {
-                                Label("Wallet", systemImage: "creditcard")
+                                Label("Wallet", systemImage: "creditcard.fill")
                             }
 
-                        CompanionSettingsView(appState: appState)
+                        MeTab(appState: appState)
                             .tabItem {
-                                Label("Settings", systemImage: "gear")
+                                Label("Me", systemImage: "person.crop.circle.fill")
                             }
                     }
+                    .tint(Color.teale)
                 } else if let authManager = appState.authManager {
                     LoginView(authManager: authManager)
                 } else {
-                    ProgressView("Loading...")
+                    ProgressView("Loading…")
                 }
             }
             .task {
                 await appState.initialize()
             }
             .onOpenURL { url in
-                // Handle invite deep links
-                if url.scheme == "teale", url.host == "invite",
-                   let code = url.pathComponents.last {
-                    Task {
-                        // P2P invitation handling — decode invite token and join group
-                        let invitation = InvitationService(currentUserID: appState.currentUserID ?? UUID())
-                        if let invite = invitation.decode(code) {
-                            if let _ = await appState.chatService?.createGroup(title: invite.groupTitle, memberIDs: []) {
-                                await appState.chatService?.loadConversations()
-                            }
-                        }
-                    }
-                }
+                handleIncomingURL(url)
+            }
+        }
+    }
 
-                // Handle OAuth callbacks
-                if let authManager = appState.authManager {
-                    Task { await authManager.handleOAuthCallback(url: url) }
+    // MARK: - Deep link handling
+
+    private func handleIncomingURL(_ url: URL) {
+        let invitationService = InvitationService(currentUserID: appState.currentUserID)
+        if let token = invitationService.parseDeepLink(url), !token.isExpired {
+            Task { @MainActor in
+                if !appState.chatService.conversations.contains(where: { $0.id == token.groupID }) {
+                    _ = await appState.chatService.createGroup(
+                        title: token.groupTitle,
+                        memberIDs: [],
+                        agentConfig: AgentConfig(autoRespond: false, mentionOnly: true, persona: "assistant")
+                    )
+                    await appState.chatService.loadConversations()
                 }
             }
+            return
+        }
+        if let authManager = appState.authManager {
+            Task { await authManager.handleOAuthCallback(url: url) }
+        }
+    }
+}
+
+// MARK: - Me tab (Models + Network + Settings consolidated)
+
+private struct MeTab: View {
+    var appState: CompanionAppState
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("AI") {
+                    NavigationLink {
+                        LocalModelsView().environment(appState)
+                    } label: {
+                        Label("Models", systemImage: "cpu")
+                    }
+                    NavigationLink {
+                        NetworkView(appState: appState)
+                    } label: {
+                        Label("Network", systemImage: "network")
+                    }
+                }
+                Section("Settings") {
+                    NavigationLink {
+                        CompanionSettingsView(appState: appState)
+                    } label: {
+                        Label("Preferences", systemImage: "gear")
+                    }
+                }
+            }
+            .navigationTitle("Me")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.large)
+            #endif
         }
     }
 }

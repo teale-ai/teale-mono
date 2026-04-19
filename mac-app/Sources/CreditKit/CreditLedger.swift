@@ -85,6 +85,12 @@ public actor USDCLedger {
         save()
     }
 
+    /// Record a transaction without affecting the balance (e.g. platform fee tracking).
+    public func record(transaction: USDCTransaction) {
+        data.transactions.append(transaction)
+        save()
+    }
+
     /// Get the current wallet balance summary.
     public func getBalance() -> WalletBalance {
         WalletBalance(

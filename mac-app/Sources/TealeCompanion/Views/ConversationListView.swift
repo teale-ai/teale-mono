@@ -20,8 +20,7 @@ struct ConversationListView: View {
     @State private var searchText = ""
 
     private var filteredConversations: [Conversation] {
-        guard let chatService = appState.chatService else { return [] }
-        let convos = chatService.conversations
+        let convos = appState.chatService.conversations
         if searchText.isEmpty { return convos }
         return convos.filter {
             ($0.title ?? "").localizedCaseInsensitiveContains(searchText)
@@ -39,19 +38,17 @@ struct ConversationListView: View {
                 }
 
                 // Group chats / DMs
-                if let chatService = appState.chatService {
-                    if filteredConversations.isEmpty && !searchText.isEmpty {
-                        Text("No conversations found")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .listRowSeparator(.hidden)
-                    } else {
-                        ForEach(filteredConversations) { conversation in
-                            NavigationLink {
-                                GroupChatView(appState: appState, conversation: conversation)
-                            } label: {
-                                ConversationRow(conversation: conversation)
-                            }
+                if filteredConversations.isEmpty && !searchText.isEmpty {
+                    Text("No conversations found")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .listRowSeparator(.hidden)
+                } else {
+                    ForEach(filteredConversations) { conversation in
+                        NavigationLink {
+                            GroupChatView(appState: appState, conversation: conversation)
+                        } label: {
+                            ConversationRow(conversation: conversation)
                         }
                     }
                 }
@@ -84,7 +81,7 @@ struct ConversationListView: View {
                 NewGroupSheet(appState: appState)
             }
             .task {
-                await appState.chatService?.loadConversations()
+                await appState.chatService.loadConversations()
             }
         }
     }
@@ -190,11 +187,16 @@ private struct NewGroupSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
                         Task {
-                            _ = await appState.chatService?.createGroup(
+                            _ = await appState.chatService.createGroup(
                                 title: groupName,
-                                memberIDs: []
+                                memberIDs: [],
+                                agentConfig: AgentConfig(
+                                    autoRespond: false,
+                                    mentionOnly: true,
+                                    persona: "assistant"
+                                )
                             )
-                            await appState.chatService?.loadConversations()
+                            await appState.chatService.loadConversations()
                             dismiss()
                         }
                     }

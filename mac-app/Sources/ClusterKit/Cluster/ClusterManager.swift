@@ -14,6 +14,50 @@ public final class ClusterManager: @unchecked Sendable {
     public private(set) var isEnabled: Bool = false
     public private(set) var isScanning: Bool = false
     public private(set) var peers: [UUID: PeerInfo] = [:]
+    /// Protects all concurrent access to `peers`. Swift dictionaries aren't
+    /// thread-safe and ClusterManager is accessed from both main-actor callers
+    /// (views) and off-main async network handlers — previously this caused
+    /// intermittent crashes with tagged-pointer/string corruption.
+    private let peersLock = NSLock()
+
+    public func peersSnapshot() -> [PeerInfo] {
+        peersLock.lock(); defer { peersLock.unlock() }
+        return Array(peers.values)
+    }
+
+    public func peer(forID id: UUID) -> PeerInfo? {
+        peersLock.lock(); defer { peersLock.unlock() }
+        return peers[id]
+    }
+
+    public func peerIDs() -> [UUID] {
+        peersLock.lock(); defer { peersLock.unlock() }
+        return Array(peers.keys)
+    }
+
+    @discardableResult
+    private func setPeer(_ peer: PeerInfo?, forID id: UUID) -> PeerInfo? {
+        peersLock.lock(); defer { peersLock.unlock() }
+        let previous = peers[id]
+        if let peer {
+            peers[id] = peer
+        } else {
+            peers.removeValue(forKey: id)
+        }
+        return previous
+    }
+
+    private func removeDisconnectedPeers() {
+        peersLock.lock(); defer { peersLock.unlock() }
+        for (id, peer) in peers where peer.status == .disconnected {
+            peers.removeValue(forKey: id)
+        }
+    }
+
+    private func removeAllPeers() {
+        peersLock.lock(); defer { peersLock.unlock() }
+        peers.removeAll()
+    }
     public private(set) var topology: ClusterTopology = ClusterTopology()
     public private(set) var clusterState: ClusterState = ClusterState()
     public private(set) var connectionNotice: String?
@@ -36,6 +80,20 @@ public final class ClusterManager: @unchecked Sendable {
     private var healthCheckTask: Task<Void, Never>?
     private var scanStopTask: Task<Void, Never>?
     private var connectingDiscoveryKeys: Set<String> = []
+    /// Serializes access to `connectingDiscoveryKeys`. Same rationale as `peersLock`.
+    private let discoveryKeysLock = NSLock()
+
+    private func tryReserveDiscoveryKey(_ key: String) -> Bool {
+        discoveryKeysLock.lock(); defer { discoveryKeysLock.unlock() }
+        if connectingDiscoveryKeys.contains(key) { return false }
+        connectingDiscoveryKeys.insert(key)
+        return true
+    }
+
+    private func releaseDiscoveryKey(_ key: String) {
+        discoveryKeysLock.lock(); defer { discoveryKeysLock.unlock() }
+        connectingDiscoveryKeys.remove(key)
+    }
 
     // Model sharing
     private var modelQueryContinuation: AsyncStream<ModelQueryResult>.Continuation?
@@ -138,10 +196,10 @@ public final class ClusterManager: @unchecked Sendable {
         healthCheckTask?.cancel()
 
         // Disconnect all peers
-        for (_, peer) in peers {
+        for peer in peersSnapshot() {
             Task { await peer.connection.cancel() }
         }
-        peers.removeAll()
+        removeAllPeers()
 
         updateState()
     }
@@ -180,12 +238,11 @@ public final class ClusterManager: @unchecked Sendable {
         guard let resolver = peerResolver else { return }
         Self.logger.info("handlePeerDiscovered endpoint=\(String(describing: endpoint), privacy: .public) txt=\(String(describing: txtDict), privacy: .public)")
         let discoveryKey = discoveryKey(for: endpoint, txtDict: txtDict)
-        guard !connectingDiscoveryKeys.contains(discoveryKey) else {
+        guard tryReserveDiscoveryKey(discoveryKey) else {
             Self.logger.info("Skipping discovered endpoint \(discoveryKey, privacy: .public) because it is already connecting")
             return
         }
-        connectingDiscoveryKeys.insert(discoveryKey)
-        defer { connectingDiscoveryKeys.remove(discoveryKey) }
+        defer { releaseDiscoveryKey(discoveryKey) }
 
         do {
             let peerInfo = try await resolver.resolve(endpoint: endpoint)
@@ -235,12 +292,12 @@ public final class ClusterManager: @unchecked Sendable {
     }
 
     private func registerResolvedPeer(_ peerInfo: PeerInfo, origin: ConnectionOrigin) async {
-        if let existingPeer = peers[peerInfo.id] {
+        if let existingPeer = peer(forID: peerInfo.id) {
             let preferredOrigin = preferredOrigin(for: peerInfo.id)
             if origin == preferredOrigin {
                 Self.logger.info("Replacing existing peer \(peerInfo.id.uuidString, privacy: .public) with preferred \(String(describing: origin), privacy: .public) connection")
                 await existingPeer.connection.cancel()
-                peers[peerInfo.id] = peerInfo
+                setPeer(peerInfo, forID: peerInfo.id)
                 startListening(to: peerInfo)
                 updateState()
             } else {
@@ -251,7 +308,7 @@ public final class ClusterManager: @unchecked Sendable {
         }
 
         Self.logger.info("Registered peer \(peerInfo.id.uuidString, privacy: .public) via \(String(describing: origin), privacy: .public)")
-        peers[peerInfo.id] = peerInfo
+        setPeer(peerInfo, forID: peerInfo.id)
         startListening(to: peerInfo)
         updateState()
     }
@@ -364,6 +421,10 @@ public final class ClusterManager: @unchecked Sendable {
         case .groupKeyExchange, .groupMessage, .groupSyncRequest, .groupSyncResponse, .groupConfigUpdate:
             // Handled by ChatKit's P2P messaging layer
             break
+
+        case .ptnJoinRequest, .ptnJoinResponse:
+            // Handled by TealeNetKit's PTN membership layer
+            break
         }
     }
 
@@ -385,9 +446,9 @@ public final class ClusterManager: @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self = self else { return }
 
-                let updates = await self.healthMonitor.checkHealth(peers: Array(self.peers.values))
+                let updates = await self.healthMonitor.checkHealth(peers: self.peersSnapshot())
                 for (peerID, newStatus) in updates {
-                    if let peer = self.peers[peerID] {
+                    if let peer = self.peer(forID: peerID) {
                         peer.status = newStatus
                         if newStatus == .disconnected {
                             await peer.connection.cancel()
@@ -395,11 +456,7 @@ public final class ClusterManager: @unchecked Sendable {
                     }
                 }
 
-                // Remove disconnected peers after a grace period
-                let disconnectedIDs = self.peers.filter { $0.value.status == .disconnected }.map { $0.key }
-                for id in disconnectedIDs {
-                    self.peers.removeValue(forKey: id)
-                }
+                self.removeDisconnectedPeers()
 
                 if !updates.isEmpty {
                     self.updateState()
@@ -411,7 +468,7 @@ public final class ClusterManager: @unchecked Sendable {
     // MARK: - State Updates
 
     private func updateState() {
-        topology.update(peers: Array(peers.values))
+        topology.update(peers: peersSnapshot())
         clusterState = topology.toClusterState(isEnabled: isEnabled)
     }
 
@@ -429,14 +486,14 @@ public final class ClusterManager: @unchecked Sendable {
         heartbeat.organizationID = organizationID
         heartbeat.ownerUserID = authenticatedUserID
 
-        for (_, peer) in peers where peer.status == .connected || peer.status == .degraded {
+        for peer in peersSnapshot() where peer.status == .connected || peer.status == .degraded {
             try? await peer.connection.send(.heartbeat(heartbeat))
         }
     }
 
     /// Get summaries of all peers for UI
     public var peerSummaries: [PeerSummary] {
-        Array(peers.values).map { $0.toSummary() }
+        peersSnapshot().map { $0.toSummary() }
     }
 
     /// Find the best peer to handle inference for a given model
@@ -448,7 +505,7 @@ public final class ClusterManager: @unchecked Sendable {
 
     /// Send a credit transfer to a specific peer
     public func sendCreditTransfer(to peerID: UUID, payload: USDCTransferPayload) async throws {
-        guard let peer = peers[peerID] else {
+        guard let peer = peer(forID: peerID) else {
             throw ClusterError.routingFailed
         }
         try await peer.connection.send(.usdcTransferRequest(payload))
@@ -462,7 +519,7 @@ public final class ClusterManager: @unchecked Sendable {
         self.modelQueryContinuation = continuation
 
         let query = ModelQueryPayload(modelID: modelID)
-        for (_, peer) in peers where peer.status == .connected {
+        for peer in peersSnapshot() where peer.status == .connected {
             Task { try? await peer.connection.send(.modelQuery(query)) }
         }
 
@@ -478,7 +535,7 @@ public final class ClusterManager: @unchecked Sendable {
 
     /// Request a model transfer from a specific peer
     public func requestModelFromPeer(modelID: String, peerID: UUID) async throws {
-        guard let peer = peers[peerID] else {
+        guard let peer = peer(forID: peerID) else {
             throw ClusterError.routingFailed
         }
 

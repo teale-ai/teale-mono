@@ -212,7 +212,10 @@ public final class AuthManager {
                 token: code,
                 type: .sms
             )
-            let profile = await ensureProfile(session: response.session!)
+            guard let session = response.session else {
+                throw NSError(domain: "AuthKit", code: -1, userInfo: [NSLocalizedDescriptionKey: "OTP verification failed — no session returned. Please try again."])
+            }
+            let profile = await ensureProfile(session: session)
             currentUser = profile
             authState = .signedIn(profile)
             UserDefaults.standard.set(true, forKey: Self.anonymousKey)

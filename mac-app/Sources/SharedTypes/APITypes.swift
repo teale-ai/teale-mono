@@ -89,6 +89,12 @@ public struct ChatCompletionResponse: Codable, Sendable {
             case completionTokens = "completion_tokens"
             case totalTokens = "total_tokens"
         }
+
+        public init(promptTokens: Int, completionTokens: Int, totalTokens: Int) {
+            self.promptTokens = promptTokens
+            self.completionTokens = completionTokens
+            self.totalTokens = totalTokens
+        }
     }
 
     public init(id: String, model: String, choices: [Choice], usage: Usage? = nil) {

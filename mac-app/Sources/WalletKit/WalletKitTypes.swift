@@ -33,6 +33,14 @@ public struct WalletKitConfig: Sendable {
         creditsPerUSDC: 10_000,
         pollIntervalSeconds: 15
     )
+
+    // MARK: - Platform Fee
+
+    /// Teale treasury wallet for collecting platform fees (Solana mainnet).
+    public static let treasuryAddress = "8Cs7qHZ9qz6M3HfZt9H6FBq7toCPKp4KUG8H9xE6V4V3"
+
+    /// Platform fee rate deducted from withdrawals (1.8%).
+    public static let platformFeeRate: Double = 0.018
 }
 
 // MARK: - On-Chain Transfer Record

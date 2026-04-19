@@ -9,7 +9,7 @@ let package = Package(
         .iOS(.v17),
     ],
     products: [
-        .executable(name: "InferencePoolApp", targets: ["InferencePoolApp"]),
+        .executable(name: "Teale", targets: ["Teale"]),
         .executable(name: "teale", targets: ["TealeCLI"]),
         .executable(name: "TealeCompanion", targets: ["TealeCompanion"]),
         .library(name: "TealeSDK", targets: ["TealeSDK", "TealeSDKUI"]),
@@ -62,6 +62,22 @@ let package = Package(
             ]
         ),
 
+        // MARK: - LlamaCppKit (llama.cpp subprocess + HTTP provider)
+        .target(
+            name: "LlamaCppKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
+        // MARK: - TealeNetKit (Private TealeNet membership & certificates)
+        .target(
+            name: "TealeNetKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
         // MARK: - InferenceEngine (provider-agnostic — no MLX dependency)
         .target(
             name: "InferenceEngine",
@@ -87,6 +103,14 @@ let package = Package(
                 "SharedTypes",
                 "HardwareProfile",
                 "ClusterKit",
+            ]
+        ),
+
+        // MARK: - CompilerKit (Mixture of Models — request compilation & fan-out)
+        .target(
+            name: "CompilerKit",
+            dependencies: [
+                "SharedTypes",
             ]
         ),
 
@@ -156,6 +180,8 @@ let package = Package(
                 "SharedTypes",
                 "HardwareProfile",
                 "MLXInference",
+                "LlamaCppKit",
+                "TealeNetKit",
                 "InferenceEngine",
                 "ModelManager",
                 "LocalAPI",
@@ -166,6 +192,7 @@ let package = Package(
                 "AgentKit",
                 "AuthKit",
                 "ChatKit",
+                "CompilerKit",
             ]
         ),
 
@@ -181,22 +208,28 @@ let package = Package(
             ]
         ),
 
-        // MARK: - InferencePoolApp (main executable)
+        // MARK: - Teale (main macOS app executable)
+        // Kept under Sources/InferencePoolApp/ for git history; target name drives
+        // the output binary filename, which is what macOS shows in the dock.
         .executableTarget(
-            name: "InferencePoolApp",
+            name: "Teale",
             dependencies: [
                 "AppCore",
                 "SharedTypes",
                 "HardwareProfile",
                 "InferenceEngine",
                 "ModelManager",
+                "LlamaCppKit",
+                "TealeNetKit",
                 "LocalAPI",
                 "ClusterKit",
                 "WANKit",
                 "CreditKit",
                 "AgentKit",
                 "AuthKit",
+                "ChatKit",
             ],
+            path: "Sources/InferencePoolApp",
             exclude: ["Info.plist", "InferencePool.entitlements"]
         ),
 

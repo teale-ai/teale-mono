@@ -135,7 +135,8 @@ public actor NATTraversal {
         }
     }
 
-    /// Handle an incoming connection offer (called when we receive an offer from relay)
+    /// Handle an incoming connection offer (called when we receive an offer from relay).
+    /// Throws if direct connection fails — caller should fall back to relay.
     public func handleIncomingOffer(
         offer: RelayMessage.OfferPayload
     ) async throws -> WireGuardPeerConnection {
@@ -172,7 +173,8 @@ public actor NATTraversal {
             throw WANError.invalidPublicKey
         }
 
-        // Attempt direct connection to offerer
+        // Attempt direct connection to offerer.
+        // If direct fails, caller falls back to relay.
         if localMapping?.publicIP == offer.connectionInfo.publicIP,
            let localIP = offer.connectionInfo.localIP,
            let localPort = offer.connectionInfo.localPort {
@@ -188,14 +190,12 @@ public actor NATTraversal {
             }
         }
 
-        let peerConnection = try await attemptDirectConnection(
+        return try await attemptDirectConnection(
             toHost: offer.connectionInfo.publicIP,
             port: offer.connectionInfo.publicPort,
             remoteNodeID: offer.fromNodeID,
             remoteWGPublicKey: remoteWGKey
         )
-
-        return peerConnection
     }
 
     // MARK: - Private

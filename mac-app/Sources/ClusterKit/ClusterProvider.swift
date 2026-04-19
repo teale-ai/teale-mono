@@ -114,6 +114,66 @@ public actor ClusterProvider: InferenceProvider {
         }
     }
 
+    // MARK: - Public Targeted Dispatch
+
+    /// Execute a full (non-streaming) inference request on a specific peer.
+    /// Used by CompilerKit for targeted sub-task dispatch.
+    public func generateFull(onPeer peer: PeerInfo, request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
+        peer.activeRequestCount += 1
+        clusterManager.localQueueDepth += 1
+        defer {
+            peer.activeRequestCount -= 1
+            clusterManager.localQueueDepth -= 1
+        }
+
+        let requestID = UUID()
+        let payload = InferenceRequestPayload(requestID: requestID, request: request, streaming: true)
+        var tokenCount = 0
+        var modelID = request.model
+        var fullContent = ""
+
+        let messages = await peer.connection.incomingMessages
+        try await peer.connection.send(.inferenceRequest(payload))
+
+        for await message in messages {
+            switch message {
+            case .inferenceChunk(let chunkPayload) where chunkPayload.requestID == requestID:
+                modelID = modelID ?? chunkPayload.chunk.model
+                if let content = chunkPayload.chunk.choices.first?.delta.content, !content.isEmpty {
+                    tokenCount += 1
+                    fullContent += content
+                }
+
+            case .inferenceComplete(let completePayload) where completePayload.requestID == requestID:
+                if let modelID, tokenCount > 0 {
+                    let record = RemoteGenerationRecord(peer: peer, modelID: modelID, tokenCount: tokenCount)
+                    await onRemoteGenerationCompleted?(record)
+                }
+                return ChatCompletionResponse(
+                    id: "chatcmpl-\(requestID.uuidString)",
+                    model: modelID ?? "unknown",
+                    choices: [
+                        .init(index: 0, message: APIMessage(role: "assistant", content: fullContent), finishReason: "stop")
+                    ],
+                    usage: .init(promptTokens: 0, completionTokens: tokenCount, totalTokens: tokenCount)
+                )
+
+            case .inferenceError(let errorPayload) where errorPayload.requestID == requestID:
+                throw ClusterError.remoteError(errorPayload.errorMessage)
+
+            default:
+                continue
+            }
+        }
+
+        throw ClusterError.peerDisconnected
+    }
+
+    /// Look up a connected peer by device ID.
+    public func peer(byID deviceID: UUID) -> PeerInfo? {
+        clusterManager.peer(forID: deviceID)
+    }
+
     // MARK: - Remote Generation
 
     private func generateRemote(

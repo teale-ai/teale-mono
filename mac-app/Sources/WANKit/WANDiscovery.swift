@@ -38,9 +38,42 @@ public struct WANPeerInfo: Codable, Sendable, Identifiable {
         self.organizationID = organizationID
     }
 
+    // Decode with defaults for fields the relay may not include (e.g. from cross-platform nodes)
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nodeID = try container.decode(String.self, forKey: .nodeID)
+        publicKey = try container.decode(String.self, forKey: .publicKey)
+        wgPublicKey = try container.decodeIfPresent(String.self, forKey: .wgPublicKey)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        capabilities = try container.decode(NodeCapabilities.self, forKey: .capabilities)
+        lastSeen = try container.decodeIfPresent(Date.self, forKey: .lastSeen) ?? Date()
+        natType = try container.decodeIfPresent(NATType.self, forKey: .natType) ?? .unknown
+        endpoints = try container.decodeIfPresent([PeerEndpoint].self, forKey: .endpoints) ?? []
+        organizationID = try container.decodeIfPresent(String.self, forKey: .organizationID)
+    }
+
     /// Whether this peer has a specific model loaded
     public func hasModel(_ modelID: String) -> Bool {
         capabilities.loadedModels.contains(modelID)
+    }
+
+    /// Placeholder for peers discovered via offer before full discovery completes.
+    public static func unknown(nodeID: String) -> WANPeerInfo {
+        WANPeerInfo(
+            nodeID: nodeID,
+            publicKey: nodeID,
+            displayName: "Unknown Peer",
+            capabilities: NodeCapabilities(
+                hardware: HardwareCapability(
+                    chipFamily: .unknown,
+                    chipName: "Unknown",
+                    totalRAMGB: 0,
+                    gpuCoreCount: 0,
+                    memoryBandwidthGBs: 0,
+                    tier: .tier4
+                )
+            )
+        )
     }
 }
 
@@ -72,8 +105,10 @@ public actor WANDiscoveryService {
     private let config: WANConfig
     private var knownPeers: [String: WANPeerInfo] = [:]  // nodeID -> info
     private var discoveryTask: Task<Void, Never>?
+    private var discoveryPollTask: Task<Void, Never>?
     private var reregistrationTask: Task<Void, Never>?
     private var localCapabilities: NodeCapabilities?
+    private var forceRediscoveryOnNextResponse: Bool = false
 
     /// Callback when a new peer is discovered
     public var onPeerDiscovered: ((WANPeerInfo) -> Void)?
@@ -106,9 +141,10 @@ public actor WANDiscoveryService {
         // Re-register automatically after relay reconnects
         let caps = capabilities
         let relay = relayClient
-        await relayClient.setOnReconnect {
+        await relayClient.setOnReconnect { [weak self] in
             FileHandle.standardError.write(Data("[WAN] Re-registering with relay after reconnect...\n".utf8))
             try? await relay.register(capabilities: caps)
+            await self?.setForceRediscovery(true)
             try? await relay.discover()
             FileHandle.standardError.write(Data("[WAN] Re-registration complete\n".utf8))
         }
@@ -121,12 +157,21 @@ public actor WANDiscoveryService {
 
         // Initial peer discovery
         try await relayClient.discover()
+
+        // Periodic discovery polling (replaces broadcast-triggered discovery)
+        startDiscoveryPolling()
+    }
+
+    public func setForceRediscovery(_ flag: Bool) {
+        forceRediscoveryOnNextResponse = flag
     }
 
     /// Stop discovery
     public func stop() {
         discoveryTask?.cancel()
         discoveryTask = nil
+        discoveryPollTask?.cancel()
+        discoveryPollTask = nil
         reregistrationTask?.cancel()
         reregistrationTask = nil
         knownPeers.removeAll()
@@ -194,21 +239,20 @@ public actor WANDiscoveryService {
     private func handleRelayMessage(_ message: RelayMessage) {
         switch message {
         case .discoverResponse(let payload):
+            let shouldForce = forceRediscoveryOnNextResponse
+            forceRediscoveryOnNextResponse = false
             for peer in payload.peers {
                 let isNew = knownPeers[peer.nodeID] == nil
                 knownPeers[peer.nodeID] = peer
-                if isNew {
+                if isNew || shouldForce {
                     onPeerDiscovered?(peer)
                 }
             }
 
-        case .peerJoined(let payload):
-            // A new peer registered — we may not have full info yet,
-            // trigger a discovery refresh
-            Task {
-                try? await relayClient.discover()
-            }
-            _ = payload  // suppress unused warning
+        case .peerJoined:
+            // Deprecated: server no longer sends broadcasts.
+            // Discovery is now poll-based (every 30s).
+            break
 
         case .peerLeft(let payload):
             knownPeers.removeValue(forKey: payload.nodeID)
@@ -220,6 +264,16 @@ public actor WANDiscoveryService {
 
         default:
             break
+        }
+    }
+
+    private func startDiscoveryPolling() {
+        discoveryPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard let self = self, !Task.isCancelled else { return }
+                try? await self.relayClient.discover()
+            }
         }
     }
 

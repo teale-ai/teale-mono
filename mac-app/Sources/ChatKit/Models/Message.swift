@@ -8,6 +8,17 @@ public enum MessageType: String, Codable, Sendable {
     case system
     case toolResult = "tool_result"
     case toolCall = "tool_call"
+    /// Append-only entry in the group wallet ledger (contribution/debit/withdrawal).
+    /// Content is a JSON-encoded `WalletLedgerEntry`.
+    case walletEntry = "wallet_entry"
+    /// Outbound agent-to-agent request (this group's agent → another agent).
+    /// Content is a JSON-encoded `AgentExchange`.
+    case agentRequest = "agent_request"
+    /// Inbound agent-to-agent response.
+    case agentResponse = "agent_response"
+    /// Scoped-disclosure consent card shown to the user before sharing context
+    /// with another agent. Content is JSON with the list of proposed disclosures.
+    case disclosureConsent = "disclosure_consent"
 }
 
 // MARK: - Message Metadata

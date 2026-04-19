@@ -101,6 +101,7 @@ struct ConnectedWANPeer: Sendable {
     var connectionType: WANConnectionType
     var lastHeartbeat: Date
     var latencyMs: Double?
+    var consecutiveHeartbeatFailures: Int = 0
 
     /// Quality score (0-100) for routing decisions. Higher is better.
     var qualityScore: Double {
@@ -148,6 +149,8 @@ public final class WANManager: @unchecked Sendable {
     // Configuration
     private var config: WANConfig?
     private var localDeviceInfo: DeviceInfo?
+    /// PTN memberships for this node, broadcast via discovery capabilities.
+    public var localPTNIDs: [PTNIdentifier] = []
 
     // Components
     private var relayClient: RelayClient?
@@ -167,6 +170,7 @@ public final class WANManager: @unchecked Sendable {
 
     // Callbacks
     public var onInferenceRequest: ((InferenceRequestPayload, WANTransportConnection) async -> Void)?
+    public var onPTNJoinRequest: ((PTNJoinRequestTransportPayload, WANTransportConnection) async -> Void)?
 
     public init() {}
 
@@ -418,17 +422,25 @@ public final class WANManager: @unchecked Sendable {
         connectedPeers.values.first { $0.peerInfo.hasModel(modelID) }
     }
 
-    func connectedPeerForInference(preferredModel modelID: String?, groupID: String? = nil) -> ConnectedWANPeer? {
+    func connectedPeerForInference(preferredModel modelID: String?, groupID: String? = nil, ptnID: String? = nil) -> ConnectedWANPeer? {
         let peerSummary = connectedPeers.values.map { "\($0.peerInfo.displayName): models=\($0.peerInfo.capabilities.loadedModels)" }
-        FileHandle.standardError.write(Data("[WAN] connectedPeerForInference: \(connectedPeers.count) peers, preferredModel=\(modelID ?? "nil") peers=[\(peerSummary.joined(separator: ", "))]\n".utf8))
-        // If a groupID is specified, try group peers first (group-first routing)
-        if let groupID {
-            let groupPeers = connectedPeers.values.filter { $0.peerInfo.organizationID == groupID }
-            let groupMatch: ConnectedWANPeer?
+        FileHandle.standardError.write(Data("[WAN] connectedPeerForInference: \(connectedPeers.count) peers, preferredModel=\(modelID ?? "nil") ptnID=\(ptnID ?? "nil") peers=[\(peerSummary.joined(separator: ", "))]\n".utf8))
+
+        // PTN-first routing: prefer peers that share a PTN membership
+        let effectivePTNID = ptnID ?? groupID
+        if let ptnID = effectivePTNID {
+            let ptnPeers = connectedPeers.values.filter { peer in
+                // Check ptnIDs array first, fall back to organizationID for backward compat
+                if let peerPTNs = peer.peerInfo.capabilities.ptnIDs {
+                    return peerPTNs.contains { $0.ptnID == ptnID }
+                }
+                return peer.peerInfo.organizationID == ptnID
+            }
+            let ptnMatch: ConnectedWANPeer?
             if let modelID {
-                groupMatch = groupPeers.first { $0.peerInfo.hasModel(modelID) }
+                ptnMatch = ptnPeers.first { $0.peerInfo.hasModel(modelID) }
             } else {
-                groupMatch = groupPeers
+                ptnMatch = ptnPeers
                     .filter { !$0.peerInfo.capabilities.loadedModels.isEmpty }
                     .sorted { lhs, rhs in
                         if lhs.latencyMs != rhs.latencyMs {
@@ -438,7 +450,7 @@ public final class WANManager: @unchecked Sendable {
                     }
                     .first
             }
-            if let peer = groupMatch { return peer }
+            if let peer = ptnMatch { return peer }
         }
 
         // Fall back to any peer
@@ -460,6 +472,11 @@ public final class WANManager: @unchecked Sendable {
     /// Check if any connected peer has a given model
     public func hasConnectedPeer(withModel modelID: String) -> Bool {
         connectedPeers.values.contains { $0.peerInfo.hasModel(modelID) }
+    }
+
+    /// Get a connected peer's transport connection by node ID.
+    public func connectedPeers(byNodeID nodeID: String) -> WANTransportConnection? {
+        connectedPeers[nodeID]?.connection
     }
 
     /// Get the best transport connection for a connected peer with the given model
@@ -523,13 +540,54 @@ public final class WANManager: @unchecked Sendable {
             self.connectedPeers.removeValue(forKey: nodeID)
             self.updateState(mapping: self.state.publicEndpoint, natType: self.state.natType)
 
-            // Try to reconnect if WAN is still enabled and we know this peer
+            // Try to reconnect if WAN is still enabled
             guard self.isEnabled else { return }
-            try? await Task.sleep(for: .seconds(5))
-            guard self.isEnabled, self.connectedPeers[nodeID] == nil else { return }
-            if let peerInfo = await self.discoveryService?.peer(byNodeID: nodeID) {
-                try? await self.connectToPeer(peerInfo)
+            self.attemptReconnect(nodeID: nodeID)
+        }
+    }
+
+    /// Tracks which peers are being reconnected to prevent duplicate attempts.
+    private var reconnectingNodeIDs: Set<String> = []
+
+    private func attemptReconnect(nodeID: String, maxAttempts: Int = 20) {
+        // Prevent duplicate reconnect tasks for the same peer
+        guard !reconnectingNodeIDs.contains(nodeID) else { return }
+        reconnectingNodeIDs.insert(nodeID)
+
+        Task { [weak self] in
+            defer { self?.reconnectingNodeIDs.remove(nodeID) }
+
+            var delay: TimeInterval = 3
+            for attempt in 1...maxAttempts {
+                guard let self else { return }
+                guard self.isEnabled, self.connectedPeers[nodeID] == nil else { return }
+
+                self.wanLog("Reconnect attempt \(attempt)/\(maxAttempts) for \(nodeID.prefix(16))... (delay: \(delay)s)")
+                try? await Task.sleep(for: .seconds(delay))
+                guard self.isEnabled, self.connectedPeers[nodeID] == nil else { return }
+
+                if let peerInfo = await self.discoveryService?.peer(byNodeID: nodeID) {
+                    // Use tiebreaker: only the higher nodeID initiates to avoid both sides racing
+                    if let config = self.config, config.identity.nodeID < peerInfo.nodeID {
+                        self.wanLog("Reconnect: \(peerInfo.displayName) has higher nodeID, waiting for them to initiate")
+                        // Still retry — if the other side doesn't initiate within backoff, we try
+                    }
+
+                    do {
+                        try await self.connectToPeer(peerInfo)
+                        self.wanLog("Reconnected to \(peerInfo.displayName) on attempt \(attempt)")
+                        return
+                    } catch {
+                        self.wanLog("Reconnect attempt \(attempt) failed for \(peerInfo.displayName): \(error.localizedDescription)")
+                    }
+                } else {
+                    self.wanLog("Reconnect attempt \(attempt): peer \(nodeID.prefix(16))... not in discovery, refreshing")
+                    try? await self.discoveryService?.refresh()
+                }
+
+                delay = min(delay * 1.5, 30)
             }
+            self?.wanLog("All reconnect attempts exhausted for \(nodeID.prefix(16))...")
         }
     }
 
@@ -558,6 +616,13 @@ public final class WANManager: @unchecked Sendable {
             // Handled by WANProvider
             break
 
+        case .ptnJoinRequest(let payload):
+            await onPTNJoinRequest?(payload, peer.connection)
+
+        case .ptnJoinResponse:
+            // Handled by the joiner's PTNManager
+            break
+
         default:
             break
         }
@@ -571,7 +636,30 @@ public final class WANManager: @unchecked Sendable {
         wanLog("Discovered peer: \(peer.displayName) nodeID=\(peer.nodeID.prefix(16))... wgKey=\(peer.wgPublicKey?.prefix(16) ?? "nil") models=\(peer.capabilities.loadedModels) available=\(peer.capabilities.isAvailable)")
         guard let config else { wanLog("  -> skip: no config"); return }
         guard peer.nodeID != config.identity.nodeID else { wanLog("  -> skip: self"); return }
-        guard connectedPeers[peer.nodeID] == nil else { wanLog("  -> skip: already connected"); return }
+        if let existing = connectedPeers[peer.nodeID] {
+            let staleness = Date().timeIntervalSince(existing.lastHeartbeat)
+            if staleness < 60 {
+                // Update peer info if it was a placeholder from a race condition
+                // (connection arrived before discovery response)
+                let hasPlaceholderName = existing.peerInfo.displayName == "Unknown Peer"
+                let hasPlaceholderHardware = existing.peerInfo.capabilities.hardware.totalRAMGB == 0
+                if hasPlaceholderName || hasPlaceholderHardware {
+                    wanLog("  -> updating placeholder peer info for \(peer.displayName)")
+                    connectedPeers[peer.nodeID]?.peerInfo.displayName = peer.displayName
+                    connectedPeers[peer.nodeID]?.peerInfo.capabilities.hardware = peer.capabilities.hardware
+                    connectedPeers[peer.nodeID]?.peerInfo.capabilities.isAvailable = peer.capabilities.isAvailable
+                    connectedPeers[peer.nodeID]?.peerInfo.wgPublicKey = peer.wgPublicKey
+                    connectedPeers[peer.nodeID]?.peerInfo.organizationID = peer.organizationID
+                    updateState(mapping: state.publicEndpoint, natType: state.natType)
+                } else {
+                    wanLog("  -> skip: already connected (heartbeat \(Int(staleness))s ago)")
+                }
+                return
+            }
+            wanLog("  -> existing connection stale (\(Int(staleness))s), replacing")
+            await existing.connection.cancel()
+            connectedPeers.removeValue(forKey: peer.nodeID)
+        }
         guard peer.wgPublicKey != nil else { wanLog("  -> skip: no wgPublicKey"); return }
         guard peer.capabilities.isAvailable else { wanLog("  -> skip: not available"); return }
         guard !lanPeerNodeIDs.contains(peer.nodeID) else { wanLog("  -> skip: on LAN"); return }
@@ -628,33 +716,13 @@ public final class WANManager: @unchecked Sendable {
 
     private func handleIncomingOffer(_ offer: RelayMessage.OfferPayload) async {
         guard let nat = natTraversal, let config = config else { return }
-
-        // Check peer limit
         guard connectedPeers.count < config.maxWANPeers else { return }
-
-        // Don't accept if already connected
         guard connectedPeers[offer.fromNodeID] == nil else { return }
-
+        let peerInfo = await discoveryService?.peers.first(where: { $0.nodeID == offer.fromNodeID })
+            ?? WANPeerInfo.unknown(nodeID: offer.fromNodeID)
         do {
+            // Try direct P2P first
             let connection = try await nat.handleIncomingOffer(offer: offer)
-
-            // Look up peer info from discovery
-            let peerInfo = await discoveryService?.peer(byNodeID: offer.fromNodeID) ?? WANPeerInfo(
-                nodeID: offer.fromNodeID,
-                publicKey: offer.fromNodeID,
-                displayName: "Unknown Peer",
-                capabilities: NodeCapabilities(
-                    hardware: HardwareCapability(
-                        chipFamily: .unknown,
-                        chipName: "Unknown",
-                        totalRAMGB: 0,
-                        gpuCoreCount: 0,
-                        memoryBandwidthGBs: 0,
-                        tier: .tier4
-                    )
-                )
-            )
-
             let connected = ConnectedWANPeer(
                 peerInfo: peerInfo,
                 connection: .direct(connection),
@@ -662,57 +730,52 @@ public final class WANManager: @unchecked Sendable {
                 lastHeartbeat: Date()
             )
             connectedPeers[offer.fromNodeID] = connected
-            startListening(to: connected)
-            updateState(mapping: state.publicEndpoint, natType: state.natType)
         } catch {
-            // Failed to accept incoming connection
+            // Direct P2P failed — fall back to relay
+            FileHandle.standardError.write(Data("[WAN] Direct connection from \(offer.fromNodeID.prefix(16)) failed: \(error). Trying relay fallback...\n".utf8))
+            do {
+                let relayConn = try await relayClient!.openRelayedSession(
+                    toNodeID: offer.fromNodeID,
+                    sessionID: offer.sessionID,
+                    timeoutSeconds: config.connectionTimeoutSeconds
+                )
+                let connected = ConnectedWANPeer(
+                    peerInfo: peerInfo,
+                    connection: .relayed(relayConn),
+                    connectionType: .relayed,
+                    lastHeartbeat: Date()
+                )
+                connectedPeers[offer.fromNodeID] = connected
+                FileHandle.standardError.write(Data("[WAN] Relay fallback succeeded for \(offer.fromNodeID.prefix(16))!\n".utf8))
+            } catch {
+                FileHandle.standardError.write(Data("[WAN] Relay fallback also failed for \(offer.fromNodeID.prefix(16)): \(error)\n".utf8))
+            }
         }
+        updateState()
     }
 
     private func handleIncomingRelayOpen(_ payload: RelayMessage.RelaySessionPayload) async {
-        wanLog("handleIncomingRelayOpen: from=\(payload.fromNodeID.prefix(16))... to=\(payload.toNodeID.prefix(16))... session=\(payload.sessionID.prefix(8))")
-        guard let relay = relayClient, let config = config else { wanLog("  -> skip: no relay/config"); return }
-        guard payload.toNodeID == config.identity.nodeID else { wanLog("  -> skip: not for us (toNodeID mismatch)"); return }
-        guard connectedPeers.count < config.maxWANPeers else { wanLog("  -> skip: max peers"); return }
-        guard connectedPeers[payload.fromNodeID] == nil else { wanLog("  -> skip: already connected"); return }
-
-        do {
-            let connection = try await relay.acceptRelayedSession(
-                fromNodeID: payload.fromNodeID,
-                sessionID: payload.sessionID
-            )
-
-            let peerInfo = await discoveryService?.peer(byNodeID: payload.fromNodeID) ?? WANPeerInfo(
-                nodeID: payload.fromNodeID,
-                publicKey: payload.fromNodeID,
-                displayName: "Unknown Peer",
-                capabilities: NodeCapabilities(
-                    hardware: HardwareCapability(
-                        chipFamily: .unknown,
-                        chipName: "Unknown",
-                        totalRAMGB: 0,
-                        gpuCoreCount: 0,
-                        memoryBandwidthGBs: 0,
-                        tier: .tier4
-                    )
+        // Accept relay sessions initiated by supply nodes
+        if connectedPeers[payload.fromNodeID] == nil {
+            do {
+                let connection = try await relayClient!.acceptRelayedSession(
+                    fromNodeID: payload.fromNodeID,
+                    sessionID: payload.sessionID
                 )
-            )
-
-            let connected = ConnectedWANPeer(
-                peerInfo: peerInfo,
-                connection: .relayed(connection),
-                connectionType: .relayed,
-                lastHeartbeat: Date()
-            )
-            connectedPeers[payload.fromNodeID] = connected
-            startListening(to: connected)
-            updateState(mapping: state.publicEndpoint, natType: state.natType)
-        } catch {
-            await relay.closeRelayedSession(
-                sessionID: payload.sessionID,
-                toNodeID: payload.fromNodeID,
-                notifyRemote: false
-            )
+                let peerInfo = await discoveryService?.peers.first(where: { $0.nodeID == payload.fromNodeID })
+                    ?? WANPeerInfo.unknown(nodeID: payload.fromNodeID)
+                let connected = ConnectedWANPeer(
+                    peerInfo: peerInfo,
+                    connection: .relayed(connection),
+                    connectionType: .relayed,
+                    lastHeartbeat: Date()
+                )
+                connectedPeers[payload.fromNodeID] = connected
+                startListening(to: connected)
+                updateState()
+            } catch {
+                FileHandle.standardError.write(Data("[WAN] Failed to accept relayOpen from \(payload.fromNodeID.prefix(16)): \(error)\n".utf8))
+            }
         }
     }
 
@@ -814,8 +877,26 @@ public final class WANManager: @unchecked Sendable {
                     isGenerating: false
                 )
 
-                for (_, peer) in self.connectedPeers {
-                    try? await peer.connection.send(.heartbeat(heartbeat))
+                for (nodeID, peer) in self.connectedPeers {
+                    do {
+                        try await peer.connection.send(.heartbeat(heartbeat))
+                        self.connectedPeers[nodeID]?.consecutiveHeartbeatFailures = 0
+                    } catch {
+                        let failures = (self.connectedPeers[nodeID]?.consecutiveHeartbeatFailures ?? 0) + 1
+                        self.connectedPeers[nodeID]?.consecutiveHeartbeatFailures = failures
+                        self.wanLog("Heartbeat send failed to \(peer.peerInfo.displayName) (\(failures) consecutive): \(error.localizedDescription)")
+
+                        // Be more tolerant during relay reconnection — the relay may be
+                        // re-establishing and heartbeat sends will fail temporarily.
+                        let relayReconnecting = await self.relayClient?.relayStatus == .reconnecting
+                        let maxFailures = relayReconnecting ? 12 : 3
+                        if failures >= maxFailures {
+                            self.wanLog("Dropping \(peer.peerInfo.displayName) after \(failures) consecutive heartbeat failures")
+                            await peer.connection.cancel()
+                            self.connectedPeers.removeValue(forKey: nodeID)
+                            self.attemptReconnect(nodeID: nodeID)
+                        }
+                    }
                 }
             }
         }
@@ -843,6 +924,8 @@ public final class WANManager: @unchecked Sendable {
 
                 for nodeID in disconnected {
                     self.connectedPeers.removeValue(forKey: nodeID)
+                    self.wanLog("Health check: pruned peer \(nodeID.prefix(16))..., attempting reconnect")
+                    self.attemptReconnect(nodeID: nodeID)
                 }
 
                 if !disconnected.isEmpty {
@@ -856,6 +939,10 @@ public final class WANManager: @unchecked Sendable {
     }
 
     // MARK: - State Updates
+
+    private func updateState() {
+        updateState(mapping: state.publicEndpoint, natType: state.natType)
+    }
 
     private func updateState(mapping: NATMapping?, natType: NATType) {
         let summaries = connectedPeerSummaries

@@ -22,9 +22,8 @@ public actor WireGuardPeerConnection {
     // Noise session (established after handshake)
     private var noiseSession: NoiseSession?
 
-    // Message stream
-    private var messageContinuation: AsyncStream<ClusterMessage>.Continuation?
-    private var _incomingMessages: AsyncStream<ClusterMessage>?
+    // Message stream — broadcast to all subscribers
+    private var subscribers: [UUID: AsyncStream<ClusterMessage>.Continuation] = [:]
 
     // Fragment reassembly
     private var fragments: [UInt32: FragmentBuffer] = [:]
@@ -65,10 +64,6 @@ public actor WireGuardPeerConnection {
 
     /// Start the connection: perform Noise handshake, then begin receiving messages.
     public func start() async {
-        let (stream, continuation) = AsyncStream<ClusterMessage>.makeStream()
-        self.messageContinuation = continuation
-        self._incomingMessages = stream
-
         udpConnection.stateUpdateHandler = { [weak self] state in
             Task { await self?.handleStateChange(state) }
         }
@@ -85,16 +80,24 @@ public actor WireGuardPeerConnection {
             startKeepaliveLoop()
         } catch {
             connectionState = .failed("Handshake failed: \(error.localizedDescription)")
-            messageContinuation?.finish()
+            for continuation in subscribers.values { continuation.finish() }
+            subscribers.removeAll()
         }
     }
 
-    /// Incoming messages as an async stream.
+    /// Each caller gets a dedicated stream. All subscribers receive every message.
     public var incomingMessages: AsyncStream<ClusterMessage> {
-        if let stream = _incomingMessages {
-            return stream
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<ClusterMessage>.makeStream()
+        subscribers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeSubscriber(id) }
         }
-        return AsyncStream { $0.finish() }
+        return stream
+    }
+
+    private func removeSubscriber(_ id: UUID) {
+        subscribers.removeValue(forKey: id)
     }
 
     /// Send a ClusterMessage to the peer (encrypted via Noise session).
@@ -149,7 +152,8 @@ public actor WireGuardPeerConnection {
         keepaliveTask?.cancel()
         keepaliveTask = nil
         udpConnection.cancel()
-        messageContinuation?.finish()
+        for continuation in subscribers.values { continuation.finish() }
+        subscribers.removeAll()
     }
 
     // MARK: - NAT Keepalive
@@ -337,7 +341,7 @@ public actor WireGuardPeerConnection {
         guard framed.count >= 4 + Int(length) else { return }
         let jsonData = framed[framed.index(framed.startIndex, offsetBy: 4)..<framed.index(framed.startIndex, offsetBy: 4 + Int(length))]
         guard let message = try? JSONDecoder().decode(ClusterMessage.self, from: jsonData) else { return }
-        messageContinuation?.yield(message)
+        for continuation in subscribers.values { continuation.yield(message) }
     }
 
     private func handleFragment(_ data: Data) {
@@ -367,10 +371,12 @@ public actor WireGuardPeerConnection {
             break // Don't set isReady here — wait for handshake
         case .failed(let error):
             connectionState = .failed(error.localizedDescription)
-            messageContinuation?.finish()
+            for continuation in subscribers.values { continuation.finish() }
+            subscribers.removeAll()
         case .cancelled:
             connectionState = .disconnected
-            messageContinuation?.finish()
+            for continuation in subscribers.values { continuation.finish() }
+            subscribers.removeAll()
         case .waiting(let error):
             connectionState = .waiting(error.localizedDescription)
         default:
@@ -391,7 +397,8 @@ public actor WireGuardPeerConnection {
 
     private func handleReceiveError() {
         connectionState = .disconnected
-        messageContinuation?.finish()
+        for continuation in subscribers.values { continuation.finish() }
+        subscribers.removeAll()
     }
 }
 

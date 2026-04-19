@@ -23,7 +23,7 @@ public final class NoiseSession: @unchecked Sendable {
 
     // Session lifetime
     private let createdAt: Date
-    private static let maxSessionAge: TimeInterval = 180  // 3 minutes, then rekey
+    private static let maxSessionAge: TimeInterval = 86400  // 24 hours — nonce counter is UInt64 so exhaustion is not a concern
 
     // Thread safety
     private let lock = NSLock()

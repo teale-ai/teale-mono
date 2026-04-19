@@ -7,6 +7,42 @@ public protocol LocalAppControlling: AnyObject {
     func remoteDownloadModel(_ request: RemoteModelControlRequest) async throws -> RemoteAppSnapshot
     func remoteUnloadModel() async -> RemoteAppSnapshot
     func remoteUpdateSettings(_ update: RemoteSettingsUpdate) async throws -> RemoteAppSnapshot
+    func remoteListPTNs() async -> [RemotePTNSnapshot]
+    func remoteCreatePTN(name: String) async throws -> RemotePTNSnapshot
+    func remoteGeneratePTNInvite(ptnID: String) async throws -> String
+    func remoteIssuePTNCert(ptnID: String, nodeID: String, role: String) async throws -> Data
+    func remoteJoinPTNWithCert(certData: Data) async throws -> RemotePTNSnapshot
+    func remoteLeavePTN(ptnID: String) async throws
+    func remotePromoteAdmin(ptnID: String, targetNodeID: String) async throws -> Data
+    func remoteImportCAKey(ptnID: String, caKeyHex: String) async throws -> RemotePTNSnapshot
+    func remoteRecoverPTN(oldPTNID: String) async throws -> RemotePTNSnapshot
+    func remoteListAPIKeys() async -> [RemoteAPIKeySnapshot]
+    func remoteGenerateAPIKey(name: String) async -> RemoteAPIKeySnapshot
+    func remoteRevokeAPIKey(id: UUID) async
+    func remoteWalletBalance() async -> RemoteWalletSnapshot
+    func remoteWalletTransactions(limit: Int) async -> [RemoteTransactionSnapshot]
+    func remoteWalletSend(amount: Double, toPeer: String, memo: String?) async throws -> Bool
+    func remoteSolanaStatus() async -> RemoteSolanaSnapshot
+    func remoteListPeers() async -> RemotePeersSnapshot
+    func remoteAgentProfile() async -> RemoteAgentProfileSnapshot?
+    func remoteAgentDirectory() async -> [RemoteAgentDirectoryEntry]
+    func remoteAgentConversations() async -> [RemoteAgentConversationSnapshot]
+}
+
+public struct RemotePTNSnapshot: Codable, Sendable {
+    public var ptnID: String
+    public var ptnName: String
+    public var role: String
+    public var isCreator: Bool
+    public var memberCount: Int
+
+    public init(ptnID: String, ptnName: String, role: String, isCreator: Bool, memberCount: Int = 1) {
+        self.ptnID = ptnID
+        self.ptnName = ptnName
+        self.role = role
+        self.isCreator = isCreator
+        self.memberCount = memberCount
+    }
 }
 
 public struct RemoteAppSnapshot: Codable, Sendable {
@@ -47,6 +83,13 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
     public var orgCapacityReservation: Double
     public var clusterPasscodeSet: Bool
     public var allowNetworkAccess: Bool
+    public var electricityCostPerKWh: Double
+    public var electricityCurrency: String
+    public var electricityMarginMultiplier: Double
+    public var keepAwake: Bool
+    public var autoManageModels: Bool
+    public var inferenceBackend: String
+    public var language: String
 
     public init(
         clusterEnabled: Bool,
@@ -57,7 +100,14 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
         maxStorageGB: Double,
         orgCapacityReservation: Double,
         clusterPasscodeSet: Bool,
-        allowNetworkAccess: Bool
+        allowNetworkAccess: Bool,
+        electricityCostPerKWh: Double = 0.12,
+        electricityCurrency: String = "USD",
+        electricityMarginMultiplier: Double = 1.2,
+        keepAwake: Bool = false,
+        autoManageModels: Bool = false,
+        inferenceBackend: String = "local_mlx",
+        language: String = "en"
     ) {
         self.clusterEnabled = clusterEnabled
         self.wanEnabled = wanEnabled
@@ -68,6 +118,13 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
         self.orgCapacityReservation = orgCapacityReservation
         self.clusterPasscodeSet = clusterPasscodeSet
         self.allowNetworkAccess = allowNetworkAccess
+        self.electricityCostPerKWh = electricityCostPerKWh
+        self.electricityCurrency = electricityCurrency
+        self.electricityMarginMultiplier = electricityMarginMultiplier
+        self.keepAwake = keepAwake
+        self.autoManageModels = autoManageModels
+        self.inferenceBackend = inferenceBackend
+        self.language = language
     }
 }
 
@@ -118,6 +175,14 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
     public var maxStorageGB: Double?
     public var orgCapacityReservation: Double?
     public var clusterPasscode: String?
+    public var allowNetworkAccess: Bool?
+    public var electricityCostPerKWh: Double?
+    public var electricityCurrency: String?
+    public var electricityMarginMultiplier: Double?
+    public var keepAwake: Bool?
+    public var autoManageModels: Bool?
+    public var inferenceBackend: String?
+    public var language: String?
 
     enum CodingKeys: String, CodingKey {
         case clusterEnabled = "cluster_enabled"
@@ -126,6 +191,14 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         case maxStorageGB = "max_storage_gb"
         case orgCapacityReservation = "org_capacity_reservation"
         case clusterPasscode = "cluster_passcode"
+        case allowNetworkAccess = "allow_network_access"
+        case electricityCostPerKWh = "electricity_cost"
+        case electricityCurrency = "electricity_currency"
+        case electricityMarginMultiplier = "electricity_margin"
+        case keepAwake = "keep_awake"
+        case autoManageModels = "auto_manage_models"
+        case inferenceBackend = "inference_backend"
+        case language
     }
 
     public init(
@@ -134,7 +207,15 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         wanRelayURL: String? = nil,
         maxStorageGB: Double? = nil,
         orgCapacityReservation: Double? = nil,
-        clusterPasscode: String? = nil
+        clusterPasscode: String? = nil,
+        allowNetworkAccess: Bool? = nil,
+        electricityCostPerKWh: Double? = nil,
+        electricityCurrency: String? = nil,
+        electricityMarginMultiplier: Double? = nil,
+        keepAwake: Bool? = nil,
+        autoManageModels: Bool? = nil,
+        inferenceBackend: String? = nil,
+        language: String? = nil
     ) {
         self.clusterEnabled = clusterEnabled
         self.wanEnabled = wanEnabled
@@ -142,6 +223,162 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         self.maxStorageGB = maxStorageGB
         self.orgCapacityReservation = orgCapacityReservation
         self.clusterPasscode = clusterPasscode
+        self.allowNetworkAccess = allowNetworkAccess
+        self.electricityCostPerKWh = electricityCostPerKWh
+        self.electricityCurrency = electricityCurrency
+        self.electricityMarginMultiplier = electricityMarginMultiplier
+        self.keepAwake = keepAwake
+        self.autoManageModels = autoManageModels
+        self.inferenceBackend = inferenceBackend
+        self.language = language
+    }
+}
+
+// MARK: - Wallet Types
+
+public struct RemoteWalletSnapshot: Codable, Sendable {
+    public var balance: Double
+    public var totalEarned: Double
+    public var totalSpent: Double
+
+    public init(balance: Double, totalEarned: Double, totalSpent: Double) {
+        self.balance = balance
+        self.totalEarned = totalEarned
+        self.totalSpent = totalSpent
+    }
+}
+
+public struct RemoteTransactionSnapshot: Codable, Sendable {
+    public var id: UUID
+    public var type: String
+    public var amount: Double
+    public var description: String
+    public var peerNodeID: String?
+    public var timestamp: Date
+
+    public init(id: UUID, type: String, amount: Double, description: String, peerNodeID: String? = nil, timestamp: Date) {
+        self.id = id
+        self.type = type
+        self.amount = amount
+        self.description = description
+        self.peerNodeID = peerNodeID
+        self.timestamp = timestamp
+    }
+}
+
+public struct RemoteSolanaSnapshot: Codable, Sendable {
+    public var enabled: Bool
+    public var address: String
+    public var usdcBalance: String
+    public var network: String
+
+    public init(enabled: Bool, address: String = "", usdcBalance: String = "0", network: String = "mainnet") {
+        self.enabled = enabled
+        self.address = address
+        self.usdcBalance = usdcBalance
+        self.network = network
+    }
+}
+
+// MARK: - Peer Types
+
+public struct RemotePeersSnapshot: Codable, Sendable {
+    public var wanPeers: [RemotePeerSnapshot]
+    public var clusterPeers: [RemotePeerSnapshot]
+
+    public init(wanPeers: [RemotePeerSnapshot] = [], clusterPeers: [RemotePeerSnapshot] = []) {
+        self.wanPeers = wanPeers
+        self.clusterPeers = clusterPeers
+    }
+}
+
+public struct RemotePeerSnapshot: Codable, Sendable {
+    public var nodeID: String
+    public var displayName: String
+    public var loadedModels: [String]
+    public var source: String
+
+    public init(nodeID: String, displayName: String, loadedModels: [String] = [], source: String) {
+        self.nodeID = nodeID
+        self.displayName = displayName
+        self.loadedModels = loadedModels
+        self.source = source
+    }
+}
+
+// MARK: - Agent Types
+
+public struct RemoteAgentProfileSnapshot: Codable, Sendable {
+    public var nodeID: String
+    public var displayName: String
+    public var agentType: String
+    public var bio: String
+    public var capabilities: [String]
+
+    public init(nodeID: String, displayName: String, agentType: String, bio: String, capabilities: [String]) {
+        self.nodeID = nodeID
+        self.displayName = displayName
+        self.agentType = agentType
+        self.bio = bio
+        self.capabilities = capabilities
+    }
+}
+
+public struct RemoteAgentDirectoryEntry: Codable, Sendable {
+    public var nodeID: String
+    public var displayName: String
+    public var agentType: String
+    public var bio: String
+    public var capabilities: [String]
+    public var isOnline: Bool
+    public var rating: Double?
+
+    public init(nodeID: String, displayName: String, agentType: String, bio: String, capabilities: [String], isOnline: Bool, rating: Double? = nil) {
+        self.nodeID = nodeID
+        self.displayName = displayName
+        self.agentType = agentType
+        self.bio = bio
+        self.capabilities = capabilities
+        self.isOnline = isOnline
+        self.rating = rating
+    }
+}
+
+public struct RemoteAgentConversationSnapshot: Codable, Sendable {
+    public var id: UUID
+    public var participants: [String]
+    public var state: String
+    public var messageCount: Int
+    public var lastMessage: String?
+    public var updatedAt: Date
+
+    public init(id: UUID, participants: [String], state: String, messageCount: Int, lastMessage: String? = nil, updatedAt: Date) {
+        self.id = id
+        self.participants = participants
+        self.state = state
+        self.messageCount = messageCount
+        self.lastMessage = lastMessage
+        self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - API Key Types
+
+public struct RemoteAPIKeySnapshot: Codable, Sendable {
+    public var id: UUID
+    public var key: String
+    public var name: String
+    public var createdAt: Date
+    public var lastUsedAt: Date?
+    public var isActive: Bool
+
+    public init(id: UUID, key: String, name: String, createdAt: Date, lastUsedAt: Date? = nil, isActive: Bool) {
+        self.id = id
+        self.key = key
+        self.name = name
+        self.createdAt = createdAt
+        self.lastUsedAt = lastUsedAt
+        self.isActive = isActive
     }
 }
 

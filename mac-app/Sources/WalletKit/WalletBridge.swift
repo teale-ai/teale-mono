@@ -52,7 +52,7 @@ public final class WalletBridge: @unchecked Sendable {
     public init(
         identity: SolanaIdentity,
         creditWallet: USDCWallet,
-        config: WalletKitConfig = .devnet
+        config: WalletKitConfig = .mainnet
     ) {
         self.identity = identity
         self.usdcWallet = creditWallet

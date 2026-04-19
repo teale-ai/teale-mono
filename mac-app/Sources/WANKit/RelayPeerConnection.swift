@@ -50,8 +50,9 @@ public actor RelayPeerConnection {
     public let remoteNodeID: String
 
     private let relayClient: RelayClient
-    private var messageContinuation: AsyncStream<ClusterMessage>.Continuation?
-    private var _incomingMessages: AsyncStream<ClusterMessage>?
+    /// Broadcast subscribers — each call to `incomingMessages` creates a new subscription.
+    /// All subscribers receive every message (fan-out, not competing consumers).
+    private var subscribers: [UUID: AsyncStream<ClusterMessage>.Continuation] = [:]
     private var isClosed = false
 
     /// Noise session for E2E encryption over the relay (nil = plaintext fallback for legacy peers)
@@ -61,10 +62,6 @@ public actor RelayPeerConnection {
         self.sessionID = sessionID
         self.remoteNodeID = remoteNodeID
         self.relayClient = relayClient
-
-        let (stream, continuation) = AsyncStream<ClusterMessage>.makeStream()
-        self._incomingMessages = stream
-        self.messageContinuation = continuation
     }
 
     /// Perform Noise handshake over the relay channel (initiator side).
@@ -119,11 +116,19 @@ public actor RelayPeerConnection {
         handshakeResponseContinuation = nil
     }
 
+    /// Each caller gets a dedicated stream. All subscribers receive every message.
     public var incomingMessages: AsyncStream<ClusterMessage> {
-        if let stream = _incomingMessages {
-            return stream
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<ClusterMessage>.makeStream()
+        subscribers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeSubscriber(id) }
         }
-        return AsyncStream { $0.finish() }
+        return stream
+    }
+
+    private func removeSubscriber(_ id: UUID) {
+        subscribers.removeValue(forKey: id)
     }
 
     public func send(_ message: ClusterMessage) async throws {
@@ -152,7 +157,10 @@ public actor RelayPeerConnection {
     public func cancel() async {
         guard !isClosed else { return }
         isClosed = true
-        messageContinuation?.finish()
+        for continuation in subscribers.values {
+            continuation.finish()
+        }
+        subscribers.removeAll()
         await relayClient.closeRelayedSession(
             sessionID: sessionID,
             toNodeID: remoteNodeID,
@@ -181,7 +189,9 @@ public actor RelayPeerConnection {
 
         do {
             let message = try JSONDecoder().decode(ClusterMessage.self, from: jsonData)
-            messageContinuation?.yield(message)
+            for continuation in subscribers.values {
+                continuation.yield(message)
+            }
         } catch {
             let preview = String(data: jsonData.prefix(200), encoding: .utf8) ?? "binary"
             FileHandle.standardError.write(Data("[WAN] RelayPeerConnection: failed to decode ClusterMessage: \(error.localizedDescription)\n    Raw: \(preview)\n".utf8))
@@ -191,6 +201,9 @@ public actor RelayPeerConnection {
     func finishLocally() {
         guard !isClosed else { return }
         isClosed = true
-        messageContinuation?.finish()
+        for continuation in subscribers.values {
+            continuation.finish()
+        }
+        subscribers.removeAll()
     }
 }

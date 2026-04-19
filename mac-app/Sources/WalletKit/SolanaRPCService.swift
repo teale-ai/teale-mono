@@ -8,7 +8,7 @@ public actor SolanaRPCService {
     private let apiClient: JSONRPCAPIClient
     private let config: WalletKitConfig
 
-    public init(config: WalletKitConfig = .devnet) {
+    public init(config: WalletKitConfig = .mainnet) {
         self.config = config
         let endpoint = APIEndPoint(
             address: config.rpcEndpoint.absoluteString,

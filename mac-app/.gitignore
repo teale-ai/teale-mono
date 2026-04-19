@@ -1,0 +1,23 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.o
+*.dylib
+*.dSYM
+.claude/
+Supabase.plist
+default.profraw
+node_modules/
+
+# Apple code signing / distribution
+.env.signing
+*.p12
+*.p8
+AuthKey_*.p8
+*.mobileprovision
+*.xcarchive
+.build/ipa/
+.build/ExportOptions.plist

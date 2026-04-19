@@ -2,6 +2,7 @@ import SwiftUI
 import AppCore
 import SharedTypes
 import ModelManager
+import LlamaCppKit
 
 struct ModelBrowserView: View {
     @Environment(AppState.self) private var appState
@@ -38,7 +39,7 @@ struct ModelBrowserView: View {
             ScrollView {
                 LazyVStack(spacing: 1) {
                     // Local models section
-                    if showLocalModels && !appState.scannedLocalModels.isEmpty {
+                    if showLocalModels && (!appState.scannedLocalModels.isEmpty || !appState.scannedGGUFModels.isEmpty) {
                         localModelsSection
                     }
 
@@ -206,7 +207,7 @@ struct ModelBrowserView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(appState.scannedLocalModels.count) found")
+                Text("\(appState.scannedLocalModels.count + appState.scannedGGUFModels.count) found")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Button {
@@ -222,6 +223,12 @@ struct ModelBrowserView: View {
 
             ForEach(filteredLocalModels) { localModel in
                 LocalModelRowView(localModel: localModel)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
+
+            ForEach(filteredGGUFModels) { ggufModel in
+                GGUFModelRowView(ggufModel: ggufModel)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
             }
@@ -247,6 +254,13 @@ struct ModelBrowserView: View {
         if searchText.isEmpty { return appState.scannedLocalModels }
         return appState.scannedLocalModels.filter {
             $0.name.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    private var filteredGGUFModels: [GGUFModelInfo] {
+        if searchText.isEmpty { return appState.scannedGGUFModels }
+        return appState.scannedGGUFModels.filter {
+            $0.filename.localizedCaseInsensitiveContains(searchText)
         }
     }
 
@@ -338,6 +352,86 @@ struct LocalModelRowView: View {
             switch localModel.source {
             case .huggingFaceCache: return ("HF", .blue)
             case .lmStudio: return ("LMS", .purple)
+            case .tealeCache: return ("TEALE", .green)
+            case .custom: return ("LOCAL", .orange)
+            }
+        }()
+        return Text(text)
+            .font(.caption2.weight(.medium))
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.2))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+}
+
+// MARK: - GGUF Model Row
+
+struct GGUFModelRowView: View {
+    @Environment(AppState.self) private var appState
+    let ggufModel: GGUFModelInfo
+    @State private var error: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(ggufModel.filename)
+                        .font(.body.bold())
+                    Text("GGUF")
+                        .font(.caption2.weight(.medium))
+                        .fixedSize()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.teal.opacity(0.2))
+                        .foregroundStyle(.teal)
+                        .clipShape(Capsule())
+                    sourceBadge
+                }
+
+                Text(ggufModel.path.path)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 8) {
+                    Label(String(format: "%.1f GB", ggufModel.sizeGB), systemImage: "externaldrive")
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            Button("Load") {
+                Task {
+                    error = nil
+                    await appState.loadGGUFModel(ggufModel)
+                    if case .error(let msg) = appState.engineStatus {
+                        error = msg
+                    }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+
+        if let error {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private var sourceBadge: some View {
+        let (text, color): (String, Color) = {
+            switch ggufModel.source {
+            case .lmStudio: return ("LMS", .purple)
+            case .ollama: return ("OLLAMA", .cyan)
+            case .huggingFaceCache: return ("HF", .blue)
             case .tealeCache: return ("TEALE", .green)
             case .custom: return ("LOCAL", .orange)
             }

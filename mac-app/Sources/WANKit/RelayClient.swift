@@ -217,17 +217,21 @@ public struct NodeCapabilities: Codable, Sendable {
     public var loadedModels: [String]
     public var maxModelSizeGB: Double
     public var isAvailable: Bool
+    /// Private TealeNet memberships this node belongs to.
+    public var ptnIDs: [PTNIdentifier]?
 
     public init(
         hardware: HardwareCapability,
         loadedModels: [String] = [],
         maxModelSizeGB: Double = 0,
-        isAvailable: Bool = true
+        isAvailable: Bool = true,
+        ptnIDs: [PTNIdentifier]? = nil
     ) {
         self.hardware = hardware
         self.loadedModels = loadedModels
         self.maxModelSizeGB = maxModelSizeGB
         self.isAvailable = isAvailable
+        self.ptnIDs = ptnIDs
     }
 }
 
@@ -280,11 +284,13 @@ public struct PeerFilter: Codable, Sendable {
     public var modelID: String?
     public var minRAMGB: Double?
     public var minTier: Int?
+    public var maxPeers: Int?
 
-    public init(modelID: String? = nil, minRAMGB: Double? = nil, minTier: Int? = nil) {
+    public init(modelID: String? = nil, minRAMGB: Double? = nil, minTier: Int? = nil, maxPeers: Int? = nil) {
         self.modelID = modelID
         self.minRAMGB = minRAMGB
         self.minTier = minTier
+        self.maxPeers = maxPeers
     }
 }
 
@@ -301,6 +307,10 @@ public actor RelayClient {
     private var currentBackoff: TimeInterval = 1.0
     private var relayedConnections: [String: RelayPeerConnection] = [:]
     private var relayReadyWaiters: [String: CheckedContinuation<Void, Error>] = [:]
+    /// Relay sessions suspended during WebSocket disconnect — re-established on reconnect.
+    private var suspendedRelaySessions: [(sessionID: String, connection: RelayPeerConnection, remoteNodeID: String)] = []
+    /// WebSocket keepalive ping task.
+    private var pingTask: Task<Void, Never>?
     /// Called after a successful reconnect so the discovery service can re-register.
     private var onReconnectHandler: (@Sendable () async -> Void)?
 
@@ -341,6 +351,7 @@ public actor RelayClient {
         currentBackoff = 1.0
 
         FileHandle.standardError.write(Data("[WAN] connect() completed, calling receiveLoop()...\n".utf8))
+        startPingLoop()
         receiveLoop()
         FileHandle.standardError.write(Data("[WAN] receiveLoop() returned\n".utf8))
     }
@@ -350,6 +361,8 @@ public actor RelayClient {
         reconnectTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+        pingTask?.cancel()
+        pingTask = nil
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         isConnected = false
@@ -578,7 +591,9 @@ public actor RelayClient {
                 let msg = "[WAN] Relay WebSocket disconnected: \(error.localizedDescription)"
                 FileHandle.standardError.write(Data((msg + "\n").utf8))
                 isConnected = false
-                failActiveRelaySessions(with: WANError.peerDisconnected)
+                pingTask?.cancel()
+                pingTask = nil
+                suspendActiveRelaySessions()
                 for (_, cont) in messageContinuations {
                     cont.finish()
                 }
@@ -608,6 +623,8 @@ public actor RelayClient {
                     await self.resetReconnect()
                     // Re-register after reconnect
                     await self.onReconnectHandler?()
+                    // Re-establish suspended relay sessions
+                    await self.resumeRelaySessions()
                     return
                 } catch {
                     FileHandle.standardError.write(Data("[WAN] Relay reconnect failed: \(error.localizedDescription)\n".utf8))
@@ -670,6 +687,7 @@ public actor RelayClient {
     private func failActiveRelaySessions(with error: Error) {
         let relayed = Array(relayedConnections.values)
         relayedConnections.removeAll()
+        suspendedRelaySessions.removeAll()
 
         let waiters = relayReadyWaiters.values
         relayReadyWaiters.removeAll()
@@ -679,6 +697,72 @@ public actor RelayClient {
 
         for connection in relayed {
             Task { await connection.finishLocally() }
+        }
+    }
+
+    /// Preserve active relay sessions during a temporary WebSocket disconnect.
+    /// The connections stay alive (their AsyncStream is not finished) so that
+    /// WANManager's startListening loops don't trigger reconnect cascades.
+    private func suspendActiveRelaySessions() {
+        for (sessionID, connection) in relayedConnections {
+            suspendedRelaySessions.append((
+                sessionID: sessionID,
+                connection: connection,
+                remoteNodeID: connection.remoteNodeID
+            ))
+        }
+        relayedConnections.removeAll()
+
+        // Fail pending waiters — they can retry after reconnect
+        let waiters = relayReadyWaiters.values
+        relayReadyWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(throwing: WANError.peerDisconnected)
+        }
+
+        FileHandle.standardError.write(Data("[WAN] Suspended \(suspendedRelaySessions.count) relay session(s) during disconnect\n".utf8))
+    }
+
+    /// Re-establish suspended relay sessions on a new WebSocket connection.
+    private func resumeRelaySessions() async {
+        let sessions = suspendedRelaySessions
+        suspendedRelaySessions.removeAll()
+
+        guard !sessions.isEmpty else { return }
+        FileHandle.standardError.write(Data("[WAN] Resuming \(sessions.count) suspended relay session(s)...\n".utf8))
+
+        for session in sessions {
+            do {
+                let payload = RelayMessage.RelaySessionPayload(
+                    fromNodeID: config.identity.nodeID,
+                    toNodeID: session.remoteNodeID,
+                    sessionID: session.sessionID
+                )
+                try await send(.relayOpen(payload))
+                // Re-register the connection so incoming relayData is routed correctly
+                relayedConnections[session.sessionID] = session.connection
+                FileHandle.standardError.write(Data("[WAN] Resumed relay session \(session.sessionID.prefix(8))... to \(session.remoteNodeID.prefix(16))...\n".utf8))
+            } catch {
+                FileHandle.standardError.write(Data("[WAN] Failed to resume relay session \(session.sessionID.prefix(8))...: \(error.localizedDescription)\n".utf8))
+                await session.connection.finishLocally()
+            }
+        }
+    }
+
+    /// Periodic WebSocket ping to keep the connection alive through NAT/firewalls.
+    private func startPingLoop() {
+        pingTask?.cancel()
+        pingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(25))
+                guard !Task.isCancelled, let self else { return }
+                let ws = await self.webSocketTask
+                ws?.sendPing { error in
+                    if let error {
+                        FileHandle.standardError.write(Data("[WAN] WebSocket ping failed: \(error.localizedDescription)\n".utf8))
+                    }
+                }
+            }
         }
     }
 }
