@@ -36,6 +36,11 @@ public final class AppState {
     private static let exoPreferredModelIDKey = "teale.exo_preferred_model_id"
     private static let wanRelayURLKey = "teale.wan_relay_url"
     private static let llamaCppBinaryPathKey = "teale.llamacpp_binary_path"
+    // Local-first gateway fallback: when the local :11435 receives a chat-
+    // completion request for a model this node can't serve, the route proxies
+    // it to the configured gateway. Leave `gatewayAPIKey` empty to disable.
+    private static let gatewayFallbackURLKey = "teale.gateway_fallback_url"
+    private static let gatewayAPIKeyKey = "teale.gateway_api_key"
 
     // Hardware
     public let hardware: HardwareCapability
@@ -211,6 +216,18 @@ public final class AppState {
             UserDefaults.standard.set(llamaCppBinaryPath, forKey: Self.llamaCppBinaryPathKey)
             Task { await applyInferenceBackendSelection() }
         }
+    }
+    /// Where the local :11435 route forwards requests whose model this node
+    /// can't serve locally. Default is the production Teale gateway.
+    public var gatewayFallbackURL: String = UserDefaults.standard.string(forKey: gatewayFallbackURLKey) ?? "https://gateway.teale.com" {
+        didSet { UserDefaults.standard.set(gatewayFallbackURL, forKey: Self.gatewayFallbackURLKey) }
+    }
+    /// Bearer token sent on gateway-fallback requests. Empty disables the
+    /// fallback — the local route will error out as before for unservable
+    /// models. Stored in UserDefaults; for production deployments consider
+    /// migrating to the Keychain.
+    public var gatewayAPIKey: String = UserDefaults.standard.string(forKey: gatewayAPIKeyKey) ?? "" {
+        didSet { UserDefaults.standard.set(gatewayAPIKey, forKey: Self.gatewayAPIKeyKey) }
     }
     public var maxStorageGB: Double = UserDefaults.standard.object(forKey: Preferences.maxStorageGB) as? Double ?? 50.0 {
         didSet {
