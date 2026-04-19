@@ -10,8 +10,13 @@ url = "wss://relay.teale.com/ws"
 [llama]
 # Path to llama-server binary
 binary = "/usr/local/bin/llama-server"
-# Path to GGUF model file
+# Path to GGUF model file on disk (passed to llama-server as --model)
 model = "/models/qwen3-8b-q4_k_m.gguf"
+# Canonical model id advertised to the relay + OpenRouter gateway.
+# Must match an entry in `gateway/models.yaml` — otherwise the gateway's
+# per-model fleet floor will exclude this device from routing.
+# If omitted, the GGUF filename stem is used as a fallback (dev only).
+model_id = "qwen/qwen3-8b"
 # Number of GPU layers to offload (999 = all)
 gpu_layers = 999
 # Context window size

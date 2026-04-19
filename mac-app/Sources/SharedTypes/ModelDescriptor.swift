@@ -19,16 +19,23 @@ public enum QuantizationType: String, Codable, Sendable {
 // MARK: - Model Descriptor
 
 public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
-    public var id: String                   // unique identifier, e.g. "llama-3.2-1b-instruct-4bit"
+    public var id: String                   // unique local identifier, e.g. "llama-3.1-8b-instruct-4bit"
     public var name: String                 // display name
-    public var huggingFaceRepo: String      // e.g. "mlx-community/Llama-3.2-1B-Instruct-4bit"
+    public var huggingFaceRepo: String      // e.g. "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
+                                            // or a local filesystem path for a scanned GGUF
     public var parameterCount: String       // e.g. "1B", "8B", "70B"
     public var quantization: QuantizationType
-    public var estimatedSizeGB: Double      // download size in GB
-    public var requiredRAMGB: Double        // minimum RAM to load
+    public var estimatedSizeGB: Double
+    public var requiredRAMGB: Double
     public var family: String               // e.g. "Llama", "Gemma", "Qwen"
     public var description: String
-    public var popularityRank: Int          // 1 = most popular, lower = more in-demand
+    public var popularityRank: Int          // 1 = most popular
+
+    /// Canonical OpenRouter slug advertised to the gateway, e.g.
+    /// "meta-llama/llama-3.1-8b-instruct". Optional — `nil` means this
+    /// device-local model doesn't map to any OpenRouter-canonical id, and
+    /// callers should fall back to `huggingFaceRepo` for advertisement.
+    public var openrouterId: String?
 
     public init(
         id: String,
@@ -40,7 +47,8 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
         requiredRAMGB: Double,
         family: String,
         description: String,
-        popularityRank: Int = 999
+        popularityRank: Int = 999,
+        openrouterId: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -52,6 +60,15 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
         self.family = family
         self.description = description
         self.popularityRank = popularityRank
+        self.openrouterId = openrouterId
+    }
+
+    /// The id to advertise on the wire to the gateway/relay. Prefers
+    /// `openrouterId` when set (canonical slug), falls back to the
+    /// HuggingFace repo id, which in turn may be a local filesystem
+    /// path for devices running scanned GGUFs.
+    public var advertisedId: String {
+        openrouterId ?? huggingFaceRepo
     }
 }
 

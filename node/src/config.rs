@@ -21,7 +21,16 @@ pub struct RelayConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct LlamaConfig {
     pub binary: String,
+    /// Path to the GGUF file on disk. Used as the `--model` arg to
+    /// llama-server; NEVER advertised to the relay as a model id.
     pub model: String,
+    /// Canonical model id advertised to the relay (and via it to the
+    /// OpenRouter gateway). Must match an entry in
+    /// `gateway/models.yaml` — e.g. `"meta-llama/llama-3.1-8b-instruct"`.
+    /// Falls back to the GGUF filename stem when omitted, which will
+    /// NOT match the gateway catalog and should only be used for dev.
+    #[serde(default)]
+    pub model_id: Option<String>,
     #[serde(default = "default_gpu_layers")]
     pub gpu_layers: i32,
     #[serde(default = "default_context_size")]
@@ -30,6 +39,26 @@ pub struct LlamaConfig {
     pub port: u16,
     #[serde(default)]
     pub extra_args: Vec<String>,
+}
+
+impl LlamaConfig {
+    /// Resolve the id to advertise. Prefer the explicit `model_id`;
+    /// fall back to the GGUF filename stem with a runtime warning.
+    pub fn resolved_model_id(&self) -> String {
+        if let Some(id) = self.model_id.as_ref().filter(|s| !s.trim().is_empty()) {
+            return id.clone();
+        }
+        let stem = std::path::Path::new(&self.model)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.model.clone());
+        tracing::warn!(
+            "[llama] model_id not set in config — falling back to GGUF stem '{}'. \
+            This will NOT match the OpenRouter gateway catalog; set model_id explicitly.",
+            stem
+        );
+        stem
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

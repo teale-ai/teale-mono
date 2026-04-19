@@ -23,6 +23,12 @@ public struct LocalModelInfo: Identifiable, Sendable {
     public func toDescriptor() -> ModelDescriptor {
         let paramCount = configJSON?.parameterCountString ?? "?"
         let quant = detectQuantization()
+        // Try to resolve a canonical OpenRouter slug from the filename
+        // so the gateway can match this local model against its catalog.
+        // Falls back to nil (no advertisement under an OR id) for models
+        // we don't recognize.
+        let orId = ModelCatalog.openrouterIdForFilename(path.lastPathComponent)
+
         return ModelDescriptor(
             id: "local-\(path.lastPathComponent)",
             name: name,
@@ -32,7 +38,8 @@ public struct LocalModelInfo: Identifiable, Sendable {
             estimatedSizeGB: sizeGB,
             requiredRAMGB: sizeGB * 1.5,  // Rough estimate: model needs ~1.5x disk size in RAM
             family: configJSON?.modelType ?? "Unknown",
-            description: "Local model from \(source.rawValue)"
+            description: "Local model from \(source.rawValue)",
+            openrouterId: orId
         )
     }
 

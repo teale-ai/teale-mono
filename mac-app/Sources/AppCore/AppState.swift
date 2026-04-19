@@ -694,7 +694,10 @@ public final class AppState {
         let loadedModels: [String]
         switch engineStatus {
         case .ready(let descriptor):
-            loadedModels = [descriptor.huggingFaceRepo]
+            // Prefer the canonical OpenRouter slug so the gateway's
+            // catalog + per-model fleet floor match this device correctly.
+            // Falls back to the HF repo (or local path) for non-catalog models.
+            loadedModels = [descriptor.advertisedId]
         default:
             loadedModels = []
         }

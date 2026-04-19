@@ -181,6 +181,7 @@ fn default_llama_stub() -> config::LlamaConfig {
     config::LlamaConfig {
         binary: "llama-server".to_string(),
         model: "".to_string(),
+        model_id: None,
         gpu_layers: 999,
         context_size: 4096,
         port: 11436,
@@ -214,7 +215,7 @@ async fn start_backend(
                 }
                 _ => {
                     let llama = config.llama.as_ref().unwrap();
-                    (llama.port, llama.model.clone())
+                    (llama.port, llama.resolved_model_id())
                 }
             };
 
