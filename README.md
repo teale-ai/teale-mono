@@ -1,23 +1,28 @@
 # teale-mono
 
-Monorepo for Teale's OpenRouter provider stack. Four deployable components
+Monorepo for Teale's OpenRouter provider stack. Five deployable components
 plus one shared protocol crate.
 
 ## Layout
 
 ```
 teale-mono/
-├── protocol/   # Rust crate — wire types shared across node, gateway, relay
-├── node/       # Rust binary — supply-side agent that runs on each Mac (and Linux/Windows/Android)
-├── gateway/    # Rust binary — OpenAI-compat HTTP gateway at gateway.teale.com
-├── stress/     # Rust binary — load + fault-injection test runner
-├── relay/      # TypeScript (Bun) — WebSocket rendezvous server at relay.teale.com
-└── mac-app/    # Swift — macOS/iOS client app
+├── protocol/    # Rust crate — wire types shared across node, gateway, relay
+├── node/        # Rust binary — supply-side agent (Mac / Linux / Windows / Android)
+├── gateway/     # Rust binary — OpenAI-compat HTTP gateway at gateway.teale.com
+│                 (SQLite ledger, device auth, wallet, groups — see
+│                  `gateway/src/ledger.rs`)
+├── stress/      # Rust binary — load + fault-injection test runner
+├── relay/       # TypeScript (Bun) — WebSocket rendezvous server at relay.teale.com
+├── mac-app/     # Swift — macOS/iOS client app
+└── android-app/ # Kotlin / Jetpack Compose — Android client (chat + wallet +
+                 # groups + supply mode with llama.cpp + teale-node bundled)
 ```
 
 Rust components form one Cargo workspace (`cargo build --workspace` at root).
 Relay is a pnpm/bun package. Mac-app is a SwiftPM package (`swift build` from
-`mac-app/`).
+`mac-app/`). Android-app is a Gradle project (`./gradlew assembleDebug` from
+`android-app/`).
 
 ## Quick start
 
@@ -41,6 +46,11 @@ cd relay && bun install && bun run server.ts
 
 # Mac app
 cd mac-app && swift build
+
+# Android app (debug APK on a plugged-in device)
+cd android-app && ./gradlew installDebug
+# Full pre-release flow (cross-compile node + push Gemma GGUF + install):
+./scripts/deploy-pixel.sh
 ```
 
 ## CI
@@ -53,6 +63,7 @@ Path-filtered — a Rust-only PR does NOT trigger the Swift build.
 | `relay/`                                     | `.github/workflows/relay.yml`    |
 | `mac-app/`                                   | `.github/workflows/mac-app.yml`  |
 | `gateway/`, `protocol/`  → Fly.io auto-deploy on `main` | `.github/workflows/gateway-deploy.yml` |
+| `android-app/`                               | _no CI yet_ — build locally, sideload via `android-app/SIDELOAD.md` |
 
 ## Deploying
 
@@ -80,6 +91,14 @@ brew install teale-ai/teale/teale-node        # (formula TBD)
 cargo build --release -p teale-node
 # then point at a teale-node.toml with your config
 ```
+
+### Android client (sideload)
+
+The current pre-release APK ships in `android-app/`; see
+`android-app/SIDELOAD.md` for install instructions and
+`android-app/scripts/deploy-pixel.sh` for the one-shot
+build + push + install flow. Five UI locales ship out of the box:
+en, pt-BR, zh-CN, fil, es.
 
 ## Docs
 
