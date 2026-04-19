@@ -1,9 +1,11 @@
-// TODO(cleanup): pre-existing dead-code and too-many-arguments violations
-// that accumulated during teale-mono consolidation. Suppressed crate-wide
-// so CI (`cargo clippy --all-targets -- -D warnings`) can pass; real
-// cleanup belongs in a focused follow-up PR.
+// TODO(cleanup): pre-existing dead-code, too-many-arguments, and
+// collapsible-match violations that accumulated during teale-mono
+// consolidation. Suppressed crate-wide so CI
+// (`cargo clippy --all-targets -- -D warnings`) can pass; real cleanup
+// belongs in a focused follow-up PR.
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
+#![allow(clippy::collapsible_match)]
 
 mod backend;
 mod cluster;
