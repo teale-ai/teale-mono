@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/models", get(handlers::models::list_models))
+        .route("/v1/network", get(handlers::network::network))
         .route("/v1/wallet/balance", get(handlers::wallet::balance))
         .route("/v1/wallet/transactions", get(handlers::wallet::transactions))
         .route("/v1/groups", post(handlers::groups::create_group))
