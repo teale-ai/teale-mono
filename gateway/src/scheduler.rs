@@ -33,12 +33,17 @@ impl Scheduler {
         exclude: &[String],
         registry: &Registry,
     ) -> Option<&'a DeviceState> {
-        // Two-stage: primary sort key is live in-flight count (least-loaded
-        // wins), tiebreak on the score function below. Without a strict
-        // primary on in-flight, TPS priors on an M3 Ultra dwarfed the small
-        // headroom penalty from 1-2 outstanding requests and every dispatch
-        // went to the same node even at 1 RPS.
-        let mut best: Option<(u32, f64, &DeviceState)> = None;
+        // Two-stage:
+        //   1. Filter to eligible, non-excluded, non-overloaded, non-zero-score
+        //      candidates.
+        //   2. Primary sort on in_flight ASC (least-loaded wins). Collect all
+        //      tied-best candidates, then pick one at random. Pure least-
+        //      in-flight with a deterministic score tiebreak pinned every
+        //      request to the same TPS-best node whenever in_flight = 0
+        //      across all candidates (e.g. when requests complete faster
+        //      than the next arrives, which is exactly the pattern we
+        //      want to handle: 1 RPS with p99 total latency < 4s).
+        let mut viable: Vec<(u32, f64, &DeviceState)> = Vec::new();
 
         for d in candidates {
             if exclude.iter().any(|e| e == &d.node_id) {
@@ -58,18 +63,31 @@ impl Scheduler {
             if score <= 0.0 {
                 continue;
             }
-            let beat = match &best {
-                None => true,
-                Some((b_inflight, b_score, _)) => {
-                    in_flight < *b_inflight || (in_flight == *b_inflight && score > *b_score)
-                }
-            };
-            if beat {
-                best = Some((in_flight, score, d));
-            }
+            viable.push((in_flight, score, d));
         }
 
-        best.map(|(_, _, d)| d)
+        if viable.is_empty() {
+            return None;
+        }
+
+        // Least in-flight wins; score is informational only (we no longer
+        // use it to tiebreak, since the TPS-prior delta dominated the small
+        // headroom penalty and killed spread at low RPS).
+        let min_inflight = viable.iter().map(|(n, _, _)| *n).min()?;
+        let tied: Vec<_> = viable
+            .into_iter()
+            .filter(|(n, _, _)| *n == min_inflight)
+            .map(|(_, _, d)| d)
+            .collect();
+
+        if tied.len() == 1 {
+            return Some(tied[0]);
+        }
+        // Randomize the tiebreak so back-to-back picks at steady state
+        // fan out across eligible devices.
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        tied.choose(&mut rng).copied()
     }
 
     fn score(&self, d: &DeviceState, loaded: bool, in_flight: u32) -> f64 {
