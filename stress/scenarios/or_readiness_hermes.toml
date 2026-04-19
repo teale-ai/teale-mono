@@ -1,0 +1,20 @@
+name = "or_readiness_hermes_3min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 180
+rps = 0.25
+warmup_seconds = 15
+concurrency_cap = 2
+
+# Single-model, low-concurrency scenario: quote-worthy steady-state
+# numbers for the OR application. tailor16 serves Hermes-3-8B with
+# `--parallel 1`, so we stay under that rate to avoid TTFT-deadline
+# queueing.
+
+[[requests]]
+model = "nousresearch/hermes-3-llama-3.1-8b"
+weight = 1
+prompt_tokens_mean = 64
+prompt_tokens_stddev = 16
+max_tokens = 32
+streaming = true

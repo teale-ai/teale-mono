@@ -1,0 +1,58 @@
+Teale Gateway — Privacy Policy
+Last updated: 2026-04-18.
+
+Summary
+-------
+Teale operates an OpenAI-compatible inference gateway at gateway.teale.com
+that routes customer traffic to a distributed pool of Apple-Silicon supply
+nodes. This policy describes what we do with request data on that path.
+
+No training
+-----------
+We do not train on customer prompts, completions, or any other request
+content. Customer data is not provided to third parties for model training,
+fine-tuning, or evaluation.
+
+Request content retention
+-------------------------
+We do not persist prompt or completion content to long-term storage. Supply
+nodes hold the in-flight payload only for the lifetime of the streaming
+response; the gateway does not log request or response bodies.
+
+Metadata retention
+------------------
+We do retain operational metadata for up to 90 days:
+  - timestamp of request
+  - canonical model id (e.g. meta-llama/llama-3.1-8b-instruct)
+  - anonymous bearer-token identifier (the opaque string we minted for the
+    caller; never the token itself)
+  - selected supply node id
+  - request duration, TTFT, total_tokens, completion_tokens
+  - finish_reason and error code if any
+This metadata is used for billing reconciliation, capacity planning,
+incident investigation, and anti-abuse. It contains no prompt or
+completion content.
+
+Supply-node handling
+--------------------
+Before a request is dispatched to a supply node, the gateway strips
+caller-identifying HTTP headers (Authorization, X-Forwarded-For, Cookie,
+etc.). The supply node sees only the sanitized ChatCompletionRequest.
+
+Transport security
+------------------
+TLS 1.2+ is enforced on gateway.teale.com (Fly.io-managed Let's Encrypt
+certificate). The relay that connects the gateway and supply nodes uses
+TLS 1.3 WebSocket (wss://relay.teale.com/ws); peer identity is
+authenticated via Ed25519 signatures.
+
+Incident disclosure
+-------------------
+Security incidents involving customer data will be disclosed to affected
+parties within 72 hours of confirmation. Providers we integrate with
+(including OpenRouter) will be notified through their registered contact
+channel.
+
+Contact
+-------
+Questions or requests: taylor@apmhelp.com.

@@ -17,6 +17,9 @@ pub struct CatalogModel {
     pub display_name: String,
     pub owned_by: String,
     pub context_length: u32,
+    /// Max completion tokens we'll accept for `max_tokens` on this model.
+    /// Required by OpenRouter's /models schema.
+    pub max_output_tokens: u32,
     /// Parameter count in billions, for fleet-floor tier lookup.
     pub params_b: f64,
     pub pricing_prompt: String,
@@ -39,6 +42,7 @@ impl CatalogModel {
             created: 0,
             owned_by: self.owned_by.clone(),
             context_length: Some(self.context_length),
+            max_output_tokens: Some(self.max_output_tokens),
             pricing: Some(Pricing {
                 prompt: self.pricing_prompt.clone(),
                 completion: self.pricing_completion.clone(),
