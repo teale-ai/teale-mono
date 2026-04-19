@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 
 use axum::{
     extract::State,
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap},
     response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
-use futures_util::stream::{self, Stream};
+use futures_util::stream::Stream;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -32,7 +32,7 @@ use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceReq
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
 use crate::metrics;
-use crate::relay_client::{PendingSession, RelayHandle, SessionEvent};
+use crate::relay_client::{PendingSession, SessionEvent};
 use crate::state::AppState;
 
 pub async fn chat_completions(
@@ -118,11 +118,11 @@ async fn pick_and_dispatch(
     });
 
     // Send the inferenceRequest.
-    let ir = ClusterMessage::InferenceRequest(InferenceRequestPayload {
+    let ir = ClusterMessage::InferenceRequest(Box::new(InferenceRequestPayload {
         request_id: request_id.clone(),
         request: outbound,
         streaming: true,
-    });
+    }));
     state
         .relay
         .send_cluster(&target_node, &session_id, &ir)

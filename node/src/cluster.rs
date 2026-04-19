@@ -19,8 +19,6 @@ use teale_protocol::{
     InferenceErrorCode, InferenceErrorPayload, InferenceRequestPayload, ThermalLevel,
 };
 
-pub use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
-
 use crate::relay::{RelayClient, RelayDataPayload};
 use crate::swap::SwapManager;
 
@@ -170,7 +168,7 @@ pub async fn handle_relay_data(
                 );
                 return;
             }
-            handle_inference_request(relay, from, session, req, swap, state).await;
+            handle_inference_request(relay, from, session, *req, swap, state).await;
         }
 
         ClusterMessage::LoadModel(req) => {

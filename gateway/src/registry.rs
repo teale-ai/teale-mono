@@ -272,9 +272,7 @@ impl Registry {
             .chain(dev.capabilities.swappable_models.iter())
         {
             let key = normalize_model_id(m);
-            idx.entry(key)
-                .or_insert_with(HashSet::new)
-                .insert(node_id.to_string());
+            idx.entry(key).or_default().insert(node_id.to_string());
         }
     }
 }

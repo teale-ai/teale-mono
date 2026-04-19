@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use teale_protocol::{
@@ -138,7 +138,7 @@ impl RelayHandle {
     fn send_json(&self, v: &serde_json::Value) -> anyhow::Result<()> {
         let text = serde_json::to_string(v)?;
         self.outbox
-            .send(Message::Text(text.into()))
+            .send(Message::Text(text))
             .map_err(|_| anyhow::anyhow!("relay outbox closed"))?;
         Ok(())
     }
@@ -182,7 +182,7 @@ pub async fn spawn(
         let sessions = sessions.clone();
         let ready_waiters = ready_waiters.clone();
         let outbox_tx = outbox_tx.clone();
-        let reliability = config.reliability.clone();
+        let _reliability = config.reliability.clone();
 
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
@@ -228,7 +228,7 @@ pub async fn spawn(
 
                         // register ourselves
                         let register_payload = make_register_payload(&identity, &display_name);
-                        if let Err(e) = outbox_tx.send(Message::Text(register_payload.into())) {
+                        if let Err(e) = outbox_tx.send(Message::Text(register_payload)) {
                             warn!("send register: {}", e);
                         }
 
@@ -303,7 +303,7 @@ pub async fn spawn(
                         write_task.abort();
 
                         // Fail in-flight sessions.
-                        for mut entry in sessions.iter_mut() {
+                        for entry in sessions.iter_mut() {
                             let _ = entry
                                 .chunks_tx
                                 .try_send(SessionEvent::Disconnect("relay disconnected".into()));

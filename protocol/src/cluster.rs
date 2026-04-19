@@ -9,13 +9,16 @@ use crate::openai::ChatCompletionRequest;
 
 /// Top-level cluster message. Encoded as a JSON object with exactly one
 /// top-level key naming the variant (matches Swift's Codable union encoding).
+///
+/// `InferenceRequest` carries a full `ChatCompletionRequest` (~320 bytes);
+/// box it so the enum's size isn't dominated by a single variant.
 #[derive(Debug, Clone)]
 pub enum ClusterMessage {
     Hello(HelloPayload),
     HelloAck(HelloAckPayload),
     Heartbeat(HeartbeatPayload),
     HeartbeatAck(HeartbeatPayload),
-    InferenceRequest(InferenceRequestPayload),
+    InferenceRequest(Box<InferenceRequestPayload>),
     InferenceChunk(InferenceChunkPayload),
     InferenceComplete(InferenceCompletePayload),
     InferenceError(InferenceErrorPayload),
@@ -52,6 +55,14 @@ impl ClusterMessage {
                     }
                 }
             };
+            (boxed $key:expr, $payload:ty, $variant:ident) => {
+                if let Some(p) = obj.get($key) {
+                    let inner = unwrap_0(p);
+                    if let Ok(parsed) = serde_json::from_value::<$payload>(inner) {
+                        return Some(Self::$variant(Box::new(parsed)));
+                    }
+                }
+            };
         }
 
         try_variant!("hello", HelloPayload, Hello);
@@ -59,6 +70,7 @@ impl ClusterMessage {
         try_variant!("heartbeat", HeartbeatPayload, Heartbeat);
         try_variant!("heartbeatAck", HeartbeatPayload, HeartbeatAck);
         try_variant!(
+            boxed
             "inferenceRequest",
             InferenceRequestPayload,
             InferenceRequest

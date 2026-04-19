@@ -8,11 +8,13 @@ use crate::hardware::NodeCapabilities;
 
 // ── Outgoing ────────────────────────────────────────────────────────
 
+// Register carries a NodeCapabilities which itself embeds HardwareCapability
+// (~300 bytes). Box it so the enum doesn't pay that size on every variant.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum OutgoingRelayMessage {
     Register {
-        register: RegisterPayload,
+        register: Box<RegisterPayload>,
     },
     Discover {
         discover: DiscoverPayload,

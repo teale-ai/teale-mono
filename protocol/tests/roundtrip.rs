@@ -108,7 +108,7 @@ fn heartbeat_roundtrip() {
 
 #[test]
 fn inference_request_roundtrip() {
-    assert_round_trip(ClusterMessage::InferenceRequest(sample_request()));
+    assert_round_trip(ClusterMessage::InferenceRequest(Box::new(sample_request())));
 }
 
 #[test]

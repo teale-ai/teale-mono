@@ -11,7 +11,7 @@ use tracing::{error, info};
 
 use teale_protocol::{IncomingRelayMessage, NodeCapabilities};
 
-pub use teale_protocol::{now_reference_seconds, RelayDataPayload, RelaySessionPayload};
+pub use teale_protocol::RelayDataPayload;
 
 use crate::identity::NodeIdentity;
 
@@ -97,7 +97,7 @@ impl RelayClient {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(25)).await;
-                if ping_write_tx.send(Message::Ping(vec![].into())).is_err() {
+                if ping_write_tx.send(Message::Ping(vec![])).is_err() {
                     break;
                 }
             }
@@ -120,7 +120,7 @@ impl RelayClient {
     fn send_json(&self, value: &Value) -> anyhow::Result<()> {
         let text = serde_json::to_string(value)?;
         self.write_tx
-            .send(Message::Text(text.into()))
+            .send(Message::Text(text))
             .map_err(|_| anyhow::anyhow!("WebSocket channel closed"))?;
         Ok(())
     }
