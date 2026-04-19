@@ -33,7 +33,8 @@ public final class HeartbeatScheduler {
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.interval ?? 1800))
+                let seconds = UInt64(self?.interval ?? 1800)
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                 await self?.runPass()
             }
         }

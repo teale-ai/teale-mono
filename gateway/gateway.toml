@@ -25,11 +25,20 @@ small = 2
 
 [reliability]
 request_timeout_seconds = 300
-# 15s covers transient relay-open spikes (occasional session-setup stalls
-# were causing single-digit-percent stress failures at 10s); real TTFT
-# under load is still 300-500 ms for small models.
-ttft_deadline_seconds = 15
+# TTFT deadline covers relay-open + first-token latency. Small warm models
+# are 300-500 ms end-to-end; the 60 s ceiling here accommodates cold loads
+# on large MoE models (e.g., DeepSeek V3.2 on a 2-Ultra exo cluster boots
+# in up to 57 s when nothing's been hot). Tighten back to 15 s once the
+# large-model cluster has warm-keeping and the scheduler avoids sending
+# first traffic to a fully-cold instance.
+ttft_deadline_seconds = 60
 max_retries = 1
-heartbeat_stale_seconds = 30
+# Teale's supply-side WAN stack has no direct node→relay heartbeat — it only
+# re-registers every 240 s (WANDiscovery.startReregistration). 30 s here
+# caused the gateway to flap devices into "stale" almost continuously,
+# dropping eligibility for models that were in fact healthy and loaded.
+# Bump to 300 s to span Teale's register cadence + slack. If we later add
+# a proper node→relay heartbeat forwarded to gateway, restore to 30 s.
+heartbeat_stale_seconds = 300
 quarantine_seconds = 30
 discover_interval_seconds = 10

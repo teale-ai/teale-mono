@@ -128,13 +128,15 @@ public actor ExoProvider: InferenceProvider {
         request: ChatCompletionRequest,
         continuation: AsyncThrowingStream<ChatCompletionChunk, Error>.Continuation
     ) async throws {
-        if currentDescriptor == nil {
+        // Make sure we have an up-to-date view of exo's running models. The
+        // single-descriptor `currentDescriptor` path still works for
+        // preferredModelID / single-model setups, but when multiple exo
+        // instances are live the resolution has to come from request.model.
+        if currentDescriptor == nil || runningModels.isEmpty {
             try await refreshSelection()
         }
 
-        guard let descriptor = currentDescriptor else {
-            throw ExoProviderError.noModelSelected
-        }
+        let descriptor = try resolveDescriptor(for: request.model)
 
         _status = .generating(descriptor, tokensGenerated: 0)
 
@@ -144,7 +146,11 @@ public actor ExoProvider: InferenceProvider {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var proxiedRequest = request
-        proxiedRequest.model = request.model ?? descriptor.huggingFaceRepo
+        // Forward with exo's internal HF-repo ID. This is the ID exo knows
+        // (e.g., "mlx-community/DeepSeek-V3.2-8bit"), distinct from the
+        // canonical OpenRouter slug the gateway sent (e.g., "deepseek/
+        // deepseek-v3.2"). resolveDescriptor(for:) did the mapping.
+        proxiedRequest.model = descriptor.huggingFaceRepo
         proxiedRequest.stream = true
         urlRequest.httpBody = try JSONEncoder().encode(proxiedRequest)
 
@@ -202,6 +208,62 @@ public actor ExoProvider: InferenceProvider {
             let data = try await fetchData(path: "state")
             return parseStateModelIDs(from: data)
         }
+    }
+
+    /// Find the exo-running model whose descriptor best matches the incoming
+    /// request's `model` field. Accepts canonical OpenRouter slugs
+    /// ("deepseek/deepseek-v3.2"), HF repo IDs
+    /// ("mlx-community/DeepSeek-V3.2-8bit"), and local catalog IDs.
+    ///
+    /// Falls back in order: explicit request.model → preferredModelID →
+    /// single-running auto-pick → noModelSelected error. This is the path
+    /// that makes a multi-model exo cluster correctly routable when the
+    /// Teale gateway dispatches one request per canonical slug.
+    private func resolveDescriptor(for requestedModel: String?) throws -> ModelDescriptor {
+        if let requestedModel = requestedModel, !requestedModel.isEmpty {
+            if let exoID = findRunningExoID(matching: requestedModel) {
+                return modelDescriptorForExternalID(exoID)
+            }
+            // Fall through only if the request didn't pin a specific model.
+            // If it did and we can't match, surface the error — never
+            // silently substitute another model.
+            throw ExoProviderError.serverError(
+                "no running exo model matches '\(requestedModel)' (running: \(runningModels.joined(separator: ", ")))"
+            )
+        }
+
+        if let preferred = preferredModelID, !preferred.isEmpty,
+           let exoID = firstMatchingModelID(for: preferred, in: runningModels) {
+            return modelDescriptorForExternalID(exoID)
+        }
+
+        if runningModels.count == 1, let only = runningModels.first {
+            return modelDescriptorForExternalID(only)
+        }
+
+        throw ExoProviderError.noModelSelected
+    }
+
+    /// Map a requested model ID (canonical slug, HF repo, or local id) to
+    /// one of exo's currently-running model IDs. Prefers direct normalized
+    /// matches; falls back to descriptor-resolved aliases.
+    private func findRunningExoID(matching requested: String) -> String? {
+        if let direct = firstMatchingModelID(for: requested, in: runningModels) {
+            return direct
+        }
+        for exoID in runningModels {
+            let desc = modelDescriptorForExternalID(exoID)
+            if let slug = desc.openrouterId, modelIdentifiersMatch(slug, requested) {
+                return exoID
+            }
+            if modelIdentifiersMatch(desc.huggingFaceRepo, requested) {
+                return exoID
+            }
+            if modelIdentifiersMatch(desc.id, requested) {
+                return exoID
+            }
+        }
+        return nil
     }
 
     private func fetchData(path: String) async throws -> Data {

@@ -270,7 +270,7 @@ public actor WANDiscoveryService {
     private func startDiscoveryPolling() {
         discoveryPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                 guard let self = self, !Task.isCancelled else { return }
                 try? await self.relayClient.discover()
             }
@@ -281,7 +281,7 @@ public actor WANDiscoveryService {
         reregistrationTask = Task { [weak self] in
             while !Task.isCancelled {
                 // Re-register every 4 minutes (before 5-minute TTL expires)
-                try? await Task.sleep(for: .seconds(240))
+                try? await Task.sleep(nanoseconds: 240 * 1_000_000_000)
                 guard let self = self, !Task.isCancelled else { return }
                 let caps = await self.localCapabilities ?? capabilities
                 try? await self.relayClient.register(capabilities: caps)

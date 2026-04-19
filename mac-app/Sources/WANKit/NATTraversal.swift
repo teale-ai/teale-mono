@@ -220,7 +220,7 @@ public actor NATTraversal {
             }
 
             group.addTask {
-                try await Task.sleep(for: .seconds(self.timeoutSeconds))
+                try await Task.sleep(nanoseconds: UInt64(self.timeoutSeconds) * 1_000_000_000)
                 throw WANError.timeout
             }
 

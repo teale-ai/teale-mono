@@ -563,7 +563,7 @@ public final class WANManager: @unchecked Sendable {
                 guard self.isEnabled, self.connectedPeers[nodeID] == nil else { return }
 
                 self.wanLog("Reconnect attempt \(attempt)/\(maxAttempts) for \(nodeID.prefix(16))... (delay: \(delay)s)")
-                try? await Task.sleep(for: .seconds(delay))
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
                 guard self.isEnabled, self.connectedPeers[nodeID] == nil else { return }
 
                 if let peerInfo = await self.discoveryService?.peer(byNodeID: nodeID) {
@@ -867,7 +867,12 @@ public final class WANManager: @unchecked Sendable {
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 let interval = self?.config?.heartbeatIntervalSeconds ?? 15
-                try? await Task.sleep(for: .seconds(interval))
+                // See ClusterManager.startHeartbeatLoop: Task.sleep(for:)
+                // crashes in swift_task_dealloc under Swift 6.3 on long-
+                // running loops. This loop must stay alive to keep the
+                // gateway's per-device "loaded" flag fresh; without it
+                // the heartbeat-stale check strips supplier eligibility.
+                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
                 guard let self = self else { return }
 
                 let heartbeat = HeartbeatPayload(
@@ -907,7 +912,11 @@ public final class WANManager: @unchecked Sendable {
     private func startHealthCheckLoop() {
         healthCheckTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                // See ClusterManager.startHeartbeatLoop for why we route
+                // through Task.sleep(nanoseconds:) rather than the newer
+                // Task.sleep(for:) — the latter crashes in swift_task_dealloc
+                // under Swift 6.3 on long-running loops.
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                 guard let self = self else { return }
 
                 let now = Date()

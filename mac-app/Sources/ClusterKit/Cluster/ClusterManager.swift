@@ -433,7 +433,13 @@ public final class ClusterManager: @unchecked Sendable {
     private func startHeartbeatLoop() {
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
+                // Avoid Task.sleep(for:) — under Swift 6.3's concurrency
+                // runtime it fatal-errors in swift_task_dealloc for long-
+                // running loops (repro: build release on macOS 26.4.1 +
+                // Swift 6.3.1, process aborts inside the sleep after the
+                // first wake-up). The `nanoseconds:` variant, though marked
+                // deprecated, routes through the older/stabler code path.
+                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
                 guard let self = self else { return }
                 await self.sendHeartbeatNow()
             }
@@ -443,7 +449,7 @@ public final class ClusterManager: @unchecked Sendable {
     private func startHealthCheckLoop() {
         healthCheckTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
                 guard let self = self else { return }
 
                 let updates = await self.healthMonitor.checkHealth(peers: self.peersSnapshot())
@@ -525,7 +531,7 @@ public final class ClusterManager: @unchecked Sendable {
 
         // Auto-close after timeout
         Task {
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
             continuation.finish()
             self.modelQueryContinuation = nil
         }
