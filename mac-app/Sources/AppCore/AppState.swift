@@ -14,6 +14,7 @@ import AgentKit
 import AuthKit
 import WalletKit
 import LlamaCppKit
+import MeshLLMKit
 import TealeNetKit
 import CompilerKit
 import ChatKit
@@ -36,6 +37,11 @@ public final class AppState {
     private static let exoPreferredModelIDKey = "teale.exo_preferred_model_id"
     private static let wanRelayURLKey = "teale.wan_relay_url"
     private static let llamaCppBinaryPathKey = "teale.llamacpp_binary_path"
+    private static let meshLLMEndpointKey = "teale.meshllm_endpoint"
+    private static let meshLLMPortKey = "teale.meshllm_port"
+    private static let meshLLMModelIDKey = "teale.meshllm_model_id"
+    private static let meshLLMBinaryPathKey = "teale.meshllm_binary_path"
+    private static let meshLLMServeArgsKey = "teale.meshllm_serve_args"
 
     // Hardware
     public let hardware: HardwareCapability
@@ -49,6 +55,7 @@ public final class AppState {
     private let localProvider: MLXProvider
     private let exoProvider: ExoProvider
     private let llamaCppProvider: LlamaCppProvider
+    private let meshLLMProvider: MeshLLMProvider
 
     // Compiler (Mixture of Models)
     private var compiler: Compiler?
@@ -212,6 +219,38 @@ public final class AppState {
             Task { await applyInferenceBackendSelection() }
         }
     }
+    public var meshLLMEndpoint: String = UserDefaults.standard.string(forKey: meshLLMEndpointKey) ?? "" {
+        didSet {
+            UserDefaults.standard.set(meshLLMEndpoint, forKey: Self.meshLLMEndpointKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var meshLLMPort: Int = (UserDefaults.standard.object(forKey: meshLLMPortKey) as? Int) ?? 9337 {
+        didSet {
+            UserDefaults.standard.set(meshLLMPort, forKey: Self.meshLLMPortKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var meshLLMModelID: String = UserDefaults.standard.string(forKey: meshLLMModelIDKey) ?? "" {
+        didSet {
+            UserDefaults.standard.set(meshLLMModelID, forKey: Self.meshLLMModelIDKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var meshLLMBinaryPath: String = UserDefaults.standard.string(forKey: meshLLMBinaryPathKey) ?? "" {
+        didSet {
+            UserDefaults.standard.set(meshLLMBinaryPath, forKey: Self.meshLLMBinaryPathKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var meshLLMServeArgs: String = UserDefaults.standard.string(forKey: meshLLMServeArgsKey) ?? "" {
+        didSet {
+            UserDefaults.standard.set(meshLLMServeArgs, forKey: Self.meshLLMServeArgsKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var meshLLMStatusMessage: String = "Mesh-LLM not configured"
+    public var meshLLMDiscoveredModelID: String?
     public var maxStorageGB: Double = UserDefaults.standard.object(forKey: Preferences.maxStorageGB) as? Double ?? 50.0 {
         didSet {
             UserDefaults.standard.set(maxStorageGB, forKey: Preferences.maxStorageGB)
@@ -294,6 +333,8 @@ public final class AppState {
             return "llama.cpp"
         case .exo:
             return "Exo"
+        case .meshLLM:
+            return "Mesh-LLM"
         }
     }
 
@@ -349,12 +390,27 @@ public final class AppState {
             host: "0.0.0.0"
         )
         self.llamaCppProvider = llamaCppProvider
+        let persistedMeshLLMEndpoint = UserDefaults.standard.string(forKey: Self.meshLLMEndpointKey) ?? ""
+        let persistedMeshLLMPort = (UserDefaults.standard.object(forKey: Self.meshLLMPortKey) as? Int) ?? 9337
+        let persistedMeshLLMModelID = UserDefaults.standard.string(forKey: Self.meshLLMModelIDKey) ?? ""
+        let persistedMeshLLMBinary = UserDefaults.standard.string(forKey: Self.meshLLMBinaryPathKey) ?? ""
+        let persistedMeshLLMServeArgsRaw = UserDefaults.standard.string(forKey: Self.meshLLMServeArgsKey) ?? ""
+        let meshLLMProvider = MeshLLMProvider(
+            endpoint: persistedMeshLLMEndpoint.isEmpty ? nil : persistedMeshLLMEndpoint,
+            port: UInt16(clamping: persistedMeshLLMPort),
+            modelID: persistedMeshLLMModelID.isEmpty ? nil : persistedMeshLLMModelID,
+            binary: persistedMeshLLMBinary.isEmpty ? nil : persistedMeshLLMBinary,
+            serveArgs: Self.parseMeshLLMServeArgs(persistedMeshLLMServeArgsRaw)
+        )
+        self.meshLLMProvider = meshLLMProvider
         let initialProvider: any InferenceProvider
         switch initialBackend {
         case .exo:
             initialProvider = exoProvider
         case .llamaCpp:
             initialProvider = llamaCppProvider
+        case .meshLLM:
+            initialProvider = meshLLMProvider
         case .localMLX:
             initialProvider = mlxProvider
         }
@@ -1363,6 +1419,8 @@ public final class AppState {
             return exoProvider
         case .llamaCpp:
             return llamaCppProvider
+        case .meshLLM:
+            return meshLLMProvider
         }
     }
 
@@ -1473,9 +1531,41 @@ public final class AppState {
         await llamaCppProvider.updateConfiguration(
             binaryPath: llamaCppBinaryPath
         )
+        await meshLLMProvider.updateConfiguration(
+            endpoint: meshLLMEndpoint.isEmpty ? nil : meshLLMEndpoint,
+            port: UInt16(clamping: meshLLMPort),
+            modelID: meshLLMModelID.isEmpty ? nil : meshLLMModelID,
+            binary: meshLLMBinaryPath.isEmpty ? nil : meshLLMBinaryPath,
+            serveArgs: Self.parseMeshLLMServeArgs(meshLLMServeArgs)
+        )
         let provider = buildActiveInferenceProvider()
         await engine.setProvider(provider)
         await refreshStatus()
+
+        if inferenceBackend == .meshLLM {
+            await refreshMeshLLMStatus()
+        }
+    }
+
+    /// Probe mesh-llm readiness and auto-discover the model id; surface the
+    /// result to the Settings UI via `meshLLMStatusMessage` /
+    /// `meshLLMDiscoveredModelID`.
+    public func refreshMeshLLMStatus() async {
+        do {
+            try await meshLLMProvider.refresh()
+            meshLLMDiscoveredModelID = await meshLLMProvider.resolvedModelID
+            meshLLMStatusMessage = await meshLLMProvider.connectionSummary
+        } catch {
+            meshLLMDiscoveredModelID = nil
+            meshLLMStatusMessage = error.localizedDescription
+        }
+    }
+
+    private static func parseMeshLLMServeArgs(_ raw: String) -> [String] {
+        raw
+            .split(whereSeparator: { $0 == "," || $0.isWhitespace })
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 }
 
@@ -1513,6 +1603,7 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
     case localMLX = "local_mlx"
     case llamaCpp = "llama_cpp"
     case exo = "exo"
+    case meshLLM = "mesh_llm"
 
     public var id: String { rawValue }
 
@@ -1524,6 +1615,8 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
             return "llama.cpp"
         case .exo:
             return "Exo Gateway"
+        case .meshLLM:
+            return "Mesh-LLM"
         }
     }
 }
