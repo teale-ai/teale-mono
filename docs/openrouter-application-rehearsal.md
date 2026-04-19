@@ -10,7 +10,7 @@ dump it, so this draft is a **skeleton to fill, not a finished submission**._
 Do **not** submit until every box is green:
 
 - [ ] `cargo build --workspace --release` clean (all crates, zero warnings if possible)
-- [ ] `teale-gateway` deployed at `gateway.teale.com` with HTTPS + Fly-managed cert
+- [x] `teale-gateway` deployed at `gateway.teale.com` with HTTPS + Fly-managed cert (Let's Encrypt via Fly, status Issued 2026-04-18)
 - [ ] At least 5 Mac supply nodes online with pinned models covering every entry in `models.yaml`
 - [ ] `/v1/models` returns the expected catalog (all models pass per-model fleet floor)
 - [ ] `/v1/chat/completions` streaming works end-to-end from an external curl
