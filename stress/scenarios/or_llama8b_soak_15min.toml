@@ -1,0 +1,19 @@
+name = "or_llama8b_soak_15min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 900
+rps = 1.0
+warmup_seconds = 30
+concurrency_cap = 8
+
+# 15-min sustained on whatever supply is up. tailor512g8 flaps when the
+# Mac login session is idle; 15 min keeps the run short enough that we
+# don't tip any individual node over even if one of them drops mid-test.
+
+[[requests]]
+model = "meta-llama/llama-3.1-8b-instruct"
+weight = 1
+prompt_tokens_mean = 128
+prompt_tokens_stddev = 32
+max_tokens = 64
+streaming = true
