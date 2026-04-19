@@ -153,6 +153,34 @@ public struct ModelCatalog: Sendable {
             popularityRank: 10,
             openrouterId: "meta-llama/llama-4-scout"
         ),
+        ModelDescriptor(
+            id: "qwen3.6-35b-a3b-bf16",
+            name: "Qwen 3.6 35B A3B (MoE, VLM)",
+            huggingFaceRepo: "mlx-community/Qwen3.6-35B-A3B-bf16",
+            parameterCount: "35B",
+            quantization: .fp16,
+            estimatedSizeGB: 70.0,
+            requiredRAMGB: 90.0,
+            family: "Qwen",
+            description: "Qwen 3.6 35B/3B-active MoE with vision, bf16. 96GB+ unified RAM.",
+            popularityRank: 11,
+            openrouterId: "qwen/qwen3.6-35b-a3b"
+        ),
+
+        // XXL models — multi-node exo cluster required
+        ModelDescriptor(
+            id: "deepseek-v3.2-8bit",
+            name: "DeepSeek V3.2 (MoE)",
+            huggingFaceRepo: "mlx-community/DeepSeek-V3.2-8bit",
+            parameterCount: "671B",
+            quantization: .q8,
+            estimatedSizeGB: 704.0,
+            requiredRAMGB: 768.0,
+            family: "DeepSeek",
+            description: "DeepSeek V3.2 MoE (671B total, ~37B active) at 8-bit. Requires multi-Ultra exo cluster.",
+            popularityRank: 12,
+            openrouterId: "deepseek/deepseek-v3.2"
+        ),
     ]
 
     /// Filter models that can run on the given hardware
