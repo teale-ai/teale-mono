@@ -5,5 +5,6 @@ pub mod groups;
 pub mod health;
 pub mod metrics;
 pub mod models;
+pub mod network;
 pub mod privacy;
 pub mod wallet;

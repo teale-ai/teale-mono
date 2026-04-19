@@ -33,12 +33,14 @@ request_timeout_seconds = 300
 # first traffic to a fully-cold instance.
 ttft_deadline_seconds = 60
 max_retries = 1
-# Teale's supply-side WAN stack has no direct node→relay heartbeat — it only
-# re-registers every 240 s (WANDiscovery.startReregistration). 30 s here
-# caused the gateway to flap devices into "stale" almost continuously,
-# dropping eligibility for models that were in fact healthy and loaded.
-# Bump to 300 s to span Teale's register cadence + slack. If we later add
-# a proper node→relay heartbeat forwarded to gateway, restore to 30 s.
-heartbeat_stale_seconds = 300
+# Teale's supply-side WAN stack has no direct node→relay heartbeat — it
+# only re-registers every 240 s (WANDiscovery.startReregistration), and in
+# practice we've observed even that periodic register not reliably reaching
+# the gateway (the Task-based loop appears to silently exit in some Swift
+# 6.3 concurrency paths; needs real fix upstream). Until the re-register is
+# reliable or a proper node→relay heartbeat is added, set this generous so
+# one successful initial register keeps a device eligible for an hour —
+# better than flapping every supplier out of the catalog every 30 s.
+heartbeat_stale_seconds = 3600
 quarantine_seconds = 30
 discover_interval_seconds = 10
