@@ -628,6 +628,11 @@ public final class AppState {
                         try await llamaCppProvider.loadModel(descriptor)
                         engineStatus = .ready(descriptor)
                         loadingPhase = ""
+                        // Advertise to cluster + WAN so the gateway sees this
+                        // auto-loaded model in its registry; otherwise the
+                        // device looks idle until the user picks a model
+                        // manually.
+                        syncAdvertisedLoadedModels()
                     } catch {
                         let msg = "[GGUF] Auto-load failed: \(error.localizedDescription)"
                         FileHandle.standardError.write(Data((msg + "\n").utf8))
@@ -896,7 +901,7 @@ public final class AppState {
             engineStatus = .ready(descriptor)
             UserDefaults.standard.set(descriptor.id, forKey: Preferences.lastLoadedModelID)
             if wanEnabled {
-                await wanManager.updateLocalLoadedModels([descriptor.huggingFaceRepo])
+                await wanManager.updateLocalLoadedModels(descriptor.advertisedId.map { [$0] } ?? [])
             }
         } catch {
             loadingPhase = ""
@@ -955,7 +960,7 @@ public final class AppState {
             UserDefaults.standard.set(descriptor.id, forKey: Preferences.lastLoadedModelID)
             syncAdvertisedLoadedModels()
             if wanEnabled {
-                await wanManager.updateLocalLoadedModels([descriptor.huggingFaceRepo])
+                await wanManager.updateLocalLoadedModels(descriptor.advertisedId.map { [$0] } ?? [])
             }
         } catch {
             loadingPhase = ""
@@ -1101,10 +1106,18 @@ public final class AppState {
         let loadedModels: [String]
         switch engineStatus {
         case .ready(let descriptor):
-            // Prefer the canonical OpenRouter slug so the gateway's
-            // catalog + per-model fleet floor match this device correctly.
-            // Falls back to the HF repo (or local path) for non-catalog models.
-            loadedModels = [descriptor.advertisedId]
+            // Advertise the canonical OpenRouter slug when we have one so
+            // the gateway's catalog + per-model fleet floor match this
+            // device correctly. Skip advertisement for unrecognized
+            // models rather than leaking a filesystem path or a
+            // non-canonical HF repo id that no OpenRouter client will
+            // match.
+            if let advertised = descriptor.advertisedId {
+                loadedModels = [advertised]
+            } else {
+                Self.wanLog("syncAdvertised: descriptor \(descriptor.id) has no openrouterId; skipping advertisement")
+                loadedModels = []
+            }
         default:
             loadedModels = []
         }
@@ -1284,8 +1297,9 @@ public final class AppState {
                 // (model may have loaded before WAN was turned on)
                 let currentEngineStatus = await MainActor.run(body: { String(describing: self.engineStatus) })
                 let loadedModels: [String]
-                if case .ready(let descriptor) = await MainActor.run(body: { self.engineStatus }) {
-                    loadedModels = [descriptor.huggingFaceRepo]
+                if case .ready(let descriptor) = await MainActor.run(body: { self.engineStatus }),
+                   let advertised = descriptor.advertisedId {
+                    loadedModels = [advertised]
                 } else {
                     loadedModels = []
                 }
