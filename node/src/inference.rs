@@ -15,7 +15,7 @@ use tracing::{debug, error, info};
 
 use teale_protocol::openai::ChatCompletionRequest;
 
-use crate::config::{LlamaConfig, MnnConfig};
+use crate::config::{LlamaConfig, MeshConfig, MnnConfig};
 
 /// Bounded channel capacity for streaming chunks back to the dispatcher.
 /// Chosen so a 2048-token response can buffer without blocking, but fast
@@ -34,17 +34,32 @@ pub struct InferenceProxy {
     base_url: String,
     model_id: String,
     client: reqwest::Client,
+    /// Path appended to `base_url` for the readiness probe.
+    /// llama-server exposes `/health`; mesh-llm does not — use `/v1/models` there.
+    health_path: String,
 }
 
 impl InferenceProxy {
     pub fn new(port: u16, model_id: &str) -> Self {
+        Self::with_base_url(format!("http://127.0.0.1:{}", port), model_id, "/health")
+    }
+
+    /// Construct a proxy against an arbitrary base URL with a caller-chosen
+    /// readiness probe path. Used by backends (e.g. mesh-llm) that don't
+    /// expose llama-server's `/health` endpoint but do expose `/v1/models`.
+    pub fn with_base_url(
+        base_url: impl Into<String>,
+        model_id: impl Into<String>,
+        health_path: impl Into<String>,
+    ) -> Self {
         Self {
-            base_url: format!("http://127.0.0.1:{}", port),
-            model_id: model_id.to_string(),
+            base_url: base_url.into(),
+            model_id: model_id.into(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("reqwest client build failed"),
+            health_path: health_path.into(),
         }
     }
 
@@ -52,18 +67,23 @@ impl InferenceProxy {
         vec![self.model_id.clone()]
     }
 
-    /// Wait for backend to become healthy (up to timeout_secs).
+    /// Wait for the backend to become ready (up to timeout_secs), by polling
+    /// the configured health path until it returns 200 OK.
     pub async fn wait_for_health(&self, timeout_secs: u64) -> anyhow::Result<()> {
-        let health_url = format!("{}/health", self.base_url);
+        let health_url = format!("{}{}", self.base_url, self.health_path);
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
 
         loop {
             if tokio::time::Instant::now() > deadline {
-                anyhow::bail!("backend health check timed out after {}s", timeout_secs);
+                anyhow::bail!(
+                    "backend readiness probe ({}) timed out after {}s",
+                    health_url,
+                    timeout_secs
+                );
             }
             match self.client.get(&health_url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    info!("backend is healthy at {}", self.base_url);
+                    info!("backend is ready (probe: {})", health_url);
                     return Ok(());
                 }
                 _ => {
@@ -246,4 +266,66 @@ pub fn spawn_mnn_server(config: &MnnConfig) -> anyhow::Result<Child> {
     }
 
     Ok(child)
+}
+
+/// Spawn mesh-llm as a subprocess. Callers should only invoke this when
+/// `config.binary` is set; if omitted, teale-node attaches to an externally
+/// managed mesh-llm instance instead.
+///
+/// teale-node does not inject `--port` / `--host` — pass those (or `--auto`)
+/// through `serve_args` and ensure they match the connection target
+/// described by `endpoint` / `port`.
+pub fn spawn_mesh_server(config: &MeshConfig, binary: &str) -> anyhow::Result<Child> {
+    info!(
+        "Starting mesh-llm: binary={}, serve_args={:?}",
+        binary, config.serve_args
+    );
+
+    let mut cmd = Command::new(binary);
+    cmd.arg("serve");
+    for arg in &config.serve_args {
+        cmd.arg(arg);
+    }
+
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn mesh-llm at '{}': {}", binary, e))?;
+
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                info!("[mesh-llm] {}", line);
+            }
+        });
+    }
+
+    Ok(child)
+}
+
+/// Query the OpenAI-compatible `/v1/models` endpoint and return the first
+/// model id. Used by the mesh backend when no `model_id` is configured.
+pub async fn fetch_first_model(base_url: &str) -> anyhow::Result<String> {
+    let url = format!("{}/v1/models", base_url);
+    let resp: Value = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("GET {} failed: {}", url, e))?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!("{} returned error: {}", url, e))?
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("{} returned non-JSON body: {}", url, e))?;
+
+    resp.get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|m| m.get("id"))
+        .and_then(|id| id.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("{} returned no models", url))
 }
