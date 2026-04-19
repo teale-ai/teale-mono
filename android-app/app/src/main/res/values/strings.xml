@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand -->
+    <string name="app_name" translatable="false">Teale</string>
+    <string name="ai_name" translatable="false">Teale</string>
+
+    <!-- Bottom-nav tabs -->
+    <string name="tab_chats">Chats</string>
+    <string name="tab_groups">Groups</string>
+    <string name="tab_wallet">Wallet</string>
+    <string name="tab_settings">Settings</string>
+
+    <!-- Chat tab -->
+    <string name="chat_hint">Message Teale</string>
+    <string name="chat_presence_online">AI online · Teale WAN</string>
+    <string name="chat_typing">typing…</string>
+
+    <!-- Generic actions -->
+    <string name="action_send">Send</string>
+    <string name="action_dismiss">Dismiss</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_create">Create</string>
+    <string name="action_back">Back</string>
+
+    <!-- Groups list -->
+    <string name="groups_new">New group</string>
+    <string name="groups_empty_title">No groups yet</string>
+    <string name="groups_empty_desc">Tap + to create a group. Mention @teale to invite the AI into any message.</string>
+    <string name="groups_title_label">Title</string>
+    <plurals name="groups_member_count">
+        <item quantity="one">%1$d member</item>
+        <item quantity="other">%1$d members</item>
+    </plurals>
+
+    <!-- Group chat -->
+    <string name="group_chat_title">Group chat</string>
+    <string name="group_chat_hint">Message · try @teale …</string>
+
+    <!-- Wallet -->
+    <string name="wallet_credits">Teale Credits</string>
+    <string name="wallet_earned">Earned</string>
+    <string name="wallet_spent">Spent</string>
+    <string name="wallet_usdc">USDC</string>
+    <string name="wallet_transactions">Transactions</string>
+    <string name="wallet_empty">No transactions yet.</string>
+
+    <!-- Settings -->
+    <string name="settings_device_id">Device ID</string>
+    <string name="settings_username_label">Username (optional alias)</string>
+    <string name="settings_phone_label">Phone (for contact invites)</string>
+    <string name="settings_model_label">Preferred model</string>
+    <string name="settings_model_supporting">e.g. nousresearch/hermes-3-llama-3.1-8b, google/gemma-3-1b-it</string>
+    <string name="settings_supply_title">Supply inference</string>
+    <string name="settings_supply_on">Earning Teale Credits — llama-server + teale-node running</string>
+    <string name="settings_supply_off">When on, this phone joins the Teale WAN and earns credits.</string>
+    <string name="settings_invite">Invite friend via SMS</string>
+    <string name="settings_scale_title">Distributed inference at scale</string>
+    <string name="settings_scale_body">Teale scales through request-level parallelism: each online phone runs a full small model (Gemma 3 1B, Qwen 2.5 1.5B). The gateway routes each incoming request to one phone. Thousands of phones = thousands of parallel inferences. Phone-mesh sharding for bigger models will land on LAN-local peers (same Wi-Fi) first.</string>
+    <string name="settings_language_title">Language</string>
+    <string name="settings_language_system">System default</string>
+
+    <!-- SMS invite body. %1$s = invite code (first 6 chars of device ID). -->
+    <string name="invite_sms_body">Join me on Teale — multiplayer chat with AI presence. Download: https://teale.com/a · invite code: %1$s</string>
+
+    <!-- Supply foreground-service -->
+    <string name="supply_tile_label">Teale supply</string>
+    <string name="supply_notification_channel">Teale supply</string>
+    <string name="supply_notification_title">Teale: earning credits</string>
+    <string name="supply_notification_text">Inference node online</string>
+
+    <!-- Calendar skill (injected as LLM context; localised so the model
+         replies in the user's language). %1$d = horizon in days. %2$s = the
+         list of events joined by newlines. -->
+    <string name="calendar_permission_not_granted">calendar permission not granted</string>
+    <string name="calendar_event_no_title">(no title)</string>
+    <string name="calendar_event_all_day">all day</string>
+    <string name="calendar_empty_events">no events in the next %1$d days</string>
+    <string name="calendar_reference_header">Upcoming calendar (next %1$d days):\n%2$s</string>
+    <string name="calendar_permission_hint">The user asked about their calendar but the app does not yet have calendar permission. Ask them to grant it in Settings → Apps → Teale.</string>
+
+    <!-- Group-chat AI system prompt. Localised so the model replies in the
+         user's language by default. -->
+    <string name="group_ai_system_prompt">You are Teale, an AI participant in a group chat. Keep replies short (1-3 sentences) and helpful. You are addressed via @teale mentions. Reply in the same language the user is writing in.</string>
+
+    <!-- In-app language picker labels (kept in native script so users can
+         recognise their language even if the UI is currently in another
+         one). -->
+    <string name="lang_en" translatable="false">English</string>
+    <string name="lang_pt_br" translatable="false">Português (Brasil)</string>
+    <string name="lang_zh_cn" translatable="false">简体中文</string>
+    <string name="lang_fil" translatable="false">Filipino</string>
+    <string name="lang_es" translatable="false">Español</string>
+</resources>

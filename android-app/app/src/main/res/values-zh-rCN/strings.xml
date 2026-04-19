@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bottom-nav tabs -->
+    <string name="tab_chats">对话</string>
+    <string name="tab_groups">群聊</string>
+    <string name="tab_wallet">钱包</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- Chat tab -->
+    <string name="chat_hint">发消息给 Teale</string>
+    <string name="chat_presence_online">AI 在线 · Teale 网络</string>
+    <string name="chat_typing">正在输入…</string>
+
+    <!-- Generic actions -->
+    <string name="action_send">发送</string>
+    <string name="action_dismiss">知道了</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_create">创建</string>
+    <string name="action_back">返回</string>
+
+    <!-- Groups list -->
+    <string name="groups_new">新建群聊</string>
+    <string name="groups_empty_title">还没有群聊</string>
+    <string name="groups_empty_desc">点击 + 创建群聊。在任意消息中 @teale 即可邀请 AI 加入。</string>
+    <string name="groups_title_label">名称</string>
+    <plurals name="groups_member_count">
+        <item quantity="other">%1$d 位成员</item>
+    </plurals>
+
+    <!-- Group chat -->
+    <string name="group_chat_title">群聊</string>
+    <string name="group_chat_hint">发消息 · 试试 @teale …</string>
+
+    <!-- Wallet -->
+    <string name="wallet_credits">Teale 积分</string>
+    <string name="wallet_earned">已赚</string>
+    <string name="wallet_spent">已用</string>
+    <string name="wallet_usdc">USDC</string>
+    <string name="wallet_transactions">交易记录</string>
+    <string name="wallet_empty">暂无交易记录。</string>
+
+    <!-- Settings -->
+    <string name="settings_device_id">设备 ID</string>
+    <string name="settings_username_label">用户名（可选别名）</string>
+    <string name="settings_phone_label">手机号（用于邀请联系人）</string>
+    <string name="settings_model_label">首选模型</string>
+    <string name="settings_model_supporting">例如 nousresearch/hermes-3-llama-3.1-8b、google/gemma-3-1b-it</string>
+    <string name="settings_supply_title">提供推理</string>
+    <string name="settings_supply_on">正在赚取 Teale 积分 — llama-server 与 teale-node 运行中</string>
+    <string name="settings_supply_off">开启后，此设备将加入 Teale 网络并赚取积分。</string>
+    <string name="settings_invite">通过短信邀请好友</string>
+    <string name="settings_scale_title">大规模分布式推理</string>
+    <string name="settings_scale_body">Teale 以请求级并行方式扩展：每台在线手机运行一个完整的小模型（Gemma 3 1B、Qwen 2.5 1.5B）。网关将每个请求路由到一台手机。上千台手机 = 上千路并行推理。更大模型将通过同一 Wi-Fi 内的 LAN 近邻手机做分片（sharding）。</string>
+    <string name="settings_language_title">语言</string>
+    <string name="settings_language_system">跟随系统</string>
+
+    <string name="invite_sms_body">来 Teale 和我一起玩 — 多人聊天，AI 常驻。下载：https://teale.com/a · 邀请码：%1$s</string>
+
+    <!-- Supply foreground-service -->
+    <string name="supply_tile_label">Teale 供给</string>
+    <string name="supply_notification_channel">Teale 供给</string>
+    <string name="supply_notification_title">Teale：正在赚取积分</string>
+    <string name="supply_notification_text">推理节点在线</string>
+
+    <!-- Calendar skill -->
+    <string name="calendar_permission_not_granted">尚未授予日历权限</string>
+    <string name="calendar_event_no_title">（无标题）</string>
+    <string name="calendar_event_all_day">全天</string>
+    <string name="calendar_empty_events">未来 %1$d 天内没有事件</string>
+    <string name="calendar_reference_header">接下来的日历（未来 %1$d 天）：\n%2$s</string>
+    <string name="calendar_permission_hint">用户询问了他们的日历，但应用还没有日历权限。请他们在「设置 → 应用 → Teale」中授予。</string>
+
+    <string name="group_ai_system_prompt">你是 Teale，一位群聊中的 AI 参与者。回复保持简短（1–3 句）且有帮助。用户通过 @teale 呼叫你。请用用户所使用的语言回复。</string>
+</resources>

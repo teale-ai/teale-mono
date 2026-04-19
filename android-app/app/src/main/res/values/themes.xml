@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bootstrap theme before Compose mounts. AppCompat parent so
+         AppCompatDelegate.setApplicationLocales() picks up locale changes on
+         restart. Compose Material3 overrides colours at runtime via
+         TealeTheme. -->
+    <style name="Theme.Teale" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

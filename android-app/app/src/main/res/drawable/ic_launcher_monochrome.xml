@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Monochrome variant for Android 13+ themed icons. Single-color silhouette
+  of the brain so the system can tint it to match the user's home-screen
+  theme. Cortex grooves are drawn as *punched-out* holes in the silhouette
+  (even-odd fill rule) so we don't depend on a second color.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M32,36
+            C26,28 34,20 44,22
+            C50,16 62,18 66,26
+            C74,22 84,30 82,40
+            C88,42 90,52 84,58
+            C88,62 86,72 78,72
+            C80,78 72,82 66,78
+            L66,84 L60,84 L60,80
+            C56,82 48,82 44,78
+            C36,80 28,74 30,66
+            C24,64 22,54 26,48
+            C22,44 24,38 32,36 Z"/>
+</vector>

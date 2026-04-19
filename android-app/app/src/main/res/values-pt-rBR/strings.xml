@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Bottom-nav tabs -->
+    <string name="tab_chats">Conversas</string>
+    <string name="tab_groups">Grupos</string>
+    <string name="tab_wallet">Carteira</string>
+    <string name="tab_settings">Configurações</string>
+
+    <!-- Chat tab -->
+    <string name="chat_hint">Mensagem para Teale</string>
+    <string name="chat_presence_online">IA online · Teale WAN</string>
+    <string name="chat_typing">digitando…</string>
+
+    <!-- Generic actions -->
+    <string name="action_send">Enviar</string>
+    <string name="action_dismiss">Descartar</string>
+    <string name="action_cancel">Cancelar</string>
+    <string name="action_create">Criar</string>
+    <string name="action_back">Voltar</string>
+
+    <!-- Groups list -->
+    <string name="groups_new">Novo grupo</string>
+    <string name="groups_empty_title">Nenhum grupo ainda</string>
+    <string name="groups_empty_desc">Toque em + para criar um grupo. Mencione @teale em qualquer mensagem para chamar a IA.</string>
+    <string name="groups_title_label">Título</string>
+    <plurals name="groups_member_count">
+        <item quantity="one">%1$d membro</item>
+        <item quantity="other">%1$d membros</item>
+    </plurals>
+
+    <!-- Group chat -->
+    <string name="group_chat_title">Bate-papo do grupo</string>
+    <string name="group_chat_hint">Mensagem · experimente @teale …</string>
+
+    <!-- Wallet -->
+    <string name="wallet_credits">Créditos Teale</string>
+    <string name="wallet_earned">Ganhos</string>
+    <string name="wallet_spent">Gastos</string>
+    <string name="wallet_usdc">USDC</string>
+    <string name="wallet_transactions">Transações</string>
+    <string name="wallet_empty">Nenhuma transação ainda.</string>
+
+    <!-- Settings -->
+    <string name="settings_device_id">ID do dispositivo</string>
+    <string name="settings_username_label">Nome de usuário (apelido opcional)</string>
+    <string name="settings_phone_label">Telefone (para convites)</string>
+    <string name="settings_model_label">Modelo preferido</string>
+    <string name="settings_model_supporting">ex.: nousresearch/hermes-3-llama-3.1-8b, google/gemma-3-1b-it</string>
+    <string name="settings_supply_title">Fornecer inferência</string>
+    <string name="settings_supply_on">Ganhando créditos Teale — llama-server + teale-node em execução</string>
+    <string name="settings_supply_off">Quando ativado, este telefone entra na rede Teale e ganha créditos.</string>
+    <string name="settings_invite">Convidar amigo por SMS</string>
+    <string name="settings_scale_title">Inferência distribuída em escala</string>
+    <string name="settings_scale_body">A Teale escala em paralelo por requisição: cada telefone online executa um modelo pequeno completo (Gemma 3 1B, Qwen 2.5 1.5B). O gateway encaminha cada requisição para um telefone. Milhares de telefones = milhares de inferências em paralelo. A divisão (sharding) de modelos maiores começará pelos vizinhos de LAN (mesma rede Wi-Fi).</string>
+    <string name="settings_language_title">Idioma</string>
+    <string name="settings_language_system">Padrão do sistema</string>
+
+    <string name="invite_sms_body">Venha para o Teale comigo — bate-papo multiusuário com IA presente. Baixe: https://teale.com/a · código: %1$s</string>
+
+    <!-- Supply foreground-service -->
+    <string name="supply_tile_label">Fornecimento Teale</string>
+    <string name="supply_notification_channel">Fornecimento Teale</string>
+    <string name="supply_notification_title">Teale: ganhando créditos</string>
+    <string name="supply_notification_text">Nó de inferência online</string>
+
+    <!-- Calendar skill -->
+    <string name="calendar_permission_not_granted">permissão de calendário não concedida</string>
+    <string name="calendar_event_no_title">(sem título)</string>
+    <string name="calendar_event_all_day">dia todo</string>
+    <string name="calendar_empty_events">nenhum evento nos próximos %1$d dias</string>
+    <string name="calendar_reference_header">Próximos eventos do calendário (nos próximos %1$d dias):\n%2$s</string>
+    <string name="calendar_permission_hint">O usuário perguntou sobre o calendário dele, mas o app ainda não tem permissão para acessá-lo. Peça para ele conceder em Configurações → Aplicativos → Teale.</string>
+
+    <string name="group_ai_system_prompt">Você é Teale, uma IA participante de um bate-papo em grupo. Mantenha as respostas curtas (1 a 3 frases) e úteis. Você é chamada por menções @teale. Responda no mesmo idioma em que o usuário está escrevendo.</string>
+</resources>
