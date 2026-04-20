@@ -240,3 +240,22 @@ models:
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
     description: "Qwen 2.5 3B — flagship Android/Huawei phone-class model."
     aliases: [qwen2.5-3b-instruct, qwen2.5-3b]
+
+  # --- Virtual meta-model: auto-selects a concrete model at request time ---
+  # Resolves to the smallest catalog model that (a) has healthy supply and
+  # (b) has context_length >= (prompt_tokens_est + max_tokens). Never leaves
+  # the gateway — the outbound payload's `model` field is rewritten to the
+  # chosen concrete ID before dispatch.
+
+  - id: teale/auto
+    display_name: Teale Auto (best-fit routing)
+    owned_by: teale
+    context_length: 262144  # upper bound advertised; actual depends on resolution
+    max_output_tokens: 32768
+    params_b: 0            # unused for virtual
+    pricing_prompt: "0.00000010"
+    pricing_completion: "0.00000020"
+    virtual: true
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Virtual routing model. Teale picks the smallest healthy model that fits your context + max_tokens. Primary model for third-party harnesses (Hermes, OpenClaw)."
+    aliases: [teale-auto, auto]

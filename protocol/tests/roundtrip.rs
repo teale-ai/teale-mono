@@ -32,6 +32,7 @@ fn sample_capabilities() -> NodeCapabilities {
         ptn_ids: None,
         swappable_models: vec!["qwen/qwen3-30b-a3b-instruct-2507".into()],
         max_concurrent_requests: Some(4),
+        effective_context: Some(32768),
     }
 }
 
