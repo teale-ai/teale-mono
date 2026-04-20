@@ -34,7 +34,7 @@ class SettingsStore(private val context: Context) {
     suspend fun setPreferredModel(v: String) = context.dataStore.edit { it[KEY_MODEL] = v }
 
     companion object {
-        const val DEFAULT_MODEL = "nousresearch/hermes-3-llama-3.1-8b"
+        const val DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct"
         private val KEY_USERNAME = stringPreferencesKey("username")
         private val KEY_PHONE = stringPreferencesKey("phone")
         private val KEY_SUPPLY = booleanPreferencesKey("supply_enabled")

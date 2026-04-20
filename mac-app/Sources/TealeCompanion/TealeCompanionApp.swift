@@ -9,38 +9,51 @@ struct TealeCompanionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if let authManager = appState.authManager, authManager.authState.canUseApp {
-                    TabView {
-                        ConversationListView(appState: appState)
-                            .tabItem {
-                                Label("Chats", systemImage: "bubble.left.and.bubble.right.fill")
-                            }
+            rootTabs
+                .task { await appState.initialize() }
+                .onOpenURL { url in handleIncomingURL(url) }
+        }
+    }
 
-                        CompanionWalletView(appState: appState)
-                            .tabItem {
-                                Label("Wallet", systemImage: "creditcard.fill")
-                            }
-
-                        MeTab(appState: appState)
-                            .tabItem {
-                                Label("Me", systemImage: "person.crop.circle.fill")
-                            }
-                    }
-                    .tint(Color.teale)
-                } else if let authManager = appState.authManager {
-                    LoginView(authManager: authManager)
-                } else {
-                    ProgressView("Loading…")
+    // Always present the Teale Network tab so the gateway-backed group chat
+    // works out of the box with nothing beyond the ed25519 device identity.
+    // The legacy Supabase-gated ChatKit tabs only show once the user has
+    // signed in (or chosen anonymous mode), matching the prior behavior.
+    @ViewBuilder
+    private var rootTabs: some View {
+        TabView {
+            #if os(iOS)
+            TealeNetworkTabView()
+                .tabItem {
+                    Label("Teale", systemImage: "brain.head.profile")
                 }
-            }
-            .task {
-                await appState.initialize()
-            }
-            .onOpenURL { url in
-                handleIncomingURL(url)
+            #endif
+
+            if let authManager = appState.authManager, authManager.authState.canUseApp {
+                ConversationListView(appState: appState)
+                    .tabItem {
+                        Label("Chats", systemImage: "bubble.left.and.bubble.right.fill")
+                    }
+
+                CompanionWalletView(appState: appState)
+                    .tabItem {
+                        Label("Wallet", systemImage: "creditcard.fill")
+                    }
+
+                MeTab(appState: appState)
+                    .tabItem {
+                        Label("Me", systemImage: "person.crop.circle.fill")
+                    }
+            } else if let authManager = appState.authManager {
+                // Existing Supabase login still available as a tab rather
+                // than a gate, so the main Teale features are always usable.
+                LoginView(authManager: authManager)
+                    .tabItem {
+                        Label("Sign in", systemImage: "person.crop.circle")
+                    }
             }
         }
+        .tint(Color.teale)
     }
 
     // MARK: - Deep link handling
