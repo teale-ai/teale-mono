@@ -25,7 +25,7 @@ pub const TOKEN_TTL_SECONDS: i64 = 86_400;
 pub const SHARE_KEY_MIN_EXPIRES_IN: i64 = 60; // 1 minute
 pub const SHARE_KEY_MAX_EXPIRES_IN: i64 = 30 * 86_400; // 30 days
 pub const SHARE_KEY_MIN_BUDGET: i64 = 1;
-pub const SHARE_KEY_MAX_BUDGET: i64 = 100_000; // $0.10
+pub const SHARE_KEY_MAX_BUDGET: i64 = 50_000_000; // $50
 pub const SHARE_KEY_MAX_ACTIVE_PER_ISSUER: i64 = 50;
 pub const SHARE_KEY_MAX_LABEL_LEN: usize = 64;
 
