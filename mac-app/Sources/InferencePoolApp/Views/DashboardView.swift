@@ -12,6 +12,9 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // Supply nudge for brand-new installs with nothing loaded
+                SupplyNudgeBanner()
+
                 // Status Header
                 StatusHeaderView()
 
@@ -55,6 +58,64 @@ struct DashboardView: View {
             .padding()
         }
         .navigationTitle(appState.loc("dashboard.title"))
+    }
+}
+
+// MARK: - Supply Nudge
+
+/// Shown at the top of the Dashboard when the user has contributeCompute on
+/// (every UserMode does by default), no model downloaded, no scan results, and
+/// no active download. One-click "Download" starts the popularity-1 catalog
+/// pick; AppState.downloadModel auto-loads when the transfer finishes.
+private struct SupplyNudgeBanner: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        if shouldShow, let starter = starterModel {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "bolt.circle.fill")
+                    .font(.title)
+                    .foregroundStyle(Color.orange)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("You're not supplying yet")
+                        .font(.headline)
+                    Text("Download \(starter.name) (\(Int(starter.requiredRAMGB.rounded())) GB) to start earning credits.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    Task { await appState.downloadModel(starter) }
+                } label: {
+                    Label("Download", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.orange.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
+            )
+        }
+    }
+
+    private var shouldShow: Bool {
+        appState.contributeCompute
+            && appState.downloadedModelIDs.isEmpty
+            && appState.activeDownloads.isEmpty
+            && appState.scannedGGUFModels.isEmpty
+    }
+
+    private var starterModel: ModelDescriptor? {
+        appState.modelManager.catalog.topModels(for: appState.hardware, limit: 1).first
     }
 }
 
