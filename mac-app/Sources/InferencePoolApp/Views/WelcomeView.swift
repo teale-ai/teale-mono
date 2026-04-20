@@ -132,10 +132,17 @@ struct WelcomeView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack {
-            Text("You can change this any time in Settings.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let starter = starterDownloadNote {
+                    Text(starter)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("You can change this any time in Settings.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
             Button {
                 confirm()
@@ -149,6 +156,16 @@ struct WelcomeView: View {
         }
     }
 
+    private var starterDownloadNote: String? {
+        guard appState.downloadedModelIDs.isEmpty,
+              appState.activeDownloads.isEmpty,
+              appState.scannedGGUFModels.isEmpty,
+              let starter = appState.modelManager.catalog
+                .topModels(for: appState.hardware, limit: 1).first
+        else { return nil }
+        return "We'll start downloading \(starter.name) (\(Int(starter.requiredRAMGB.rounded())) GB) in the background."
+    }
+
     private func confirm() {
         guard let mode = selected else { return }
         didConfirm = true
@@ -156,6 +173,22 @@ struct WelcomeView: View {
         appState.contributeCompute = mode.suppliesCompute
         appState.currentView = mode.chatEnabled ? .chat : .dashboard
         appState.onboardingCompleted = true
+        autoDownloadStarterModelIfNeeded()
+    }
+
+    /// Kick off a background download of the top catalog model for this Mac's
+    /// RAM. No-op if the user already has a model downloaded, scanned locally,
+    /// or in progress — those are all signals they're not a brand-new install.
+    /// The download progresses in the Dashboard while the sheet dismisses, and
+    /// auto-loads on completion (see AppState.downloadModel).
+    private func autoDownloadStarterModelIfNeeded() {
+        guard appState.downloadedModelIDs.isEmpty,
+              appState.activeDownloads.isEmpty,
+              appState.scannedGGUFModels.isEmpty,
+              let starter = appState.modelManager.catalog
+                .topModels(for: appState.hardware, limit: 1).first
+        else { return }
+        Task { await appState.downloadModel(starter) }
     }
 
     // MARK: - Hardware-aware recommendation
