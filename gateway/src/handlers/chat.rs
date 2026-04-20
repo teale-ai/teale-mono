@@ -694,6 +694,7 @@ fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::NoEligibleDevice(_) => "no_supply",
         GatewayError::ModelNotFound(_) => "model_not_found",
         GatewayError::NotFound(_) => "not_found",
+        GatewayError::Forbidden(_) => "forbidden",
         GatewayError::BudgetExhausted => "budget_exhausted",
         GatewayError::BadRequest(_) => "bad_request",
         GatewayError::Unauthorized(_) => "unauthorized",

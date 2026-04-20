@@ -21,7 +21,7 @@ use teale_gateway::identity::GatewayIdentity;
 use teale_gateway::ledger;
 use teale_gateway::registry::Registry;
 use teale_gateway::scheduler::Scheduler;
-use teale_gateway::state::AppState;
+use teale_gateway::state::{AppState, ShareKeyIssuers};
 use teale_gateway::{auth, catalog, handlers, metrics, relay_client};
 
 #[derive(Parser)]
@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
     let relay = relay_client::spawn(&config, identity.clone(), registry.clone()).await?;
 
     let tokens = TokenTable::from_env("GATEWAY_TOKENS");
+    let share_key_issuers = ShareKeyIssuers::from_env("GATEWAY_SHARE_KEY_ISSUERS");
 
     let (group_tx, _group_rx) = broadcast::channel(256);
 
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         catalog: Arc::new(catalog_models),
         db: pool.clone(),
         group_tx,
+        share_key_issuers,
     };
 
     // Spawn the Teale Credit availability drip loop.

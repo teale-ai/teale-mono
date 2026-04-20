@@ -62,6 +62,29 @@ pub async fn mint(
     Json(req): Json<MintReq>,
 ) -> Result<Json<ledger::ShareKeyMinted>, GatewayError> {
     let issuer = require_device(&principal)?;
+
+    // Allowlist gate: only configured issuer devices can mint share keys.
+    // Fail-closed when the env var is empty so a deploy without the secret
+    // can't be abused.
+    if state.share_key_issuers.is_empty() {
+        tracing::warn!(
+            device = %issuer,
+            "share-key mint attempted but GATEWAY_SHARE_KEY_ISSUERS is empty"
+        );
+        return Err(GatewayError::Forbidden(
+            "share-key issuance is not configured on this gateway".into(),
+        ));
+    }
+    if !state.share_key_issuers.is_allowed(issuer) {
+        tracing::info!(
+            device = %issuer,
+            "share-key mint rejected — device not in GATEWAY_SHARE_KEY_ISSUERS"
+        );
+        return Err(GatewayError::Forbidden(
+            "this device is not permitted to mint share keys".into(),
+        ));
+    }
+
     let pool = require_pool(&state)?;
     let minted = ledger::mint_share_key(
         pool,
