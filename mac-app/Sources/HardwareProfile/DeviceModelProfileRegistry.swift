@@ -61,6 +61,27 @@ public struct DeviceModelProfileRegistry: Sendable {
             notes: "Qwen3-235B on 512GB Ultra — MoE is memory-efficient, full context"
         ),
 
+        // GLM-5.1 UD-Q4_K_XL (~434GB) on 512GB Ultra — MLA keeps KV cache small,
+        // push per-slot ctx to match the 128K catalog promise. 256K total pool
+        // across 2 parallel slots → 128K per request. KV cache at q8_0 stays
+        // under ~21 GB; leaves ~40 GB headroom on a 512 GB machine.
+        DeviceModelProfile(
+            deviceClass: .ultraDesktop,
+            modelFamily: "GLM",
+            minRAMGB: 256,
+            params: InferenceProfile(
+                contextSize: 262144,
+                kvCacheType: "q8_0",
+                batchSize: 4096,
+                flashAttn: true,
+                mmap: true,
+                parallelSlots: 2,
+                gpuLayers: 999,
+                reasoningOff: true
+            ),
+            notes: "GLM-5.1 Q4 on 512GB Ultra — 128K per-slot context (catalog-promised), 2 concurrent slots"
+        ),
+
         // --- 64-192GB Ultra: mid-tier, must budget carefully ---
         DeviceModelProfile(
             deviceClass: .ultraDesktop,
