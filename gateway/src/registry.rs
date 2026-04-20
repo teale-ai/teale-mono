@@ -116,6 +116,30 @@ pub enum Eligibility {
     Unavailable,
 }
 
+/// Fleet-wide availability tier for a given model. Ordered ready > warm > cold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelAvailability {
+    /// Loaded in RAM on ≥1 healthy device — instant.
+    Ready,
+    /// Weights cached on disk on ≥1 device — seconds to swap in.
+    Warm,
+    /// No device has it, but ≥1 device can fit the estimated size — minutes.
+    Cold,
+    /// No healthy device can fit the model.
+    Unavailable,
+}
+
+impl ModelAvailability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Warm => "warm",
+            Self::Cold => "cold",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 pub struct Registry {
     /// Every known device (even quarantined).
     devices: DashMap<String, DeviceState>,
@@ -279,6 +303,43 @@ impl Registry {
                 }
             })
             .collect()
+    }
+
+    /// Tier of availability for a model across the fleet:
+    ///   Ready — at least one healthy device has it loaded right now
+    ///   Warm  — no one has it loaded, but a device has the weights on disk
+    ///   Cold  — no device has it, but some device could fit it (≥ size_gb)
+    ///   Unavailable — no healthy device can even fit the model
+    ///
+    /// Skips quarantined, unavailable, and stale-heartbeat devices.
+    pub fn model_availability(&self, model_id: &str, size_gb: f64) -> ModelAvailability {
+        let mut any_swappable = false;
+        let mut any_fits = false;
+        for r in self.devices.iter() {
+            let st = r.value();
+            if st.is_quarantined()
+                || !st.capabilities.is_available
+                || st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
+            {
+                continue;
+            }
+            if model_matches_any(model_id, &st.capabilities.loaded_models) {
+                return ModelAvailability::Ready;
+            }
+            if model_matches_any(model_id, &st.capabilities.swappable_models) {
+                any_swappable = true;
+            }
+            if st.capabilities.max_model_size_gb >= size_gb {
+                any_fits = true;
+            }
+        }
+        if any_swappable {
+            ModelAvailability::Warm
+        } else if any_fits {
+            ModelAvailability::Cold
+        } else {
+            ModelAvailability::Unavailable
+        }
     }
 
     /// Count of healthy devices that currently have `model_id` loaded.

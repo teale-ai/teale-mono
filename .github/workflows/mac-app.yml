@@ -13,12 +13,13 @@ on:
 
 jobs:
   swift-build:
-    runs-on: macos-14
+    # macos-14 ships Swift 5.10; mlx-swift-lm requires Swift ≥ 6.1 (macos-15).
+    runs-on: macos-15
     defaults:
       run:
         working-directory: mac-app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: swift build
         run: swift build
       - name: swift test

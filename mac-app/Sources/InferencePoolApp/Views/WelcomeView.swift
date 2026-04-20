@@ -8,6 +8,7 @@ struct WelcomeView: View {
     @Environment(AppState.self) private var appState
     @State private var selected: UserMode?
     @State private var didConfirm = false
+    @State private var wantsStarterDownload = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -132,38 +133,48 @@ struct WelcomeView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 2) {
-                if let starter = starterDownloadNote {
-                    Text(starter)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            if let starter = starterModel {
+                Toggle(isOn: $wantsStarterDownload) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Download \(starter.name) now (\(Int(starter.requiredRAMGB.rounded())) GB)")
+                            .font(.callout)
+                        Text("Needed to supply compute. You can skip and pick a model later in Models.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .toggleStyle(.checkbox)
+            }
+
+            HStack(alignment: .center) {
                 Text("You can change this any time in Settings.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                Spacer()
+                Button {
+                    confirm()
+                } label: {
+                    Text("Continue")
+                        .frame(minWidth: 120)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(selected == nil || didConfirm)
             }
-            Spacer()
-            Button {
-                confirm()
-            } label: {
-                Text("Continue")
-                    .frame(minWidth: 120)
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .disabled(selected == nil || didConfirm)
         }
     }
 
-    private var starterDownloadNote: String? {
+    /// The top catalog pick for this Mac, shown in the opt-in checkbox. `nil`
+    /// when the user already has a model (downloaded, scanned, or in-flight) —
+    /// in that case the checkbox isn't rendered at all.
+    private var starterModel: ModelDescriptor? {
         guard appState.downloadedModelIDs.isEmpty,
               appState.activeDownloads.isEmpty,
-              appState.scannedGGUFModels.isEmpty,
-              let starter = appState.modelManager.catalog
-                .topModels(for: appState.hardware, limit: 1).first
+              appState.scannedGGUFModels.isEmpty
         else { return nil }
-        return "We'll start downloading \(starter.name) (\(Int(starter.requiredRAMGB.rounded())) GB) in the background."
+        return appState.modelManager.catalog
+            .topModels(for: appState.hardware, limit: 1).first
     }
 
     private func confirm() {
@@ -173,22 +184,9 @@ struct WelcomeView: View {
         appState.contributeCompute = mode.suppliesCompute
         appState.currentView = mode.chatEnabled ? .chat : .dashboard
         appState.onboardingCompleted = true
-        autoDownloadStarterModelIfNeeded()
-    }
-
-    /// Kick off a background download of the top catalog model for this Mac's
-    /// RAM. No-op if the user already has a model downloaded, scanned locally,
-    /// or in progress — those are all signals they're not a brand-new install.
-    /// The download progresses in the Dashboard while the sheet dismisses, and
-    /// auto-loads on completion (see AppState.downloadModel).
-    private func autoDownloadStarterModelIfNeeded() {
-        guard appState.downloadedModelIDs.isEmpty,
-              appState.activeDownloads.isEmpty,
-              appState.scannedGGUFModels.isEmpty,
-              let starter = appState.modelManager.catalog
-                .topModels(for: appState.hardware, limit: 1).first
-        else { return }
-        Task { await appState.downloadModel(starter) }
+        if wantsStarterDownload, let starter = starterModel {
+            Task { await appState.downloadModel(starter) }
+        }
     }
 
     // MARK: - Hardware-aware recommendation

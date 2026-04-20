@@ -88,3 +88,23 @@ pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {
 pub fn is_large(params_b: f64) -> bool {
     params_b >= 50.0
 }
+
+/// Rough on-disk / VRAM footprint in GB. Used for "will this fit?" checks
+/// when deciding whether an un-cached model is *potentially* downloadable.
+/// Intentionally conservative — better to over-estimate and hide an
+/// ambiguous case than to promise capacity that doesn't exist.
+pub fn estimated_size_gb(params_b: f64, quantization: Option<&str>) -> f64 {
+    let q = quantization.map(|s| s.to_ascii_uppercase());
+    let bytes_per_param = match q.as_deref() {
+        Some(q) if q.contains("FP16") || q.contains("BF16") => 2.0,
+        Some(q) if q.contains("Q8") || q.contains("8BIT") => 1.1,
+        Some(q) if q.contains("Q6") => 0.75,
+        Some(q) if q.contains("Q5") => 0.65,
+        Some(q) if q.contains("Q4") => 0.55,
+        Some(q) if q.contains("MXFP4") => 0.55,
+        Some(q) if q.contains("Q3") => 0.40,
+        Some(q) if q.contains("Q2") => 0.30,
+        _ => 0.6,
+    };
+    params_b * bytes_per_param
+}

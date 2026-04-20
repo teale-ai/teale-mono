@@ -1,10 +1,13 @@
 pub mod auth;
 pub mod chat;
 pub mod completions;
+pub mod favicon;
 pub mod groups;
 pub mod health;
 pub mod metrics;
 pub mod models;
 pub mod network;
 pub mod privacy;
+pub mod share_keys;
+pub mod try_page;
 pub mod wallet;

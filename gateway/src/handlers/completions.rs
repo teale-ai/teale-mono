@@ -76,8 +76,7 @@ pub async fn completions(
 
     // Delegate to the chat handler (which handles auth, catalog lookup,
     // fleet floor, dispatch, retries, and streaming-usage emission).
-    let response =
-        chat_completions(State(state), Extension(principal), Json(chat_body)).await?;
+    let response = chat_completions(State(state), Extension(principal), Json(chat_body)).await?;
 
     // Transform the chat response back to legacy /v1/completions shape.
     // For streaming (SSE) we leave the content mostly as-is — OR's
