@@ -17,11 +17,13 @@ swap_penalty = 0.3
 tps_weight = 1.0
 
 [scheduler.per_model_floor]
-# 2026-04-19: small=2 restored (meta-llama/llama-3.1-8b-instruct now
-# served by 4 supply nodes). Large stays at 1 until ≥3 supply nodes
-# carry a ≥50B model; raise to 3 then.
+# 2026-04-19: lowered small=1 to re-expose hermes-3-llama-3.1-8b (served only
+# by tailor16, Nous Research's own fine-tune — worth keeping reachable via
+# teale/auto for hermes-agent). Restore to small=2, large>=2 before opening
+# real OpenRouter traffic — single-supplier models will reject under node
+# quarantine or overload.
 large = 1
-small = 2
+small = 1
 
 [reliability]
 request_timeout_seconds = 300

@@ -301,6 +301,7 @@ pub fn build_capabilities(
     model_id: Option<&str>,
     max_concurrent: u32,
     swappable_models: Vec<String>,
+    effective_context: Option<u32>,
 ) -> NodeCapabilities {
     let max_model = hardware.gpu_vram_gb.unwrap_or(hardware.total_ram_gb * 0.75);
 
@@ -312,5 +313,6 @@ pub fn build_capabilities(
         ptn_ids: None,
         swappable_models,
         max_concurrent_requests: Some(max_concurrent),
+        effective_context,
     }
 }

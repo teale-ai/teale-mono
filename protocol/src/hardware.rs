@@ -56,6 +56,16 @@ pub struct NodeCapabilities {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_concurrent_requests: Option<u32>,
+    /// Effective context size (in tokens) the node's loaded backend was
+    /// launched with — i.e. the `--ctx-size` flag to llama-server, or the
+    /// equivalent for MNN/LiteRT. Optional for back-compat: older nodes
+    /// omit it and the gateway falls back to the catalog's `context_length`.
+    #[serde(
+        rename = "effectiveContext",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_context: Option<u32>,
 }
 
 /// Device capability tier. 1 = backbone (Ultra/Max, 64GB+), 4 = phone/SBC.

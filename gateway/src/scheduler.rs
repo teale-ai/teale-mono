@@ -32,10 +32,12 @@ impl Scheduler {
         model_id: &str,
         exclude: &[String],
         registry: &Registry,
+        min_context: Option<u32>,
     ) -> Option<&'a DeviceState> {
         // Two-stage:
         //   1. Filter to eligible, non-excluded, non-overloaded, non-zero-score
-        //      candidates.
+        //      candidates, AND any whose advertised effective_context can't
+        //      cover the request's min_context requirement (when known).
         //   2. Primary sort on in_flight ASC (least-loaded wins). Collect all
         //      tied-best candidates, then pick one at random. Pure least-
         //      in-flight with a deterministic score tiebreak pinned every
@@ -43,7 +45,7 @@ impl Scheduler {
         //      across all candidates (e.g. when requests complete faster
         //      than the next arrives, which is exactly the pattern we
         //      want to handle: 1 RPS with p99 total latency < 4s).
-        let mut viable: Vec<(u32, f64, &DeviceState)> = Vec::new();
+        let mut viable: Vec<(u32, bool, f64, &DeviceState)> = Vec::new();
 
         for d in candidates {
             if exclude.iter().any(|e| e == &d.node_id) {
@@ -55,6 +57,18 @@ impl Scheduler {
                 Eligibility::Swappable => false,
                 _ => continue,
             };
+            // Context filter: if the request declared a min context, drop
+            // any node whose llama-server was launched with --ctx-size below
+            // it. Nodes that omit effective_context are older/legacy — we
+            // trust them (absent == unknown, not unfit), since the field is
+            // additive.
+            if let Some(need) = min_context {
+                if let Some(have) = d.capabilities.effective_context {
+                    if have < need {
+                        continue;
+                    }
+                }
+            }
             let in_flight = registry.in_flight(&d.node_id);
             if in_flight >= self.cfg.max_queue_depth {
                 continue;
@@ -63,21 +77,26 @@ impl Scheduler {
             if score <= 0.0 {
                 continue;
             }
-            viable.push((in_flight, score, d));
+            viable.push((in_flight, loaded, score, d));
         }
 
         if viable.is_empty() {
             return None;
         }
 
-        // Least in-flight wins; score is informational only (we no longer
-        // use it to tiebreak, since the TPS-prior delta dominated the small
-        // headroom penalty and killed spread at low RPS).
-        let min_inflight = viable.iter().map(|(n, _, _)| *n).min()?;
+        // Sort: (1) least in-flight, (2) loaded > swappable, (3) random tiebreak.
+        // Loaded-before-swappable prevents the rare race where a ready node
+        // loses to a node that still needs to swap in the GGUF — the swap
+        // penalty already disadvantages it by score, but score is advisory
+        // here after the primary in_flight sort.
+        let min_inflight = viable.iter().map(|(n, _, _, _)| *n).min()?;
+        let any_loaded = viable
+            .iter()
+            .any(|(n, l, _, _)| *n == min_inflight && *l);
         let tied: Vec<_> = viable
             .into_iter()
-            .filter(|(n, _, _)| *n == min_inflight)
-            .map(|(_, _, d)| d)
+            .filter(|(n, l, _, _)| *n == min_inflight && (!any_loaded || *l))
+            .map(|(_, _, _, d)| d)
             .collect();
 
         if tied.len() == 1 {
