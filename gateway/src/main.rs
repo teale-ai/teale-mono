@@ -135,7 +135,6 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::chat::chat_completions),
         )
         .route("/v1/completions", post(handlers::completions::completions))
-        .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/network", get(handlers::network::network))
         .route("/v1/wallet/balance", get(handlers::wallet::balance))
         .route(
@@ -175,6 +174,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(handlers::health::health))
         .route("/metrics", get(handlers::metrics::metrics))
         .route("/privacy", get(handlers::privacy::privacy))
+        // Public catalog — just metadata + live TTFT/TPS; safe to expose
+        // unauthenticated so share links and curl-based tinkering work.
+        .route("/v1/models", get(handlers::models::list_models))
         .route("/favicon.ico", get(handlers::favicon::favicon_ico))
         .route("/favicon.png", get(handlers::favicon::favicon_png))
         .route("/favicon.svg", get(handlers::favicon::favicon_svg))
