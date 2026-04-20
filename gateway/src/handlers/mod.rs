@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod chat;
 pub mod completions;
+pub mod favicon;
 pub mod groups;
 pub mod health;
 pub mod metrics;
