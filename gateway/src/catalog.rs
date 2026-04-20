@@ -32,6 +32,11 @@ pub struct CatalogModel {
     /// Extra aliases the gateway accepts in the `model` field (e.g. short names).
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Virtual meta-model (e.g. `teale/auto`). Always advertised, never
+    /// dispatched directly — resolved at request time to a concrete model
+    /// via `resolve_auto`.
+    #[serde(default, rename = "virtual")]
+    pub is_virtual: bool,
 }
 
 impl CatalogModel {
@@ -79,4 +84,43 @@ pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {
 /// Floor-category for per-model availability gating.
 pub fn is_large(params_b: f64) -> bool {
     params_b >= 50.0
+}
+
+/// Resolve a virtual model (e.g. `teale/auto`) to a concrete catalog model.
+///
+/// Picks the smallest concrete model (lowest `params_b`) whose
+/// `context_length >= required_ctx` AND whose live supplier count meets
+/// the per-model floor. Returns `None` if no catalog model satisfies both
+/// — caller must translate to 503 `NoEligibleDevice` (strict, per the
+/// project's fallback policy).
+pub fn resolve_auto<'a>(
+    catalog: &'a [CatalogModel],
+    required_ctx: u32,
+    loaded_count: impl Fn(&str) -> u32,
+    floor_small: u32,
+    floor_large: u32,
+) -> Option<&'a CatalogModel> {
+    let mut candidates: Vec<&CatalogModel> = catalog
+        .iter()
+        .filter(|m| !m.is_virtual)
+        .filter(|m| m.context_length >= required_ctx)
+        .filter(|m| {
+            let required = if is_large(m.params_b) {
+                floor_large
+            } else {
+                floor_small
+            };
+            loaded_count(&m.id) >= required
+        })
+        .collect();
+
+    // Prefer smallest params_b (cheapest, frees bigger nodes for harder work).
+    // Tiebreak on context_length desc so we pick the one with the most headroom.
+    candidates.sort_by(|a, b| {
+        a.params_b
+            .partial_cmp(&b.params_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.context_length.cmp(&a.context_length))
+    });
+    candidates.first().copied()
 }

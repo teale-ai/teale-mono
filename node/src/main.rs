@@ -117,11 +117,18 @@ async fn main() -> anyhow::Result<()> {
         swap_model_ids.len()
     );
 
+    let effective_context = match config.backend.as_str() {
+        "litert" => config.litert.as_ref().map(|c| c.context_size),
+        "mnn" => config.mnn.as_ref().map(|c| c.context_size),
+        _ => config.llama.as_ref().map(|c| c.context_size),
+    };
+
     let capabilities = build_capabilities(
         hw,
         Some(&model_id),
         config.node.max_concurrent_requests,
         swap_model_ids,
+        effective_context,
     );
 
     let device_info = build_device_info(&config, &identity, &capabilities);
