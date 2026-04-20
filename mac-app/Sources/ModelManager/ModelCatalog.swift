@@ -181,6 +181,19 @@ public struct ModelCatalog: Sendable {
             popularityRank: 12,
             openrouterId: "deepseek/deepseek-v3.2"
         ),
+        ModelDescriptor(
+            id: "glm-5.1-q8",
+            name: "GLM-5.1 (MoE)",
+            huggingFaceRepo: "unsloth/GLM-5.1-GGUF",
+            parameterCount: "754B",
+            quantization: .q8,
+            estimatedSizeGB: 746.0,
+            requiredRAMGB: 810.0,
+            family: "GLM",
+            description: "Z.ai GLM-5.1 — 754B MoE at Q8_0. Flagship coding quality. Requires dual 512GB Ultra cluster over TB5.",
+            popularityRank: 13,
+            openrouterId: "zai/glm-5.1"
+        ),
     ]
 
     /// Filter models that can run on the given hardware

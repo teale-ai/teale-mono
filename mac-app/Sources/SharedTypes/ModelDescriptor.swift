@@ -103,6 +103,7 @@ public enum OpenRouterIdResolver {
         ("gpt-oss-20b", "openai/gpt-oss-20b"),
         ("mistral-small-3-2-24b", "mistralai/mistral-small-3.2-24b-instruct"),
         ("gemma-3-27b-it", "google/gemma-3-27b-it"),
+        ("glm-5-1", "zai/glm-5.1"),
     ]
 
     public static func resolve(filename: String) -> String? {

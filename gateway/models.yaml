@@ -150,6 +150,19 @@ models:
     description: "DeepSeek V3.2 MoE (671B total, ~37B active). 704 GB on disk at 8-bit; requires multi-Ultra exo cluster."
     aliases: [deepseek-v3.2, deepseek-v3-2, deepseek-v3.2-8bit]
 
+  - id: zai/glm-5.1
+    display_name: GLM-5.1 (MoE)
+    owned_by: zai
+    context_length: 131072
+    max_output_tokens: 16384
+    params_b: 754
+    pricing_prompt: "0.00000025"
+    pricing_completion: "0.00000050"
+    quantization: Q8_0
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Z.ai GLM-5.1 — 754B MoE at Q8_0. Flagship coding quality (Opus 4.6 parity). 746 GB on disk; dual 512GB Ultra cluster over TB5."
+    aliases: [glm-5.1, glm5.1, glm-5, glm5]
+
   # --- Phone-class entries for Android (Pixel) + HarmonyOS (Huawei) supply ---
 
   - id: google/gemma-4-1b-it
