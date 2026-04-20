@@ -48,12 +48,33 @@ pub enum PrincipalKind {
     Static { scope: String },
     /// Device-bound token issued by /v1/auth/device/exchange
     Device { device_id: String },
+    /// Temporary share key minted by a device for community previews.
+    /// Spending debits the issuer's wallet and ticks the key's
+    /// `consumed_credits`; exhaustion/expiry/revoke is enforced in middleware.
+    Share {
+        issuer_device_id: String,
+        key_id: String,
+        /// Snapshot at auth time; `settle_request` re-reads under lock for truth.
+        budget_remaining: i64,
+    },
 }
 
 impl AuthPrincipal {
     pub fn device_id(&self) -> Option<&str> {
         match &self.kind {
             PrincipalKind::Device { device_id } => Some(device_id),
+            _ => None,
+        }
+    }
+
+    /// Returns `(issuer_device_id, key_id)` for share-key principals.
+    pub fn share_key(&self) -> Option<(&str, &str)> {
+        match &self.kind {
+            PrincipalKind::Share {
+                issuer_device_id,
+                key_id,
+                ..
+            } => Some((issuer_device_id.as_str(), key_id.as_str())),
             _ => None,
         }
     }
@@ -126,6 +147,33 @@ pub async fn require_bearer(
                 kind: PrincipalKind::Device { device_id },
             });
             return Ok(next.run(req).await);
+        }
+    }
+
+    // 2b) Share-key match — temporary scoped bearers minted by a device.
+    //     Rejection reasons (expired/revoked/exhausted) short-circuit here
+    //     with the right status; a miss falls through.
+    if let Some(pool) = state.db.as_ref() {
+        match ledger::resolve_share_key(pool, token) {
+            Ok(Some(resolved)) => {
+                let budget_remaining = resolved.remaining();
+                req.extensions_mut().insert(AuthPrincipal {
+                    kind: PrincipalKind::Share {
+                        issuer_device_id: resolved.issuer_device_id,
+                        key_id: resolved.key_id,
+                        budget_remaining,
+                    },
+                });
+                return Ok(next.run(req).await);
+            }
+            Ok(None) => { /* not a share key — fall through */ }
+            Err(ledger::ShareKeyRejection::Exhausted) => {
+                return Err(StatusCode::PAYMENT_REQUIRED);
+            }
+            Err(ledger::ShareKeyRejection::Expired)
+            | Err(ledger::ShareKeyRejection::Revoked) => {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
         }
     }
 

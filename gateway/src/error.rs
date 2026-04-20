@@ -15,6 +15,12 @@ pub enum GatewayError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("{0}")]
+    NotFound(String),
+
+    #[error("share-key budget exhausted")]
+    BudgetExhausted,
+
     #[error("model not found: {0}")]
     ModelNotFound(String),
 
@@ -42,6 +48,8 @@ impl GatewayError {
         match self {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::BudgetExhausted => StatusCode::PAYMENT_REQUIRED,
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
             Self::NoEligibleDevice(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
@@ -56,6 +64,8 @@ impl GatewayError {
         match self {
             Self::Unauthorized(_) => "unauthorized",
             Self::BadRequest(_) => "invalid_request",
+            Self::NotFound(_) => "not_found",
+            Self::BudgetExhausted => "budget_exhausted",
             Self::ModelNotFound(_) => "model_not_found",
             Self::NoEligibleDevice(_) => "model_unavailable",
             Self::Upstream(_) => "upstream_error",

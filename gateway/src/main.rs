@@ -151,6 +151,14 @@ async fn main() -> anyhow::Result<()> {
             "/v1/auth/device/username",
             axum::routing::patch(handlers::auth::set_username),
         )
+        .route(
+            "/v1/auth/keys/share",
+            post(handlers::share_keys::mint).get(handlers::share_keys::list),
+        )
+        .route(
+            "/v1/auth/keys/share/:key_id",
+            axum::routing::delete(handlers::share_keys::revoke),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -166,6 +174,11 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::auth::challenge),
         )
         .route("/v1/auth/device/exchange", post(handlers::auth::exchange))
+        .route(
+            "/v1/auth/keys/share/preview/:token",
+            get(handlers::share_keys::preview),
+        )
+        .route("/try/:token", get(handlers::try_page::try_page))
         .route(
             "/v1/groups/:id/stream",
             get(handlers::groups::stream_messages),

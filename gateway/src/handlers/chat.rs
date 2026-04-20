@@ -72,15 +72,30 @@ pub async fn chat_completions(
     }
 
     let streaming = parsed.stream.unwrap_or(false);
-    let consumer_device_id = principal.device_id().map(|s| s.to_string());
+    let consumer = consumer_principal(&principal);
 
     if streaming {
-        let stream = run_streaming(state, catalog_model, req, consumer_device_id).await?;
+        let stream = run_streaming(state, catalog_model, req, consumer).await?;
         Ok(stream.into_response())
     } else {
-        let json = run_buffered(state, catalog_model, req, consumer_device_id).await?;
+        let json = run_buffered(state, catalog_model, req, consumer).await?;
         Ok(json.into_response())
     }
+}
+
+/// Build the ledger-facing consumer from an authenticated principal.
+/// Static tokens don't settle (they pre-date the credit system), so we
+/// return `None` for them.
+fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::ConsumerPrincipal> {
+    if let Some((issuer, key_id)) = principal.share_key() {
+        return Some(ledger::ConsumerPrincipal::Share {
+            issuer_device_id: issuer.to_string(),
+            key_id: key_id.to_string(),
+        });
+    }
+    principal
+        .device_id()
+        .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
 }
 
 async fn pick_and_dispatch(
@@ -182,7 +197,7 @@ async fn run_streaming(
     state: AppState,
     catalog_model: CatalogModel,
     req_body: Value,
-    consumer_device_id: Option<String>,
+    consumer: Option<ledger::ConsumerPrincipal>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -398,9 +413,9 @@ async fn run_streaming(
 
         // Settle Teale Credit ledger on success.
         if final_status == "ok" {
-            if let (Some(provider), Some(consumer), Some(pool)) = (
+            if let (Some(provider), Some(consumer_p), Some(pool)) = (
                 served_by.as_ref(),
-                consumer_device_id.as_ref(),
+                consumer.as_ref(),
                 state.db.as_ref(),
             ) {
                 let final_tokens = reported_tokens.map(|t| t as u64).unwrap_or(tokens_out).max(1);
@@ -414,9 +429,9 @@ async fn run_streaming(
                     .map(|d| d.node_id)
                     .collect();
                 let request_id = Uuid::new_v4().to_string();
-                match ledger::settle_request(pool, consumer, Some(provider.as_str()), &online, cost, &request_id, &model_id) {
+                match ledger::settle_request(pool, consumer_p, Some(provider.as_str()), &online, cost, &request_id, &model_id) {
                     Ok(()) => info!(
-                        consumer=%consumer,
+                        consumer=%consumer_p.paying_device_id(),
                         provider=%provider,
                         tokens=%final_tokens,
                         cost=%cost,
@@ -453,7 +468,7 @@ async fn run_buffered(
     state: AppState,
     catalog_model: CatalogModel,
     req_body: Value,
-    consumer_device_id: Option<String>,
+    consumer: Option<ledger::ConsumerPrincipal>,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -550,9 +565,7 @@ async fn run_buffered(
                 .inc_by(tokens_out as f64);
 
             // Settle Teale Credit ledger.
-            if let (Some(consumer), Some(pool)) =
-                (consumer_device_id.as_ref(), state.db.as_ref())
-            {
+            if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
                 let cost = ledger::cost_credits(
                     tokens_out.max(1),
                     catalog_model.params_b,
@@ -567,7 +580,7 @@ async fn run_buffered(
                 let request_id = Uuid::new_v4().to_string();
                 if let Err(e) = ledger::settle_request(
                     pool,
-                    consumer,
+                    consumer_p,
                     Some(target_node.as_str()),
                     &online,
                     cost,
@@ -680,6 +693,8 @@ fn error_to_status_label(err: &GatewayError) -> &'static str {
     match err {
         GatewayError::NoEligibleDevice(_) => "no_supply",
         GatewayError::ModelNotFound(_) => "model_not_found",
+        GatewayError::NotFound(_) => "not_found",
+        GatewayError::BudgetExhausted => "budget_exhausted",
         GatewayError::BadRequest(_) => "bad_request",
         GatewayError::Unauthorized(_) => "unauthorized",
         GatewayError::UpstreamTimeout => "timeout",
