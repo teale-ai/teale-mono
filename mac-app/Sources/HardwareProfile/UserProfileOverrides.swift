@@ -9,8 +9,17 @@ import SharedTypes
 public struct UserProfileOverrides: Sendable {
 
     public static var filePath: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        #if os(macOS)
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".teale/profiles.json")
+        #else
+        // iOS sandbox — no $HOME; put it under the app's Application Support.
+        let base = (try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )) ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return base.appendingPathComponent("teale/profiles.json")
+        #endif
     }
 
     /// Load user overrides. Returns empty array if file is missing or invalid.
