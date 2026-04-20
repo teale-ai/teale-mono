@@ -313,6 +313,7 @@
   <footer>
     <div class="tagline">distributed ai inference is the future.</div>
     <div>join the network &rarr; <a href="https://teale.com">teale.com</a></div>
+    <div>follow &rarr; <a href="https://x.com/teale_ai" target="_blank" rel="noopener noreferrer">@teale_ai</a></div>
   </footer>
 </main>
 
@@ -483,6 +484,27 @@
   let clockTimer = null;
   let pollTimer = null;
 
+  // X/Twitter handles: 1–15 ASCII alphanumeric + underscore. If the issuer
+  // display name matches, render as a link to x.com/<name>; otherwise
+  // fall back to plain text (prevents issuers with odd names from
+  // producing a broken or misleading link).
+  const X_HANDLE = /^[A-Za-z0-9_]{1,15}$/;
+  function renderIssuer(name) {
+    const el = $("issuer");
+    el.textContent = "";
+    if (!name) { el.textContent = "anonymous"; return; }
+    if (X_HANDLE.test(name)) {
+      const a = document.createElement("a");
+      a.href = "https://x.com/" + encodeURIComponent(name);
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "@" + name;
+      el.appendChild(a);
+    } else {
+      el.textContent = "@" + name;
+    }
+  }
+
   function render(data) {
     const firstLoad = currentData === null;
     currentData = data;
@@ -499,7 +521,7 @@
     }
 
     $("label").textContent = data.label || "(unlabeled)";
-    $("issuer").textContent = data.issuerDisplayName ? "@" + data.issuerDisplayName : "anonymous";
+    renderIssuer(data.issuerDisplayName);
 
     const budget = data.budgetCredits || 0;
     const used = data.consumedCredits || 0;
