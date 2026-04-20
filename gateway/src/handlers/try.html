@@ -214,12 +214,32 @@
       letter-spacing: 0.12em;
       color: var(--dim);
     }
-    .legend .tag { display: inline-flex; gap: 6px; align-items: baseline; }
-    .legend .tag::before { content: "●"; font-size: 8px; }
-    .legend .ready::before { color: var(--text); }
-    .legend .warm::before  { color: var(--warn); }
-    .legend .cold::before  { color: var(--dim); }
-    .legend .unavailable::before { color: var(--fail); }
+    .legend .tag {
+      display: inline-flex;
+      gap: 6px;
+      align-items: baseline;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+      cursor: pointer;
+      opacity: 0.5;
+    }
+    .legend .tag::before { content: "○"; font-size: 9px; }
+    .legend .tag[aria-pressed="true"] { opacity: 1; }
+    .legend .tag[aria-pressed="true"]::before { content: "●"; font-size: 9px; }
+    .legend .tag.ready[aria-pressed="true"] { color: var(--text); }
+    .legend .tag.ready[aria-pressed="true"]::before { color: var(--text); }
+    .legend .tag.warm[aria-pressed="true"]  { color: var(--warn); }
+    .legend .tag.warm[aria-pressed="true"]::before  { color: var(--warn); }
+    .legend .tag.cold[aria-pressed="true"]  { color: var(--bright); }
+    .legend .tag.cold[aria-pressed="true"]::before  { color: var(--bright); }
+    .legend .tag:hover { opacity: 0.95; }
+    .legend .counts { margin-left: auto; color: var(--dim); opacity: 0.7; }
 
     .sort-row {
       display: flex;
@@ -327,10 +347,11 @@
     </div>
 
     <div class="prompt"><span class="arrow">&gt;</span> available models <span id="modelsHint" class="val"></span></div>
-    <div class="legend" aria-label="availability legend">
-      <span class="tag ready">ready — loaded, instant</span>
-      <span class="tag warm">warm — cached, swap-in</span>
-      <span class="tag cold">cold — downloadable</span>
+    <div class="legend" role="toolbar" aria-label="filter by availability">
+      <button class="tag ready" type="button" data-tier="ready" aria-pressed="true">ready — loaded, instant</button>
+      <button class="tag warm"  type="button" data-tier="warm"  aria-pressed="false">warm — cached, swap-in</button>
+      <button class="tag cold"  type="button" data-tier="cold"  aria-pressed="false">cold — downloadable</button>
+      <span class="counts" id="filterCounts"></span>
     </div>
     <div class="sort-row" role="toolbar" aria-label="sort available models">
       <span class="label">sort:</span>
@@ -470,27 +491,42 @@
   }
 
   function renderModels() {
-    const models = (currentData && currentData.availableModels) || [];
+    const all = (currentData && currentData.availableModels) || [];
     const root = $("models");
     root.textContent = "";
     $("modelsHint").textContent = "";
-    if (!models.length) {
+    if (!all.length) {
       const empty = document.createElement("div");
       empty.className = "model empty";
       empty.textContent = "(catalog empty — gateway has no models loaded)";
       root.appendChild(empty);
+      $("filterCounts").textContent = "";
       return;
     }
-    const counts = models.reduce((acc, m) => {
+    // Update tier counts on the legend — always reflects the full catalog.
+    const counts = all.reduce((acc, m) => {
       acc[m.status] = (acc[m.status] || 0) + 1; return acc;
     }, {});
-    $("modelsHint").textContent =
-      "(" + (counts.ready || 0) + " ready · "
-          + (counts.warm  || 0) + " warm · "
-          + (counts.cold  || 0) + " cold"
-          + (counts.unavailable ? " · " + counts.unavailable + " unavailable" : "")
-          + ")";
-    const sorted = sortModels(models, currentSort);
+    document.querySelectorAll(".legend .tag").forEach((b) => {
+      const t = b.dataset.tier;
+      const c = counts[t] || 0;
+      // strip any prior count suffix, then re-append
+      const base = b.textContent.replace(/\s+\(\d+\)$/, "");
+      b.textContent = base + " (" + c + ")";
+    });
+    const visible = all.filter((m) => activeTiers.has(m.status));
+    const hidden = all.length - visible.length;
+    $("filterCounts").textContent =
+      visible.length + " shown" + (hidden ? " · " + hidden + " hidden" : "");
+    $("modelsHint").textContent = "(" + visible.length + " — click to swap)";
+    if (!visible.length) {
+      const empty = document.createElement("div");
+      empty.className = "model empty";
+      empty.textContent = "(nothing matches the filter — click a tier above to include it)";
+      root.appendChild(empty);
+      return;
+    }
+    const sorted = sortModels(visible, currentSort);
     sorted.forEach((m) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -540,10 +576,24 @@
     });
     renderModels();
   }
+  function toggleTier(tier) {
+    if (activeTiers.has(tier)) {
+      // Never let the user leave zero tiers active; keep at least one.
+      if (activeTiers.size <= 1) return;
+      activeTiers.delete(tier);
+    } else {
+      activeTiers.add(tier);
+    }
+    document.querySelectorAll(".legend .tag").forEach((b) => {
+      b.setAttribute("aria-pressed", activeTiers.has(b.dataset.tier) ? "true" : "false");
+    });
+    renderModels();
+  }
 
   let currentData = null;
   let selectedModel = null;
   let currentSort = "size-asc";
+  let activeTiers = new Set(["ready"]);
   let clockTimer = null;
   let pollTimer = null;
 
@@ -686,6 +736,9 @@
   });
   document.querySelectorAll(".sort-btn").forEach((btn) => {
     btn.addEventListener("click", () => setSort(btn.dataset.sort));
+  });
+  document.querySelectorAll(".legend .tag").forEach((btn) => {
+    btn.addEventListener("click", () => toggleTier(btn.dataset.tier));
   });
 
   if (!token) {
