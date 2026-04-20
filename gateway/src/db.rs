@@ -14,7 +14,7 @@ pub type DbPool = Arc<Mutex<Connection>>;
 pub const INITIAL_MINT_POOL: i64 = 1_000_000_000;
 
 const MIGRATIONS: &[&str] = &[
-    // 001_init.sql inlined — single migration for now
+    // 001_init.sql inlined
     r#"
     CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 
@@ -104,6 +104,24 @@ const MIGRATIONS: &[&str] = &[
     );
 
     CREATE INDEX IF NOT EXISTS idx_group_memory_group ON group_memory(group_id);
+    "#,
+    // 002_share_keys.sql — temporary scoped bearer tokens for community previews.
+    r#"
+    CREATE TABLE IF NOT EXISTS share_keys (
+        key_id TEXT PRIMARY KEY,
+        token TEXT NOT NULL UNIQUE,
+        issuer_device_id TEXT NOT NULL,
+        label TEXT,
+        expires_at INTEGER NOT NULL,
+        budget_credits INTEGER NOT NULL CHECK(budget_credits > 0),
+        consumed_credits INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        FOREIGN KEY (issuer_device_id) REFERENCES devices(device_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_share_keys_issuer
+        ON share_keys(issuer_device_id, created_at DESC);
     "#,
 ];
 

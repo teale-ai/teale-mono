@@ -43,7 +43,7 @@ impl Scheduler {
         //      across all candidates (e.g. when requests complete faster
         //      than the next arrives, which is exactly the pattern we
         //      want to handle: 1 RPS with p99 total latency < 4s).
-        let mut viable: Vec<(u32, f64, &DeviceState)> = Vec::new();
+        let mut viable: Vec<(u32, bool, f64, &DeviceState)> = Vec::new();
 
         for d in candidates {
             if exclude.iter().any(|e| e == &d.node_id) {
@@ -63,7 +63,7 @@ impl Scheduler {
             if score <= 0.0 {
                 continue;
             }
-            viable.push((in_flight, score, d));
+            viable.push((in_flight, loaded, score, d));
         }
 
         if viable.is_empty() {
@@ -73,18 +73,25 @@ impl Scheduler {
         // Least in-flight wins; score is informational only (we no longer
         // use it to tiebreak, since the TPS-prior delta dominated the small
         // headroom penalty and killed spread at low RPS).
-        let min_inflight = viable.iter().map(|(n, _, _)| *n).min()?;
+        let min_inflight = viable.iter().map(|(n, _, _, _)| *n).min()?;
+        // Among the tied set, prefer loaded over swappable — pulling weights
+        // off disk is a multi-second hit, whereas random-picking a swap device
+        // when a loaded one is free throws away that headstart. If any loaded
+        // devices are tied on in_flight, restrict the tiebreak pool to them.
+        let any_loaded = viable
+            .iter()
+            .any(|(n, loaded, _, _)| *n == min_inflight && *loaded);
         let tied: Vec<_> = viable
             .into_iter()
-            .filter(|(n, _, _)| *n == min_inflight)
-            .map(|(_, _, d)| d)
+            .filter(|(n, loaded, _, _)| *n == min_inflight && (!any_loaded || *loaded))
+            .map(|(_, _, _, d)| d)
             .collect();
 
         if tied.len() == 1 {
             return Some(tied[0]);
         }
-        // Randomize the tiebreak so back-to-back picks at steady state
-        // fan out across eligible devices.
+        // Randomize among equivalent picks so back-to-back requests at
+        // steady state fan out across eligible devices.
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
         tied.choose(&mut rng).copied()

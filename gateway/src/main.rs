@@ -21,7 +21,7 @@ use teale_gateway::identity::GatewayIdentity;
 use teale_gateway::ledger;
 use teale_gateway::registry::Registry;
 use teale_gateway::scheduler::Scheduler;
-use teale_gateway::state::AppState;
+use teale_gateway::state::{AppState, ShareKeyIssuers};
 use teale_gateway::{auth, catalog, handlers, metrics, relay_client};
 
 #[derive(Parser)]
@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
     let relay = relay_client::spawn(&config, identity.clone(), registry.clone()).await?;
 
     let tokens = TokenTable::from_env("GATEWAY_TOKENS");
+    let share_key_issuers = ShareKeyIssuers::from_env("GATEWAY_SHARE_KEY_ISSUERS");
 
     let (group_tx, _group_rx) = broadcast::channel(256);
 
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         catalog: Arc::new(catalog_models),
         db: pool.clone(),
         group_tx,
+        share_key_issuers,
     };
 
     // Spawn the Teale Credit availability drip loop.
@@ -119,7 +121,10 @@ async fn main() -> anyhow::Result<()> {
                 .map(|d| d.node_id)
                 .collect()
         });
-        tracing::info!("spawned availability drip loop ({}s)", ledger::DRIP_INTERVAL_SECS);
+        tracing::info!(
+            "spawned availability drip loop ({}s)",
+            ledger::DRIP_INTERVAL_SECS
+        );
     }
 
     // Protected routes — require any valid bearer (static or device).
@@ -132,13 +137,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/network", get(handlers::network::network))
         .route("/v1/wallet/balance", get(handlers::wallet::balance))
-        .route("/v1/wallet/transactions", get(handlers::wallet::transactions))
+        .route(
+            "/v1/wallet/transactions",
+            get(handlers::wallet::transactions),
+        )
         .route("/v1/groups", post(handlers::groups::create_group))
         .route("/v1/groups/mine", get(handlers::groups::list_mine))
-        .route(
-            "/v1/groups/:id/members",
-            post(handlers::groups::add_member),
-        )
+        .route("/v1/groups/:id/members", post(handlers::groups::add_member))
         .route(
             "/v1/groups/:id/messages",
             post(handlers::groups::post_message).get(handlers::groups::list_messages),
@@ -151,6 +156,14 @@ async fn main() -> anyhow::Result<()> {
             "/v1/auth/device/username",
             axum::routing::patch(handlers::auth::set_username),
         )
+        .route(
+            "/v1/auth/keys/share",
+            post(handlers::share_keys::mint).get(handlers::share_keys::list),
+        )
+        .route(
+            "/v1/auth/keys/share/:key_id",
+            axum::routing::delete(handlers::share_keys::revoke),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -161,11 +174,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(handlers::health::health))
         .route("/metrics", get(handlers::metrics::metrics))
         .route("/privacy", get(handlers::privacy::privacy))
-        .route(
-            "/v1/auth/device/challenge",
-            post(handlers::auth::challenge),
-        )
+        .route("/favicon.ico", get(handlers::favicon::favicon_ico))
+        .route("/favicon.png", get(handlers::favicon::favicon_png))
+        .route("/favicon.svg", get(handlers::favicon::favicon_svg))
+        .route("/v1/auth/device/challenge", post(handlers::auth::challenge))
         .route("/v1/auth/device/exchange", post(handlers::auth::exchange))
+        .route(
+            "/v1/auth/keys/share/preview/:token",
+            get(handlers::share_keys::preview),
+        )
+        .route("/try/:token", get(handlers::try_page::try_page))
         .route(
             "/v1/groups/:id/stream",
             get(handlers::groups::stream_messages),
