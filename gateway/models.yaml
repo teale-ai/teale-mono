@@ -158,9 +158,9 @@ models:
     params_b: 754
     pricing_prompt: "0.00000025"
     pricing_completion: "0.00000050"
-    quantization: Q8_0
+    quantization: UD-Q4_K_XL
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
-    description: "Z.ai GLM-5.1 — 754B MoE at Q8_0. Flagship coding quality (Opus 4.6 parity). 746 GB on disk; dual 512GB Ultra cluster over TB5."
+    description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL. Flagship coding quality (Opus 4.6 parity). 434 GB on disk per replica; fits a single 512 GB Ultra, served multi-replica across the fleet."
     aliases: [glm-5.1, glm5.1, glm-5, glm5]
 
   # --- Phone-class entries for Android (Pixel) + HarmonyOS (Huawei) supply ---

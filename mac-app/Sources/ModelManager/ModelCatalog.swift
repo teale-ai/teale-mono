@@ -182,15 +182,15 @@ public struct ModelCatalog: Sendable {
             openrouterId: "deepseek/deepseek-v3.2"
         ),
         ModelDescriptor(
-            id: "glm-5.1-q8",
+            id: "glm-5.1-ud-q4-k-xl",
             name: "GLM-5.1 (MoE)",
             huggingFaceRepo: "unsloth/GLM-5.1-GGUF",
             parameterCount: "754B",
-            quantization: .q8,
-            estimatedSizeGB: 746.0,
-            requiredRAMGB: 810.0,
+            quantization: .q4,
+            estimatedSizeGB: 434.0,
+            requiredRAMGB: 480.0,
             family: "GLM",
-            description: "Z.ai GLM-5.1 — 754B MoE at Q8_0. Flagship coding quality. Requires dual 512GB Ultra cluster over TB5.",
+            description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL. Fits a single 512 GB Mac Studio.",
             popularityRank: 13,
             openrouterId: "zai/glm-5.1"
         ),
