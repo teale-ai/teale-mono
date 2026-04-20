@@ -18,7 +18,7 @@ pub async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> 
             };
             state.registry.loaded_count(&m.id) >= min
         })
-        .map(|m| m.to_entry())
+        .map(|m| m.to_entry_with_metrics(state.model_metrics.snapshot(&m.id)))
         .collect();
 
     Json(ModelsResponse {

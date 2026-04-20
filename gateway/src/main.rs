@@ -106,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         catalog: Arc::new(catalog_models),
         db: pool.clone(),
         group_tx,
+        model_metrics: Arc::new(teale_gateway::model_metrics::ModelMetricsTracker::new()),
     };
 
     // Spawn the Teale Credit availability drip loop.

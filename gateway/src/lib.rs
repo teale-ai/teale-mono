@@ -10,6 +10,7 @@ pub mod handlers;
 pub mod identity;
 pub mod ledger;
 pub mod metrics;
+pub mod model_metrics;
 pub mod registry;
 pub mod relay_client;
 pub mod scheduler;

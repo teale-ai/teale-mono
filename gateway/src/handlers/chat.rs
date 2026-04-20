@@ -435,13 +435,29 @@ async fn run_streaming(
             .observe(started.elapsed().as_secs_f64());
 
         if let Some(ft) = first_token_at {
+            let ttft_ms = ft.duration_since(started).as_millis();
+            let total_ms = started.elapsed().as_millis();
+            let gen_ms = total_ms.saturating_sub(ttft_ms);
             debug!(
                 "request complete: model={} ttft_ms={} total_ms={} tokens_out={}",
-                model_id,
-                ft.duration_since(started).as_millis(),
-                started.elapsed().as_millis(),
-                tokens_out
+                model_id, ttft_ms, total_ms, tokens_out
             );
+            // Record a rolling sample for /v1/models percentile reporting.
+            // Only record successful streams so bad attempts don't poison the
+            // advertised serving speed. Use the supplier-reported token count
+            // when available, falling back to the chunk count.
+            if final_status == "ok" {
+                let completion_tokens = reported_tokens
+                    .map(|t| t as u64)
+                    .unwrap_or(tokens_out)
+                    .max(1);
+                state.model_metrics.record(
+                    &model_id,
+                    ttft_ms as u32,
+                    Some(completion_tokens),
+                    gen_ms as u64,
+                );
+            }
         }
     };
 

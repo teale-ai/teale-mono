@@ -9,6 +9,7 @@ use crate::catalog::CatalogModel;
 use crate::config::Config;
 use crate::db::DbPool;
 use crate::handlers::groups::GroupMessage;
+use crate::model_metrics::ModelMetricsTracker;
 use crate::registry::Registry;
 use crate::relay_client::RelayHandle;
 use crate::scheduler::Scheduler;
@@ -25,4 +26,6 @@ pub struct AppState {
     pub db: Option<DbPool>,
     /// Broadcast channel of group messages for SSE live-stream.
     pub group_tx: broadcast::Sender<GroupMessage>,
+    /// Per-model rolling TTFT/TPS stats, surfaced on `/v1/models`.
+    pub model_metrics: Arc<ModelMetricsTracker>,
 }
