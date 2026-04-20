@@ -22,6 +22,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{AuthPrincipal, PrincipalKind};
+use crate::catalog;
 use crate::db::DbPool;
 use crate::error::GatewayError;
 use crate::ledger;
@@ -164,6 +165,13 @@ pub struct PreviewModel {
     params_b: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     quantization: Option<String>,
+    /// Availability tier computed from live fleet state:
+    /// `ready` (loaded now), `warm` (swappable on disk), `cold` (can fit, not cached),
+    /// or `unavailable` (no device can fit the model).
+    status: &'static str,
+    /// Rough size estimate in GB used to compute `status`. Lets the client
+    /// annotate rows without re-deriving the heuristic.
+    estimated_size_gb: f64,
 }
 
 /// GET /v1/auth/keys/share/preview/:token — public, no auth.
@@ -183,10 +191,19 @@ pub async fn preview(
     let available_models = state
         .catalog
         .iter()
-        .map(|m| PreviewModel {
-            id: m.id.clone(),
-            params_b: m.params_b,
-            quantization: m.quantization.clone(),
+        .map(|m| {
+            let size_gb = catalog::estimated_size_gb(m.params_b, m.quantization.as_deref());
+            let status = state
+                .registry
+                .model_availability(&m.id, size_gb)
+                .as_str();
+            PreviewModel {
+                id: m.id.clone(),
+                params_b: m.params_b,
+                quantization: m.quantization.clone(),
+                status,
+                estimated_size_gb: (size_gb * 10.0).round() / 10.0,
+            }
         })
         .collect();
     Ok(Json(PreviewResponse {

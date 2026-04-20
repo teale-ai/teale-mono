@@ -185,8 +185,41 @@
     .model .id::before { content: "[ "; color: var(--dim); }
     .model .id::after  { content: " ]"; color: var(--dim); }
     .model .meta { color: var(--dim); font-size: 12px; }
+    .model .status {
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      margin-left: 8px;
+      font-weight: 500;
+    }
+    .model .status.ready { color: var(--text); }
+    .model .status.warm  { color: var(--warn); }
+    .model .status.cold  { color: var(--dim); }
+    .model .status.unavailable { color: var(--fail); }
+    .model[data-status="unavailable"] { opacity: 0.5; cursor: not-allowed; }
+    .model[data-status="unavailable"]:hover {
+      border-color: transparent;
+      color: var(--text);
+    }
     .model.empty { color: var(--dim); cursor: default; }
     .model.empty:hover { border-color: transparent; color: var(--dim); }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin: 2px 0 8px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+    }
+    .legend .tag { display: inline-flex; gap: 6px; align-items: baseline; }
+    .legend .tag::before { content: "●"; font-size: 8px; }
+    .legend .ready::before { color: var(--text); }
+    .legend .warm::before  { color: var(--warn); }
+    .legend .cold::before  { color: var(--dim); }
+    .legend .unavailable::before { color: var(--fail); }
 
     .sort-row {
       display: flex;
@@ -294,11 +327,17 @@
     </div>
 
     <div class="prompt"><span class="arrow">&gt;</span> available models <span id="modelsHint" class="val"></span></div>
+    <div class="legend" aria-label="availability legend">
+      <span class="tag ready">ready — loaded, instant</span>
+      <span class="tag warm">warm — cached, swap-in</span>
+      <span class="tag cold">cold — downloadable</span>
+    </div>
     <div class="sort-row" role="toolbar" aria-label="sort available models">
       <span class="label">sort:</span>
       <button class="sort-btn" type="button" data-sort="size-asc" aria-pressed="true">size ↑</button>
       <button class="sort-btn" type="button" data-sort="size-desc" aria-pressed="false">size ↓</button>
       <button class="sort-btn" type="button" data-sort="name" aria-pressed="false">name</button>
+      <button class="sort-btn" type="button" data-sort="status" aria-pressed="false">status</button>
     </div>
     <div class="models" id="models" role="listbox" aria-label="available models"></div>
 
@@ -407,6 +446,7 @@
     });
   }
 
+  const STATUS_RANK = { ready: 0, warm: 1, cold: 2, unavailable: 3 };
   function sortModels(models, mode) {
     const arr = models.slice();
     switch (mode) {
@@ -415,6 +455,12 @@
         break;
       case "name":
         arr.sort((a, b) => (a.id || "").localeCompare(b.id || ""));
+        break;
+      case "status":
+        arr.sort((a, b) => {
+          const d = (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9);
+          return d !== 0 ? d : (a.paramsB || 0) - (b.paramsB || 0);
+        });
         break;
       case "size-asc":
       default:
@@ -435,7 +481,15 @@
       root.appendChild(empty);
       return;
     }
-    $("modelsHint").textContent = "(" + models.length + " — click to swap)";
+    const counts = models.reduce((acc, m) => {
+      acc[m.status] = (acc[m.status] || 0) + 1; return acc;
+    }, {});
+    $("modelsHint").textContent =
+      "(" + (counts.ready || 0) + " ready · "
+          + (counts.warm  || 0) + " warm · "
+          + (counts.cold  || 0) + " cold"
+          + (counts.unavailable ? " · " + counts.unavailable + " unavailable" : "")
+          + ")";
     const sorted = sortModels(models, currentSort);
     sorted.forEach((m) => {
       const btn = document.createElement("button");
@@ -443,6 +497,7 @@
       btn.className = "model";
       btn.setAttribute("role", "option");
       btn.dataset.id = m.id;
+      btn.dataset.status = m.status || "ready";
       const id = document.createElement("span");
       id.className = "id";
       id.textContent = m.id;
@@ -450,7 +505,15 @@
       meta.className = "meta";
       const params = m.paramsB ? m.paramsB + "B" : "";
       const q = m.quantization ? " · " + m.quantization : "";
-      meta.textContent = params + q;
+      const size = m.estimatedSizeGb ? " · ~" + m.estimatedSizeGb + "GB" : "";
+      const metaText = document.createTextNode(params + q + size);
+      meta.appendChild(metaText);
+      if (m.status) {
+        const status = document.createElement("span");
+        status.className = "status " + m.status;
+        status.textContent = m.status;
+        meta.appendChild(status);
+      }
       btn.appendChild(id);
       btn.appendChild(meta);
       btn.addEventListener("click", () => setModel(m.id));
@@ -510,11 +573,22 @@
     currentData = data;
     $("preview").hidden = false;
 
+    // Re-render on every poll so status tags stay fresh as the fleet's
+    // loaded-models set shifts. Selection is preserved across renders.
+    renderModels();
     if (firstLoad) {
-      renderModels();
-      const sorted = sortModels(data.availableModels || [], currentSort);
-      if (sorted.length && !selectedModel) {
-        setModel(sorted[0].id);
+      // Prefer a "ready" (loaded) model as the default so the first curl
+      // the user copies Just Works without a cold-start wait. Fall back
+      // to warm, then cold, then anything.
+      const cands = data.availableModels || [];
+      const bySize = (a, b) => (a.paramsB || 0) - (b.paramsB || 0);
+      const pick =
+        cands.filter(m => m.status === "ready").sort(bySize)[0] ||
+        cands.filter(m => m.status === "warm").sort(bySize)[0] ||
+        cands.filter(m => m.status === "cold").sort(bySize)[0] ||
+        cands[0];
+      if (pick && !selectedModel) {
+        setModel(pick.id);
       } else {
         renderCurl();
       }
