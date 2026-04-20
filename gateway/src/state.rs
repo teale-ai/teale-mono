@@ -59,10 +59,7 @@ mod tests {
 
     #[test]
     fn share_key_issuers_parses_comma_list() {
-        std::env::set_var(
-            "TEST_SKI_OK",
-            "  dev_a ,dev_b,  , dev_c ",
-        );
+        std::env::set_var("TEST_SKI_OK", "  dev_a ,dev_b,  , dev_c ");
         let s = ShareKeyIssuers::from_env("TEST_SKI_OK");
         assert!(s.is_allowed("dev_a"));
         assert!(s.is_allowed("dev_b"));

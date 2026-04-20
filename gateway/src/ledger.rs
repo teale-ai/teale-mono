@@ -22,10 +22,10 @@ pub const CHALLENGE_TTL_SECONDS: i64 = 300;
 pub const TOKEN_TTL_SECONDS: i64 = 86_400;
 
 /// Share-key bounds. Enforced by `mint_share_key`.
-pub const SHARE_KEY_MIN_EXPIRES_IN: i64 = 60;                 // 1 minute
-pub const SHARE_KEY_MAX_EXPIRES_IN: i64 = 30 * 86_400;        // 30 days
+pub const SHARE_KEY_MIN_EXPIRES_IN: i64 = 60; // 1 minute
+pub const SHARE_KEY_MAX_EXPIRES_IN: i64 = 30 * 86_400; // 30 days
 pub const SHARE_KEY_MIN_BUDGET: i64 = 1;
-pub const SHARE_KEY_MAX_BUDGET: i64 = 100_000;                // $0.10
+pub const SHARE_KEY_MAX_BUDGET: i64 = 100_000; // $0.10
 pub const SHARE_KEY_MAX_ACTIVE_PER_ISSUER: i64 = 50;
 pub const SHARE_KEY_MAX_LABEL_LEN: usize = 64;
 
@@ -91,7 +91,9 @@ impl ConsumerPrincipal {
     pub fn paying_device_id(&self) -> &str {
         match self {
             Self::Device(d) => d,
-            Self::Share { issuer_device_id, .. } => issuer_device_id,
+            Self::Share {
+                issuer_device_id, ..
+            } => issuer_device_id,
         }
     }
 }
@@ -680,7 +682,16 @@ pub fn resolve_share_key(
                     consumed_credits, revoked_at
              FROM share_keys WHERE token = ?",
             [token],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .ok();
     drop(conn);
@@ -755,17 +766,30 @@ pub fn revoke_share_key(
     Ok(n > 0)
 }
 
+/// Columns pulled from the `share_keys` row during a public preview:
+/// `(label, budget_credits, consumed_credits, expires_at, issuer_device_id, revoked_at)`.
+type PreviewRow = (Option<String>, i64, i64, i64, String, Option<i64>);
+
 /// Public preview — no auth required. Looks up a key by token and exposes
 /// only the fields needed to render the `/try/:token` landing page.
 pub fn preview_share_key(pool: &DbPool, token: &str) -> Option<ShareKeyPreview> {
     let conn = pool.lock();
-    let row: Option<(Option<String>, i64, i64, i64, String, Option<i64>)> = conn
+    let row: Option<PreviewRow> = conn
         .query_row(
             "SELECT sk.label, sk.budget_credits, sk.consumed_credits, sk.expires_at,
                     sk.issuer_device_id, sk.revoked_at
              FROM share_keys sk WHERE sk.token = ?",
             [token],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .ok();
     let (label, budget_credits, consumed_credits, expires_at, issuer_device_id, revoked_at) = row?;
@@ -819,11 +843,7 @@ mod tests {
         }
         record_bonus(&pool, consumer, 10_000).unwrap();
 
-        let online = vec![
-            provider.to_string(),
-            peer1.to_string(),
-            peer2.to_string(),
-        ];
+        let online = vec![provider.to_string(), peer1.to_string(), peer2.to_string()];
         settle_request(
             &pool,
             &ConsumerPrincipal::Device(consumer.to_string()),
@@ -941,7 +961,7 @@ mod tests {
         let entries = list_transactions(&pool, issuer, 10);
         assert!(entries
             .iter()
-            .any(|e| e.note.as_deref().map_or(false, |n| n.contains("share_key:"))));
+            .any(|e| e.note.as_deref().is_some_and(|n| n.contains("share_key:"))));
     }
 
     #[test]
@@ -1070,18 +1090,27 @@ mod tests {
     fn mint_share_key_rejects_bad_bounds() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "a").unwrap();
-        assert!(mint_share_key(&pool, "a", None, 10, 100).is_err(), "too short TTL");
+        assert!(
+            mint_share_key(&pool, "a", None, 10, 100).is_err(),
+            "too short TTL"
+        );
         assert!(
             mint_share_key(&pool, "a", None, SHARE_KEY_MAX_EXPIRES_IN + 1, 100).is_err(),
             "too long TTL"
         );
-        assert!(mint_share_key(&pool, "a", None, 3600, 0).is_err(), "zero budget");
+        assert!(
+            mint_share_key(&pool, "a", None, 3600, 0).is_err(),
+            "zero budget"
+        );
         assert!(
             mint_share_key(&pool, "a", None, 3600, SHARE_KEY_MAX_BUDGET + 1).is_err(),
             "over cap"
         );
         let over = "x".repeat(SHARE_KEY_MAX_LABEL_LEN + 1);
-        assert!(mint_share_key(&pool, "a", Some(&over), 3600, 10).is_err(), "long label");
+        assert!(
+            mint_share_key(&pool, "a", Some(&over), 3600, 10).is_err(),
+            "long label"
+        );
     }
 
     #[test]

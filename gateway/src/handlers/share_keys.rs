@@ -34,9 +34,9 @@ fn require_device(principal: &AuthPrincipal) -> Result<&str, GatewayError> {
         PrincipalKind::Share { .. } => Err(GatewayError::Unauthorized(
             "share keys cannot mint share keys".into(),
         )),
-        PrincipalKind::Static { .. } => Err(GatewayError::Unauthorized(
-            "device bearer required".into(),
-        )),
+        PrincipalKind::Static { .. } => {
+            Err(GatewayError::Unauthorized("device bearer required".into()))
+        }
     }
 }
 
@@ -193,10 +193,7 @@ pub async fn preview(
         .iter()
         .map(|m| {
             let size_gb = catalog::estimated_size_gb(m.params_b, m.quantization.as_deref());
-            let status = state
-                .registry
-                .model_availability(&m.id, size_gb)
-                .as_str();
+            let status = state.registry.model_availability(&m.id, size_gb).as_str();
             PreviewModel {
                 id: m.id.clone(),
                 params_b: m.params_b,

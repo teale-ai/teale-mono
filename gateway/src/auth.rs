@@ -3,8 +3,8 @@
 //! Two token paths are supported in parallel:
 //!
 //! 1. **Static tokens** from env (`GATEWAY_TOKENS`), loaded at startup. Format
-//!    is comma-separated `token:scope` pairs, e.g.:
-//!      `GATEWAY_TOKENS=tok_abc:openrouter,tok_dev:internal`
+//!    is comma-separated `token:scope` pairs, e.g.
+//!    `GATEWAY_TOKENS=tok_abc:openrouter,tok_dev:internal`.
 //!    These keep existing OpenRouter / internal integrations working.
 //!
 //! 2. **Device tokens** issued by `/v1/auth/device/exchange`, persisted in
@@ -170,8 +170,7 @@ pub async fn require_bearer(
             Err(ledger::ShareKeyRejection::Exhausted) => {
                 return Err(StatusCode::PAYMENT_REQUIRED);
             }
-            Err(ledger::ShareKeyRejection::Expired)
-            | Err(ledger::ShareKeyRejection::Revoked) => {
+            Err(ledger::ShareKeyRejection::Expired) | Err(ledger::ShareKeyRejection::Revoked) => {
                 return Err(StatusCode::UNAUTHORIZED);
             }
         }

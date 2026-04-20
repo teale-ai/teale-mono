@@ -121,7 +121,10 @@ async fn main() -> anyhow::Result<()> {
                 .map(|d| d.node_id)
                 .collect()
         });
-        tracing::info!("spawned availability drip loop ({}s)", ledger::DRIP_INTERVAL_SECS);
+        tracing::info!(
+            "spawned availability drip loop ({}s)",
+            ledger::DRIP_INTERVAL_SECS
+        );
     }
 
     // Protected routes — require any valid bearer (static or device).
@@ -134,13 +137,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/network", get(handlers::network::network))
         .route("/v1/wallet/balance", get(handlers::wallet::balance))
-        .route("/v1/wallet/transactions", get(handlers::wallet::transactions))
+        .route(
+            "/v1/wallet/transactions",
+            get(handlers::wallet::transactions),
+        )
         .route("/v1/groups", post(handlers::groups::create_group))
         .route("/v1/groups/mine", get(handlers::groups::list_mine))
-        .route(
-            "/v1/groups/:id/members",
-            post(handlers::groups::add_member),
-        )
+        .route("/v1/groups/:id/members", post(handlers::groups::add_member))
         .route(
             "/v1/groups/:id/messages",
             post(handlers::groups::post_message).get(handlers::groups::list_messages),
@@ -174,10 +177,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/favicon.ico", get(handlers::favicon::favicon_ico))
         .route("/favicon.png", get(handlers::favicon::favicon_png))
         .route("/favicon.svg", get(handlers::favicon::favicon_svg))
-        .route(
-            "/v1/auth/device/challenge",
-            post(handlers::auth::challenge),
-        )
+        .route("/v1/auth/device/challenge", post(handlers::auth::challenge))
         .route("/v1/auth/device/exchange", post(handlers::auth::exchange))
         .route(
             "/v1/auth/keys/share/preview/:token",

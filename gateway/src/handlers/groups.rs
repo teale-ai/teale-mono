@@ -366,9 +366,8 @@ pub async fn stream_messages(
             }
         }
     };
-    Ok(Sse::new(stream).keep_alive(
-        axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)),
-    ))
+    Ok(Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 #[derive(Deserialize)]
@@ -418,7 +417,14 @@ pub async fn remember(
     conn.execute(
         "INSERT INTO group_memory (id, group_id, category, text, source_message_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?)",
-        params![&id, &group_id, req.category.as_ref(), &req.text, req.source_message_id.as_ref(), now],
+        params![
+            &id,
+            &group_id,
+            req.category.as_ref(),
+            &req.text,
+            req.source_message_id.as_ref(),
+            now
+        ],
     )
     .map_err(wrap)?;
     Ok(Json(MemoryEntry {
