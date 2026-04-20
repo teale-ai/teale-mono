@@ -36,6 +36,13 @@ pub struct CatalogModel {
 
 impl CatalogModel {
     pub fn to_entry(&self) -> ModelEntry {
+        self.to_entry_with_metrics(None)
+    }
+
+    pub fn to_entry_with_metrics(
+        &self,
+        metrics: Option<teale_protocol::openai::ModelMetrics>,
+    ) -> ModelEntry {
         ModelEntry {
             id: self.id.clone(),
             object: "model".to_string(),
@@ -58,6 +65,7 @@ impl CatalogModel {
             },
             quantization: self.quantization.clone(),
             description: self.description.clone(),
+            metrics,
         }
     }
 
