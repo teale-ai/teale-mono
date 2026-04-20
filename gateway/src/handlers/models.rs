@@ -1,10 +1,45 @@
-use axum::{extract::State, Json};
+use axum::{
+    extract::State,
+    http::{header, HeaderMap, HeaderValue},
+    response::{IntoResponse, Response},
+    Json,
+};
 use teale_protocol::openai::ModelsResponse;
 
 use crate::catalog::is_large;
 use crate::state::AppState;
 
-pub async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> {
+const CATALOG_HTML: &str = include_str!("models.html");
+
+pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Content negotiation: browsers (Accept: text/html) get the styled catalog
+    // page; curl/SDKs (Accept: */* or application/json) keep the raw JSON.
+    let wants_html = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("text/html"))
+        .unwrap_or(false);
+
+    if wants_html {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+                 script-src 'self' 'unsafe-inline'; img-src 'self' data:",
+            ),
+        );
+        return (h, CATALOG_HTML).into_response();
+    }
+
     let floor = &state.config.scheduler.per_model_floor;
     let entries: Vec<_> = state
         .catalog
@@ -25,4 +60,5 @@ pub async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> 
         object: "list".to_string(),
         data: entries,
     })
+    .into_response()
 }
