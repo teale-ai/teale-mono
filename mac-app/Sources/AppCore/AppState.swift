@@ -678,6 +678,28 @@ public final class AppState {
                     engineStatus = .loadingModel(descriptor)
                     loadingPhase = "Starting llama-server..."
                     do {
+                        // Apply the model-specific profile so auto-loaded GGUFs get
+                        // the same tuned args (ctx-size, parallel slots, KV cache
+                        // type, flash-attn, etc.) that manual loadModel() gets.
+                        // Before this, auto-load used only the device-class default
+                        // baked in at AppState.init — which meant e.g. GLM-5.1 was
+                        // running with a 65K shared ctx across 4 slots (16K per
+                        // request) regardless of its family-specific profile.
+                        let profile = DeviceModelProfileResolver.resolve(
+                            hardware: hardware, model: descriptor,
+                            userOverrides: UserProfileOverrides.load()
+                        )
+                        await llamaCppProvider.updateConfiguration(
+                            gpuLayers: profile.gpuLayers,
+                            contextSize: profile.contextSize,
+                            parallelSlots: profile.parallelSlots,
+                            batchSize: profile.batchSize,
+                            reasoningOff: profile.reasoningOff,
+                            kvCacheType: profile.kvCacheType,
+                            threads: profile.threads,
+                            flashAttn: profile.flashAttn,
+                            mmap: profile.mmap
+                        )
                         try await llamaCppProvider.loadModel(descriptor)
                         engineStatus = .ready(descriptor)
                         loadingPhase = ""
