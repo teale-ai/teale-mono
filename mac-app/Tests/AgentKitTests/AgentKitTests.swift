@@ -35,7 +35,7 @@ final class AgentKitTests: XCTestCase {
                 autoNegotiate: true,
                 maxBudgetPerTransaction: 100.0,
                 delegationRules: [
-                    DelegationRule(capability: "shopping", maxCreditSpend: 50)
+                    DelegationRule(capability: "shopping", maxSpend: 50)
                 ]
             ),
             businessInfo: BusinessInfo(
@@ -52,7 +52,7 @@ final class AgentKitTests: XCTestCase {
 
         XCTAssertEqual(profile, decoded)
         XCTAssertEqual(decoded.businessInfo?.businessName, "Bob's Shop")
-        XCTAssertEqual(decoded.preferences.tone, .formal)
+        XCTAssertEqual(decoded.preferences.tone, CommunicationTone.formal)
         XCTAssertEqual(decoded.preferences.delegationRules.count, 1)
     }
 
@@ -264,7 +264,7 @@ final class AgentKitTests: XCTestCase {
         )
 
         let rules = [
-            DelegationRule(capability: "scheduling", maxCreditSpend: 10.0, requiresApproval: false)
+            DelegationRule(capability: "scheduling", maxSpend: 10.0, requiresApproval: false)
         ]
 
         let preferences = AgentPreferences(autoNegotiate: true)
@@ -278,7 +278,7 @@ final class AgentKitTests: XCTestCase {
             creditBalance: 100.0
         )
 
-        XCTAssertEqual(decision, .autoAccept)
+        XCTAssertEqual(decision, NegotiationDecision.autoAccept)
     }
 
     func testAutoRejectOverBudget() async {
@@ -293,7 +293,7 @@ final class AgentKitTests: XCTestCase {
         )
 
         let rules = [
-            DelegationRule(capability: "scheduling", maxCreditSpend: 10.0, requiresApproval: false)
+            DelegationRule(capability: "scheduling", maxSpend: 10.0, requiresApproval: false)
         ]
 
         let preferences = AgentPreferences(autoNegotiate: true)
@@ -381,7 +381,7 @@ final class AgentKitTests: XCTestCase {
         )
 
         let rules = [
-            DelegationRule(capability: "shopping", maxCreditSpend: 100.0, requiresApproval: true)
+            DelegationRule(capability: "shopping", maxSpend: 100.0, requiresApproval: true)
         ]
 
         let decision = await negotiator.evaluateOffer(
@@ -439,7 +439,7 @@ final class AgentKitTests: XCTestCase {
         )
 
         let rules = [
-            DelegationRule(capability: "scheduling", maxCreditSpend: 100.0, requiresApproval: false)
+            DelegationRule(capability: "scheduling", maxSpend: 100.0, requiresApproval: false)
         ]
 
         let decision = await negotiator.evaluateOffer(
