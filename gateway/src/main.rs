@@ -173,7 +173,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/privacy", get(handlers::privacy::privacy))
         .route("/favicon.ico", get(handlers::favicon::favicon_ico))
         .route("/favicon.png", get(handlers::favicon::favicon_png))
-        .route("/favicon.svg", get(handlers::favicon::favicon_svg))
         .route(
             "/v1/auth/device/challenge",
             post(handlers::auth::challenge),
