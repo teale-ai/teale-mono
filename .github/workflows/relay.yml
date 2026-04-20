@@ -18,8 +18,16 @@ jobs:
       run:
         working-directory: relay
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v1
       - run: bun install
       - run: bun run tsc --noEmit || true   # upgrade to strict once types are tightened
-      - run: bun test
+      # bun test exits non-zero when there are no test files yet. Tolerate
+      # that specific case; any other failure still breaks the build.
+      - name: bun test (tolerant of empty suite)
+        shell: bash
+        run: |
+          set -o pipefail
+          out=$(bun test 2>&1) && { echo "$out"; exit 0; }
+          echo "$out"
+          echo "$out" | grep -q "No tests found" && exit 0 || exit 1
