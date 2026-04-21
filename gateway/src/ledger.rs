@@ -5,10 +5,16 @@
 //! are recorded as append-only rows in the `ledger` table, with a denormalized
 //! `balances` table kept in sync for fast reads.
 //!
-//! Pricing peg: 1 Teale Credit = $0.000001 USD.
-//! Consumer charge formula: cost_usd = (tokens/1000) * complexity * quant / 10_000.
-//! Split: 5% ops / 50% direct provider / 45% availability pool (pro-rata to
-//! all other online devices).
+//! Pricing peg: 1 Teale Credit = $0.000001 USD. Consumer cost per chat turn is
+//! derived from the catalog's per-token USD prices: `credits = round((tokens_in
+//! * prompt_price + tokens_out * completion_price) * 1_000_000)`.
+//!
+//! Settlement split: 70% direct provider / 25% availability pool (pro-rata to
+//! other eligible online devices) / 5% teale network operator. Every balance
+//! is non-negative; if the consumer's balance at settlement time is less than
+//! the computed cost (concurrent-request edge case), all earners' shares are
+//! reduced proportionally to what the consumer can actually pay and the
+//! shortfall is noted on the SPENT row.
 
 use std::sync::Arc;
 
@@ -179,21 +185,21 @@ pub struct BalanceSnapshot {
     pub usdc_cents: i64,
 }
 
-/// Credit cost in Teale credits for a completed chat turn.
-/// Matches mac-app/CreditKit pricing; returned as an integer >=1.
-pub fn cost_credits(tokens_out: u64, params_b: f64, quantization: Option<&str>) -> i64 {
-    let tokens = tokens_out.max(1) as f64;
-    let complexity = params_b.max(0.1) * 0.1;
-    let quant_mult = match quantization {
-        Some(q) if q.eq_ignore_ascii_case("FP16") => 2.0,
-        Some(q) if q.eq_ignore_ascii_case("Q8_0") => 1.5,
-        Some(q) if q.to_uppercase().contains("Q8") => 1.5,
-        _ => 1.0,
-    };
-    // cost_usd = (tokens/1000) * complexity * quant / 10_000
-    let usd = (tokens / 1000.0) * complexity * quant_mult / 10_000.0;
-    // credits = usd / 0.000001 = usd * 1_000_000
-    let credits = (usd * 1_000_000.0).ceil() as i64;
+/// Credit cost in Teale credits for a completed chat turn, driven by the
+/// per-token USD prices in `models.yaml`. Returned as an integer ≥1.
+///
+/// `prompt_price_usd` and `completion_price_usd` are USD *per single token*
+/// (e.g. "0.00000010" from the catalog = $0.10/M tokens). Converting to
+/// credits: 1 credit = $0.000001, so credits_per_token = usd_per_token * 1e6.
+pub fn cost_credits(
+    tokens_in: u64,
+    tokens_out: u64,
+    prompt_price_usd: f64,
+    completion_price_usd: f64,
+) -> i64 {
+    let usd = tokens_in as f64 * prompt_price_usd.max(0.0)
+        + tokens_out as f64 * completion_price_usd.max(0.0);
+    let credits = (usd * 1_000_000.0).round() as i64;
     credits.max(1)
 }
 
@@ -375,9 +381,17 @@ pub fn list_transactions(pool: &DbPool, device_id: &str, limit: i64) -> Vec<Ledg
 
 /// Called after a chat completion. Distributes:
 ///   - consumer SPENT (negative) — debited from the paying device (issuer for share-key spends)
-///   - provider DIRECT_EARN (50% of cost)
-///   - AVAILABILITY_EARN to all other online devices (45%, pro-rata)
-///   - OPS_FEE (5%) internal
+///   - provider DIRECT_EARN (70% of effective cost)
+///   - AVAILABILITY_EARN to all other eligible online devices (25%, pro-rata)
+///   - OPS_FEE (5%) internal — plus any integer-division leftover and the
+///     25% that rolls to ops when no eligible pool recipients exist
+///
+/// Non-negative balance invariant: if the consumer's balance at commit time
+/// is below `cost`, the debit is capped at the available balance and every
+/// earner's share is scaled proportionally (down to `effective_cost`). The
+/// shortfall is recorded on the SPENT row's `note`. The primary defense is
+/// the pre-flight balance check in the chat handler; this guard catches the
+/// concurrent-request edge case.
 ///
 /// When the consumer is a `Share` principal, the key's `consumed_credits` is
 /// incremented inside the same transaction so budget enforcement stays
@@ -394,13 +408,34 @@ pub fn settle_request(
     if cost <= 0 {
         return Ok(());
     }
-    let ops_fee = (cost * 5 + 99) / 100;
-    let direct_earn = cost / 2;
-    let availability_pool = cost - ops_fee - direct_earn;
-
     let paying_device_id = consumer.paying_device_id();
 
-    // Filter provider + paying device out of availability recipients
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    // Probe consumer balance under the transaction lock so we see a consistent
+    // view and can bound the payout to what's actually paid.
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [paying_device_id],
+    )?;
+    let consumer_balance: i64 = tx
+        .query_row(
+            "SELECT balance FROM balances WHERE device_id = ?",
+            [paying_device_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let effective_cost = cost.min(consumer_balance.max(0));
+    let shortfall = cost - effective_cost;
+
+    // Split the effective (actually-payable) amount 70/25/5.
+    let direct_earn = effective_cost * 70 / 100;
+    let pool_share = effective_cost * 25 / 100;
+    let ops_fee = effective_cost - direct_earn - pool_share;
+
+    // Filter provider + paying device out of availability recipients.
     let recipients: Vec<&String> = online_device_ids
         .iter()
         .filter(|d| Some(d.as_str()) != provider_device_id && *d != paying_device_id)
@@ -409,63 +444,73 @@ pub fn settle_request(
     let per_peer = if recipients.is_empty() {
         0
     } else {
-        availability_pool / recipients.len() as i64
+        pool_share / recipients.len() as i64
     };
     let availability_used = per_peer * recipients.len() as i64;
-    let leftover = availability_pool - availability_used; // folds back to ops
+    // Whatever we couldn't split into whole credits folds back to ops; the
+    // entire pool does so if there are no recipients.
+    let pool_leftover = pool_share - availability_used;
 
-    let mut conn = pool.lock();
-    let now = unix_now();
-    let tx = conn.transaction()?;
-    let note = match consumer {
+    let note_base = match consumer {
         ConsumerPrincipal::Device(_) => format!("model={}", model),
         ConsumerPrincipal::Share { key_id, .. } => {
             format!("share_key:{} model={}", key_id, model)
         }
     };
+    let note = if shortfall > 0 {
+        format!("{} shortfall={}", note_base, shortfall)
+    } else {
+        note_base
+    };
 
-    // Consumer SPENT (debited from the paying device — issuer for share spends)
-    tx.execute(
-        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
-        [paying_device_id],
-    )?;
+    // Consumer SPENT — capped at available balance so the debit never drives
+    // the balance negative. We always record the row (even if effective_cost
+    // is 0) so the request is attributable in wallet history.
     tx.execute(
         "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
          VALUES (?, 'SPENT', ?, ?, ?, ?)",
-        params![paying_device_id, -cost, now, request_id, &note],
+        params![paying_device_id, -effective_cost, now, request_id, &note],
     )?;
-    tx.execute(
-        "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
-         WHERE device_id = ?",
-        params![cost, cost, paying_device_id],
-    )?;
+    if effective_cost > 0 {
+        tx.execute(
+            "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
+             WHERE device_id = ?",
+            params![effective_cost, effective_cost, paying_device_id],
+        )?;
+    }
 
     // Share-key: atomically bump consumed_credits so budget checks see spend.
+    // We bump by effective_cost (what was actually paid) to stay consistent
+    // with the SPENT amount and keep the budget from being "consumed" for
+    // credits that never moved.
     if let ConsumerPrincipal::Share { key_id, .. } = consumer {
-        tx.execute(
-            "UPDATE share_keys SET consumed_credits = consumed_credits + ?
-             WHERE key_id = ?",
-            params![cost, key_id],
-        )?;
+        if effective_cost > 0 {
+            tx.execute(
+                "UPDATE share_keys SET consumed_credits = consumed_credits + ?
+                 WHERE key_id = ?",
+                params![effective_cost, key_id],
+            )?;
+        }
     }
 
     // Provider DIRECT_EARN
     if let Some(provider) = provider_device_id {
-        // Ensure provider has a balances row
-        tx.execute(
-            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
-            [provider],
-        )?;
-        tx.execute(
-            "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
-             VALUES (?, 'DIRECT_EARN', ?, ?, ?, ?)",
-            params![provider, direct_earn, now, request_id, &note],
-        )?;
-        tx.execute(
-            "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
-             WHERE device_id = ?",
-            params![direct_earn, direct_earn, provider],
-        )?;
+        if direct_earn > 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+                [provider],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+                 VALUES (?, 'DIRECT_EARN', ?, ?, ?, ?)",
+                params![provider, direct_earn, now, request_id, &note],
+            )?;
+            tx.execute(
+                "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+                 WHERE device_id = ?",
+                params![direct_earn, direct_earn, provider],
+            )?;
+        }
     }
 
     // Availability earns
@@ -488,8 +533,8 @@ pub fn settle_request(
         }
     }
 
-    // Ops fee (+ leftover) — recorded as an internal entry under a sentinel device id
-    let ops_total = ops_fee + leftover;
+    // Ops fee + pool leftover — recorded under the sentinel `__ops__` device.
+    let ops_total = ops_fee + pool_leftover;
     if ops_total > 0 {
         tx.execute(
             "INSERT OR IGNORE INTO balances (device_id) VALUES ('__ops__')",
@@ -855,11 +900,118 @@ mod tests {
         )
         .unwrap();
 
-        // cost=100: ops=5, direct=50, pool=45 → 2 peers get 22 each, leftover=1 to ops
+        // cost=100: direct=70, pool=25, ops=5. Pool 25 split 2 ways = 12 each,
+        // leftover=1 folds back to ops → ops=5+1=6.
         assert_eq!(get_balance(&pool, consumer).balance_credits, 10_000 - 100);
-        assert_eq!(get_balance(&pool, provider).balance_credits, 50);
-        assert_eq!(get_balance(&pool, peer1).balance_credits, 22);
-        assert_eq!(get_balance(&pool, peer2).balance_credits, 22);
+        assert_eq!(get_balance(&pool, provider).balance_credits, 70);
+        assert_eq!(get_balance(&pool, peer1).balance_credits, 12);
+        assert_eq!(get_balance(&pool, peer2).balance_credits, 12);
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 6);
+    }
+
+    #[test]
+    fn settlement_rolls_pool_to_ops_when_no_peers() {
+        // Only consumer + provider online → pool has no recipients; the
+        // 25% rolls into ops along with the 5% fee.
+        let pool = open_in_memory().unwrap();
+        let consumer = "c";
+        let provider = "p";
+        for d in &[consumer, provider] {
+            upsert_device(&pool, d).unwrap();
+        }
+        record_bonus(&pool, consumer, 10_000).unwrap();
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Device(consumer.to_string()),
+            Some(provider),
+            &[provider.to_string()],
+            100,
+            "req-empty",
+            "gemma",
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, consumer).balance_credits, 10_000 - 100);
+        assert_eq!(get_balance(&pool, provider).balance_credits, 70);
+        // ops = 5% fee + 25% unclaimed pool = 30
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 30);
+    }
+
+    #[test]
+    fn settlement_matches_catalog_for_kimi() {
+        // Regression tying cost_credits to the models.yaml pricing: 1M
+        // completion tokens at $1/M = 1,000,000 credits; with a 70/25/5
+        // split and 2 peers, provider earns 700,000 and each peer 125,000.
+        let pool = open_in_memory().unwrap();
+        for d in &["consumer", "provider", "peer1", "peer2"] {
+            upsert_device(&pool, d).unwrap();
+        }
+        // Seed the consumer so they can actually afford the spend.
+        record_bonus(&pool, "consumer", 2_000_000).unwrap();
+
+        // $0.50/M prompt, $1.00/M completion — Kimi K2.6 rates.
+        let kimi_prompt = 0.00000050_f64;
+        let kimi_completion = 0.00000100_f64;
+        let cost = cost_credits(0, 1_000_000, kimi_prompt, kimi_completion);
+        assert_eq!(cost, 1_000_000);
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Device("consumer".into()),
+            Some("provider"),
+            &["provider".into(), "peer1".into(), "peer2".into()],
+            cost,
+            "kimi-req",
+            "kimi-k2.6",
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, "provider").balance_credits, 700_000);
+        assert_eq!(get_balance(&pool, "peer1").balance_credits, 125_000);
+        assert_eq!(get_balance(&pool, "peer2").balance_credits, 125_000);
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 50_000);
+    }
+
+    #[test]
+    fn settlement_caps_at_consumer_balance_on_shortfall() {
+        // Concurrent-request edge case: consumer has 40 credits but cost is
+        // 100. Non-negative rule forces effective_cost = 40. All earners
+        // scale down to the 70/25/5 split of 40 (= 28/10/2), keeping the
+        // ledger balanced; the 60-credit shortfall is noted on the SPENT
+        // row for audit.
+        let pool = open_in_memory().unwrap();
+        for d in &["consumer", "provider", "peer"] {
+            upsert_device(&pool, d).unwrap();
+        }
+        record_bonus(&pool, "consumer", 40).unwrap();
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Device("consumer".into()),
+            Some("provider"),
+            &["provider".into(), "peer".into()],
+            100,
+            "short-req",
+            "gemma",
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, "consumer").balance_credits, 0);
+        // 70% of 40 = 28
+        assert_eq!(get_balance(&pool, "provider").balance_credits, 28);
+        // 25% of 40 = 10, one peer → 10
+        assert_eq!(get_balance(&pool, "peer").balance_credits, 10);
+        // 40 - 28 - 10 = 2 to ops
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 2);
+
+        let entries = list_transactions(&pool, "consumer", 10);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.note.as_deref().is_some_and(|n| n.contains("shortfall=60"))),
+            "shortfall should be noted on the SPENT row"
+        );
     }
 
     #[test]
@@ -880,11 +1032,15 @@ mod tests {
 
     #[test]
     fn cost_for_typical_turn() {
-        // 1000 tokens on 1B q4 = 1000/1000 * 0.1 * 1.0 / 10_000 = 0.00001 usd
-        // = 10 credits
-        assert_eq!(cost_credits(1000, 1.0, Some("Q4_K_M")), 10);
-        // 500 tokens on 8B q4: 500/1000 * 0.8 * 1.0 / 10_000 = 0.00004 = 40 cr
-        assert_eq!(cost_credits(500, 8.0, Some("Q4_K_M")), 40);
+        // Llama 3.1 8B: $0.10/M prompt, $0.20/M completion.
+        let p8b = 0.00000010_f64;
+        let c8b = 0.00000020_f64;
+        // 1000 prompt + 500 completion = 1000*0.1 + 500*0.2 = 200 credits.
+        assert_eq!(cost_credits(1000, 500, p8b, c8b), 200);
+        // Zero tokens still returns the 1-credit floor.
+        assert_eq!(cost_credits(0, 0, p8b, c8b), 1);
+        // 1M completion tokens of an $0.20/M model = 200,000 credits.
+        assert_eq!(cost_credits(0, 1_000_000, p8b, c8b), 200_000);
     }
 
     #[test]
@@ -948,8 +1104,8 @@ mod tests {
 
         // Issuer dropped by 100.
         assert_eq!(get_balance(&pool, issuer).balance_credits, 10_000 - 100);
-        // Provider earned 50% = 50.
-        assert_eq!(get_balance(&pool, provider).balance_credits, 50);
+        // Provider earned 70% of 100 = 70.
+        assert_eq!(get_balance(&pool, provider).balance_credits, 70);
         // Peer earned the availability cut (≥1).
         assert!(get_balance(&pool, peer).balance_credits > 0);
 
@@ -965,7 +1121,12 @@ mod tests {
     }
 
     #[test]
-    fn settle_share_key_allows_issuer_negative() {
+    fn settle_share_key_rejects_when_issuer_insufficient() {
+        // Non-negative policy: if the share-key issuer can't cover the
+        // spend, the settlement caps the debit at the issuer's balance
+        // (zero, here) and earners get nothing beyond what the issuer paid.
+        // The consumed_credits ticker only advances by what was actually
+        // debited so the share-key isn't "used up" by phantom spend.
         let pool = open_in_memory().unwrap();
         let issuer = "alice_poor";
         let provider = "provider";
@@ -973,12 +1134,13 @@ mod tests {
         upsert_device(&pool, provider).unwrap();
 
         let minted = mint_share_key(&pool, issuer, None, 3600, 1_000).unwrap();
-        // No bonus — issuer balance starts at 0. Burn a big cost.
+        // No bonus — issuer balance starts at 0. If settlement ran, the
+        // shortfall guard should pin everything to zero.
         settle_request(
             &pool,
             &ConsumerPrincipal::Share {
                 issuer_device_id: issuer.to_string(),
-                key_id: minted.key_id,
+                key_id: minted.key_id.clone(),
             },
             Some(provider),
             &[provider.to_string()],
@@ -987,7 +1149,15 @@ mod tests {
             "gemma",
         )
         .unwrap();
-        assert!(get_balance(&pool, issuer).balance_credits < 0);
+
+        // Non-negative invariant: issuer never goes below zero.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 0);
+        // Provider earns nothing since nothing was paid.
+        assert_eq!(get_balance(&pool, provider).balance_credits, 0);
+        // consumed_credits didn't advance — key still has its full budget.
+        let resolved = resolve_share_key(&pool, &minted.token).unwrap().unwrap();
+        assert_eq!(resolved.consumed_credits, 0);
+        assert_eq!(resolved.remaining(), 1_000);
     }
 
     #[test]

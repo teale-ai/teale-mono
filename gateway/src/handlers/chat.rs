@@ -74,6 +74,34 @@ pub async fn chat_completions(
     let streaming = parsed.stream.unwrap_or(false);
     let consumer = consumer_principal(&principal);
 
+    // Pre-flight balance check — ledger must never go negative. Reject
+    // before dispatching if the paying device (or share-key issuer) can't
+    // cover a conservative max-cost reservation. See `reservation_credits`
+    // for the reservation shape (rough prompt-tokens estimate plus full
+    // max_tokens at the catalog's completion rate).
+    if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
+        let required = reservation_credits(&catalog_model, &parsed);
+        let paying_device = consumer_p.paying_device_id();
+        let balance = ledger::get_balance(pool, paying_device).balance_credits;
+        if balance < required {
+            return Err(GatewayError::InsufficientCredits { balance, required });
+        }
+        // For share-keys, the per-key budget is also a hard cap: even if the
+        // issuer is rich, a key minted with a small budget must still refuse
+        // the request rather than draining the issuer's wallet beyond the
+        // bearer's share-key allowance.
+        if let ledger::ConsumerPrincipal::Share { key_id, .. } = consumer_p {
+            if let Some(remaining) = share_key_remaining(pool, key_id) {
+                if remaining < required {
+                    return Err(GatewayError::InsufficientCredits {
+                        balance: remaining,
+                        required,
+                    });
+                }
+            }
+        }
+    }
+
     if streaming {
         let stream = run_streaming(state, catalog_model, req, consumer).await?;
         Ok(stream.into_response())
@@ -81,6 +109,51 @@ pub async fn chat_completions(
         let json = run_buffered(state, catalog_model, req, consumer).await?;
         Ok(json.into_response())
     }
+}
+
+/// Conservative cost upper bound in credits for a request, used by the
+/// pre-flight non-negative guard. Uses the catalog's per-token prices and a
+/// cheap `bytes / 4` estimate for prompt tokens (the exact count isn't known
+/// until upstream tokenizes). Completion side uses the request's `max_tokens`
+/// bounded by the catalog's `max_output_tokens`.
+fn reservation_credits(model: &CatalogModel, req: &ChatCompletionRequest) -> i64 {
+    let prompt_bytes: usize = req
+        .messages
+        .iter()
+        .map(|m| match &m.content {
+            Value::String(s) => s.len(),
+            other => other.to_string().len(),
+        })
+        .sum();
+    // ~4 bytes/token is a conservative over-estimate for English; keeps the
+    // reservation on the generous side of actual usage so settlement rarely
+    // hits the shortfall path.
+    let prompt_tokens_est = (prompt_bytes as u64).div_ceil(4) + 16;
+    let max_out = req
+        .max_tokens
+        .map(|v| v as u64)
+        .unwrap_or(model.max_output_tokens as u64)
+        .min(model.max_output_tokens as u64)
+        .max(1);
+    ledger::cost_credits(
+        prompt_tokens_est,
+        max_out,
+        model.prompt_price_usd(),
+        model.completion_price_usd(),
+    )
+}
+
+/// Remaining credits on a share-key (budget - consumed), or None if the key
+/// can't be looked up — in that case we fall through and let the auth layer
+/// handle rejection.
+fn share_key_remaining(pool: &crate::db::DbPool, key_id: &str) -> Option<i64> {
+    let conn = pool.lock();
+    conn.query_row(
+        "SELECT budget_credits - consumed_credits FROM share_keys WHERE key_id = ?",
+        [key_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .ok()
 }
 
 /// Build the ledger-facing consumer from an authenticated principal.
@@ -388,7 +461,7 @@ async fn run_streaming(
         // stream_options.include_usage=true) use that; otherwise synthesize
         // a chunk with our locally-observed completion_tokens.
         if final_status == "ok" {
-            let usage = captured_usage.unwrap_or_else(|| serde_json::json!({
+            let usage = captured_usage.clone().unwrap_or_else(|| serde_json::json!({
                 "prompt_tokens": 0,
                 "completion_tokens": tokens_out,
                 "total_tokens": tokens_out,
@@ -418,11 +491,16 @@ async fn run_streaming(
                 consumer.as_ref(),
                 state.db.as_ref(),
             ) {
-                let final_tokens = reported_tokens.map(|t| t as u64).unwrap_or(tokens_out).max(1);
+                let final_tokens_out = reported_tokens.map(|t| t as u64).unwrap_or(tokens_out).max(1);
+                let prompt_tokens = captured_usage
+                    .as_ref()
+                    .and_then(|u| u.get("prompt_tokens").and_then(|v| v.as_u64()))
+                    .unwrap_or(0);
                 let cost = ledger::cost_credits(
-                    final_tokens,
-                    catalog_model.params_b,
-                    catalog_model.quantization.as_deref(),
+                    prompt_tokens,
+                    final_tokens_out,
+                    catalog_model.prompt_price_usd(),
+                    catalog_model.completion_price_usd(),
                 );
                 let online: Vec<String> = state.registry.snapshot_devices()
                     .into_iter()
@@ -433,7 +511,8 @@ async fn run_streaming(
                     Ok(()) => info!(
                         consumer=%consumer_p.paying_device_id(),
                         provider=%provider,
-                        tokens=%final_tokens,
+                        tokens_in=%prompt_tokens,
+                        tokens_out=%final_tokens_out,
                         cost=%cost,
                         "settled chat (Teale Credits)"
                     ),
@@ -497,6 +576,7 @@ async fn run_buffered(
     let mut tried = 0u32;
     let mut accumulated_text = String::new();
     let mut last_chunk_obj: Option<serde_json::Map<String, Value>> = None;
+    let mut captured_usage: Option<Value> = None;
     let mut tokens_out: u64 = 0;
 
     loop {
@@ -524,6 +604,11 @@ async fn run_buffered(
                         accumulated_text.push_str(&text);
                     }
                     if let Some(obj) = chunk.as_object() {
+                        if let Some(u) = obj.get("usage").cloned() {
+                            if !u.is_null() {
+                                captured_usage = Some(u);
+                            }
+                        }
                         last_chunk_obj = Some(obj.clone());
                     }
                 }
@@ -582,10 +667,15 @@ async fn run_buffered(
 
             // Settle Teale Credit ledger.
             if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
+                let prompt_tokens = captured_usage
+                    .as_ref()
+                    .and_then(|u| u.get("prompt_tokens").and_then(|v| v.as_u64()))
+                    .unwrap_or(0);
                 let cost = ledger::cost_credits(
+                    prompt_tokens,
                     tokens_out.max(1),
-                    catalog_model.params_b,
-                    catalog_model.quantization.as_deref(),
+                    catalog_model.prompt_price_usd(),
+                    catalog_model.completion_price_usd(),
                 );
                 let online: Vec<String> = state
                     .registry
@@ -712,6 +802,7 @@ fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::NotFound(_) => "not_found",
         GatewayError::Forbidden(_) => "forbidden",
         GatewayError::BudgetExhausted => "budget_exhausted",
+        GatewayError::InsufficientCredits { .. } => "insufficient_credits",
         GatewayError::BadRequest(_) => "bad_request",
         GatewayError::Unauthorized(_) => "unauthorized",
         GatewayError::UpstreamTimeout => "timeout",
