@@ -1,8 +1,13 @@
-# TealeNode post-install script — run by the Inno Setup installer after file extraction.
-# Downloads the model, generates config, installs and starts the Windows service.
+# TealeNode post-install script — run by the Inno Setup installer after file
+# extraction. Downloads the model, generates config, installs and starts the
+# Windows service. Also applies power-configuration (powercfg) when the user
+# opted into lid-closed supply on the installer wizard.
 
 param(
-    [string]$InstallDir = "C:\Teale"
+    [string]$InstallDir = "C:\Teale",
+    # When "1", allow supply while lid is closed on AC power. Set by the
+    # installer wizard's Behavior page. Default off for conservative opt-in.
+    [string]$AllowSupplyLidClosed = "1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +24,6 @@ $NssmExe    = Join-Path $BinDir "nssm.exe"
 $LlamaExe   = Join-Path $BinDir "llama-server.exe"
 $TealeExe   = Join-Path $BinDir "teale-node.exe"
 $ConfigFile = Join-Path $ConfigDir "teale-node.toml"
-$ModelUrl   = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
-$ModelFile  = Join-Path $ModelDir "Qwen3-4B-Q4_K_M.gguf"
 
 # --- Create directories ---
 foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
@@ -29,28 +32,85 @@ foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
     }
 }
 
-# --- Download model if not present ---
+# --- RAM gate: pilot is 16 GB+ only ---
+$ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
+if ($ramGB -lt 16) {
+    # Unsupported — show a friendly message and bail cleanly. The installer
+    # already extracted files, but the service won't be installed so they
+    # can safely uninstall via Add/Remove Programs.
+    $msg = "Teale needs 16 GB of RAM or more. This machine has $ramGB GB.`n`n" + `
+           "We are working on support for smaller devices and will let you know when it's ready. " + `
+           "You can uninstall Teale from Settings > Apps for now."
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show($msg, "Teale — Unsupported RAM", "OK", "Information") | Out-Null
+    Write-Host "RAM check failed: $ramGB GB < 16 GB minimum. Exiting without installing service."
+    exit 0
+}
+
+# --- Model configuration (Hermes-3-Llama-3.1-8B Q5_K_M, Q5 ≈ 5.7 GB) ---
+# Primary: Google Drive mirror (pilot). Fallback: HuggingFace direct.
+# The Drive URL is a direct-download converted uc?export=download&id= link;
+# replace the id once the GGUF is uploaded to the pilot partner's Drive.
+$ModelFile = Join-Path $ModelDir "hermes-3-llama-3.1-8b-Q5_K_M.gguf"
+$ModelUrlPrimary  = $env:TEALE_MODEL_URL
+if ([string]::IsNullOrEmpty($ModelUrlPrimary)) {
+    # Default to HuggingFace; operator may set TEALE_MODEL_URL to a Drive
+    # mirror during the pilot if rate-limits bite.
+    $ModelUrlPrimary = "https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B-GGUF/resolve/main/Hermes-3-Llama-3.1-8B.Q5_K_M.gguf"
+}
+$ModelUrlFallback = "https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B-GGUF/resolve/main/Hermes-3-Llama-3.1-8B.Q5_K_M.gguf"
+
+# --- Download model (BITS when available, WebRequest as fallback) ---
 if (-not (Test-Path $ModelFile)) {
-    Write-Host "Downloading Qwen3-4B model (about 2.5 GB)..."
-    try {
-        Start-BitsTransfer -Source $ModelUrl -Destination $ModelFile -Description "Downloading Qwen3-4B Q4_K_M"
-    } catch {
-        Write-Host "BITS unavailable, using Invoke-WebRequest..."
-        Invoke-WebRequest -Uri $ModelUrl -OutFile $ModelFile -UseBasicParsing
+    Write-Host "Downloading Hermes-3-Llama-3.1-8B Q5_K_M (~5.7 GB). This may take a while..."
+    $downloaded = $false
+    foreach ($url in @($ModelUrlPrimary, $ModelUrlFallback)) {
+        if ($downloaded) { break }
+        try {
+            Start-BitsTransfer -Source $url -Destination $ModelFile -Description "Downloading Hermes-3 model"
+            $downloaded = $true
+            Write-Host "  Downloaded from: $url"
+        } catch {
+            Write-Host "  BITS from $url failed: $($_.Exception.Message)"
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $ModelFile -UseBasicParsing
+                $downloaded = $true
+                Write-Host "  Downloaded (WebRequest) from: $url"
+            } catch {
+                Write-Host "  WebRequest from $url failed: $($_.Exception.Message)"
+            }
+        }
     }
+    if (-not $downloaded) {
+        Write-Error "Failed to download model from all configured URLs."
+        exit 1
+    }
+}
+
+# --- Detect Vulkan runtime (deploy-windows.ps1 already downloads the
+#     Vulkan llama-server build; this check just confirms the Vulkan loader
+#     is present on the system so we can set gpu_backend accordingly) ---
+$vulkanDll = "$env:SystemRoot\System32\vulkan-1.dll"
+if (Test-Path $vulkanDll) {
+    $gpuBackend = "vulkan"
+    $gpuLayers = 999
+    Write-Host "Vulkan runtime detected. GPU offload enabled."
+} else {
+    $gpuBackend = "cpu"
+    $gpuLayers = 0
+    Write-Host "No Vulkan runtime found. Falling back to CPU-only inference."
 }
 
 # --- Generate config ---
 $logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
 $threads = [math]::Max(2, $logicalCores - 2)
-$ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
 
 $llamaPath = $LlamaExe.Replace('\', '/')
 $modelPath = $ModelFile.Replace('\', '/')
 
 $tomlContent = @"
 # teale-node configuration -- auto-generated by TealeNode installer
-# Machine: $env:COMPUTERNAME | RAM: $ramGB GB | Cores: $logicalCores
+# Machine: $env:COMPUTERNAME | RAM: $ramGB GB | Cores: $logicalCores | GPU: $gpuBackend
 
 [relay]
 url = "wss://relay.teale.com/ws"
@@ -58,17 +118,34 @@ url = "wss://relay.teale.com/ws"
 [llama]
 binary = "$llamaPath"
 model = "$modelPath"
-gpu_layers = 0
+gpu_layers = $gpuLayers
 context_size = 8192
 port = 11436
 extra_args = ["--threads", "$threads"]
 
 [node]
 display_name = "$env:COMPUTERNAME"
-gpu_backend = "cpu"
+gpu_backend = "$gpuBackend"
 "@
 
 Set-Content -Path $ConfigFile -Value $tomlContent -Encoding UTF8
+Write-Host "Config written to $ConfigFile"
+
+# --- Apply power configuration if user opted into lid-closed supply ---
+if ($AllowSupplyLidClosed -eq "1") {
+    Write-Host "Configuring Windows power plan for lid-closed supply on AC..."
+    # Never sleep on AC. Hibernation also disabled on AC.
+    powercfg /change standby-timeout-ac 0
+    powercfg /change hibernate-timeout-ac 0
+    # Lid close action on AC = 0 (Do Nothing). The GUID below is the
+    # well-known "lid close action" power setting.
+    # Source: https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/power-button-and-lid-settings
+    powercfg /setacvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
+    powercfg /setactive SCHEME_CURRENT
+    Write-Host "Power plan: machine stays awake on AC even with lid closed. Screen can still turn off."
+} else {
+    Write-Host "Lid-closed supply NOT enabled (user did not opt in). Default sleep behavior preserved."
+}
 
 # --- Stop existing service if upgrading ---
 if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
@@ -93,6 +170,9 @@ $stderrLog = Join-Path $LogDir "teale-node-stderr.log"
 & $NssmExe set $ServiceName AppRestartDelay 5000
 & $NssmExe set $ServiceName Start SERVICE_AUTO_START
 & $NssmExe set $ServiceName AppEnvironmentExtra "APPDATA=$DataDir"
+# Run at Below Normal priority so contributor's foreground apps are never
+# starved. Teale is a good citizen — user's own work always wins the CPU.
+& $NssmExe set $ServiceName AppPriority BELOW_NORMAL_PRIORITY_CLASS
 
 # --- Start the service ---
 Start-Service -Name $ServiceName

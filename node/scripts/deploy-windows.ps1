@@ -39,18 +39,22 @@ param(
     [string]$ModelSharePath = "",
 
     # Direct download URL for the GGUF model
-    [string]$ModelUrl = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+    [string]$ModelUrl = "https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B-GGUF/resolve/main/Hermes-3-Llama-3.1-8B.Q5_K_M.gguf",
 
     # Model filename (derived from URL if not set)
     [string]$ModelFilename = "",
 
-    # llama.cpp release tag for downloading llama-server
-    [string]$LlamaRelease = "b8815",
+    # llama.cpp release tag for downloading llama-server (Vulkan build)
+    [string]$LlamaRelease = "b8840",
 
-    # GPU layers to offload (0 = CPU-only, 999 = all)
-    [int]$GpuLayers = 0,
+    # llama-server build variant: "vulkan" (Intel/AMD iGPU, recommended) or "cpu"
+    [ValidateSet("vulkan","cpu")]
+    [string]$LlamaBuild = "vulkan",
 
-    # Context window size (8192 fits comfortably with 4B model in 8-10GB free RAM)
+    # GPU layers to offload (0 = CPU-only, 999 = all). Auto-set based on build.
+    [int]$GpuLayers = -1,
+
+    # Context window size (8192 comfortably fits 8B-Q5 on a 16 GB laptop)
     [int]$ContextSize = 8192,
 
     # Node display name (defaults to hostname)
@@ -58,6 +62,13 @@ param(
 
     # Relay server URL
     [string]$RelayUrl = "wss://relay.teale.com/ws",
+
+    # Allow supply while lid is closed on AC power (configures powercfg).
+    # Matches the installer wizard's "Behavior" page default.
+    [switch]$AllowSupplyLidClosed,
+
+    # Skip the RAM gate (pilot minimum is 16 GB). Use only for dev machines.
+    [switch]$SkipRamGate,
 
     # Remove the TealeNode service and optionally all files
     [switch]$Uninstall,
@@ -116,11 +127,28 @@ if ($Uninstall) {
 # ============================================================
 # INSTALL / UPGRADE
 # ============================================================
+
+# RAM gate — pilot minimum is 16 GB. Bypass with -SkipRamGate for dev.
+$ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
+if (-not $SkipRamGate -and $ramGB -lt 16) {
+    Write-Error "This machine has $ramGB GB RAM. Pilot minimum is 16 GB. Use -SkipRamGate to override (not recommended)."
+    exit 1
+}
+
+# Pick the right default for GPU layers based on llama build:
+#   vulkan → 999 (full offload), cpu → 0.
+if ($GpuLayers -eq -1) {
+    $GpuLayers = if ($LlamaBuild -eq "vulkan") { 999 } else { 0 }
+}
+
 Write-Host "=== Deploying TealeNode ===" -ForegroundColor Cyan
 Write-Host "  Install dir:  $InstallDir"
 Write-Host "  Display name: $DisplayName"
-Write-Host "  Context size: $ContextSize"
+Write-Host "  RAM:          $ramGB GB"
+Write-Host "  llama build:  $LlamaBuild"
 Write-Host "  GPU layers:   $GpuLayers"
+Write-Host "  Context size: $ContextSize"
+Write-Host "  Lid-closed:   $([bool]$AllowSupplyLidClosed)"
 Write-Host ""
 
 # --- Create directory structure ---
@@ -177,9 +205,9 @@ if (-not (Test-Path $NssmExe)) {
 
 # --- Download llama-server ---
 if (-not (Test-Path $LlamaExe)) {
-    Write-Host "Downloading llama-server CPU release $LlamaRelease..."
-    $llamaZip = Join-Path $env:TEMP "llama-server-win-cpu.zip"
-    $llamaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaRelease/llama-$LlamaRelease-bin-win-cpu-x64.zip"
+    Write-Host "Downloading llama-server $LlamaBuild release $LlamaRelease..."
+    $llamaZip = Join-Path $env:TEMP "llama-server-win-$LlamaBuild.zip"
+    $llamaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaRelease/llama-$LlamaRelease-bin-win-$LlamaBuild-x64.zip"
 
     Invoke-WebRequest -Uri $llamaUrl -OutFile $llamaZip -UseBasicParsing
     $llamaExtract = Join-Path $env:TEMP "llama-extract"
@@ -266,7 +294,7 @@ extra_args = ["--threads", "$threads"]
 
 [node]
 display_name = "$DisplayName"
-gpu_backend = "cpu"
+gpu_backend = "$LlamaBuild"
 "@
 
 Set-Content -Path $ConfigFile -Value $tomlContent -Encoding UTF8
@@ -309,6 +337,20 @@ $stderrLog = Join-Path $LogDir "teale-node-stderr.log"
 
 # Set APPDATA so identity key lands under C:\Teale\data instead of system profile
 & $NssmExe set $ServiceName AppEnvironmentExtra "APPDATA=$DataDir"
+
+# Run at Below Normal priority — contributor's own apps always win the CPU.
+& $NssmExe set $ServiceName AppPriority BELOW_NORMAL_PRIORITY_CLASS
+
+# --- Power configuration for lid-closed supply (AC only) ---
+if ($AllowSupplyLidClosed) {
+    Write-Host "Configuring Windows power plan for lid-closed supply on AC..."
+    powercfg /change standby-timeout-ac 0
+    powercfg /change hibernate-timeout-ac 0
+    # GUID: 4f971e89 = "Power buttons and lid", 5ca83367 = "Lid close action"
+    powercfg /setacvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
+    powercfg /setactive SCHEME_CURRENT
+    Write-Host "Power plan: machine stays awake on AC even with lid closed. Screen can still turn off."
+}
 
 # --- Start the service ---
 Write-Host ""

@@ -1,140 +1,187 @@
-# Windows Fleet Deployment Guide
+# Windows Fleet Deployment Guide — Partner Pilot
 
-Deploy teale-node to a fleet of Windows machines as TealeNet supply nodes.
+Deploy teale-node as TealeNet supply nodes across a partner fleet of Windows
+laptops. **Pilot spec:** Windows 10 (build 17763+) or 11, **16 GB RAM or
+more**, Intel or AMD iGPU (Vulkan accelerates decode 2–3× over CPU). No
+NVIDIA GPU required, but if present is auto-offloaded via Vulkan/CUDA.
+
+## Two deployment paths
+
+### A) Contributor-driven (recommended for mixed end-user laptops)
+
+Each contributor:
+
+1. Downloads `Teale.exe` from the Drive / download link you send.
+2. Windows SmartScreen shows **"Windows protected your PC — unknown publisher."**
+   One-time click: **More info → Run anyway**. (This warning disappears once
+   the code-signing cert is active; until then, include that instruction in
+   your onboarding email.)
+3. UAC prompt → Yes.
+4. Installer wizard: **Welcome** (what Teale does) → **Behavior** (one
+   checkbox, pre-checked: "Keep supplying when lid is closed on AC") →
+   **Install**.
+5. Under-16-GB machines see a friendly "coming soon for smaller devices"
+   message and exit without installing.
+6. ≥16-GB machines see a visible progress bar downloading the 5.7 GB
+   Hermes-3-Llama-3.1-8B Q5 model, then the NSSM-wrapped service starts
+   and the tray icon appears.
+
+### B) Admin-driven (SCCM / GPO / PowerShell Remoting)
+
+Use `scripts/deploy-windows.ps1` for silent / scripted installs.
+
+```powershell
+# Basic — picks Vulkan llama-server, Hermes-3-8B Q5, enables lid-closed supply:
+.\deploy-windows.ps1 -AllowSupplyLidClosed
+
+# Network file share for the model (fleet rollouts, avoids 195× HF downloads):
+.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf" `
+    -AllowSupplyLidClosed
+
+# CPU-only fallback (for machines that fail Vulkan init — rare):
+.\deploy-windows.ps1 -LlamaBuild cpu -AllowSupplyLidClosed
+```
 
 ## Prerequisites
 
-- Windows 10/11 x64 with 16GB+ RAM
+- Windows 10 (17763+) / Windows 11, x64
+- **16 GB RAM minimum** (script refuses to install on less; `-SkipRamGate` overrides for dev)
+- ~10 GB free disk (6 GB model + binaries + logs)
 - Outbound network access to `wss://relay.teale.com` (port 443)
 - Administrator access on target machines
-- Pre-built `teale-node.exe` for Windows (see [Building](#building-teale-nodeexe))
+- `teale-node.exe` (Rust release build, x86_64-pc-windows-msvc)
 
-## Building teale-node.exe
+## Installer build (`Teale.exe`)
 
-**Option A: Cross-compile from macOS/Linux** (requires [cross](https://github.com/cross-rs/cross)):
-```bash
-cross build --release --target x86_64-pc-windows-gnu
-# Output: target/x86_64-pc-windows-gnu/release/teale-node.exe
-```
+CI-based: push `teale-v<version>` tag → `.github/workflows/windows-installer.yml`
+builds, runs ISCC, uploads artifact. Download, upload to Drive, share link.
 
-**Option B: Build natively on Windows** (requires [Rust](https://rustup.rs/)):
+Manual build: see `node/installer/BUILD-INSTALLER.txt`.
+
+Once the code-signing cert arrives, uncomment the signtool step in the
+workflow and add `CERT_PFX_BASE64` + `CERT_PASSWORD` to repo secrets. Next
+release becomes SmartScreen-clean.
+
+## Model distribution strategies
+
+**Option A — Google Drive link** (pilot default). Contributors download
+both `Teale.exe` and the GGUF pulls from HuggingFace at install time.
+Works for ~200 contributors; HuggingFace is fine unless you're rolling to
+a China-heavy fleet.
+
+**Option B — Network file share** (LAN):
 ```powershell
-cargo build --release
-# Output: target\release\teale-node.exe
-```
-
-## Quick Start — Single Machine
-
-```powershell
-# Place teale-node.exe next to the script, then:
-.\scripts\deploy-windows.ps1
-```
-
-This downloads llama-server, NSSM, and the default model (Qwen3-4B Q4_K_M, ~2.8GB), then installs and starts the TealeNode Windows Service.
-
-## Model Distribution (Fleet)
-
-Downloading the model individually on 200+ machines is wasteful. Choose a strategy:
-
-### Option A: Network File Share (recommended for LAN)
-
-Stage the model on a Windows file share accessible to all machines:
-
-```powershell
-# On your file server:
+# Stage on the server:
 mkdir \\fileserver\teale\models
-# Copy the GGUF model there
+Copy-Item hermes-3-llama-3.1-8b-Q5_K_M.gguf \\fileserver\teale\models\
 
-# Deploy with share path:
-.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\qwen3-4b-q4_k_m.gguf"
+# Deploy pointing at the share:
+.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf" -AllowSupplyLidClosed
 ```
 
-The script copies the model locally to `C:\Teale\models\`. For fast LANs, you could also point the config directly at the UNC path (requires the SYSTEM account to have read access to the share).
+**Option C — BranchCache + BITS** (WAN / multi-site): host the GGUF on
+internal HTTPS and enable BranchCache via GPO. `Start-BitsTransfer`
+leverages it automatically — first machine per subnet pulls from the
+server, subsequent machines peer-pull.
 
-### Option B: BranchCache + BITS (WAN / multi-site)
+**Option D — Override URL via env var** (for custom mirror):
+Set `TEALE_MODEL_URL` before running the installer / deploy script. The
+post-install PS1 falls back to the HuggingFace URL if the primary fails.
 
-Host the model on an internal HTTPS server and enable BranchCache via Group Policy. The deploy script uses `Start-BitsTransfer`, which automatically leverages BranchCache — the first machine per subnet downloads from your server, subsequent machines pull from the peer cache.
+## Fleet deployment methods
 
-### Option C: SCCM / Intune Package
-
-Package the model file as an SCCM application or Intune Win32 app. Deploy it to `C:\Teale\models\` as a prerequisite before running the deploy script.
-
-### Option D: Pre-staged Image
-
-For air-gapped or imaging-based deployments, include `C:\Teale\models\` in your golden image.
-
-## Fleet Deployment Methods
-
-### Method A: PowerShell Remoting (WinRM)
+### PowerShell Remoting (WinRM)
 
 ```powershell
-# Ensure WinRM is enabled on target machines (often already on for domain-joined PCs)
 $machines = Get-Content .\machine-list.txt
 
-# Copy files to a share accessible from all machines, then:
-Invoke-Command -ComputerName $machines -ThrottleLimit 20 -FilePath \\share\teale\deploy-windows.ps1 -ArgumentList @(
-    "-ModelSharePath", "\\fileserver\teale\models\qwen3-4b-q4_k_m.gguf"
-)
+Invoke-Command -ComputerName $machines -ThrottleLimit 20 `
+    -FilePath \\share\teale\deploy-windows.ps1 `
+    -ArgumentList @("-ModelSharePath", "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf",
+                    "-AllowSupplyLidClosed")
 ```
 
-Use `-ThrottleLimit` to control concurrency and avoid saturating the network.
+### Group Policy Startup Script
 
-### Method B: Group Policy Startup Script
-
-1. Place `deploy-windows.ps1`, `teale-node.exe`, and the model on a SYSVOL or network share
-2. Create a GPO: Computer Configuration > Policies > Windows Settings > Scripts > Startup
-3. Add the PowerShell script with parameters:
+1. Place `deploy-windows.ps1`, `teale-node.exe`, and the model on SYSVOL or a share.
+2. GPO: Computer Config > Policies > Windows Settings > Scripts > Startup.
+3. Add PS script with parameters:
    ```
-   -TealeNodePath "\\share\teale\teale-node.exe" -ModelSharePath "\\share\teale\models\qwen3-4b-q4_k_m.gguf"
+   -TealeNodePath "\\share\teale\teale-node.exe"
+   -ModelSharePath "\\share\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf"
+   -AllowSupplyLidClosed
    ```
-4. Link the GPO to the OU containing target machines
-5. Machines execute on next reboot
+4. Link the GPO to the OU containing target machines. Runs on next reboot.
 
-### Method C: SCCM Task Sequence
+### SCCM Task Sequence
 
-1. Create a package containing `teale-node.exe` and `deploy-windows.ps1`
-2. Create a task sequence that runs the deploy script
-3. Deploy to a device collection targeting your 16GB machines
+1. Package containing `teale-node.exe`, `deploy-windows.ps1`, the GGUF.
+2. Task sequence runs the deploy script with fleet-standard args.
+3. Deploy to a device collection targeting the ≥16 GB machines.
 
-## 32GB Test Machine
+## Pilot behavior (what contributors see)
 
-Run the same config as the fleet to validate before rollout:
-
-```powershell
-# Match fleet config exactly (Qwen3-4B, 8192 context, CPU-only):
-.\deploy-windows.ps1 -DisplayName "TestBench-32GB"
-```
-
-Once validated, you can optionally reconfigure for a larger model:
-
-```powershell
-# Upgrade to Qwen3-14B for better quality (after fleet validation):
-.\deploy-windows.ps1 -ContextSize 16384 -DisplayName "TestBench-32GB" `
-    -ModelUrl "https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/main/qwen3-14b-q4_k_m.gguf"
-```
+1. **Tray icon appears** post-install (green = supplying, yellow = on
+   battery / paused, gray = user-paused, red = disconnected).
+2. Hover tooltip: *"Teale — Supplying · 12 requests · 4,800 credits today"*.
+3. Right-click menu:
+   - **Pause supply** — toggles user-pause. Tray goes gray. Service keeps
+     running, just stops accepting new inference.
+   - **Resume supply** — clears the user-pause flag.
+   - **Open Teale dashboard** — opens `https://teale.com/supply` in browser.
+   - **Quit** — closes the tray (service continues in background).
+4. Lid-closed on AC → still supplying, screen dark, Wi-Fi up, fans may
+   spin up slightly. Machine awake until lid opened again.
+5. Unplug AC → tray flips yellow within ~5 seconds, node deregisters from
+   gateway routing; supply resumes within ~30 seconds of reconnecting AC.
+6. Scheduled task on every user logon pings GitHub Releases; if a newer
+   `Teale.exe` is published, shows a Windows toast and opens the download
+   link. User installs over top (identity key preserved).
 
 ## Monitoring
 
-### Check service status across fleet
+### Service status across fleet
 
 ```powershell
 $machines = Get-Content .\machine-list.txt
-Invoke-Command -ComputerName $machines -ScriptBlock { Get-Service TealeNode | Select-Object MachineName, Status }
+Invoke-Command -ComputerName $machines -ScriptBlock {
+    Get-Service TealeNode | Select-Object MachineName, Status
+}
 ```
 
-### View logs remotely
+### Local status endpoint (tray's data source)
+
+On any contributor machine, inspect the live state the tray is showing:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:11437/status | ConvertTo-Json
+# { "state": "supplying",
+#   "supplying_since": "1745234567",
+#   "requests_today": 12,
+#   "credits_today": 4800,
+#   "on_ac": true,
+#   "paused_reason": null }
+```
+
+### Logs
 
 ```powershell
 # Last 20 lines of stdout log:
 Get-Content "\\MACHINE\C$\Teale\logs\teale-node-stdout.log" -Tail 20
 
-# Check stderr for errors:
+# Stderr for Vulkan init failures / relay connection errors:
 Get-Content "\\MACHINE\C$\Teale\logs\teale-node-stderr.log" -Tail 50
 ```
 
-### Verify nodes in relay
+### Verify in gateway
 
-From a Teale demand node (Mac/iPhone app), the connected supply nodes appear in the peer list. You can also check the stdout log for `Registered with relay` confirmation.
+Registered nodes appear under their catalog slug in `/v1/models` healthy-
+supplier counts:
+
+```bash
+curl -sH "Authorization: Bearer $TEALE_TOKEN" https://gateway.teale.com/v1/models \
+  | jq '.data[] | select(.id=="nousresearch/hermes-3-llama-3.1-8b")'
+```
 
 ### Fleet-wide restart
 
@@ -144,10 +191,16 @@ Invoke-Command -ComputerName $machines -ScriptBlock { Restart-Service TealeNode 
 
 ## Updating
 
-### Update teale-node binary
+### Via Inno Setup installer (recommended)
+
+Publish a new `Teale.exe` (bumped `#define AppVer`) to GitHub Releases
+with a tag like `teale-v0.3.0`. Every contributor's on-logon scheduled
+task will catch it, toast them, and open the download. Contributor
+double-clicks the new installer; Inno Setup upgrades in place.
+
+### Via file share (GPO-managed fleet)
 
 ```powershell
-# Fleet-wide binary update:
 Invoke-Command -ComputerName $machines -ScriptBlock {
     Stop-Service TealeNode
     Copy-Item "\\share\teale\teale-node.exe" "C:\Teale\bin\teale-node.exe" -Force
@@ -155,56 +208,65 @@ Invoke-Command -ComputerName $machines -ScriptBlock {
 }
 ```
 
-### Update the model
-
-```powershell
-Invoke-Command -ComputerName $machines -ScriptBlock {
-    Stop-Service TealeNode
-    Copy-Item "\\share\teale\models\new-model.gguf" "C:\Teale\models\new-model.gguf" -Force
-    # Update the config to point to the new model, then:
-    Start-Service TealeNode
-}
-```
-
 ## Uninstall
 
-```powershell
-# Remove service only:
-.\deploy-windows.ps1 -Uninstall
-
-# Remove service and all files:
-.\deploy-windows.ps1 -Uninstall -RemoveFiles
-```
+Via Add/Remove Programs → Teale → Uninstall. Removes service, tray, model,
+config. **Identity key under `C:\Teale\data` is preserved** across
+reinstalls so credit-earning history carries over. To fully reset, manually
+delete `C:\Teale\data` before reinstalling.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Service fails to start | llama-server crash (OOM) | Reduce `context_size` or use a smaller model |
-| "Failed to connect" in logs | Firewall blocking outbound 443 | Allow outbound TCP 443 to `relay.teale.com` |
-| High CPU / machine slow | Too many inference threads | Reduce `--threads` in `extra_args` |
-| Service starts then stops | Config error | Check `C:\Teale\logs\teale-node-stderr.log` |
-| Model download fails | Network / proxy issue | Use `-ModelSharePath` instead |
-| Identity key missing | APPDATA not set correctly | Check NSSM env: `nssm get TealeNode AppEnvironmentExtra` |
+### "Windows protected your PC" screen blocks install
 
-## File Layout
+Expected until the code-signing cert is live. Instruct contributors to
+click **More info → Run anyway** once. This is one-time per `Teale.exe`
+hash; updates trigger the same dialog unless the new build is signed with
+the same cert identity.
 
-After deployment, each machine has:
+### Installer reports RAM < 16 GB and exits
 
+Working as intended for the pilot scope. Smaller-RAM tier support is
+planned post-pilot. Override with `deploy-windows.ps1 -SkipRamGate` for
+dev testing only.
+
+### Vulkan init fails on startup
+
+Tray shows red, `teale-node-stderr.log` has `ggml_vulkan: failed to init`.
+Causes and fixes:
+- **Old drivers** — run Windows Update + the vendor's GPU driver update.
+- **No supported GPU** — the machine has Intel HD 3000 / pre-2014 silicon;
+  fall back to CPU with `deploy-windows.ps1 -LlamaBuild cpu`.
+- **Vulkan runtime missing** — install the Vulkan Runtime from LunarG or
+  reinstall the GPU driver (which bundles it).
+
+### Service won't start
+
+`Get-Content C:\Teale\logs\teale-node-stderr.log -Tail 50` usually points
+at: missing GGUF file (download didn't finish), llama-server binary
+corrupted (re-run installer), or relay connection blocked (firewall /
+corporate proxy — check outbound 443 to `relay.teale.com`).
+
+### Machine sleeps despite lid-closed checkbox
+
+Double-check the power plan:
+```powershell
+powercfg /query SCHEME_CURRENT SUB_BUTTONS 5ca83367-6e45-459f-a27b-476b1d01c936
 ```
-C:\Teale\
-├── bin\
-│   ├── teale-node.exe        # Supply node agent
-│   ├── llama-server.exe      # Inference engine
-│   └── nssm.exe              # Service manager
-├── config\
-│   └── teale-node.toml       # Node configuration
-├── data\
-│   └── Teale\
-│       └── wan-identity.key  # Ed25519 identity (auto-generated)
-├── logs\
-│   ├── teale-node-stdout.log # Application log
-│   └── teale-node-stderr.log # Error log
-└── models\
-    └── qwen3-4b-q4_k_m.gguf # GGUF model (~2.8GB)
-```
+Lid close action on AC should be 0 ("Do nothing"). Corporate policies
+sometimes override user powercfg changes — contact IT if overrides are
+reverting the setting.
+
+### Tray icon doesn't appear
+
+Tray is per-user, starts via Startup-folder shortcut. If it went missing:
+`Start-Process "C:\Teale\bin\teale-tray.exe"` to relaunch. Tray auto-
+reconnects to the service when the service is restored.
+
+## Pilot escalation path
+
+- Gateway issues → `reference_gateway_relay.md` has deploy and bearer
+  token. `fly deploy -c gateway/fly.toml` for emergency rollbacks.
+- Scheduler-skipping of battery-paused nodes can be verified via
+  `gateway/tests/registry_and_scheduler.rs::scheduler_skips_battery_paused_laptop`.
+- All Hermes-3 8B routes: `gateway/models.yaml` catalog entry at line 101.

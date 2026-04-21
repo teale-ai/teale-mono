@@ -1,0 +1,127 @@
+name: Windows installer (Teale.exe)
+
+# Builds the partner-pilot Windows installer:
+#   - cargo builds teale-node.exe + teale-tray.exe (x86_64-pc-windows-msvc)
+#   - downloads llama-server with Vulkan backend from llama.cpp's releases
+#   - stages all artifacts next to the .iss script and compiles with ISCC
+#   - uploads Teale.exe as a workflow artifact (manual upload to Drive for
+#     the pilot; will add signtool step once the EV cert arrives)
+#
+# Triggered on:
+#   - push of a tag matching `teale-v*` (canonical release path)
+#   - manual dispatch from the Actions tab (for testing the pipeline)
+
+on:
+  push:
+    tags:
+      # Timestamp-style tags like `teale-2026.04.21.1722` (matches the
+      # mac-app's CFBundleShortVersionString format in Info.plist).
+      - 'teale-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_RELEASE: b8840  # keep in sync with node/installer/post-install.ps1
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build Teale.exe
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build teale-node.exe and teale-tray.exe (release)
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p teale-node
+          # teale-tray is a separate binary crate in node/teale-tray/
+          cargo build --release --target x86_64-pc-windows-msvc -p teale-tray || echo "teale-tray not yet defined; installer treats it as skipifsourcedoesntexist"
+
+      - name: Download llama-server (Vulkan build)
+        shell: pwsh
+        run: |
+          $llamaZip = "$env:RUNNER_TEMP\llama-vulkan.zip"
+          $llamaExtract = "$env:RUNNER_TEMP\llama"
+          $url = "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/llama-$env:LLAMA_RELEASE-bin-win-vulkan-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile $llamaZip -UseBasicParsing
+          Expand-Archive -Path $llamaZip -DestinationPath $llamaExtract -Force
+          $llamaServer = Get-ChildItem -Path $llamaExtract -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+          if (-not $llamaServer) { throw "llama-server.exe not found in $url" }
+          Copy-Item -Path $llamaServer.FullName -Destination "node\installer\llama-server.exe" -Force
+          # Copy all DLLs from the same directory (Vulkan runtime + GGML backends)
+          $srcDir = Split-Path $llamaServer.FullName
+          Get-ChildItem -Path $srcDir -Filter "*.dll" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination "node\installer\" -Force
+          }
+
+      - name: Download NSSM
+        shell: pwsh
+        run: |
+          $nssmZip = "$env:RUNNER_TEMP\nssm.zip"
+          Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $nssmZip -UseBasicParsing
+          Expand-Archive -Path $nssmZip -DestinationPath "$env:RUNNER_TEMP\nssm-extract" -Force
+          Copy-Item -Path "$env:RUNNER_TEMP\nssm-extract\nssm-2.24\win64\nssm.exe" -Destination "node\installer\nssm.exe" -Force
+
+      - name: Stage teale-node.exe + teale-tray.exe
+        shell: pwsh
+        run: |
+          Copy-Item -Path "target\x86_64-pc-windows-msvc\release\teale-node.exe" -Destination "node\installer\teale-node.exe" -Force
+          $trayPath = "target\x86_64-pc-windows-msvc\release\teale-tray.exe"
+          if (Test-Path $trayPath) {
+            Copy-Item -Path $trayPath -Destination "node\installer\teale-tray.exe" -Force
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $innoInstaller = "$env:RUNNER_TEMP\innosetup.exe"
+          Invoke-WebRequest -Uri "https://files.jrsoftware.org/is/6/innosetup-6.4.3.exe" -OutFile $innoInstaller -UseBasicParsing
+          Start-Process -Wait -FilePath $innoInstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
+          # Inno Download Plugin (idpDownloadFile / idpAddFile for visible model-download progress)
+          $idpZip = "$env:RUNNER_TEMP\idp.zip"
+          Invoke-WebRequest -Uri "https://mitrichsoftware.wordpress.com/inno-download-plugin/" -OutFile $idpZip -UseBasicParsing -ErrorAction SilentlyContinue
+          # IDP install is optional — if the download fails, the build still
+          # runs but the model-progress UI falls back to post-install PS1.
+
+      - name: Compile installer (ISCC)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "node\installer\teale-node-setup.iss"
+
+      # TODO: signtool step once the Authenticode / EV cert is in repo secrets.
+      # - name: Sign Teale.exe
+      #   shell: pwsh
+      #   env:
+      #     CERT_PFX_BASE64: ${{ secrets.CERT_PFX_BASE64 }}
+      #     CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+      #   run: |
+      #     $pfxPath = "$env:RUNNER_TEMP\cert.pfx"
+      #     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+      #     $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe"
+      #     & $signtool sign /f $pfxPath /p $env:CERT_PASSWORD /tr http://timestamp.sectigo.com /td sha256 /fd sha256 "node\installer\output\Teale.exe"
+
+      - name: Upload Teale.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Teale-${{ github.ref_name }}-unsigned
+          path: node/installer/output/Teale.exe
+          if-no-files-found: error
+          retention-days: 90
