@@ -1,0 +1,28 @@
+[package]
+name = "teale-tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "System-tray companion for teale-node — shows supply status + earnings"
+
+[[bin]]
+name = "teale-tray"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+# Sync HTTP client (smaller than reqwest for a tray process).
+ureq = { version = "2", default-features = false, features = ["json"] }
+
+# Cross-platform tray + menu. Windows uses Shell_NotifyIconW under the hood.
+tray-icon = "0.19"
+
+# OS interop for icon loading + (on Windows) the message loop.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+] }
