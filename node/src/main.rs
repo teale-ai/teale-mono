@@ -14,7 +14,10 @@ mod hardware;
 mod identity;
 mod inference;
 mod litert;
+#[cfg(windows)]
+mod power_win;
 mod relay;
+mod status_server;
 mod supervisor;
 mod swap;
 
@@ -123,13 +126,42 @@ async fn main() -> anyhow::Result<()> {
         _ => config.llama.as_ref().map(|c| c.context_size),
     };
 
+    // Laptop-contributor power state. Only Windows participates today —
+    // Mac app uses its own lid-close UX, Android supply is phone-only.
+    // `None` means "don't gate on battery" (desktops, Mac Studios, Swift).
+    #[cfg(windows)]
+    let (on_ac_power, ac_state) = {
+        let initial = power_win::initial_ac_state();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(initial));
+        power_win::spawn_ac_poller(flag.clone());
+        if !initial {
+            warn!("Starting on battery power — supply will remain paused until AC restored");
+        }
+        (Some(initial), Some(flag))
+    };
+    #[cfg(not(windows))]
+    let (on_ac_power, ac_state): (Option<bool>, Option<Arc<std::sync::atomic::AtomicBool>>) =
+        (None, None);
+    let _ = &ac_state; // Reserved for supervisor wiring in a follow-up.
+
     let capabilities = build_capabilities(
         hw,
         Some(&model_id),
         config.node.max_concurrent_requests,
         swap_model_ids,
         effective_context,
+        on_ac_power,
     );
+
+    // Localhost status endpoint for the tray app. Windows-pilot scoped —
+    // the tray only runs on Windows today, and the endpoint is bound to
+    // 127.0.0.1 so it's inert on any non-loopback-listening deployments.
+    let tray_status = status_server::StatusState::new();
+    tray_status.mark_supplying_now();
+    if let Some(ac) = on_ac_power {
+        tray_status.on_ac.store(ac, std::sync::atomic::Ordering::SeqCst);
+    }
+    status_server::spawn(tray_status.clone(), 11437);
 
     let device_info = build_device_info(&config, &identity, &capabilities);
 

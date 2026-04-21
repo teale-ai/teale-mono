@@ -1,30 +1,42 @@
-# teale-node — Windows 16GB CPU-only configuration template
-# Copy this file to teale-node.toml and customize, or let deploy-windows.ps1 generate it.
+# teale-node — Windows ≥16 GB configuration template
 #
-# Default: Qwen3-4B Q4_K_M (~2.8GB) — fast conversation + tool calling on CPU.
-# Total usage: ~4-5GB (model + 8192 context), fits in 8-10GB free RAM.
+# Pilot-scope fleet default: Hermes-3-Llama-3.1-8B Q5_K_M via llama-server
+# with Vulkan backend (Intel Arc / Iris Xe / UHD, AMD Vega / RDNA iGPUs
+# auto-offloaded). Partner-fleet minimum spec is 16 GB RAM — the installer's
+# post-install.ps1 gates on this and exits cleanly on smaller machines.
 #
-# For 32GB machines: use Qwen3-14B Q4_K_M (~8.5GB) with context_size = 16384.
+# Model file: ~5.7 GB on disk, fits comfortably in 16 GB unified RAM with
+# 8K context KV cache (~1.2 GB). For 32 GB+ machines you can bump
+# context_size to 16384 or 32768 if partner workloads need it.
+#
+# Copy this file to teale-node.toml and customize, or let deploy-windows.ps1
+# (or the Inno Setup installer's post-install.ps1) generate it automatically
+# with hostname + thread count + GPU detection baked in.
 
 [relay]
 url = "wss://relay.teale.com/ws"
 
 [llama]
-# Path to llama-server binary (forward slashes work on Windows)
+# Path to llama-server binary — must be the Vulkan build
+# (llama-bXXXX-bin-win-vulkan-x64.zip from llama.cpp releases).
 binary = "C:/Teale/bin/llama-server.exe"
-# Path to GGUF model file — Qwen3-4B Q4_K_M (~2.8GB)
-model = "C:/Teale/models/qwen3-4b-q4_k_m.gguf"
-# CPU-only: no GPU layer offloading
-gpu_layers = 0
-# 8192 context fits comfortably with 4B model in 8-10GB free RAM
+# Path to GGUF model — Hermes-3-Llama-3.1-8B Q5_K_M (~5.7 GB)
+model = "C:/Teale/models/hermes-3-llama-3.1-8b-Q5_K_M.gguf"
+# Full offload to Vulkan-capable iGPU. llama-server falls back to CPU
+# automatically if Vulkan init fails (e.g., missing drivers); teale-node's
+# supervisor loop notices the crash and restarts with gpu_layers=0 on retry.
+gpu_layers = 999
+# 8K context fits 16 GB machines comfortably with 5.7 GB model + OS.
 context_size = 8192
-# Local port for llama-server HTTP API
+# Local port for llama-server HTTP API (bound to 127.0.0.1 only).
 port = 11436
-# Threads = logical cores minus 2 (leave headroom for OS)
-# Adjust to match your CPU — deploy-windows.ps1 calculates this automatically
+# Threads = logical cores minus 2 (leave headroom for OS + user apps).
+# deploy-windows.ps1 calculates this automatically per machine.
 extra_args = ["--threads", "6"]
 
 [node]
 display_name = "WIN-HOSTNAME"
-gpu_backend = "cpu"
-# gpu_vram_gb omitted — max_model_size_gb = 0.75 * total_ram_gb ≈ 12 GB
+# Reported in NodeCapabilities; gateway scheduler uses it to estimate
+# decode throughput (EWMA prior starts from bandwidth / active-param-size).
+gpu_backend = "vulkan"
+# gpu_vram_gb omitted — max_model_size_gb = 0.75 * total_ram_gb ≈ 12 GB.

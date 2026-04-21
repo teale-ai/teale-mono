@@ -69,6 +69,14 @@ impl Scheduler {
                     }
                 }
             }
+            // Battery filter: laptop contributor nodes advertise on_ac_power
+            // and pause themselves on battery. Skip Some(false) explicitly
+            // so we route around them even before their next re-register.
+            // None means "doesn't participate in battery gating" (desktops,
+            // Mac Studios, Swift Teale.app supply) — always eligible.
+            if matches!(d.capabilities.on_ac_power, Some(false)) {
+                continue;
+            }
             let in_flight = registry.in_flight(&d.node_id);
             if in_flight >= self.cfg.max_queue_depth {
                 continue;

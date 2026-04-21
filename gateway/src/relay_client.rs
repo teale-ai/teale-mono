@@ -512,6 +512,7 @@ fn make_register_payload(identity: &Arc<GatewayIdentity>, display_name: &str) ->
         swappable_models: vec![],
         max_concurrent_requests: Some(0),
         effective_context: None,
+        on_ac_power: None,
     };
     let signature = identity.sign_node_id();
     serde_json::json!({

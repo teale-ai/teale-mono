@@ -65,10 +65,19 @@ fn detect_chip_info(cpu_name: &str, _total_ram: f64) -> (String, String, u32, f6
     }
 
     if lower.contains("intel") {
-        return ("intelCPU".to_string(), cpu_name.to_string(), 0, 50.0);
+        // On Windows, most modern Intel laptops (Core 11th gen+) have a
+        // Vulkan-capable iGPU (Iris Xe / Arc). llama.cpp's Vulkan backend
+        // typically decodes 2-3x faster than CPU-only on these chips. We
+        // detect Vulkan availability by probing for vulkan-1.dll and upgrade
+        // the bandwidth estimate from ~50 GB/s (CPU DDR5 effective) to
+        // ~80 GB/s (iGPU against unified LPDDR5) — conservative since we
+        // don't know the exact SKU.
+        let bw = if has_vulkan_runtime() { 80.0 } else { 50.0 };
+        return ("intelCPU".to_string(), cpu_name.to_string(), 0, bw);
     }
     if lower.contains("amd") {
-        return ("amdCPU".to_string(), cpu_name.to_string(), 0, 50.0);
+        let bw = if has_vulkan_runtime() { 80.0 } else { 50.0 };
+        return ("amdCPU".to_string(), cpu_name.to_string(), 0, bw);
     }
     if lower.contains("arm")
         || lower.contains("aarch64")
@@ -147,7 +156,43 @@ fn infer_gpu_backend(chip_family: &str) -> &'static str {
         }
         "nvidiaGPU" => "cuda",
         "amdGPU" => "rocm",
+        // Intel/AMD CPU with integrated graphics on Windows: prefer Vulkan
+        // when the runtime is present (Intel Arc / Iris Xe / UHD, AMD Vega /
+        // RDNA iGPUs). llama.cpp's Vulkan backend decodes 2-3x faster than
+        // CPU-only on 8B-class models on these chips.
+        "intelCPU" | "amdCPU" if cfg!(target_os = "windows") && has_vulkan_runtime() => "vulkan",
         _ => "cpu",
+    }
+}
+
+/// Detect a Vulkan runtime loader on the current machine. Used to decide
+/// whether `intelCPU` / `amdCPU` should upgrade to Vulkan backend. Returns
+/// true when a loader is present — doesn't guarantee llama-server was built
+/// with Vulkan or that the device supports it, but filters out machines
+/// where Vulkan isn't installed at all.
+fn has_vulkan_runtime() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            std::path::PathBuf::from(r"C:\Windows\System32\vulkan-1.dll"),
+            std::path::PathBuf::from(r"C:\Windows\SysWOW64\vulkan-1.dll"),
+        ];
+        candidates.iter().any(|p| p.exists())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Common distros install libvulkan.so.1 under /usr/lib or /usr/lib64.
+        [
+            "/usr/lib/libvulkan.so.1",
+            "/usr/lib64/libvulkan.so.1",
+            "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+        ]
+        .iter()
+        .any(|p| std::path::Path::new(p).exists())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        false
     }
 }
 
@@ -302,6 +347,7 @@ pub fn build_capabilities(
     max_concurrent: u32,
     swappable_models: Vec<String>,
     effective_context: Option<u32>,
+    on_ac_power: Option<bool>,
 ) -> NodeCapabilities {
     let max_model = hardware.gpu_vram_gb.unwrap_or(hardware.total_ram_gb * 0.75);
 
@@ -314,5 +360,6 @@ pub fn build_capabilities(
         swappable_models,
         max_concurrent_requests: Some(max_concurrent),
         effective_context,
+        on_ac_power,
     }
 }

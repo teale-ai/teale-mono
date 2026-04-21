@@ -66,6 +66,17 @@ pub struct NodeCapabilities {
         skip_serializing_if = "Option::is_none"
     )]
     pub effective_context: Option<u32>,
+    /// Laptop supply nodes flag whether they're currently on AC power. We
+    /// only supply on AC — pausing on battery is a trust feature for end-
+    /// user-laptop contributors who shouldn't see battery drain from Teale.
+    /// `None` means "this node doesn't participate in battery gating" (Mac
+    /// Studios, desktops, Swift Teale.app, etc.).
+    #[serde(
+        rename = "onACPower",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub on_ac_power: Option<bool>,
 }
 
 /// Device capability tier. 1 = backbone (Ultra/Max, 64GB+), 4 = phone/SBC.
