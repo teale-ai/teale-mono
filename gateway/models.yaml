@@ -163,7 +163,18 @@ models:
     description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL (434 GB). Flagship coding quality (Opus 4.6 parity). Each 512 GB Mac Studio serves an independent replica; the gateway load-balances requests across the fleet."
     aliases: [glm-5.1, glm5.1, glm-5, glm5]
 
-  # --- Phone-class entries for Android (Pixel) + HarmonyOS (Huawei) supply ---
+  - id: moonshotai/kimi-k2.6
+    display_name: Kimi K2.6 (1T MoE, Multimodal)
+    owned_by: moonshotai
+    context_length: 262144
+    max_output_tokens: 16384
+    params_b: 1000
+    pricing_prompt: "0.00000050"
+    pricing_completion: "0.00000100"
+    quantization: INT4
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice, reasoning]
+    description: "Moonshot AI Kimi K2.6 — 1T MoE (32B active), natively int4, multimodal (MoonViT vision encoder), 256K context via MLA attention. Sharded across two 512 GB Mac Studios over Thunderbolt 5 via exo. Recommended sampling: temperature 1.0 / top_p 0.95 (thinking mode default)."
+    aliases: [kimi-k2.6, kimi-k26, k2.6, kimi]
 
   - id: google/gemma-4-1b-it
     display_name: Gemma 4 1B Instruct (phone-class)

@@ -82,6 +82,29 @@ public struct DeviceModelProfileRegistry: Sendable {
             notes: "GLM-5.1 Q4 on 512GB Ultra — 128K per-slot context (catalog-promised), 2 concurrent slots"
         ),
 
+        // Kimi K2.6 on 256GB+ Ultra — 1T MoE, natively int4, 256K native ctx,
+        // MLA attention keeps KV cache small. Moonshot recommends temperature
+        // 1.0 / top_p 0.95 (thinking mode) or 0.6 / 0.95 (instant). Default
+        // to thinking; clients override per-request. Profile applies if a
+        // GGUF small enough to fit one Mac ever gets served via llama.cpp;
+        // the primary serving path is exo-sharded MLX.
+        DeviceModelProfile(
+            deviceClass: .ultraDesktop,
+            modelFamily: "Kimi",
+            minRAMGB: 256,
+            params: InferenceProfile(
+                contextSize: 262144,
+                kvCacheType: "q8_0",
+                batchSize: 4096,
+                flashAttn: true,
+                mmap: true,
+                parallelSlots: 2,
+                gpuLayers: 999,
+                reasoningOff: false
+            ),
+            notes: "Kimi K2.6 on 512GB Ultra — 256K total ctx × 2 slots = 128K per-request. MLA + q8_0 KV keeps KV footprint under ~25GB"
+        ),
+
         // --- 64-192GB Ultra: mid-tier, must budget carefully ---
         DeviceModelProfile(
             deviceClass: .ultraDesktop,
