@@ -194,6 +194,22 @@ public struct ModelCatalog: Sendable {
             popularityRank: 13,
             openrouterId: "zai/glm-5.1"
         ),
+        // Kimi K2.6 — 1T MoE, natively int4, 256K context. MLX variant is
+        // 554 GB — needs multi-Ultra exo cluster (single 512 GB Mac can't
+        // load it alone). Served via exo-sharded MLX, not llama.cpp.
+        ModelDescriptor(
+            id: "kimi-k2.6",
+            name: "Kimi K2.6 (1T MoE)",
+            huggingFaceRepo: "unsloth/Kimi-K2.6",
+            parameterCount: "1T",
+            quantization: .q4,
+            estimatedSizeGB: 554.0,
+            requiredRAMGB: 640.0,
+            family: "Kimi",
+            description: "Moonshot Kimi K2.6 — 1T MoE (32B active), native int4, multimodal (MoonViT), 256K context. Requires 2× 512 GB Ultra exo cluster over TB5.",
+            popularityRank: 14,
+            openrouterId: "moonshotai/kimi-k2.6"
+        ),
     ]
 
     /// Filter models that can run on the given hardware
