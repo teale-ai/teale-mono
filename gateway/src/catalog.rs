@@ -75,6 +75,18 @@ impl CatalogModel {
         }
         self.aliases.iter().any(|a| a.eq_ignore_ascii_case(id))
     }
+
+    /// Per-token prompt price in USD, parsed from the YAML string. Malformed
+    /// values fall back to 0 (free) rather than blowing up inference — a bad
+    /// catalog entry should not take down the gateway.
+    pub fn prompt_price_usd(&self) -> f64 {
+        self.pricing_prompt.parse::<f64>().unwrap_or(0.0)
+    }
+
+    /// Per-token completion price in USD. See `prompt_price_usd`.
+    pub fn completion_price_usd(&self) -> f64 {
+        self.pricing_completion.parse::<f64>().unwrap_or(0.0)
+    }
 }
 
 pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {

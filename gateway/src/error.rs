@@ -24,6 +24,9 @@ pub enum GatewayError {
     #[error("share-key budget exhausted")]
     BudgetExhausted,
 
+    #[error("insufficient credits: balance {balance}, need {required}")]
+    InsufficientCredits { balance: i64, required: i64 },
+
     #[error("model not found: {0}")]
     ModelNotFound(String),
 
@@ -54,6 +57,7 @@ impl GatewayError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::BudgetExhausted => StatusCode::PAYMENT_REQUIRED,
+            Self::InsufficientCredits { .. } => StatusCode::PAYMENT_REQUIRED,
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
             Self::NoEligibleDevice(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
@@ -71,6 +75,7 @@ impl GatewayError {
             Self::NotFound(_) => "not_found",
             Self::Forbidden(_) => "forbidden",
             Self::BudgetExhausted => "budget_exhausted",
+            Self::InsufficientCredits { .. } => "insufficient_credits",
             Self::ModelNotFound(_) => "model_not_found",
             Self::NoEligibleDevice(_) => "model_unavailable",
             Self::Upstream(_) => "upstream_error",
@@ -84,13 +89,16 @@ impl GatewayError {
 
 impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
-        let body = Json(json!({
-            "error": {
-                "message": self.to_string(),
-                "type": self.code(),
-                "code": self.code(),
-            }
-        }));
+        let mut err = json!({
+            "message": self.to_string(),
+            "type": self.code(),
+            "code": self.code(),
+        });
+        if let Self::InsufficientCredits { balance, required } = &self {
+            err["balance"] = json!(*balance);
+            err["required"] = json!(*required);
+        }
+        let body = Json(json!({ "error": err }));
         (self.status(), body).into_response()
     }
 }
