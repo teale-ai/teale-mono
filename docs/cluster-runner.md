@@ -63,6 +63,10 @@ curl -s http://127.0.0.1:52415/v1/chat/completions \
   -d '{"model":"moonshotai/kimi-k2","messages":[{"role":"user","content":"hi"}],"stream":false}'
 ```
 
+Once the gateway catalog includes Kimi, clients may also target the
+Conductor-friendly alias `kimi2.6`; the supply side should still advertise
+the canonical model id `moonshotai/kimi-k2`.
+
 ## Connect to the relay as a node
 
 Start a second terminal on the head Mac:
@@ -77,7 +81,9 @@ just proxies OpenAI-compat requests to it, then streams results back
 through the relay.
 
 From the gateway's `/v1/models` the cluster appears as a single entry
-(`moonshotai/kimi-k2`) with the head Mac's node identity.
+(`moonshotai/kimi-k2`) with the head Mac's node identity. Client-facing
+aliases such as `kimi2.6` are resolved by the gateway catalog, not by the
+cluster runner.
 
 ## Running as a daemon
 

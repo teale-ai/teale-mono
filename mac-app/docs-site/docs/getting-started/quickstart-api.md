@@ -108,9 +108,35 @@ Teale works with any tool or framework that supports the OpenAI API format. Test
 | `GET /v1/models` | List available models |
 | `POST /v1/chat/completions` | Chat completion (streaming and non-streaming) |
 
+## Conductor workspace setup
+
+If you want tools inside Conductor workspaces to use the hosted Teale fleet instead of your local node, use:
+
+```bash
+OPENAI_BASE_URL=https://gateway.teale.com/v1
+OPENAI_API_KEY=<your-teale-gateway-token>
+```
+
+Preferred model once Kimi is exposed on the gateway:
+
+```text
+kimi2.6
+```
+
+Canonical fallback:
+
+```text
+moonshotai/kimi-k2
+```
+
+Full setup guide:
+
+- [Use with Conductor](../guides/use-with-conductor.md)
+
 ---
 
 ## Next steps
 
 - [Quickstart: Earn](quickstart-earn.md) --- share compute and earn USDC
 - [Quickstart: Chat](quickstart-chat.md) --- use the built-in chat interface
+- [Use with Conductor](../guides/use-with-conductor.md) --- route Conductor workspace tools to the hosted gateway

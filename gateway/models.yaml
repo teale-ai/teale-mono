@@ -150,6 +150,19 @@ models:
     description: "DeepSeek V3.2 MoE (671B total, ~37B active). 704 GB on disk at 8-bit; requires multi-Ultra exo cluster."
     aliases: [deepseek-v3.2, deepseek-v3-2, deepseek-v3.2-8bit]
 
+  - id: moonshotai/kimi-k2
+    display_name: Kimi K2 (exo cluster)
+    owned_by: moonshotai
+    context_length: 131072
+    max_output_tokens: 32768
+    params_b: 1000
+    pricing_prompt: "0.00000035"
+    pricing_completion: "0.00000070"
+    quantization: MLX
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Kimi K2 served from a paired 512 GB Ultra exo cluster. Client-friendly alias: kimi2.6."
+    aliases: [kimi2.6, kimi-k2, kimi2-6]
+
   - id: zai/glm-5.1
     display_name: GLM-5.1 (MoE)
     owned_by: zai

@@ -80,6 +80,14 @@ if [ -f "Sources/InferencePoolApp/AppIcon.icns" ]; then
     echo "  Included app icon"
 fi
 
+# Embed the Developer ID provisioning profile if present. Required by AMFI to
+# authorize restricted entitlements (e.g. com.apple.developer.networking.multicast)
+# under Hardened Runtime.
+if [ -f "Sources/InferencePoolApp/embedded.provisionprofile" ]; then
+    cp "Sources/InferencePoolApp/embedded.provisionprofile" "${CONTENTS_DIR}/embedded.provisionprofile"
+    echo "  Included embedded.provisionprofile"
+fi
+
 BUILD_DATE="$(date '+%Y.%m.%d')"
 BUILD_TIME="$(date '+%H:%M')"
 BUILD_NUMBER="$(date '+%Y%m%d%H%M')"
@@ -96,7 +104,18 @@ BUILD_VERSION="${BUILD_DATE}-${BUILD_TIME}-${GIT_HASH}"
 if [ "${SIGNING_IDENTITY}" = "-" ]; then
     codesign --force --deep --sign - "${APP_DIR}"
 else
-    codesign --force --deep --sign "${SIGNING_IDENTITY}" --entitlements "${ENTITLEMENTS}" "${APP_DIR}"
+    # Inside-out signing: nested bundles first, then outer app.
+    # --options runtime (Hardened Runtime) and --timestamp are required for notarization.
+    for nested in "${RESOURCES_DIR}"/*.bundle; do
+        [ -d "${nested}" ] && codesign --force --sign "${SIGNING_IDENTITY}" \
+            --timestamp --options runtime "${nested}"
+    done
+    codesign --force --sign "${SIGNING_IDENTITY}" \
+        --entitlements "${ENTITLEMENTS}" \
+        --timestamp --options runtime \
+        "${APP_DIR}"
+    echo "==> Verifying signature"
+    codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 fi
 
 SIZE=$(du -sh "${APP_DIR}" | cut -f1)
