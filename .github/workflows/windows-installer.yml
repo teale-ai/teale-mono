@@ -90,36 +90,24 @@ jobs:
             Copy-Item -Path $_.FullName -Destination "node\installer\" -Force
           }
 
-      - name: Download NSSM
+      - name: Install NSSM (via Chocolatey)
         shell: pwsh
         run: |
-          function Download-WithRetry {
-            param([string[]]$Urls, [string]$OutFile)
-            foreach ($url in $Urls) {
-              for ($i = 1; $i -le 3; $i++) {
-                try {
-                  Invoke-WebRequest -Uri $url -OutFile $OutFile -UseBasicParsing -TimeoutSec 60
-                  Write-Host "  Downloaded from $url (attempt $i)"
-                  return
-                } catch {
-                  Write-Host "  Attempt $i from $url failed: $($_.Exception.Message)"
-                  Start-Sleep -Seconds ($i * 5)
-                }
-              }
-            }
-            throw "All download URLs exhausted: $($Urls -join ', ')"
+          # nssm.cc has been 503-ing all afternoon, so we pull NSSM from
+          # Chocolatey's CDN instead. Pre-installed on windows-latest.
+          choco install nssm -y --no-progress
+          # Choco lands nssm.exe under C:\ProgramData\chocolatey\bin; stage
+          # it next to the .iss for Inno Setup's [Files] section.
+          $nssm = Get-Command nssm -ErrorAction SilentlyContinue
+          if (-not $nssm) {
+            $nssm = Get-ChildItem "C:\ProgramData\chocolatey\lib\NSSM\tools" -Recurse -Filter "nssm.exe" | Select-Object -First 1
           }
-
-          $nssmZip = "$env:RUNNER_TEMP\nssm.zip"
-          # nssm.cc is occasionally flaky. Try the official source first,
-          # then a Chocolatey CDN mirror that carries the same 2.24 binary.
-          $urls = @(
-            "https://nssm.cc/release/nssm-2.24.zip",
-            "https://web.archive.org/web/2025/https://nssm.cc/release/nssm-2.24.zip"
-          )
-          Download-WithRetry -Urls $urls -OutFile $nssmZip
-          Expand-Archive -Path $nssmZip -DestinationPath "$env:RUNNER_TEMP\nssm-extract" -Force
-          Copy-Item -Path "$env:RUNNER_TEMP\nssm-extract\nssm-2.24\win64\nssm.exe" -Destination "node\installer\nssm.exe" -Force
+          if (-not $nssm) { throw "nssm.exe not found after choco install" }
+          Copy-Item -Path $nssm.Source -Destination "node\installer\nssm.exe" -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path "node\installer\nssm.exe")) {
+            Copy-Item -Path $nssm.FullName -Destination "node\installer\nssm.exe" -Force
+          }
+          Write-Host "NSSM staged at node\installer\nssm.exe"
 
       - name: Stage teale-node.exe + teale-tray.exe
         shell: pwsh

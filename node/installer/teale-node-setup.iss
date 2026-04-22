@@ -18,7 +18,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.21.1955"
+#define AppVer "2026.04.21.2002"
 
 ; NOTE: pilot builds rely on post-install.ps1's Start-BitsTransfer for the
 ; ~5.7 GB model download. A follow-up release will wire in Inno Download
