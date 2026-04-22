@@ -19,7 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.22.1314"
+#define AppVer "2026.04.22.1324"
 
 [Setup]
 AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
@@ -215,7 +215,7 @@ end;
 
 function QuoteForPowerShell(const Value: String): String;
 begin
-  Result := '''' + StringChangeEx(Value, '''', '''''', True) + '''';
+  Result := #39 + StringChangeEx(Value, #39, #39 + #39, True) + #39;
 end;
 
 function FindExistingUninstaller(): String;
