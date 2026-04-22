@@ -18,7 +18,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.21.1949"
+#define AppVer "2026.04.21.1955"
 
 ; NOTE: pilot builds rely on post-install.ps1's Start-BitsTransfer for the
 ; ~5.7 GB model download. A follow-up release will wire in Inno Download
@@ -161,8 +161,27 @@ begin
     Result := '0';
 end;
 
-// RAM gate at the wizard level — if the machine has <16 GB, explain and
-// exit before the user watches a 5.7 GB download fail to install anyway.
+// RAM gate at the wizard level using a direct kernel32 import —
+// Inno Setup's built-in Pascal doesn't define TMemoryStatusEx, so we
+// declare it ourselves and call GlobalMemoryStatusEx as an external
+// function. Rejects <16 GB machines with a friendly message before
+// anything is extracted.
+type
+  TMemoryStatusEx = record
+    dwLength: Cardinal;
+    dwMemoryLoad: Cardinal;
+    ullTotalPhys: Int64;
+    ullAvailPhys: Int64;
+    ullTotalPageFile: Int64;
+    ullAvailPageFile: Int64;
+    ullTotalVirtual: Int64;
+    ullAvailVirtual: Int64;
+    ullAvailExtendedVirtual: Int64;
+  end;
+
+function GlobalMemoryStatusEx(var lpBuffer: TMemoryStatusEx): Boolean;
+  external 'GlobalMemoryStatusEx@kernel32.dll stdcall';
+
 function InitializeSetup(): Boolean;
 var
   MemStatus: TMemoryStatusEx;
