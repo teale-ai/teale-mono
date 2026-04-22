@@ -36,12 +36,13 @@ pub struct CatalogModel {
 
 impl CatalogModel {
     pub fn to_entry(&self) -> ModelEntry {
-        self.to_entry_with_metrics(None)
+        self.to_entry_with_live_state(None, 0)
     }
 
-    pub fn to_entry_with_metrics(
+    pub fn to_entry_with_live_state(
         &self,
         metrics: Option<teale_protocol::openai::ModelMetrics>,
+        loaded_device_count: u32,
     ) -> ModelEntry {
         ModelEntry {
             id: self.id.clone(),
@@ -65,6 +66,7 @@ impl CatalogModel {
             },
             quantization: self.quantization.clone(),
             description: self.description.clone(),
+            loaded_device_count: Some(loaded_device_count),
             metrics,
         }
     }

@@ -53,6 +53,8 @@ pub struct ApiMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsResponse {
     pub object: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected_device_count: Option<u32>,
     pub data: Vec<ModelEntry>,
 }
 
@@ -78,29 +80,36 @@ pub struct ModelEntry {
     pub quantization: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Rolling per-model serving stats (TTFT + TPS percentiles). Absent when
-    /// no recent successful completions for this model are in the window.
+    /// Healthy devices that currently have this model loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_device_count: Option<u32>,
+    /// Rolling per-model serving stats (TTFT + TPS averages and percentiles).
+    /// Absent when no recent successful completions for this model are in the window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<ModelMetrics>,
 }
 
 /// Per-model serving stats surfaced on `/v1/models` entries and the
 /// `/try/:token` landing pages so clients can compare latency/throughput.
-/// Percentiles are computed over a sliding window of recent successful
+/// Averages and percentiles are computed over a sliding window of recent successful
 /// completions (size controlled by the gateway).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelMetrics {
     /// Time-to-first-token in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms_avg: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_ms_p50: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_ms_p95: Option<u32>,
     /// Tokens per second during the generation phase (first token → last token).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps_avg: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tps_p50: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tps_p95: Option<f32>,
-    /// Samples contributing to the percentiles above.
+    /// Samples contributing to the rolling stats above.
     pub sample_count: u32,
     /// Age of the freshest sample in seconds — lets clients detect stale data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
