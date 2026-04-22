@@ -46,6 +46,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     }
 
     let floor = &state.config.scheduler.per_model_floor;
+    let connected_device_count = state.registry.device_count() as u32;
     let entries: Vec<_> = state
         .catalog
         .iter()
@@ -58,7 +59,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             };
             state.registry.loaded_count(&m.id) >= min
         })
-        .map(|m| m.to_entry_with_metrics(state.model_metrics.snapshot(&m.id)))
+        .map(|m| {
+            let loaded_device_count = state.registry.loaded_count(&m.id);
+            m.to_entry_with_live_state(state.model_metrics.snapshot(&m.id), loaded_device_count)
+        })
         .collect();
 
     let mut h = HeaderMap::new();
@@ -67,6 +71,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         h,
         Json(ModelsResponse {
             object: "list".to_string(),
+            connected_device_count: Some(connected_device_count),
             data: entries,
         }),
     )

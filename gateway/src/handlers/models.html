@@ -91,9 +91,6 @@
     .model dl.stats dd .lbl { color: var(--dim); }
     .model dl.stats dd .v { color: var(--bright); }
     .model dl.stats dd small { color: var(--dim); margin-left: 6px; }
-    .model.offline { opacity: 0.55; }
-    .model.offline .id { color: var(--dim); }
-
     .summary {
       display: grid;
       grid-template-columns: max-content 1fr;
@@ -133,7 +130,8 @@
   <div class="prompt"><span class="arrow">&gt;</span> gateway: <span class="val">gateway.teale.com</span></div>
   <dl class="summary">
     <dt>Models</dt><dd id="modelCount">—</dd>
-    <dt>Advertising</dt><dd id="readyCount">— <small>(models with live supply)</small></dd>
+    <dt>Devices</dt><dd id="deviceCount">— <small>(currently connected)</small></dd>
+    <dt>Recent traffic</dt><dd id="trafficCount">— <small>(models with recent samples)</small></dd>
   </dl>
 
   <div class="prompt"><span class="arrow">&gt;</span> available models</div>
@@ -176,6 +174,15 @@
     if (s < 3600) return Math.round(s / 60) + "m ago";
     return Math.round(s / 3600) + "h ago";
   }
+  function fmtMs(n) {
+    return n == null ? "—" : `${n}ms`;
+  }
+  function fmtTps(n) {
+    return n == null || !isFinite(n) ? "—" : n.toFixed(1);
+  }
+  function pluralize(count, singular, plural) {
+    return `${count} ${count === 1 ? singular : plural}`;
+  }
   function banner(msg, fail) {
     const b = document.getElementById("banner");
     b.textContent = msg;
@@ -187,14 +194,16 @@
     const catalog = document.getElementById("catalog");
     const models = data.data || [];
     document.getElementById("modelCount").textContent = String(models.length);
-    const ready = models.filter(m => m.metrics && m.metrics.sample_count > 0).length;
-    document.getElementById("readyCount").innerHTML = String(ready) +
-      ' <small>(models with live supply)</small>';
+    document.getElementById("deviceCount").innerHTML =
+      String(data.connected_device_count ?? "—") + ' <small>(currently connected)</small>';
+    const withRecentTraffic = models.filter(m => m.metrics && m.metrics.sample_count > 0).length;
+    document.getElementById("trafficCount").innerHTML = String(withRecentTraffic) +
+      ' <small>(models with recent samples)</small>';
 
     catalog.innerHTML = "";
     models.forEach(m => {
       const el = document.createElement("div");
-      el.className = "model" + (m.metrics ? "" : " offline");
+      el.className = "model";
       el.setAttribute("role", "listitem");
 
       const id = document.createElement("div");
@@ -230,28 +239,31 @@
           `${fmtPrice(m.pricing.prompt)} / ${fmtPrice(m.pricing.completion)} per 1M tokens`);
       }
 
-      if (m.metrics && m.metrics.sample_count > 0) {
-        const wrap = document.createElement("div");
-        wrap.className = "metrics";
-        wrap.style.display = "flex";
-        wrap.style.gap = "18px";
-        wrap.style.flexWrap = "wrap";
+      row("devices", pluralize(m.loaded_device_count ?? 0, "device", "devices"));
 
-        const ttft = document.createElement("span");
-        ttft.innerHTML = `<span class="lbl">ttft</span> <span class="v">${m.metrics.ttft_ms_p50 ?? "—"}ms</span> <small>p50 · ${m.metrics.ttft_ms_p95 ?? "—"}ms p95</small>`;
-        const tps = document.createElement("span");
-        tps.innerHTML = `<span class="lbl">tps</span> <span class="v">${(m.metrics.tps_p50 ?? 0).toFixed(1)}</span> <small>p50 · ${(m.metrics.tps_p95 ?? 0).toFixed(1)} p95</small>`;
-        const src = document.createElement("span");
-        src.innerHTML = `<small>${m.metrics.sample_count} samples · ${fmtAgeSecs(m.metrics.last_sample_age_seconds)}</small>`;
+      const wrap = document.createElement("div");
+      wrap.className = "metrics";
+      wrap.style.display = "flex";
+      wrap.style.gap = "18px";
+      wrap.style.flexWrap = "wrap";
 
-        wrap.appendChild(ttft);
-        wrap.appendChild(tps);
-        wrap.appendChild(src);
-        const dd = row("live", wrap);
-        dd.classList.add("metrics");
+      const metrics = m.metrics;
+      const ttft = document.createElement("span");
+      ttft.innerHTML = `<span class="lbl">ttft</span> <span class="v">${fmtMs(metrics && metrics.ttft_ms_avg)}</span> <small>avg</small>`;
+      const tps = document.createElement("span");
+      tps.innerHTML = `<span class="lbl">tps</span> <span class="v">${fmtTps(metrics && metrics.tps_avg)}</span> <small>avg</small>`;
+      const src = document.createElement("span");
+      if (metrics && metrics.sample_count > 0) {
+        src.innerHTML = `<small>${metrics.sample_count} samples · ${fmtAgeSecs(metrics.last_sample_age_seconds)}</small>`;
       } else {
-        row("live", "no recent samples in window");
+        src.innerHTML = `<small>waiting for recent traffic</small>`;
       }
+
+      wrap.appendChild(ttft);
+      wrap.appendChild(tps);
+      wrap.appendChild(src);
+      const dd = row("live", wrap);
+      dd.classList.add("metrics");
 
       el.appendChild(id);
       el.appendChild(tier);

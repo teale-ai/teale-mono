@@ -186,7 +186,7 @@ models:
     pricing_completion: "0.00000100"
     quantization: INT4
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice, reasoning]
-    description: "Moonshot AI Kimi K2.6 — 1T MoE (32B active), natively int4, multimodal (MoonViT vision encoder), 256K context via MLA attention. Sharded across two 512 GB Mac Studios over Thunderbolt 5 via exo. Recommended sampling: temperature 1.0 / top_p 0.95 (thinking mode default)."
+    description: "Moonshot AI Kimi K2.6 — 1T MoE (32B active), natively int4, multimodal (MoonViT vision encoder), 256K context via MLA attention. Gateway availability reflects the live Teale fleet rather than a fixed hardware pairing. Recommended sampling: temperature 1.0 / top_p 0.95 (thinking mode default)."
     aliases: [kimi-k2.6, kimi-k26, k2.6, kimi]
 
   - id: google/gemma-4-1b-it
