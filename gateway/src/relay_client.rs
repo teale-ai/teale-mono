@@ -151,6 +151,17 @@ impl RelayHandle {
         });
         self.send_json(&payload)
     }
+
+    #[cfg(test)]
+    pub fn test_handle() -> Self {
+        let (outbox, _rx) = mpsc::unbounded_channel();
+        Self {
+            node_id: "test-node".into(),
+            sessions: Arc::new(DashMap::new()),
+            ready_waiters: Arc::new(Mutex::new(HashMap::new())),
+            outbox,
+        }
+    }
 }
 
 /// Spawn the relay client — connects, registers, routes messages into the

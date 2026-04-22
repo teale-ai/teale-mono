@@ -21,6 +21,9 @@ pub enum GatewayError {
     #[error("forbidden: {0}")]
     Forbidden(String),
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("share-key budget exhausted")]
     BudgetExhausted,
 
@@ -56,6 +59,7 @@ impl GatewayError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::BudgetExhausted => StatusCode::PAYMENT_REQUIRED,
             Self::InsufficientCredits { .. } => StatusCode::PAYMENT_REQUIRED,
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
@@ -74,6 +78,7 @@ impl GatewayError {
             Self::BadRequest(_) => "invalid_request",
             Self::NotFound(_) => "not_found",
             Self::Forbidden(_) => "forbidden",
+            Self::Conflict(_) => "conflict",
             Self::BudgetExhausted => "budget_exhausted",
             Self::InsufficientCredits { .. } => "insufficient_credits",
             Self::ModelNotFound(_) => "model_not_found",

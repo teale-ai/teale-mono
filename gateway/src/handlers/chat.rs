@@ -167,12 +167,8 @@ pub(crate) fn compute_clamp(
         model.prompt_price_usd(),
         model.completion_price_usd(),
     );
-    let one_out_cost = ledger::cost_credits(
-        0,
-        1,
-        model.prompt_price_usd(),
-        model.completion_price_usd(),
-    );
+    let one_out_cost =
+        ledger::cost_credits(0, 1, model.prompt_price_usd(), model.completion_price_usd());
     let min_required = prompt_cost.saturating_add(one_out_cost);
     if effective_budget < min_required {
         return Err(min_required);
@@ -900,6 +896,7 @@ fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::ModelNotFound(_) => "model_not_found",
         GatewayError::NotFound(_) => "not_found",
         GatewayError::Forbidden(_) => "forbidden",
+        GatewayError::Conflict(_) => "conflict",
         GatewayError::BudgetExhausted => "budget_exhausted",
         GatewayError::InsufficientCredits { .. } => "insufficient_credits",
         GatewayError::BadRequest(_) => "bad_request",

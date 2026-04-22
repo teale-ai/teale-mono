@@ -16,6 +16,7 @@
 //! reduced proportionally to what the consumer can actually pay and the
 //! shortfall is noted on the SPENT row.
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rusqlite::params;
@@ -93,8 +94,8 @@ pub struct LedgerEntry {
 
 /// Who is being charged for an inference request. Device spenders are
 /// ordinary device-bound tokens; Share spenders are holders of a temporary
-/// share key minted by a device — in that case the ledger debits the
-/// **issuer** and the key's `consumed_credits` is incremented.
+/// share key minted by a device — in that case the ledger attributes spend to
+/// the issuer while debiting the share key's funded pool.
 #[derive(Debug, Clone)]
 pub enum ConsumerPrincipal {
     Device(String),
@@ -145,6 +146,8 @@ impl ResolvedShareKey {
 pub struct ShareKeyMinted {
     #[serde(rename = "keyID")]
     pub key_id: String,
+    #[serde(rename = "fundingID")]
+    pub funding_id: String,
     pub token: String,
     pub label: Option<String>,
     #[serde(rename = "budgetCredits")]
@@ -160,11 +163,15 @@ pub struct ShareKeyMinted {
 pub struct ShareKeyPublic {
     #[serde(rename = "keyID")]
     pub key_id: String,
+    #[serde(rename = "fundingID")]
+    pub funding_id: String,
     pub label: Option<String>,
     #[serde(rename = "budgetCredits")]
     pub budget_credits: i64,
     #[serde(rename = "consumedCredits")]
     pub consumed_credits: i64,
+    #[serde(rename = "remainingCredits")]
+    pub remaining_credits: i64,
     #[serde(rename = "expiresAt")]
     pub expires_at: i64,
     #[serde(rename = "createdAt")]
@@ -185,6 +192,70 @@ pub struct ShareKeyPreview {
     pub expires_at: i64,
     #[serde(rename = "issuerDisplayName")]
     pub issuer_display_name: Option<String>,
+}
+
+/// Public discovery payload for a share key's non-secret funding identifier.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShareKeyFundingPreview {
+    #[serde(rename = "fundingID")]
+    pub funding_id: String,
+    pub label: Option<String>,
+    #[serde(rename = "issuerDisplayName")]
+    pub issuer_display_name: Option<String>,
+    #[serde(rename = "budgetCredits")]
+    pub budget_credits: i64,
+    #[serde(rename = "consumedCredits")]
+    pub consumed_credits: i64,
+    #[serde(rename = "remainingCredits")]
+    pub remaining_credits: i64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ShareKeyFundingReceipt {
+    #[serde(rename = "fundingID")]
+    pub funding_id: String,
+    #[serde(rename = "keyID")]
+    pub key_id: String,
+    #[serde(rename = "fundedCredits")]
+    pub funded_credits: i64,
+    #[serde(rename = "budgetCredits")]
+    pub budget_credits: i64,
+    #[serde(rename = "consumedCredits")]
+    pub consumed_credits: i64,
+    #[serde(rename = "remainingCredits")]
+    pub remaining_credits: i64,
+    #[serde(rename = "senderBalanceCredits")]
+    pub sender_balance_credits: i64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FundShareKeyError {
+    NotFound,
+    Revoked,
+    Expired,
+    NotMigrated,
+    InsufficientBalance { balance: i64, required: i64 },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ExpiredShareKeyRefundReport {
+    #[serde(rename = "keysClosed")]
+    pub keys_closed: usize,
+    #[serde(rename = "contributionsRefunded")]
+    pub contributions_refunded: usize,
+    #[serde(rename = "creditsRefunded")]
+    pub credits_refunded: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShareKeyContributionBackfillReport {
+    pub keys_backfilled: usize,
+    pub funding_ids_backfilled: usize,
+    pub contributions_backfilled: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -348,6 +419,491 @@ pub fn record_bonus(pool: &DbPool, device_id: &str, amount: i64) -> anyhow::Resu
     Ok(balance)
 }
 
+#[derive(Debug, Clone)]
+struct ShareKeyContributionState {
+    contribution_id: String,
+    remaining_credits: i64,
+    created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ShareKeyFundingTarget {
+    key_id: String,
+    budget_credits: i64,
+    consumed_credits: i64,
+    expires_at: i64,
+    revoked_at: Option<i64>,
+    funded: i64,
+}
+
+fn new_share_key_funding_id() -> String {
+    format!("skf_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn new_share_key_contribution_id() -> String {
+    format!("skc_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn insert_share_key_contribution_tx(
+    tx: &rusqlite::Transaction<'_>,
+    key_id: &str,
+    funder_device_id: &str,
+    funded_credits: i64,
+    remaining_credits: i64,
+    created_at: i64,
+    refunded_at: Option<i64>,
+    refund_reason: Option<&str>,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT INTO share_key_contributions
+         (contribution_id, key_id, funder_device_id, funded_credits, remaining_credits,
+          created_at, refunded_at, refund_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            new_share_key_contribution_id(),
+            key_id,
+            funder_device_id,
+            funded_credits,
+            remaining_credits.max(0),
+            created_at,
+            refunded_at,
+            refund_reason,
+        ],
+    )?;
+    Ok(())
+}
+
+fn sum_share_key_contributions_tx(
+    tx: &rusqlite::Transaction<'_>,
+    key_id: &str,
+) -> anyhow::Result<i64> {
+    Ok(tx.query_row(
+        "SELECT COALESCE(SUM(remaining_credits), 0)
+         FROM share_key_contributions WHERE key_id = ?",
+        [key_id],
+        |r| r.get(0),
+    )?)
+}
+
+fn ensure_share_key_funding_id_tx(
+    tx: &rusqlite::Transaction<'_>,
+    key_id: &str,
+    existing: Option<String>,
+) -> anyhow::Result<String> {
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let funding_id = new_share_key_funding_id();
+    tx.execute(
+        "UPDATE share_keys SET funding_id = ? WHERE key_id = ?",
+        params![funding_id, key_id],
+    )?;
+    Ok(funding_id)
+}
+
+fn refund_share_key_contributions_tx(
+    tx: &rusqlite::Transaction<'_>,
+    key_id: &str,
+    settled_at: i64,
+    reason: &str,
+) -> anyhow::Result<(usize, i64)> {
+    let rows: Vec<(String, String, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT contribution_id, funder_device_id, remaining_credits
+             FROM share_key_contributions
+             WHERE key_id = ? AND refunded_at IS NULL
+             ORDER BY created_at ASC, contribution_id ASC",
+        )?;
+        let rows = stmt
+            .query_map([key_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    let mut refunded_rows = 0usize;
+    let mut refunded_credits = 0i64;
+    for (contribution_id, funder_device_id, remaining_credits) in rows {
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+            [&funder_device_id],
+        )?;
+        if remaining_credits > 0 {
+            tx.execute(
+                "UPDATE balances SET balance = balance + ? WHERE device_id = ?",
+                params![remaining_credits, &funder_device_id],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &funder_device_id,
+                    LedgerType::ShareKeyRefund.as_str(),
+                    remaining_credits,
+                    settled_at,
+                    format!("share_key:{} refunded ({})", key_id, reason),
+                ],
+            )?;
+            refunded_rows += 1;
+            refunded_credits += remaining_credits;
+        }
+        tx.execute(
+            "UPDATE share_key_contributions
+             SET remaining_credits = 0, refunded_at = ?, refund_reason = ?
+             WHERE contribution_id = ?",
+            params![settled_at, reason, contribution_id],
+        )?;
+    }
+
+    Ok((refunded_rows, refunded_credits))
+}
+
+fn apply_pro_rata_share_key_spend_tx(
+    tx: &rusqlite::Transaction<'_>,
+    key_id: &str,
+    spend: i64,
+) -> anyhow::Result<()> {
+    if spend <= 0 {
+        return Ok(());
+    }
+
+    let contributions: Vec<ShareKeyContributionState> = {
+        let mut stmt = tx.prepare(
+            "SELECT contribution_id, funder_device_id, remaining_credits, created_at
+             FROM share_key_contributions
+             WHERE key_id = ? AND remaining_credits > 0
+             ORDER BY created_at ASC, contribution_id ASC",
+        )?;
+        let rows = stmt
+            .query_map([key_id], |r| {
+                Ok(ShareKeyContributionState {
+                    contribution_id: r.get(0)?,
+                    remaining_credits: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    if contributions.is_empty() {
+        return Ok(());
+    }
+
+    let total_remaining: i64 = contributions.iter().map(|c| c.remaining_credits).sum();
+    if total_remaining <= 0 {
+        return Ok(());
+    }
+    let spend = spend.min(total_remaining);
+
+    let mut reductions: Vec<(String, i64, i64, i64)> = Vec::with_capacity(contributions.len());
+    let mut floored_total = 0i64;
+    for c in &contributions {
+        let numerator = (spend as i128) * (c.remaining_credits as i128);
+        let base = (numerator / total_remaining as i128) as i64;
+        let remainder = (numerator % total_remaining as i128) as i64;
+        floored_total += base;
+        reductions.push((c.contribution_id.clone(), base, remainder, c.created_at));
+    }
+
+    let mut leftover = spend - floored_total;
+    if leftover > 0 {
+        let mut order: Vec<(usize, i64, i64, String)> = reductions
+            .iter()
+            .enumerate()
+            .map(|(idx, (id, _, remainder, created_at))| (idx, *remainder, *created_at, id.clone()))
+            .collect();
+        order.sort_by(|a, b| match b.1.cmp(&a.1) {
+            Ordering::Equal => match a.2.cmp(&b.2) {
+                Ordering::Equal => a.3.cmp(&b.3),
+                other => other,
+            },
+            other => other,
+        });
+        for (idx, _, _, _) in order {
+            if leftover == 0 {
+                break;
+            }
+            reductions[idx].1 += 1;
+            leftover -= 1;
+        }
+    }
+
+    for (c, (_, reduction, _, _)) in contributions.iter().zip(reductions.iter()) {
+        let new_remaining = (c.remaining_credits - *reduction).max(0);
+        tx.execute(
+            "UPDATE share_key_contributions SET remaining_credits = ? WHERE contribution_id = ?",
+            params![new_remaining, &c.contribution_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+pub fn backfill_funded_share_key_contributions(
+    pool: &DbPool,
+) -> anyhow::Result<ShareKeyContributionBackfillReport> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let rows: Vec<(
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        i64,
+    )> = {
+        let mut stmt = tx.prepare(
+            "SELECT sk.key_id, sk.issuer_device_id, sk.budget_credits, sk.consumed_credits,
+                    sk.expires_at, sk.revoked_at, sk.funding_id, sk.refunds_settled_at,
+                    (SELECT COUNT(*) FROM share_key_contributions skc WHERE skc.key_id = sk.key_id)
+             FROM share_keys sk
+             WHERE sk.funded = 1",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+
+    let mut report = ShareKeyContributionBackfillReport::default();
+    for (
+        key_id,
+        issuer,
+        budget,
+        consumed,
+        expires_at,
+        revoked_at,
+        funding_id,
+        refunds_settled_at,
+        contribution_count,
+    ) in rows
+    {
+        if funding_id.is_none() {
+            ensure_share_key_funding_id_tx(&tx, &key_id, None)?;
+            report.funding_ids_backfilled += 1;
+        }
+        if contribution_count > 0 {
+            continue;
+        }
+
+        let remaining = (budget - consumed).max(0);
+        if let Some(revoked_at) = revoked_at {
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                budget.max(1),
+                0,
+                revoked_at,
+                Some(refunds_settled_at.unwrap_or(revoked_at)),
+                Some("legacy_revoked"),
+            )?;
+        } else if expires_at <= now && refunds_settled_at.is_some() {
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                budget.max(1),
+                0,
+                expires_at,
+                refunds_settled_at,
+                Some("legacy_expired_refunded"),
+            )?;
+        } else {
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                budget.max(1),
+                remaining,
+                now,
+                None,
+                None,
+            )?;
+        }
+        report.keys_backfilled += 1;
+        report.contributions_backfilled += 1;
+    }
+
+    tx.commit()?;
+    Ok(report)
+}
+
+pub fn transfer_to_share_key(
+    pool: &DbPool,
+    sender_device_id: &str,
+    funding_id: &str,
+    amount_credits: i64,
+) -> Result<ShareKeyFundingReceipt, FundShareKeyError> {
+    if amount_credits <= 0 {
+        return Err(FundShareKeyError::InsufficientBalance {
+            balance: 0,
+            required: amount_credits.max(1),
+        });
+    }
+
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn
+        .transaction()
+        .map_err(|_| FundShareKeyError::NotFound)?;
+
+    let target: Option<ShareKeyFundingTarget> = tx
+        .query_row(
+            "SELECT key_id, issuer_device_id, budget_credits, consumed_credits, expires_at,
+                    revoked_at, funded
+             FROM share_keys WHERE funding_id = ?",
+            [funding_id],
+            |r| {
+                Ok(ShareKeyFundingTarget {
+                    key_id: r.get(0)?,
+                    budget_credits: r.get(2)?,
+                    consumed_credits: r.get(3)?,
+                    expires_at: r.get(4)?,
+                    revoked_at: r.get(5)?,
+                    funded: r.get(6)?,
+                })
+            },
+        )
+        .ok();
+    let target = target.ok_or(FundShareKeyError::NotFound)?;
+    if target.revoked_at.is_some() {
+        return Err(FundShareKeyError::Revoked);
+    }
+    if target.expires_at <= now {
+        return Err(FundShareKeyError::Expired);
+    }
+    if target.funded != 1 {
+        return Err(FundShareKeyError::NotMigrated);
+    }
+
+    tx.execute(
+        "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+        params![sender_device_id, now, now],
+    )
+    .map_err(|_| FundShareKeyError::NotFound)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [sender_device_id],
+    )
+    .map_err(|_| FundShareKeyError::NotFound)?;
+    let sender_balance: i64 = tx
+        .query_row(
+            "SELECT balance FROM balances WHERE device_id = ?",
+            [sender_device_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if sender_balance < amount_credits {
+        return Err(FundShareKeyError::InsufficientBalance {
+            balance: sender_balance,
+            required: amount_credits,
+        });
+    }
+
+    tx.execute(
+        "UPDATE balances SET balance = balance - ? WHERE device_id = ?",
+        params![amount_credits, sender_device_id],
+    )
+    .map_err(|_| FundShareKeyError::NotFound)?;
+    tx.execute(
+        "UPDATE share_keys SET budget_credits = budget_credits + ? WHERE key_id = ?",
+        params![amount_credits, &target.key_id],
+    )
+    .map_err(|_| FundShareKeyError::NotFound)?;
+    insert_share_key_contribution_tx(
+        &tx,
+        &target.key_id,
+        sender_device_id,
+        amount_credits,
+        amount_credits,
+        now,
+        None,
+        None,
+    )
+    .map_err(|_| FundShareKeyError::NotFound)?;
+    tx.execute(
+        "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+         VALUES (?, ?, ?, ?, ?)",
+        params![
+            sender_device_id,
+            LedgerType::ShareKeyFund.as_str(),
+            -amount_credits,
+            now,
+            format!("share_key:{} funded", &target.key_id),
+        ],
+    )
+    .map_err(|_| FundShareKeyError::NotFound)?;
+
+    let new_sender_balance = sender_balance - amount_credits;
+    let new_budget = target.budget_credits + amount_credits;
+    let remaining = sum_share_key_contributions_tx(&tx, &target.key_id)
+        .map_err(|_| FundShareKeyError::NotFound)?;
+    tx.commit().map_err(|_| FundShareKeyError::NotFound)?;
+
+    Ok(ShareKeyFundingReceipt {
+        funding_id: funding_id.to_string(),
+        key_id: target.key_id,
+        funded_credits: amount_credits,
+        budget_credits: new_budget,
+        consumed_credits: target.consumed_credits,
+        remaining_credits: remaining,
+        sender_balance_credits: new_sender_balance,
+        expires_at: target.expires_at,
+    })
+}
+
+pub fn refund_expired_share_keys(pool: &DbPool) -> anyhow::Result<ExpiredShareKeyRefundReport> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let keys: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT key_id FROM share_keys
+             WHERE funded = 1
+               AND revoked_at IS NULL
+               AND expires_at <= ?
+               AND refunds_settled_at IS NULL",
+        )?;
+        let keys = stmt
+            .query_map([now], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        keys
+    };
+
+    let mut report = ExpiredShareKeyRefundReport::default();
+    for key_id in keys {
+        let (rows, credits) = refund_share_key_contributions_tx(&tx, &key_id, now, "expired")?;
+        tx.execute(
+            "UPDATE share_keys SET refunds_settled_at = ? WHERE key_id = ?",
+            params![now, &key_id],
+        )?;
+        report.keys_closed += 1;
+        report.contributions_refunded += rows;
+        report.credits_refunded += credits;
+    }
+
+    tx.commit()?;
+    Ok(report)
+}
+
 /// Admin-initiated mint: credit a device wallet with `amount` credits, debit
 /// the mint pool (clamping at zero so we never go negative), and record an
 /// ADMIN_MINT ledger entry. Used by the admin top-up endpoint.
@@ -355,12 +911,7 @@ pub fn record_bonus(pool: &DbPool, device_id: &str, amount: i64) -> anyhow::Resu
 /// Like `record_bonus`, counts toward the recipient's `total_earned` so the
 /// wallet history shows the top-up as an earn (distinguishable by ledger type
 /// from a welcome bonus).
-pub fn admin_mint(
-    pool: &DbPool,
-    device_id: &str,
-    amount: i64,
-    note: &str,
-) -> anyhow::Result<i64> {
+pub fn admin_mint(pool: &DbPool, device_id: &str, amount: i64, note: &str) -> anyhow::Result<i64> {
     if amount <= 0 {
         anyhow::bail!("amount must be > 0");
     }
@@ -385,13 +936,7 @@ pub fn admin_mint(
     tx.execute(
         "INSERT INTO ledger (device_id, type, amount, timestamp, note)
          VALUES (?, ?, ?, ?, ?)",
-        params![
-            device_id,
-            LedgerType::AdminMint.as_str(),
-            amount,
-            now,
-            note,
-        ],
+        params![device_id, LedgerType::AdminMint.as_str(), amount, now, note,],
     )?;
     tx.execute(
         "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
@@ -521,13 +1066,7 @@ pub fn settle_request(
         ConsumerPrincipal::Share { key_id, .. } => {
             if share_funded == Some(1) {
                 // New semantics: debit from the pre-funded pool.
-                let remaining: i64 = tx
-                    .query_row(
-                        "SELECT budget_credits - consumed_credits FROM share_keys WHERE key_id = ?",
-                        [key_id],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
+                let remaining = sum_share_key_contributions_tx(&tx, key_id).unwrap_or(0);
                 cost.min(remaining.max(0))
             } else {
                 // Legacy pre-refactor key: debit directly from the issuer's
@@ -614,6 +1153,7 @@ pub fn settle_request(
                     params![effective_cost, key_id],
                 )?;
                 if share_funded == Some(1) {
+                    apply_pro_rata_share_key_spend_tx(&tx, key_id, effective_cost)?;
                     // New: pool already holds the funds; just bump
                     // total_spent on the issuer's wallet to keep cumulative
                     // accounting coherent (from the wallet-owner's
@@ -849,14 +1389,15 @@ pub fn mint_share_key(
     }
 
     let key_id = uuid::Uuid::new_v4().simple().to_string();
+    let funding_id = new_share_key_funding_id();
     let token = format!("tok_share_{}", uuid::Uuid::new_v4().simple());
     let expires_at = now + expires_in_seconds;
 
     tx.execute(
         "INSERT INTO share_keys
          (key_id, token, issuer_device_id, label, expires_at, budget_credits,
-          consumed_credits, created_at, revoked_at, funded)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, 1)",
+          consumed_credits, created_at, revoked_at, funded, funding_id, refunds_settled_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, 1, ?, NULL)",
         params![
             &key_id,
             &token,
@@ -865,6 +1406,7 @@ pub fn mint_share_key(
             expires_at,
             budget_credits,
             now,
+            &funding_id,
         ],
     )?;
     // Debit issuer: balance drops but total_spent does NOT — the funds are
@@ -884,10 +1426,21 @@ pub fn mint_share_key(
             format!("share_key:{} funded", key_id),
         ],
     )?;
+    insert_share_key_contribution_tx(
+        &tx,
+        &key_id,
+        issuer_device_id,
+        budget_credits,
+        budget_credits,
+        now,
+        None,
+        None,
+    )?;
     tx.commit()?;
 
     Ok(ShareKeyMinted {
         key_id,
+        funding_id,
         token,
         label: normalized_label.map(|s| s.to_string()),
         budget_credits,
@@ -953,9 +1506,20 @@ pub fn resolve_share_key(
 pub fn list_share_keys(pool: &DbPool, issuer_device_id: &str) -> Vec<ShareKeyPublic> {
     let conn = pool.lock();
     let mut stmt = match conn.prepare(
-        "SELECT key_id, label, budget_credits, consumed_credits, expires_at,
-                created_at, revoked_at
-         FROM share_keys WHERE issuer_device_id = ?
+        "SELECT sk.key_id, sk.funding_id, sk.label, sk.budget_credits, sk.consumed_credits,
+                COALESCE(
+                    CASE
+                        WHEN sk.funded = 1 THEN (
+                            SELECT SUM(skc.remaining_credits)
+                            FROM share_key_contributions skc
+                            WHERE skc.key_id = sk.key_id
+                        )
+                        ELSE sk.budget_credits - sk.consumed_credits
+                    END,
+                    0
+                ) AS remaining_credits,
+                sk.expires_at, sk.created_at, sk.revoked_at
+         FROM share_keys sk WHERE sk.issuer_device_id = ?
          ORDER BY created_at DESC",
     ) {
         Ok(s) => s,
@@ -964,12 +1528,14 @@ pub fn list_share_keys(pool: &DbPool, issuer_device_id: &str) -> Vec<ShareKeyPub
     stmt.query_map([issuer_device_id], |r| {
         Ok(ShareKeyPublic {
             key_id: r.get(0)?,
-            label: r.get(1)?,
-            budget_credits: r.get(2)?,
-            consumed_credits: r.get(3)?,
-            expires_at: r.get(4)?,
-            created_at: r.get(5)?,
-            revoked_at: r.get(6)?,
+            funding_id: r.get(1)?,
+            label: r.get(2)?,
+            budget_credits: r.get(3)?,
+            consumed_credits: r.get(4)?,
+            remaining_credits: r.get(5)?,
+            expires_at: r.get(6)?,
+            created_at: r.get(7)?,
+            revoked_at: r.get(8)?,
         })
     })
     .ok()
@@ -977,8 +1543,8 @@ pub fn list_share_keys(pool: &DbPool, issuer_device_id: &str) -> Vec<ShareKeyPub
     .unwrap_or_default()
 }
 
-/// Soft-revoke a key and refund the unspent pool back to the issuer's
-/// wallet atomically. Returns `true` if a row was updated (key belongs to
+/// Soft-revoke a key and refund each funder's unspent contribution back to
+/// that funder atomically. Returns `true` if a row was updated (key belongs to
 /// issuer, not already revoked), `false` if no matching row was found.
 pub fn revoke_share_key(
     pool: &DbPool,
@@ -993,15 +1559,16 @@ pub fn revoke_share_key(
     // amount doesn't race with concurrent settlements. Only revoke-and-refund
     // if the key is still live, owned by this issuer, and funded (old
     // un-funded keys were not paid for so have nothing to refund).
-    let row: Option<(i64, i64, i64)> = tx
+    let row: Option<(i64, i64, i64, Option<i64>)> = tx
         .query_row(
-            "SELECT budget_credits, consumed_credits, funded FROM share_keys
+            "SELECT budget_credits, consumed_credits, funded, refunds_settled_at
+             FROM share_keys
              WHERE key_id = ? AND issuer_device_id = ? AND revoked_at IS NULL",
             params![key_id, issuer_device_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .ok();
-    let (budget, consumed, funded) = match row {
+    let (budget, consumed, funded, refunds_settled_at) = match row {
         Some(v) => v,
         None => {
             tx.rollback()?;
@@ -1015,25 +1582,12 @@ pub fn revoke_share_key(
     )?;
 
     let refund = (budget - consumed).max(0);
-    if funded == 1 && refund > 0 {
+    if funded == 1 && refunds_settled_at.is_none() {
+        let _ = refund;
+        let _ = refund_share_key_contributions_tx(&tx, key_id, now, "revoked")?;
         tx.execute(
-            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
-            [issuer_device_id],
-        )?;
-        tx.execute(
-            "UPDATE balances SET balance = balance + ? WHERE device_id = ?",
-            params![refund, issuer_device_id],
-        )?;
-        tx.execute(
-            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
-             VALUES (?, ?, ?, ?, ?)",
-            params![
-                issuer_device_id,
-                LedgerType::ShareKeyRefund.as_str(),
-                refund,
-                now,
-                format!("share_key:{} refunded on revoke", key_id),
-            ],
+            "UPDATE share_keys SET refunds_settled_at = ? WHERE key_id = ?",
+            params![now, key_id],
         )?;
     }
     tx.commit()?;
@@ -1068,10 +1622,10 @@ pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigr
     let now = unix_now();
     let tx = conn.transaction()?;
 
-    let rows: Vec<(String, String, i64, i64, i64, Option<i64>)> = {
+    let rows: Vec<(String, String, i64, i64, i64, Option<i64>, Option<String>)> = {
         let mut stmt = tx.prepare(
             "SELECT key_id, issuer_device_id, budget_credits, consumed_credits,
-                    expires_at, revoked_at
+                    expires_at, revoked_at, funding_id
              FROM share_keys WHERE funded = 0",
         )?;
         let collected: Vec<_> = stmt
@@ -1083,6 +1637,7 @@ pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigr
                     r.get::<_, i64>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1090,12 +1645,27 @@ pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigr
     };
 
     let mut report = ShareKeyMigrationReport::default();
-    for (key_id, issuer, budget, consumed, expires_at, revoked_at) in rows {
+    for (key_id, issuer, budget, consumed, expires_at, revoked_at, funding_id) in rows {
+        ensure_share_key_funding_id_tx(&tx, &key_id, funding_id)?;
         let is_dead = revoked_at.is_some() || expires_at <= now;
         if is_dead {
             tx.execute(
-                "UPDATE share_keys SET funded = 1 WHERE key_id = ?",
-                [&key_id],
+                "UPDATE share_keys SET funded = 1, refunds_settled_at = ? WHERE key_id = ?",
+                params![revoked_at.unwrap_or(now), &key_id],
+            )?;
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                budget.max(1),
+                0,
+                revoked_at.unwrap_or(expires_at),
+                Some(revoked_at.unwrap_or(now)),
+                Some(if revoked_at.is_some() {
+                    "legacy_revoked"
+                } else {
+                    "legacy_expired"
+                }),
             )?;
             report.skipped_revoked += 1;
             continue;
@@ -1106,6 +1676,16 @@ pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigr
             tx.execute(
                 "UPDATE share_keys SET funded = 1 WHERE key_id = ?",
                 [&key_id],
+            )?;
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                budget.max(1),
+                0,
+                now,
+                None,
+                None,
             )?;
             report.funded_fully += 1;
             continue;
@@ -1151,12 +1731,32 @@ pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigr
             )?;
             report.funded_partially += 1;
             report.total_shrunk_credits += budget - new_budget;
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                debit.max(1),
+                debit,
+                now,
+                None,
+                None,
+            )?;
         } else {
             tx.execute(
                 "UPDATE share_keys SET funded = 1 WHERE key_id = ?",
                 [&key_id],
             )?;
             report.funded_fully += 1;
+            insert_share_key_contribution_tx(
+                &tx,
+                &key_id,
+                &issuer,
+                debit.max(1),
+                debit,
+                now,
+                None,
+                None,
+            )?;
         }
         report.total_debited_credits += debit;
     }
@@ -1210,6 +1810,66 @@ pub fn preview_share_key(pool: &DbPool, token: &str) -> Option<ShareKeyPreview> 
         consumed_credits,
         expires_at,
         issuer_display_name,
+    })
+}
+
+pub fn preview_share_key_funding(
+    pool: &DbPool,
+    funding_id: &str,
+) -> Option<ShareKeyFundingPreview> {
+    let conn = pool.lock();
+    let now = unix_now();
+    let row: Option<(Option<String>, i64, i64, i64, String, Option<i64>, i64)> = conn
+        .query_row(
+            "SELECT sk.label, sk.budget_credits, sk.consumed_credits, sk.expires_at,
+                    sk.issuer_device_id, sk.revoked_at, sk.funded
+             FROM share_keys sk
+             WHERE sk.funding_id = ?",
+            [funding_id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .ok();
+    let (label, budget_credits, consumed_credits, expires_at, issuer_device_id, revoked_at, funded) =
+        row?;
+    if revoked_at.is_some() || expires_at <= now || funded != 1 {
+        return None;
+    }
+    let issuer_display_name: Option<String> = conn
+        .query_row(
+            "SELECT username FROM devices WHERE device_id = ?",
+            [&issuer_device_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    let remaining_credits: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(remaining_credits), 0)
+             FROM share_key_contributions WHERE key_id = (
+                 SELECT key_id FROM share_keys WHERE funding_id = ?
+             )",
+            [funding_id],
+            |r| r.get(0),
+        )
+        .unwrap_or((budget_credits - consumed_credits).max(0));
+    Some(ShareKeyFundingPreview {
+        funding_id: funding_id.to_string(),
+        label,
+        issuer_display_name,
+        budget_credits,
+        consumed_credits,
+        remaining_credits,
+        expires_at,
     })
 }
 
@@ -1361,9 +2021,10 @@ mod tests {
 
         let entries = list_transactions(&pool, "consumer", 10);
         assert!(
-            entries
-                .iter()
-                .any(|e| e.note.as_deref().is_some_and(|n| n.contains("shortfall=60"))),
+            entries.iter().any(|e| e
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("shortfall=60"))),
             "shortfall should be noted on the SPENT row"
         );
     }
@@ -1815,7 +2476,15 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at, funded)
                  VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 0)",
-                params!["ki1", "tok_share_old1", issuer, now + 3600, 400i64, 100i64, now],
+                params![
+                    "ki1",
+                    "tok_share_old1",
+                    issuer,
+                    now + 3600,
+                    400i64,
+                    100i64,
+                    now
+                ],
             )
             .unwrap();
         }
@@ -1824,7 +2493,7 @@ mod tests {
         assert_eq!(report.funded_fully, 1);
         assert_eq!(report.funded_partially, 0);
         assert_eq!(report.total_debited_credits, 300); // budget 400 - consumed 100
-        // Issuer debited by owed amount.
+                                                       // Issuer debited by owed amount.
         assert_eq!(get_balance(&pool, issuer).balance_credits, 700);
 
         // Idempotent: running again is a no-op.
@@ -1851,7 +2520,15 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at, funded)
                  VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 0)",
-                params!["ki2", "tok_share_old2", issuer, now + 3600, 1_000i64, 10i64, now],
+                params![
+                    "ki2",
+                    "tok_share_old2",
+                    issuer,
+                    now + 3600,
+                    1_000i64,
+                    10i64,
+                    now
+                ],
             )
             .unwrap();
         }
@@ -1885,7 +2562,15 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at, funded)
                  VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, 0)",
-                params!["kr", "tok_share_rev", issuer, now + 3600, 500i64, now, now - 1],
+                params![
+                    "kr",
+                    "tok_share_rev",
+                    issuer,
+                    now + 3600,
+                    500i64,
+                    now,
+                    now - 1
+                ],
             )
             .unwrap();
             // Already-expired.
@@ -1904,5 +2589,274 @@ mod tests {
         assert_eq!(report.total_debited_credits, 0);
         // Issuer balance unchanged.
         assert_eq!(get_balance(&pool, issuer).balance_credits, before);
+    }
+
+    fn contribution_rows(
+        pool: &DbPool,
+        key_id: &str,
+    ) -> Vec<(String, i64, i64, Option<i64>, Option<String>)> {
+        let conn = pool.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT funder_device_id, funded_credits, remaining_credits, refunded_at, refund_reason
+                 FROM share_key_contributions
+                 WHERE key_id = ?
+                 ORDER BY created_at ASC, contribution_id ASC",
+            )
+            .unwrap();
+        stmt.query_map([key_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn mint_share_key_creates_funding_id_and_initial_contribution() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "issuer").unwrap();
+        record_bonus(&pool, "issuer", 250).unwrap();
+
+        let minted = mint_share_key(&pool, "issuer", Some("demo"), 3600, 250).unwrap();
+        assert!(minted.funding_id.starts_with("skf_"));
+
+        let rows = contribution_rows(&pool, &minted.key_id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "issuer");
+        assert_eq!(rows[0].1, 250);
+        assert_eq!(rows[0].2, 250);
+
+        let listed = list_share_keys(&pool, "issuer");
+        assert_eq!(listed[0].funding_id, minted.funding_id);
+        assert_eq!(listed[0].remaining_credits, 250);
+    }
+
+    #[test]
+    fn transfer_to_share_key_adds_a_new_contribution() {
+        let pool = open_in_memory().unwrap();
+        for device in &["issuer", "donor"] {
+            upsert_device(&pool, device).unwrap();
+        }
+        record_bonus(&pool, "issuer", 100).unwrap();
+        record_bonus(&pool, "donor", 75).unwrap();
+
+        let minted = mint_share_key(&pool, "issuer", None, 3600, 100).unwrap();
+        let receipt = transfer_to_share_key(&pool, "donor", &minted.funding_id, 75).unwrap();
+
+        assert_eq!(receipt.budget_credits, 175);
+        assert_eq!(receipt.remaining_credits, 175);
+        assert_eq!(receipt.sender_balance_credits, 0);
+
+        let rows = contribution_rows(&pool, &minted.key_id);
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .any(|row| row.0 == "issuer" && row.1 == 100 && row.2 == 100));
+        assert!(rows
+            .iter()
+            .any(|row| row.0 == "donor" && row.1 == 75 && row.2 == 75));
+    }
+
+    #[test]
+    fn transfer_to_share_key_rejects_insufficient_balance_without_mutation() {
+        let pool = open_in_memory().unwrap();
+        for device in &["issuer", "donor"] {
+            upsert_device(&pool, device).unwrap();
+        }
+        record_bonus(&pool, "issuer", 100).unwrap();
+        record_bonus(&pool, "donor", 10).unwrap();
+
+        let minted = mint_share_key(&pool, "issuer", None, 3600, 100).unwrap();
+        let err = transfer_to_share_key(&pool, "donor", &minted.funding_id, 50).unwrap_err();
+        assert_eq!(
+            err,
+            FundShareKeyError::InsufficientBalance {
+                balance: 10,
+                required: 50,
+            }
+        );
+
+        assert_eq!(get_balance(&pool, "donor").balance_credits, 10);
+        let rows = contribution_rows(&pool, &minted.key_id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].2, 100);
+    }
+
+    #[test]
+    fn pro_rata_spend_uses_largest_remainder_with_oldest_tiebreak() {
+        let pool = open_in_memory().unwrap();
+        for device in &["issuer", "donor"] {
+            upsert_device(&pool, device).unwrap();
+        }
+        record_bonus(&pool, "issuer", 100).unwrap();
+        record_bonus(&pool, "donor", 100).unwrap();
+
+        let minted = mint_share_key(&pool, "issuer", None, 3600, 100).unwrap();
+        transfer_to_share_key(&pool, "donor", &minted.funding_id, 100).unwrap();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "UPDATE share_key_contributions
+                 SET created_at = created_at + 1
+                 WHERE key_id = ? AND funder_device_id = 'donor'",
+                params![&minted.key_id],
+            )
+            .unwrap();
+        }
+
+        let mut conn = pool.lock();
+        let tx = conn.transaction().unwrap();
+        apply_pro_rata_share_key_spend_tx(&tx, &minted.key_id, 1).unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let rows = contribution_rows(&pool, &minted.key_id);
+        assert_eq!(rows[0].0, "issuer");
+        assert_eq!(rows[0].2, 99);
+        assert_eq!(rows[1].0, "donor");
+        assert_eq!(rows[1].2, 100);
+    }
+
+    #[test]
+    fn revoke_refunds_each_funder_not_just_the_issuer() {
+        let pool = open_in_memory().unwrap();
+        for device in &["issuer", "donor", "provider"] {
+            upsert_device(&pool, device).unwrap();
+        }
+        record_bonus(&pool, "issuer", 100).unwrap();
+        record_bonus(&pool, "donor", 100).unwrap();
+
+        let minted = mint_share_key(&pool, "issuer", None, 3600, 100).unwrap();
+        transfer_to_share_key(&pool, "donor", &minted.funding_id, 100).unwrap();
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Share {
+                issuer_device_id: "issuer".into(),
+                key_id: minted.key_id.clone(),
+            },
+            Some("provider"),
+            &["provider".into()],
+            60,
+            "req-refund",
+            "gemma",
+        )
+        .unwrap();
+
+        assert!(revoke_share_key(&pool, "issuer", &minted.key_id).unwrap());
+        assert_eq!(get_balance(&pool, "issuer").balance_credits, 70);
+        assert_eq!(get_balance(&pool, "donor").balance_credits, 70);
+
+        let rows = contribution_rows(&pool, &minted.key_id);
+        assert_eq!(rows[0].2, 0);
+        assert_eq!(rows[1].2, 0);
+        assert_eq!(rows[0].4.as_deref(), Some("revoked"));
+        assert_eq!(rows[1].4.as_deref(), Some("revoked"));
+    }
+
+    #[test]
+    fn refund_expired_share_keys_is_idempotent() {
+        let pool = open_in_memory().unwrap();
+        for device in &["issuer", "donor"] {
+            upsert_device(&pool, device).unwrap();
+        }
+        record_bonus(&pool, "issuer", 100).unwrap();
+        record_bonus(&pool, "donor", 40).unwrap();
+
+        let minted = mint_share_key(&pool, "issuer", None, 3600, 100).unwrap();
+        transfer_to_share_key(&pool, "donor", &minted.funding_id, 40).unwrap();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "UPDATE share_keys SET expires_at = ? WHERE key_id = ?",
+                params![unix_now() - 1, &minted.key_id],
+            )
+            .unwrap();
+        }
+
+        let report = refund_expired_share_keys(&pool).unwrap();
+        assert_eq!(report.keys_closed, 1);
+        assert_eq!(report.contributions_refunded, 2);
+        assert_eq!(report.credits_refunded, 140);
+        assert_eq!(get_balance(&pool, "issuer").balance_credits, 100);
+        assert_eq!(get_balance(&pool, "donor").balance_credits, 40);
+
+        let again = refund_expired_share_keys(&pool).unwrap();
+        assert_eq!(again, ExpiredShareKeyRefundReport::default());
+    }
+
+    #[test]
+    fn backfill_funded_share_keys_adds_funding_id_and_contribution() {
+        let pool = open_in_memory().unwrap();
+        let issuer = "issuer";
+        upsert_device(&pool, issuer).unwrap();
+        let now = unix_now();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at, budget_credits,
+                  consumed_credits, created_at, revoked_at, funded, funding_id, refunds_settled_at)
+                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 1, NULL, NULL)",
+                params![
+                    "kb1",
+                    "tok_share_backfill",
+                    issuer,
+                    now + 3600,
+                    100i64,
+                    30i64,
+                    now
+                ],
+            )
+            .unwrap();
+        }
+
+        let report = backfill_funded_share_key_contributions(&pool).unwrap();
+        assert_eq!(report.keys_backfilled, 1);
+        assert_eq!(report.funding_ids_backfilled, 1);
+        let listed = list_share_keys(&pool, issuer);
+        assert_eq!(listed[0].remaining_credits, 70);
+        assert!(listed[0].funding_id.starts_with("skf_"));
+        let rows = contribution_rows(&pool, "kb1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].2, 70);
+    }
+
+    #[test]
+    fn migrate_unfunded_share_keys_creates_contribution_rows() {
+        let pool = open_in_memory().unwrap();
+        let issuer = "issuer";
+        upsert_device(&pool, issuer).unwrap();
+        record_bonus(&pool, issuer, 500).unwrap();
+        let now = unix_now();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at, budget_credits,
+                  consumed_credits, created_at, revoked_at, funded, funding_id, refunds_settled_at)
+                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 0, NULL, NULL)",
+                params![
+                    "km1",
+                    "tok_share_migrate",
+                    issuer,
+                    now + 3600,
+                    400i64,
+                    100i64,
+                    now
+                ],
+            )
+            .unwrap();
+        }
+
+        let report = migrate_unfunded_share_keys(&pool).unwrap();
+        assert_eq!(report.funded_fully, 1);
+        let listed = list_share_keys(&pool, issuer);
+        assert_eq!(listed[0].remaining_credits, 300);
+        assert!(listed[0].funding_id.starts_with("skf_"));
+        let rows = contribution_rows(&pool, "km1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, 300);
+        assert_eq!(rows[0].2, 300);
     }
 }

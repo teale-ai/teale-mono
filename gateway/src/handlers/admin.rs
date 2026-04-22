@@ -1,6 +1,6 @@
 //! Admin-only endpoints.
 //!
-//! Currently just credit top-ups. Gated by a **static** bearer (from
+//! Operator endpoints for credit top-ups and share-key maintenance. Gated by a **static** bearer (from
 //! `GATEWAY_TOKENS` env). Device and share-key bearers are rejected so
 //! user-scoped tokens can never mint.
 
@@ -113,4 +113,105 @@ pub async fn migrate_share_keys(
         total_debited_credits: report.total_debited_credits,
         total_shrunk_credits: report.total_shrunk_credits,
     }))
+}
+
+/// POST /v1/admin/refund-expired-share-keys — refund any expired, still-open
+/// funded share keys back to their original funders.
+pub async fn refund_expired_share_keys(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<ledger::ExpiredShareKeyRefundReport>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let report = ledger::refund_expired_share_keys(pool)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("refund-expired-share-keys: {}", e)))?;
+    tracing::info!(
+        keys_closed = report.keys_closed,
+        contributions_refunded = report.contributions_refunded,
+        credits_refunded = report.credits_refunded,
+        "admin refunded expired share keys"
+    );
+    Ok(Json(report))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::Extension;
+    use tokio::sync::broadcast;
+
+    use crate::auth::TokenTable;
+    use crate::config::Config;
+    use crate::db::open_in_memory;
+    use crate::ledger;
+    use crate::model_metrics::ModelMetricsTracker;
+    use crate::registry::Registry;
+    use crate::relay_client::RelayHandle;
+    use crate::scheduler::Scheduler;
+    use crate::state::ShareKeyIssuers;
+
+    use super::*;
+
+    fn test_state() -> AppState {
+        let cfg = Config::defaults();
+        AppState {
+            config: cfg.clone(),
+            tokens: TokenTable::default(),
+            registry: Registry::new(cfg.reliability.clone()),
+            scheduler: Arc::new(Scheduler::new(cfg.scheduler.clone())),
+            relay: RelayHandle::test_handle(),
+            catalog: Arc::new(vec![]),
+            db: Some(open_in_memory().unwrap()),
+            group_tx: broadcast::channel(8).0,
+            model_metrics: Arc::new(ModelMetricsTracker::new()),
+            share_key_issuers: ShareKeyIssuers::from_env("TEALE_ADMIN_TEST_ISSUERS"),
+        }
+    }
+
+    #[tokio::test]
+    async fn refund_expired_share_keys_requires_static_bearer() {
+        let state = test_state();
+        let err = refund_expired_share_keys(
+            State(state),
+            Extension(AuthPrincipal {
+                kind: PrincipalKind::Device {
+                    device_id: "dev".into(),
+                },
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn refund_expired_share_keys_returns_report_for_static_bearer() {
+        let state = test_state();
+        let pool = state.db.as_ref().unwrap().clone();
+        ledger::upsert_device(&pool, "issuer").unwrap();
+        ledger::record_bonus(&pool, "issuer", 50).unwrap();
+        let minted = ledger::mint_share_key(&pool, "issuer", None, 3600, 50).unwrap();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "UPDATE share_keys SET expires_at = ? WHERE key_id = ?",
+                rusqlite::params![crate::db::unix_now() - 1, minted.key_id],
+            )
+            .unwrap();
+        }
+
+        let Json(report) = refund_expired_share_keys(
+            State(state),
+            Extension(AuthPrincipal {
+                kind: PrincipalKind::Static {
+                    scope: "admin".into(),
+                },
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.keys_closed, 1);
+        assert_eq!(report.credits_refunded, 50);
+    }
 }
