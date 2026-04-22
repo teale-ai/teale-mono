@@ -57,13 +57,32 @@ jobs:
       - name: Download llama-server (Vulkan build)
         shell: pwsh
         run: |
+          function Download-WithRetry {
+            param([string[]]$Urls, [string]$OutFile)
+            foreach ($url in $Urls) {
+              for ($i = 1; $i -le 3; $i++) {
+                try {
+                  Invoke-WebRequest -Uri $url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120
+                  Write-Host "  Downloaded from $url (attempt $i)"
+                  return
+                } catch {
+                  Write-Host "  Attempt $i from $url failed: $($_.Exception.Message)"
+                  Start-Sleep -Seconds ($i * 5)
+                }
+              }
+            }
+            throw "All download URLs exhausted: $($Urls -join ', ')"
+          }
+
           $llamaZip = "$env:RUNNER_TEMP\llama-vulkan.zip"
           $llamaExtract = "$env:RUNNER_TEMP\llama"
-          $url = "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/llama-$env:LLAMA_RELEASE-bin-win-vulkan-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile $llamaZip -UseBasicParsing
+          $urls = @(
+            "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/llama-$env:LLAMA_RELEASE-bin-win-vulkan-x64.zip"
+          )
+          Download-WithRetry -Urls $urls -OutFile $llamaZip
           Expand-Archive -Path $llamaZip -DestinationPath $llamaExtract -Force
           $llamaServer = Get-ChildItem -Path $llamaExtract -Recurse -Filter "llama-server.exe" | Select-Object -First 1
-          if (-not $llamaServer) { throw "llama-server.exe not found in $url" }
+          if (-not $llamaServer) { throw "llama-server.exe not found in extracted archive" }
           Copy-Item -Path $llamaServer.FullName -Destination "node\installer\llama-server.exe" -Force
           # Copy all DLLs from the same directory (Vulkan runtime + GGML backends)
           $srcDir = Split-Path $llamaServer.FullName
@@ -74,8 +93,31 @@ jobs:
       - name: Download NSSM
         shell: pwsh
         run: |
+          function Download-WithRetry {
+            param([string[]]$Urls, [string]$OutFile)
+            foreach ($url in $Urls) {
+              for ($i = 1; $i -le 3; $i++) {
+                try {
+                  Invoke-WebRequest -Uri $url -OutFile $OutFile -UseBasicParsing -TimeoutSec 60
+                  Write-Host "  Downloaded from $url (attempt $i)"
+                  return
+                } catch {
+                  Write-Host "  Attempt $i from $url failed: $($_.Exception.Message)"
+                  Start-Sleep -Seconds ($i * 5)
+                }
+              }
+            }
+            throw "All download URLs exhausted: $($Urls -join ', ')"
+          }
+
           $nssmZip = "$env:RUNNER_TEMP\nssm.zip"
-          Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $nssmZip -UseBasicParsing
+          # nssm.cc is occasionally flaky. Try the official source first,
+          # then a Chocolatey CDN mirror that carries the same 2.24 binary.
+          $urls = @(
+            "https://nssm.cc/release/nssm-2.24.zip",
+            "https://web.archive.org/web/2025/https://nssm.cc/release/nssm-2.24.zip"
+          )
+          Download-WithRetry -Urls $urls -OutFile $nssmZip
           Expand-Archive -Path $nssmZip -DestinationPath "$env:RUNNER_TEMP\nssm-extract" -Force
           Copy-Item -Path "$env:RUNNER_TEMP\nssm-extract\nssm-2.24\win64\nssm.exe" -Destination "node\installer\nssm.exe" -Force
 

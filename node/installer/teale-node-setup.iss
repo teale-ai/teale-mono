@@ -20,7 +20,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.21.1722"
+#define AppVer "2026.04.21.1942"
 
 ; Pull in Inno Download Plugin for visible model-download progress. The
 ; plugin ships with idp.iss — this include adds idpDownloadFile /
