@@ -9,6 +9,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 
+use crate::ledger;
+
 pub type DbPool = Arc<Mutex<Connection>>;
 
 pub const INITIAL_MINT_POOL: i64 = 1_000_000_000;
@@ -123,6 +125,44 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_share_keys_issuer
         ON share_keys(issuer_device_id, created_at DESC);
     "#,
+    // 003_share_keys_funded.sql — track whether a share key has been
+    // pre-funded from the issuer's wallet. Existing rows default to 0 and are
+    // brought forward by the startup `migrate_unfunded_share_keys` pass in
+    // the ledger module.
+    r#"
+    ALTER TABLE share_keys ADD COLUMN funded INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // 004_share_key_funding_ids.sql — add public funding ids and refund-settled
+    // marker so share keys can receive third-party contributions safely.
+    r#"
+    ALTER TABLE share_keys ADD COLUMN funding_id TEXT;
+    ALTER TABLE share_keys ADD COLUMN refunds_settled_at INTEGER;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_share_keys_funding_id
+        ON share_keys(funding_id)
+        WHERE funding_id IS NOT NULL;
+    "#,
+    // 005_share_key_contributions.sql — per-funder contribution ledger for
+    // share-key pools so refunds return to original funders.
+    r#"
+    CREATE TABLE IF NOT EXISTS share_key_contributions (
+        contribution_id TEXT PRIMARY KEY,
+        key_id TEXT NOT NULL,
+        funder_device_id TEXT NOT NULL,
+        funded_credits INTEGER NOT NULL CHECK(funded_credits > 0),
+        remaining_credits INTEGER NOT NULL CHECK(remaining_credits >= 0),
+        created_at INTEGER NOT NULL,
+        refunded_at INTEGER,
+        refund_reason TEXT,
+        FOREIGN KEY (key_id) REFERENCES share_keys(key_id),
+        FOREIGN KEY (funder_device_id) REFERENCES devices(device_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_share_key_contributions_key_created
+        ON share_key_contributions(key_id, created_at, contribution_id);
+    CREATE INDEX IF NOT EXISTS idx_share_key_contributions_funder_created
+        ON share_key_contributions(funder_device_id, created_at, contribution_id);
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
@@ -134,7 +174,9 @@ pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
     migrate(&conn)?;
     seed_mint_pool(&conn)?;
 
-    Ok(Arc::new(Mutex::new(conn)))
+    let pool = Arc::new(Mutex::new(conn));
+    ledger::backfill_funded_share_key_contributions(&pool)?;
+    Ok(pool)
 }
 
 /// Open an in-memory DB — used only by tests.
@@ -142,12 +184,25 @@ pub fn open_in_memory() -> anyhow::Result<DbPool> {
     let conn = Connection::open_in_memory()?;
     migrate(&conn)?;
     seed_mint_pool(&conn)?;
-    Ok(Arc::new(Mutex::new(conn)))
+    let pool = Arc::new(Mutex::new(conn));
+    ledger::backfill_funded_share_key_contributions(&pool)?;
+    Ok(pool)
 }
 
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
-    for sql in MIGRATIONS {
-        conn.execute_batch(sql)?;
+    // SQLite's built-in `user_version` pragma tracks which migrations have
+    // already applied. Existing DBs from before versioning was added start at
+    // 0; migrations 1 and 2 are idempotent (CREATE … IF NOT EXISTS) so they
+    // re-run harmlessly, and we only advance the version after each batch.
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate() {
+        let target = (i + 1) as i64;
+        if target > current {
+            conn.execute_batch(sql)?;
+            // PRAGMA user_version doesn't accept a bound parameter; the value
+            // is a controlled integer so string interpolation is safe here.
+            conn.execute_batch(&format!("PRAGMA user_version = {}", target))?;
+        }
     }
     Ok(())
 }
