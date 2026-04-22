@@ -135,6 +135,8 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    teale_gateway::probe::spawn_synthetic_probe_loop(state.clone());
+
     // Protected routes — require any valid bearer (static or device).
     let protected = Router::new()
         .route(

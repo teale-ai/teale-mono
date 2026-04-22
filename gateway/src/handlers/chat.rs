@@ -673,6 +673,7 @@ async fn run_buffered(
     let mut last_chunk_obj: Option<serde_json::Map<String, Value>> = None;
     let mut captured_usage: Option<Value> = None;
     let mut tokens_out: u64 = 0;
+    let mut first_token_at: Option<Instant> = None;
 
     loop {
         tried += 1;
@@ -693,7 +694,13 @@ async fn run_buffered(
             let next = tokio::time::timeout(deadline, rx.recv()).await;
             match next {
                 Ok(Some(SessionEvent::Chunk(chunk))) => {
-                    got_first = true;
+                    if !got_first {
+                        got_first = true;
+                        first_token_at = Some(Instant::now());
+                        metrics::TTFT_SECONDS
+                            .with_label_values(&[&model_id])
+                            .observe(started.elapsed().as_secs_f64());
+                    }
                     tokens_out += 1;
                     if let Some(text) = extract_delta_content(&chunk) {
                         accumulated_text.push_str(&text);
@@ -759,6 +766,14 @@ async fn run_buffered(
             metrics::TOKENS_OUT_TOTAL
                 .with_label_values(&[&model_id])
                 .inc_by(tokens_out as f64);
+            if let Some(ft) = first_token_at {
+                let ttft_ms = ft.duration_since(started).as_millis() as u32;
+                let total_ms = started.elapsed().as_millis() as u64;
+                let gen_ms = total_ms.saturating_sub(ttft_ms as u64);
+                state
+                    .model_metrics
+                    .record(&model_id, ttft_ms, Some(tokens_out.max(1)), gen_ms);
+            }
 
             // Settle Teale Credit ledger.
             if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {

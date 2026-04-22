@@ -10,6 +10,7 @@ use crate::catalog::is_large;
 use crate::state::AppState;
 
 const CATALOG_HTML: &str = include_str!("models.html");
+const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2"];
 
 pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Content negotiation: browsers (Accept: text/html) get the styled catalog
@@ -50,6 +51,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let entries: Vec<_> = state
         .catalog
         .iter()
+        .filter(|m| !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
         .filter(|m| {
             // Enforce per-model fleet floor: hide models we can't serve healthily.
             let min = if is_large(m.params_b) {
