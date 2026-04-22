@@ -30,6 +30,11 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             header::CACHE_CONTROL,
             HeaderValue::from_static("public, max-age=60"),
         );
+        // Without `Vary: Accept`, the browser caches the HTML response under
+        // `/v1/models` and reuses it for the page's `Accept: application/json`
+        // fetch, which then hits `res.json()` and throws
+        // `Unexpected token '<', "<!doctype "... is not valid JSON`.
+        h.insert(header::VARY, HeaderValue::from_static("Accept"));
         h.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
@@ -56,9 +61,14 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .map(|m| m.to_entry_with_metrics(state.model_metrics.snapshot(&m.id)))
         .collect();
 
-    Json(ModelsResponse {
-        object: "list".to_string(),
-        data: entries,
-    })
-    .into_response()
+    let mut h = HeaderMap::new();
+    h.insert(header::VARY, HeaderValue::from_static("Accept"));
+    (
+        h,
+        Json(ModelsResponse {
+            object: "list".to_string(),
+            data: entries,
+        }),
+    )
+        .into_response()
 }
