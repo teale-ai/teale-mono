@@ -96,18 +96,41 @@ jobs:
           # nssm.cc has been 503-ing all afternoon, so we pull NSSM from
           # Chocolatey's CDN instead. Pre-installed on windows-latest.
           choco install nssm -y --no-progress
-          # Choco lands nssm.exe under C:\ProgramData\chocolatey\bin; stage
-          # it next to the .iss for Inno Setup's [Files] section.
-          $nssm = Get-Command nssm -ErrorAction SilentlyContinue
-          if (-not $nssm) {
-            $nssm = Get-ChildItem "C:\ProgramData\chocolatey\lib\NSSM\tools" -Recurse -Filter "nssm.exe" | Select-Object -First 1
+          # Never stage the Chocolatey shim from C:\ProgramData\chocolatey\bin.
+          # We need the real NSSM binary from the package payload.
+          $candidateRoots = @(
+            "C:\ProgramData\chocolatey\lib\nssm\tools",
+            "C:\ProgramData\chocolatey\lib\NSSM\tools"
+          )
+          $nssm = $null
+          foreach ($root in $candidateRoots) {
+            if (-not (Test-Path $root)) { continue }
+            $preferred = Join-Path $root "win64\nssm.exe"
+            if (Test-Path $preferred) {
+              $nssm = Get-Item $preferred
+              break
+            }
+
+            $fallback = Get-ChildItem -Path $root -Recurse -Filter "nssm.exe" |
+              Where-Object { $_.FullName -notmatch "\\chocolatey\\bin\\" } |
+              Sort-Object FullName |
+              Select-Object -First 1
+            if ($fallback) {
+              $nssm = $fallback
+              break
+            }
           }
-          if (-not $nssm) { throw "nssm.exe not found after choco install" }
-          Copy-Item -Path $nssm.Source -Destination "node\installer\nssm.exe" -Force -ErrorAction SilentlyContinue
-          if (-not (Test-Path "node\installer\nssm.exe")) {
-            Copy-Item -Path $nssm.FullName -Destination "node\installer\nssm.exe" -Force
+
+          if (-not $nssm) { throw "real nssm.exe not found after choco install" }
+
+          Copy-Item -Path $nssm.FullName -Destination "node\installer\nssm.exe" -Force
+          $staged = Get-Item "node\installer\nssm.exe"
+          Write-Host "NSSM staged from $($nssm.FullName)"
+          Write-Host "Staged NSSM size: $($staged.Length) bytes"
+
+          if ($staged.Length -lt 100000) {
+            throw "staged nssm.exe looks too small to be the real binary: $($staged.Length) bytes"
           }
-          Write-Host "NSSM staged at node\installer\nssm.exe"
 
       - name: Stage teale-node.exe + teale-tray.exe
         shell: pwsh

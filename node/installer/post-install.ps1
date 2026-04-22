@@ -28,6 +28,27 @@ $NssmExe    = Join-Path $BinDir "nssm.exe"
 $LlamaExe   = Join-Path $BinDir "llama-server.exe"
 $TealeExe   = Join-Path $BinDir "teale-node.exe"
 $ConfigFile = Join-Path $ConfigDir "teale-node.toml"
+$TranscriptPath = Join-Path $LogDir "post-install.log"
+
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+
+    if ($exitCode -ne 0) {
+        $renderedArgs = if ($Arguments) { $Arguments -join " " } else { "" }
+        throw "Command failed with exit code $exitCode: $FilePath $renderedArgs"
+    }
+}
 
 # --- Create directories ---
 foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
@@ -35,6 +56,8 @@ foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
 }
+
+Start-Transcript -Path $TranscriptPath -Force | Out-Null
 
 # --- RAM gate: pilot is 16 GB+ only ---
 $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
@@ -136,30 +159,35 @@ if ($AllowSupplyLidClosed -eq "1") {
 if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
-    & $NssmExe remove $ServiceName confirm 2>$null
+    Invoke-Checked $NssmExe remove $ServiceName confirm
 }
 
 # --- Install service via NSSM ---
-& $NssmExe install $ServiceName $TealeExe
-& $NssmExe set $ServiceName AppParameters "--config `"$ConfigFile`""
-& $NssmExe set $ServiceName AppDirectory $InstallDir
-& $NssmExe set $ServiceName DisplayName "Teale Node"
-& $NssmExe set $ServiceName Description "TealeNet inference supply node"
+if (-not (Test-Path $NssmExe)) {
+    throw "nssm.exe not found at $NssmExe"
+}
+
+Invoke-Checked $NssmExe install $ServiceName $TealeExe
+Invoke-Checked $NssmExe set $ServiceName AppParameters "--config `"$ConfigFile`""
+Invoke-Checked $NssmExe set $ServiceName AppDirectory $InstallDir
+Invoke-Checked $NssmExe set $ServiceName DisplayName "Teale Node"
+Invoke-Checked $NssmExe set $ServiceName Description "TealeNet inference supply node"
 
 $stdoutLog = Join-Path $LogDir "teale-node-stdout.log"
 $stderrLog = Join-Path $LogDir "teale-node-stderr.log"
-& $NssmExe set $ServiceName AppStdout $stdoutLog
-& $NssmExe set $ServiceName AppStderr $stderrLog
-& $NssmExe set $ServiceName AppRotateFiles 1
-& $NssmExe set $ServiceName AppRotateBytes 10485760
-& $NssmExe set $ServiceName AppRestartDelay 5000
-& $NssmExe set $ServiceName Start SERVICE_AUTO_START
-& $NssmExe set $ServiceName AppEnvironmentExtra ($appEnvironment -join "`n")
+Invoke-Checked $NssmExe set $ServiceName AppStdout $stdoutLog
+Invoke-Checked $NssmExe set $ServiceName AppStderr $stderrLog
+Invoke-Checked $NssmExe set $ServiceName AppRotateFiles 1
+Invoke-Checked $NssmExe set $ServiceName AppRotateBytes 10485760
+Invoke-Checked $NssmExe set $ServiceName AppRestartDelay 5000
+Invoke-Checked $NssmExe set $ServiceName Start SERVICE_AUTO_START
+Invoke-Checked $NssmExe set $ServiceName AppEnvironmentExtra ($appEnvironment -join "`n")
 # Run at Below Normal priority so contributor's foreground apps are never
 # starved. Teale is a good citizen — user's own work always wins the CPU.
-& $NssmExe set $ServiceName AppPriority BELOW_NORMAL_PRIORITY_CLASS
+Invoke-Checked $NssmExe set $ServiceName AppPriority BELOW_NORMAL_PRIORITY_CLASS
 
 # --- Start the service ---
 Start-Service -Name $ServiceName
 
 Write-Host "TealeNode service installed and started."
+Stop-Transcript | Out-Null
