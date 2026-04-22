@@ -18,7 +18,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.21.2002"
+#define AppVer "2026.04.21.2021"
 
 ; NOTE: pilot builds rely on post-install.ps1's Start-BitsTransfer for the
 ; ~5.7 GB model download. A follow-up release will wire in Inno Download
@@ -181,6 +181,43 @@ type
 
 function GlobalMemoryStatusEx(var lpBuffer: TMemoryStatusEx): Boolean;
   external 'GlobalMemoryStatusEx@kernel32.dll stdcall';
+
+// Stop the existing TealeNode service and the per-user tray process
+// before [Files] extraction — otherwise a reinstall hits
+// "DeleteFile failed; code 5. Access is denied." on teale-node.exe
+// because the running service holds it open. Called from
+// PrepareToInstall, which fires after the wizard and before extraction.
+procedure StopExistingInstall;
+var
+  ResultCode: Integer;
+  NssmPath: String;
+begin
+  NssmPath := ExpandConstant('{app}\bin\nssm.exe');
+
+  // Prefer NSSM's stop (it handles child-process cleanup); fall back to
+  // sc.exe if NSSM isn't there yet (first-time install).
+  if FileExists(NssmPath) then
+    Exec(NssmPath, 'stop TealeNode', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+  else
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop TealeNode', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Give Windows Service Control Manager a moment to release file
+  // handles — sc stop returns before the worker has fully drained.
+  Sleep(3000);
+
+  // Kill any lingering teale-tray.exe (per-user, not a service).
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM teale-tray.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Also kill any orphaned llama-server.exe that the node spawned — it
+  // holds ggml-*.dll and vulkan-*.dll open too.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopExistingInstall;
+  Result := ''; // empty string = success
+end;
 
 function InitializeSetup(): Boolean;
 var
