@@ -133,14 +133,15 @@ jobs:
       - name: Install Inno Setup
         shell: pwsh
         run: |
-          $innoInstaller = "$env:RUNNER_TEMP\innosetup.exe"
-          Invoke-WebRequest -Uri "https://files.jrsoftware.org/is/6/innosetup-6.4.3.exe" -OutFile $innoInstaller -UseBasicParsing
-          Start-Process -Wait -FilePath $innoInstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
-          # Inno Download Plugin (idpDownloadFile / idpAddFile for visible model-download progress)
-          $idpZip = "$env:RUNNER_TEMP\idp.zip"
-          Invoke-WebRequest -Uri "https://mitrichsoftware.wordpress.com/inno-download-plugin/" -OutFile $idpZip -UseBasicParsing -ErrorAction SilentlyContinue
-          # IDP install is optional — if the download fails, the build still
-          # runs but the model-progress UI falls back to post-install PS1.
+          # Chocolatey is pre-installed on windows-latest; it mirrors Inno
+          # Setup reliably without depending on jrsoftware.org's CDN.
+          choco install innosetup -y --no-progress
+          # Verify ISCC is on PATH after install.
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $default = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $default)) { throw "ISCC.exe not found after choco install innosetup" }
+          }
 
       - name: Compile installer (ISCC)
         shell: pwsh

@@ -13,19 +13,16 @@
 ;      - ggml-*.dll, vulkan-*.dll and any runtime DLLs from the llama-server zip
 ;      - nssm.exe         (from nssm-2.24/win64/nssm.exe)
 ;      - post-install.ps1, uninstall.ps1, check-update.ps1 (already in this dir)
-;      - IDP plugin files: `Files/idp.iss`, `Files/Unicode/idp.dll`
-;        (download from https://mitrichsoftware.wordpress.com/inno-download-plugin/)
 ;   3. Open this file in Inno Setup Compiler → Build → Compile
 ;   4. Output: output/Teale.exe (ready to upload to Google Drive)
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.21.1942"
+#define AppVer "2026.04.21.1949"
 
-; Pull in Inno Download Plugin for visible model-download progress. The
-; plugin ships with idp.iss — this include adds idpDownloadFile /
-; idpDownloadAfter functions we call in [Code].
-#include "idp.iss"
+; NOTE: pilot builds rely on post-install.ps1's Start-BitsTransfer for the
+; ~5.7 GB model download. A follow-up release will wire in Inno Download
+; Plugin for an inline progress bar inside the wizard UI.
 
 [Setup]
 AppName=Teale
@@ -187,22 +184,7 @@ begin
   Result := True;
 end;
 
-// Visible model-download progress (replaces the hidden runhidden PS1
-// download). Kicks in right after file extraction finishes.
-procedure InitializeDownloadsOnPrepareToInstall;
-var
-  ModelUrl: String;
-begin
-  // If the user pre-staged the GGUF (e.g., fleet deploy), skip the download.
-  if FileExists(ExpandConstant('{app}\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf')) then
-    exit;
-  ModelUrl := 'https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B-GGUF/resolve/main/Hermes-3-Llama-3.1-8B.Q5_K_M.gguf';
-  idpAddFile(ModelUrl, ExpandConstant('{app}\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf'));
-  idpDownloadAfter(wpReady);
-end;
-
-procedure CurPageChanged(CurPageID: Integer);
-begin
-  if CurPageID = wpReady then
-    InitializeDownloadsOnPrepareToInstall;
-end;
+// Pilot: the 5.7 GB model download happens inside post-install.ps1 via
+// BITS. The installer wizard shows "Configuring Teale and starting
+// service..." while that runs. A follow-up release will move the download
+// here with Inno Download Plugin so users see a real progress bar.
