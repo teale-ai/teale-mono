@@ -22,6 +22,8 @@ pub struct Config {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub reliability: ReliabilityConfig,
+    #[serde(default)]
+    pub synthetic_probes: SyntheticProbeConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -104,6 +106,26 @@ impl Default for ReliabilityConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct SyntheticProbeConfig {
+    #[serde(default = "default_synthetic_probe_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_synthetic_probe_interval")]
+    pub interval_seconds: u64,
+    #[serde(default = "default_synthetic_probe_max_tokens")]
+    pub max_tokens: u32,
+}
+
+impl Default for SyntheticProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_synthetic_probe_enabled(),
+            interval_seconds: default_synthetic_probe_interval(),
+            max_tokens: default_synthetic_probe_max_tokens(),
+        }
+    }
+}
+
 fn default_bind() -> String {
     "0.0.0.0:8080".to_string()
 }
@@ -152,6 +174,15 @@ fn default_quarantine() -> u64 {
 fn default_discover_interval() -> u64 {
     10
 }
+fn default_synthetic_probe_enabled() -> bool {
+    false
+}
+fn default_synthetic_probe_interval() -> u64 {
+    1800
+}
+fn default_synthetic_probe_max_tokens() -> u32 {
+    16
+}
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
@@ -174,6 +205,7 @@ impl Config {
             models_yaml: default_models_yaml(),
             scheduler: SchedulerConfig::default(),
             reliability: ReliabilityConfig::default(),
+            synthetic_probes: SyntheticProbeConfig::default(),
         }
     }
 }

@@ -131,7 +131,8 @@
   <dl class="summary">
     <dt>Models</dt><dd id="modelCount">—</dd>
     <dt>Devices</dt><dd id="deviceCount">— <small>(currently connected)</small></dd>
-    <dt>Recent traffic</dt><dd id="trafficCount">— <small>(models with recent samples)</small></dd>
+    <dt>Credits peg</dt><dd>1 USD = 1,000,000 Teale credits</dd>
+    <dt>Fresh metrics</dt><dd id="trafficCount">— <small>(models with fresh samples)</small></dd>
   </dl>
 
   <div class="prompt"><span class="arrow">&gt;</span> available models</div>
@@ -157,6 +158,11 @@
     const perMil = Number(credPerToken) * 1_000_000;
     if (!isFinite(perMil)) return "—";
     return "$" + perMil.toFixed(2);
+  }
+  function fmtCreditsPerMillion(usdPerToken) {
+    const credits = Number(usdPerToken) * 1_000_000 * CRED_PER_USD;
+    if (!isFinite(credits)) return "—";
+    return Math.round(credits).toLocaleString();
   }
   function fmtParams(p) {
     if (p == null) return "—";
@@ -196,9 +202,9 @@
     document.getElementById("modelCount").textContent = String(models.length);
     document.getElementById("deviceCount").innerHTML =
       String(data.connected_device_count ?? "—") + ' <small>(currently connected)</small>';
-    const withRecentTraffic = models.filter(m => m.metrics && m.metrics.sample_count > 0).length;
-    document.getElementById("trafficCount").innerHTML = String(withRecentTraffic) +
-      ' <small>(models with recent samples)</small>';
+    const withFreshMetrics = models.filter(m => m.metrics && m.metrics.sample_count > 0).length;
+    document.getElementById("trafficCount").innerHTML = String(withFreshMetrics) +
+      ' <small>(models with fresh samples)</small>';
 
     catalog.innerHTML = "";
     models.forEach(m => {
@@ -236,7 +242,9 @@
 
       if (m.pricing) {
         row("pricing",
-          `${fmtPrice(m.pricing.prompt)} / ${fmtPrice(m.pricing.completion)} per 1M tokens`);
+          `prompt ${fmtPrice(m.pricing.prompt)} = ${fmtCreditsPerMillion(m.pricing.prompt)} cr · ` +
+          `completion ${fmtPrice(m.pricing.completion)} = ${fmtCreditsPerMillion(m.pricing.completion)} cr ` +
+          `per 1M tokens`);
       }
 
       row("devices", pluralize(m.loaded_device_count ?? 0, "device", "devices"));
@@ -256,7 +264,7 @@
       if (metrics && metrics.sample_count > 0) {
         src.innerHTML = `<small>${metrics.sample_count} samples · ${fmtAgeSecs(metrics.last_sample_age_seconds)}</small>`;
       } else {
-        src.innerHTML = `<small>waiting for recent traffic</small>`;
+        src.innerHTML = `<small>waiting for a fresh sample</small>`;
       }
 
       wrap.appendChild(ttft);

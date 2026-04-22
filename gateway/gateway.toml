@@ -46,3 +46,13 @@ max_retries = 1
 heartbeat_stale_seconds = 3600
 quarantine_seconds = 30
 discover_interval_seconds = 10
+
+[synthetic_probes]
+# Keep /v1/models TTFT/TPS from going stale when real traffic is quiet.
+# These probes only hit idle, loaded suppliers, use a tiny prompt, and
+# bypass wallet settlement. With the current 30-minute cadence the cost is
+# low enough to keep Kimi/GLM-class models fresh without materially stealing
+# capacity from user traffic.
+enabled = true
+interval_seconds = 1800
+max_tokens = 16
