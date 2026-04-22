@@ -89,6 +89,13 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Note: pre-refactor share keys (funded=0) keep their legacy semantics
+    // (settle_request falls back to debiting the issuer's wallet) until an
+    // operator explicitly runs the retroactive-funding migration via
+    // `POST /v1/admin/migrate-share-keys`. This lets ops top-up issuer
+    // wallets before converting existing keys into pre-funded pools so a
+    // thin wallet at deploy time doesn't permanently shrink a key's budget.
+
     let registry = Registry::new(config.reliability.clone());
     let scheduler = Arc::new(Scheduler::new(config.scheduler.clone()));
     let relay = relay_client::spawn(&config, identity.clone(), registry.clone()).await?;
@@ -163,6 +170,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/auth/keys/share/:key_id",
             axum::routing::delete(handlers::share_keys::revoke),
+        )
+        .route("/v1/admin/mint", post(handlers::admin::mint))
+        .route(
+            "/v1/admin/migrate-share-keys",
+            post(handlers::admin::migrate_share_keys),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

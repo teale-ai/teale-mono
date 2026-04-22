@@ -51,6 +51,15 @@ pub enum LedgerType {
     AvailabilityDrip,
     Spent,
     OpsFee,
+    /// Issuer → share-key pool transfer at mint time (pre-funds the key).
+    /// Not counted toward total_spent: the funds may be refunded on revoke.
+    ShareKeyFund,
+    /// Share-key pool → issuer transfer at revoke time (unused remainder).
+    /// Not counted toward total_earned.
+    ShareKeyRefund,
+    /// Admin-initiated mint into a device wallet. Tracked separately from
+    /// BONUS so audit trails distinguish operator top-ups from welcome bonuses.
+    AdminMint,
 }
 
 impl LedgerType {
@@ -62,6 +71,9 @@ impl LedgerType {
             LedgerType::AvailabilityDrip => "AVAILABILITY_DRIP",
             LedgerType::Spent => "SPENT",
             LedgerType::OpsFee => "OPS_FEE",
+            LedgerType::ShareKeyFund => "SHARE_KEY_FUND",
+            LedgerType::ShareKeyRefund => "SHARE_KEY_REFUND",
+            LedgerType::AdminMint => "ADMIN_MINT",
         }
     }
 }
@@ -336,6 +348,65 @@ pub fn record_bonus(pool: &DbPool, device_id: &str, amount: i64) -> anyhow::Resu
     Ok(balance)
 }
 
+/// Admin-initiated mint: credit a device wallet with `amount` credits, debit
+/// the mint pool (clamping at zero so we never go negative), and record an
+/// ADMIN_MINT ledger entry. Used by the admin top-up endpoint.
+///
+/// Like `record_bonus`, counts toward the recipient's `total_earned` so the
+/// wallet history shows the top-up as an earn (distinguishable by ledger type
+/// from a welcome bonus).
+pub fn admin_mint(
+    pool: &DbPool,
+    device_id: &str,
+    amount: i64,
+    note: &str,
+) -> anyhow::Result<i64> {
+    if amount <= 0 {
+        anyhow::bail!("amount must be > 0");
+    }
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    // Ensure device exists so the FK on any downstream ledger rows is valid.
+    tx.execute(
+        "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+        params![device_id, now, now],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [device_id],
+    )?;
+
+    tx.execute(
+        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
+        params![amount],
+    )?;
+    tx.execute(
+        "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+         VALUES (?, ?, ?, ?, ?)",
+        params![
+            device_id,
+            LedgerType::AdminMint.as_str(),
+            amount,
+            now,
+            note,
+        ],
+    )?;
+    tx.execute(
+        "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+         WHERE device_id = ?",
+        params![amount, amount, device_id],
+    )?;
+    let balance: i64 = tx.query_row(
+        "SELECT balance FROM balances WHERE device_id = ?",
+        [device_id],
+        |r| r.get(0),
+    )?;
+    tx.commit()?;
+    Ok(balance)
+}
+
 pub fn get_balance(pool: &DbPool, device_id: &str) -> BalanceSnapshot {
     let conn = pool.lock();
     let (balance, earned, spent): (i64, i64, i64) = conn
@@ -414,20 +485,72 @@ pub fn settle_request(
     let now = unix_now();
     let tx = conn.transaction()?;
 
-    // Probe consumer balance under the transaction lock so we see a consistent
-    // view and can bound the payout to what's actually paid.
+    // Compute the effective (actually-payable) cost. For device principals
+    // this is bounded by the wallet balance; for share-keys, by the key's
+    // pre-funded pool remainder. In both cases the non-negative invariant
+    // holds: we never debit more than the source can cover.
     tx.execute(
         "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
         [paying_device_id],
     )?;
-    let consumer_balance: i64 = tx
-        .query_row(
-            "SELECT balance FROM balances WHERE device_id = ?",
-            [paying_device_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let effective_cost = cost.min(consumer_balance.max(0));
+    // Share-key funded status (only relevant for Share principals). Keys
+    // minted post-refactor (`funded=1`) have a pre-stocked pool; legacy keys
+    // (`funded=0`) still debit the issuer's wallet at settle time until an
+    // operator runs the retroactive-funding migration.
+    let share_funded = match consumer {
+        ConsumerPrincipal::Share { key_id, .. } => tx
+            .query_row(
+                "SELECT funded FROM share_keys WHERE key_id = ?",
+                [key_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .ok(),
+        _ => None,
+    };
+    let effective_cost = match consumer {
+        ConsumerPrincipal::Device(_) => {
+            let bal: i64 = tx
+                .query_row(
+                    "SELECT balance FROM balances WHERE device_id = ?",
+                    [paying_device_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            cost.min(bal.max(0))
+        }
+        ConsumerPrincipal::Share { key_id, .. } => {
+            if share_funded == Some(1) {
+                // New semantics: debit from the pre-funded pool.
+                let remaining: i64 = tx
+                    .query_row(
+                        "SELECT budget_credits - consumed_credits FROM share_keys WHERE key_id = ?",
+                        [key_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                cost.min(remaining.max(0))
+            } else {
+                // Legacy pre-refactor key: debit directly from the issuer's
+                // wallet, capped at wallet balance AND the key's remaining
+                // budget (the original cap semantics).
+                let bal: i64 = tx
+                    .query_row(
+                        "SELECT balance FROM balances WHERE device_id = ?",
+                        [paying_device_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                let key_remaining: i64 = tx
+                    .query_row(
+                        "SELECT budget_credits - consumed_credits FROM share_keys WHERE key_id = ?",
+                        [key_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                cost.min(bal.max(0)).min(key_remaining.max(0))
+            }
+        }
+    };
     let shortfall = cost - effective_cost;
 
     // Split the effective (actually-payable) amount 70/25/5.
@@ -463,33 +586,53 @@ pub fn settle_request(
         note_base
     };
 
-    // Consumer SPENT — capped at available balance so the debit never drives
-    // the balance negative. We always record the row (even if effective_cost
-    // is 0) so the request is attributable in wallet history.
+    // Record the SPENT ledger entry against the paying device for audit
+    // attribution regardless of source (device wallet OR share-key pool). We
+    // always record it (even at effective_cost==0) so the request shows up
+    // in wallet history.
     tx.execute(
         "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
          VALUES (?, 'SPENT', ?, ?, ?, ?)",
         params![paying_device_id, -effective_cost, now, request_id, &note],
     )?;
     if effective_cost > 0 {
-        tx.execute(
-            "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
-             WHERE device_id = ?",
-            params![effective_cost, effective_cost, paying_device_id],
-        )?;
-    }
-
-    // Share-key: atomically bump consumed_credits so budget checks see spend.
-    // We bump by effective_cost (what was actually paid) to stay consistent
-    // with the SPENT amount and keep the budget from being "consumed" for
-    // credits that never moved.
-    if let ConsumerPrincipal::Share { key_id, .. } = consumer {
-        if effective_cost > 0 {
-            tx.execute(
-                "UPDATE share_keys SET consumed_credits = consumed_credits + ?
-                 WHERE key_id = ?",
-                params![effective_cost, key_id],
-            )?;
+        match consumer {
+            ConsumerPrincipal::Device(_) => {
+                // Device path: debit the wallet and bump total_spent.
+                tx.execute(
+                    "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
+                     WHERE device_id = ?",
+                    params![effective_cost, effective_cost, paying_device_id],
+                )?;
+            }
+            ConsumerPrincipal::Share { key_id, .. } => {
+                // Always bump the key's consumed_credits ticker so budget
+                // exhaustion tracks across both semantics.
+                tx.execute(
+                    "UPDATE share_keys SET consumed_credits = consumed_credits + ?
+                     WHERE key_id = ?",
+                    params![effective_cost, key_id],
+                )?;
+                if share_funded == Some(1) {
+                    // New: pool already holds the funds; just bump
+                    // total_spent on the issuer's wallet to keep cumulative
+                    // accounting coherent (from the wallet-owner's
+                    // perspective, a share-key spend IS their spend — they
+                    // funded it at mint time).
+                    tx.execute(
+                        "UPDATE balances SET total_spent = total_spent + ?
+                         WHERE device_id = ?",
+                        params![effective_cost, paying_device_id],
+                    )?;
+                } else {
+                    // Legacy: debit the issuer's wallet directly.
+                    tx.execute(
+                        "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
+                         WHERE device_id = ?",
+                        params![effective_cost, effective_cost, paying_device_id],
+                    )?;
+                }
+            }
         }
     }
 
@@ -631,11 +774,16 @@ pub fn spawn_drip_loop(pool: DbPool, snapshot: impl Fn() -> Vec<String> + Send +
 // ── Share keys ───────────────────────────────────────────────────────────────
 //
 // Temporary scoped bearer tokens minted by a device for community previews.
-// The key's budget caps inference spend; usage is debited from the issuer's
-// wallet while `share_keys.consumed_credits` ticks up in the same transaction
-// as the ledger SPENT entry (see `settle_request`).
+// The key is a **pre-funded pool**: at mint time we atomically debit the
+// issuer's wallet by `budget_credits` and record that as the key's pool.
+// Subsequent bearer spend debits the pool (not the issuer's wallet) in
+// `settle_request`, and a revoke refunds the unspent remainder back to the
+// issuer. This decouples share-key spending from the issuer's live wallet
+// balance: once minted, the bearer has a committed allowance.
 
-/// Mint a share key. Validates bounds and enforces the per-issuer active cap.
+/// Mint a share key. Atomically debits the issuer's wallet by the key's
+/// budget and records the key row with `funded=1`. Fails if the issuer can't
+/// cover the budget (non-negative-wallet invariant).
 pub fn mint_share_key(
     pool: &DbPool,
     issuer_device_id: &str,
@@ -681,6 +829,25 @@ pub fn mint_share_key(
         );
     }
 
+    // Ensure the issuer has a balance row before we read, then check it can
+    // cover the budget. The invariant is hard: wallets must never go negative.
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [issuer_device_id],
+    )?;
+    let issuer_balance: i64 = tx.query_row(
+        "SELECT balance FROM balances WHERE device_id = ?",
+        [issuer_device_id],
+        |r| r.get(0),
+    )?;
+    if issuer_balance < budget_credits {
+        anyhow::bail!(
+            "insufficient wallet balance: have {}, need {}",
+            issuer_balance,
+            budget_credits
+        );
+    }
+
     let key_id = uuid::Uuid::new_v4().simple().to_string();
     let token = format!("tok_share_{}", uuid::Uuid::new_v4().simple());
     let expires_at = now + expires_in_seconds;
@@ -688,8 +855,8 @@ pub fn mint_share_key(
     tx.execute(
         "INSERT INTO share_keys
          (key_id, token, issuer_device_id, label, expires_at, budget_credits,
-          consumed_credits, created_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL)",
+          consumed_credits, created_at, revoked_at, funded)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, 1)",
         params![
             &key_id,
             &token,
@@ -698,6 +865,23 @@ pub fn mint_share_key(
             expires_at,
             budget_credits,
             now,
+        ],
+    )?;
+    // Debit issuer: balance drops but total_spent does NOT — the funds are
+    // transferred to the share-key pool, not spent. They come back on revoke.
+    tx.execute(
+        "UPDATE balances SET balance = balance - ? WHERE device_id = ?",
+        params![budget_credits, issuer_device_id],
+    )?;
+    tx.execute(
+        "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+         VALUES (?, ?, ?, ?, ?)",
+        params![
+            issuer_device_id,
+            LedgerType::ShareKeyFund.as_str(),
+            -budget_credits,
+            now,
+            format!("share_key:{} funded", key_id),
         ],
     )?;
     tx.commit()?;
@@ -793,22 +977,192 @@ pub fn list_share_keys(pool: &DbPool, issuer_device_id: &str) -> Vec<ShareKeyPub
     .unwrap_or_default()
 }
 
-/// Soft-revoke a key. Returns `true` if a row was updated (key belongs to issuer,
-/// not already revoked), `false` if no matching row was found.
+/// Soft-revoke a key and refund the unspent pool back to the issuer's
+/// wallet atomically. Returns `true` if a row was updated (key belongs to
+/// issuer, not already revoked), `false` if no matching row was found.
 pub fn revoke_share_key(
     pool: &DbPool,
     issuer_device_id: &str,
     key_id: &str,
 ) -> anyhow::Result<bool> {
-    let conn = pool.lock();
+    let mut conn = pool.lock();
     let now = unix_now();
-    let n = conn.execute(
-        "UPDATE share_keys
-            SET revoked_at = ?
-          WHERE key_id = ? AND issuer_device_id = ? AND revoked_at IS NULL",
-        params![now, key_id, issuer_device_id],
+    let tx = conn.transaction()?;
+
+    // Look up the key's state under the transaction lock so the refund
+    // amount doesn't race with concurrent settlements. Only revoke-and-refund
+    // if the key is still live, owned by this issuer, and funded (old
+    // un-funded keys were not paid for so have nothing to refund).
+    let row: Option<(i64, i64, i64)> = tx
+        .query_row(
+            "SELECT budget_credits, consumed_credits, funded FROM share_keys
+             WHERE key_id = ? AND issuer_device_id = ? AND revoked_at IS NULL",
+            params![key_id, issuer_device_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let (budget, consumed, funded) = match row {
+        Some(v) => v,
+        None => {
+            tx.rollback()?;
+            return Ok(false);
+        }
+    };
+
+    tx.execute(
+        "UPDATE share_keys SET revoked_at = ? WHERE key_id = ?",
+        params![now, key_id],
     )?;
-    Ok(n > 0)
+
+    let refund = (budget - consumed).max(0);
+    if funded == 1 && refund > 0 {
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+            [issuer_device_id],
+        )?;
+        tx.execute(
+            "UPDATE balances SET balance = balance + ? WHERE device_id = ?",
+            params![refund, issuer_device_id],
+        )?;
+        tx.execute(
+            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                issuer_device_id,
+                LedgerType::ShareKeyRefund.as_str(),
+                refund,
+                now,
+                format!("share_key:{} refunded on revoke", key_id),
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Outcome of the startup retroactive-funding pass for pre-refactor share
+/// keys. Surfaced to the caller mainly for logging.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ShareKeyMigrationReport {
+    pub funded_fully: usize,
+    pub funded_partially: usize,
+    pub skipped_revoked: usize,
+    pub total_debited_credits: i64,
+    pub total_shrunk_credits: i64,
+}
+
+/// One-shot migration: retroactively pre-fund share-key pools that existed
+/// before the pre-funded-pool refactor. For each row with `funded=0`:
+///
+/// - **Revoked/expired keys** are marked funded without debiting (their
+///   budget is moot; they can no longer be spent).
+/// - **Live keys** get `(budget - consumed)` debited from the issuer. If the
+///   issuer's wallet can't cover the full remainder, the key's budget is
+///   shrunk to `consumed + issuer_balance` and only the affordable portion
+///   is debited — preserving the non-negative-wallet invariant.
+///
+/// Idempotent: rows are marked `funded=1` after processing, so re-runs are
+/// cheap no-ops.
+pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigrationReport> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let rows: Vec<(String, String, i64, i64, i64, Option<i64>)> = {
+        let mut stmt = tx.prepare(
+            "SELECT key_id, issuer_device_id, budget_credits, consumed_credits,
+                    expires_at, revoked_at
+             FROM share_keys WHERE funded = 0",
+        )?;
+        let collected: Vec<_> = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        collected
+    };
+
+    let mut report = ShareKeyMigrationReport::default();
+    for (key_id, issuer, budget, consumed, expires_at, revoked_at) in rows {
+        let is_dead = revoked_at.is_some() || expires_at <= now;
+        if is_dead {
+            tx.execute(
+                "UPDATE share_keys SET funded = 1 WHERE key_id = ?",
+                [&key_id],
+            )?;
+            report.skipped_revoked += 1;
+            continue;
+        }
+
+        let owed = (budget - consumed).max(0);
+        if owed == 0 {
+            tx.execute(
+                "UPDATE share_keys SET funded = 1 WHERE key_id = ?",
+                [&key_id],
+            )?;
+            report.funded_fully += 1;
+            continue;
+        }
+
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+            [&issuer],
+        )?;
+        let issuer_balance: i64 = tx.query_row(
+            "SELECT balance FROM balances WHERE device_id = ?",
+            [&issuer],
+            |r| r.get(0),
+        )?;
+
+        let debit = owed.min(issuer_balance.max(0));
+        let new_budget = consumed + debit;
+
+        if debit > 0 {
+            tx.execute(
+                "UPDATE balances SET balance = balance - ? WHERE device_id = ?",
+                params![debit, issuer],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    issuer,
+                    LedgerType::ShareKeyFund.as_str(),
+                    -debit,
+                    now,
+                    format!("share_key:{} retroactive funding", key_id),
+                ],
+            )?;
+        }
+        // If we couldn't cover the full owed amount, shrink the key's budget
+        // so that `budget - consumed == debit`. This keeps the pool balance
+        // exactly equal to what we successfully pre-funded.
+        if new_budget < budget {
+            tx.execute(
+                "UPDATE share_keys SET budget_credits = ?, funded = 1 WHERE key_id = ?",
+                params![new_budget, key_id],
+            )?;
+            report.funded_partially += 1;
+            report.total_shrunk_credits += budget - new_budget;
+        } else {
+            tx.execute(
+                "UPDATE share_keys SET funded = 1 WHERE key_id = ?",
+                [&key_id],
+            )?;
+            report.funded_fully += 1;
+        }
+        report.total_debited_credits += debit;
+    }
+
+    tx.commit()?;
+    Ok(report)
 }
 
 /// Columns pulled from the `share_keys` row during a public preview:
@@ -1060,11 +1414,15 @@ mod tests {
         let pool = open_in_memory().unwrap();
         let issuer = "issuer1";
         upsert_device(&pool, issuer).unwrap();
+        // New semantics: mint pre-funds the pool from the issuer's wallet.
+        record_bonus(&pool, issuer, 500).unwrap();
 
         let minted = mint_share_key(&pool, issuer, Some("demo"), 3600, 500).unwrap();
         assert!(minted.token.starts_with("tok_share_"));
         assert_eq!(minted.budget_credits, 500);
         assert_eq!(minted.label.as_deref(), Some("demo"));
+        // Issuer's wallet was debited by the full budget at mint time.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 0);
 
         let resolved = resolve_share_key(&pool, &minted.token).unwrap().unwrap();
         assert_eq!(resolved.key_id, minted.key_id);
@@ -1075,7 +1433,25 @@ mod tests {
     }
 
     #[test]
-    fn settle_share_key_debits_issuer_and_bumps_consumed() {
+    fn mint_share_key_rejects_when_issuer_cant_cover_budget() {
+        let pool = open_in_memory().unwrap();
+        let issuer = "broke";
+        upsert_device(&pool, issuer).unwrap();
+        // No bonus — issuer wallet is empty. Mint must refuse rather than
+        // driving the wallet negative.
+        let err = mint_share_key(&pool, issuer, None, 3600, 100).unwrap_err();
+        assert!(
+            err.to_string().contains("insufficient wallet balance"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn settle_share_key_debits_pool_and_bumps_consumed() {
+        // Post-refactor: the share-key pool (not the issuer's wallet) is the
+        // source of funds at settle time. The wallet was already debited at
+        // mint. Earners still get paid out of the pool in the 70/25/5 split.
         let pool = open_in_memory().unwrap();
         let issuer = "alice";
         let provider = "provider";
@@ -1086,8 +1462,10 @@ mod tests {
         record_bonus(&pool, issuer, 10_000).unwrap();
 
         let minted = mint_share_key(&pool, issuer, None, 3600, 1_000).unwrap();
-        let online = vec![provider.to_string(), peer.to_string()];
+        // After mint: issuer had 10_000 credits, 1_000 transferred into pool.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 9_000);
 
+        let online = vec![provider.to_string(), peer.to_string()];
         settle_request(
             &pool,
             &ConsumerPrincipal::Share {
@@ -1102,8 +1480,8 @@ mod tests {
         )
         .unwrap();
 
-        // Issuer dropped by 100.
-        assert_eq!(get_balance(&pool, issuer).balance_credits, 10_000 - 100);
+        // Settle doesn't re-debit the issuer — wallet stays at 9_000.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 9_000);
         // Provider earned 70% of 100 = 70.
         assert_eq!(get_balance(&pool, provider).balance_credits, 70);
         // Peer earned the availability cut (≥1).
@@ -1121,21 +1499,75 @@ mod tests {
     }
 
     #[test]
-    fn settle_share_key_rejects_when_issuer_insufficient() {
-        // Non-negative policy: if the share-key issuer can't cover the
-        // spend, the settlement caps the debit at the issuer's balance
-        // (zero, here) and earners get nothing beyond what the issuer paid.
-        // The consumed_credits ticker only advances by what was actually
-        // debited so the share-key isn't "used up" by phantom spend.
+    fn legacy_unfunded_share_key_still_debits_issuer_on_settle() {
+        // Pre-refactor key with funded=0: settle must fall back to debiting
+        // the issuer's wallet (old semantics) until an operator runs the
+        // migration. This keeps existing tokens working between deploy and
+        // admin-migrate without silently creating credits from thin air.
         let pool = open_in_memory().unwrap();
-        let issuer = "alice_poor";
+        let issuer = "alice";
         let provider = "provider";
-        upsert_device(&pool, issuer).unwrap();
-        upsert_device(&pool, provider).unwrap();
+        for d in &[issuer, provider] {
+            upsert_device(&pool, d).unwrap();
+        }
+        record_bonus(&pool, issuer, 1_000).unwrap();
 
-        let minted = mint_share_key(&pool, issuer, None, 3600, 1_000).unwrap();
-        // No bonus — issuer balance starts at 0. If settlement ran, the
-        // shortfall guard should pin everything to zero.
+        // Insert a legacy row (funded=0, no mint-time debit).
+        let now = unix_now();
+        let key_id = "ki_legacy";
+        let token = "tok_share_legacy";
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at,
+                  budget_credits, consumed_credits, created_at, revoked_at, funded)
+                 VALUES (?, ?, ?, NULL, ?, ?, 0, ?, NULL, 0)",
+                params![key_id, token, issuer, now + 3600, 10_000i64, now],
+            )
+            .unwrap();
+        }
+        // Issuer wallet should still be 1000 (no mint-time debit under legacy).
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 1_000);
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Share {
+                issuer_device_id: issuer.to_string(),
+                key_id: key_id.to_string(),
+            },
+            Some(provider),
+            &[provider.to_string()],
+            200,
+            "reqL",
+            "gemma",
+        )
+        .unwrap();
+
+        // Legacy: issuer wallet dropped by 200 at settle (not at mint).
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 800);
+        // Provider earned 70% of 200 = 140.
+        assert_eq!(get_balance(&pool, provider).balance_credits, 140);
+        // Consumed ticker advanced.
+        let resolved = resolve_share_key(&pool, token).unwrap().unwrap();
+        assert_eq!(resolved.consumed_credits, 200);
+    }
+
+    #[test]
+    fn settle_share_key_caps_at_pool_remaining() {
+        // Non-negative policy on the pool: if the settlement cost exceeds
+        // what remains in the share-key pool, the debit caps at the pool's
+        // remainder (earners paid proportionally, shortfall recorded).
+        let pool = open_in_memory().unwrap();
+        let issuer = "alice";
+        let provider = "provider";
+        for d in &[issuer, provider] {
+            upsert_device(&pool, d).unwrap();
+        }
+        record_bonus(&pool, issuer, 1_000).unwrap();
+
+        let minted = mint_share_key(&pool, issuer, None, 3600, 100).unwrap();
+        // Pool = 100; cost = 500 — settle must cap at 100.
         settle_request(
             &pool,
             &ConsumerPrincipal::Share {
@@ -1150,27 +1582,31 @@ mod tests {
         )
         .unwrap();
 
-        // Non-negative invariant: issuer never goes below zero.
-        assert_eq!(get_balance(&pool, issuer).balance_credits, 0);
-        // Provider earns nothing since nothing was paid.
-        assert_eq!(get_balance(&pool, provider).balance_credits, 0);
-        // consumed_credits didn't advance — key still has its full budget.
-        let resolved = resolve_share_key(&pool, &minted.token).unwrap().unwrap();
-        assert_eq!(resolved.consumed_credits, 0);
-        assert_eq!(resolved.remaining(), 1_000);
+        // Issuer wallet untouched by settle (already debited at mint).
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 900);
+        // Provider earned 70% of 100 (the capped amount).
+        assert_eq!(get_balance(&pool, provider).balance_credits, 70);
+        // Pool drained.
+        let resolved = resolve_share_key(&pool, &minted.token).unwrap_err();
+        assert_eq!(resolved, ShareKeyRejection::Exhausted);
     }
 
     #[test]
-    fn revoke_share_key_blocks_resolve_and_preview() {
+    fn revoke_share_key_blocks_resolve_and_refunds_unspent() {
         let pool = open_in_memory().unwrap();
         let issuer = "alice";
         upsert_device(&pool, issuer).unwrap();
+        record_bonus(&pool, issuer, 100).unwrap();
         let minted = mint_share_key(&pool, issuer, None, 3600, 100).unwrap();
+        // Mint transferred 100 into the pool.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 0);
 
         assert!(resolve_share_key(&pool, &minted.token).unwrap().is_some());
         assert!(preview_share_key(&pool, &minted.token).is_some());
 
         assert!(revoke_share_key(&pool, issuer, &minted.key_id).unwrap());
+        // Revoke refunded the full 100 back to the wallet (no spend occurred).
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 100);
 
         assert_eq!(
             resolve_share_key(&pool, &minted.token).unwrap_err(),
@@ -1179,6 +1615,39 @@ mod tests {
         assert!(preview_share_key(&pool, &minted.token).is_none());
         // Second revoke is a no-op.
         assert!(!revoke_share_key(&pool, issuer, &minted.key_id).unwrap());
+        // Refund didn't duplicate.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 100);
+    }
+
+    #[test]
+    fn revoke_refund_after_partial_spend() {
+        // After some spending, revoke refunds only the remainder.
+        let pool = open_in_memory().unwrap();
+        let issuer = "alice";
+        let provider = "provider";
+        upsert_device(&pool, issuer).unwrap();
+        upsert_device(&pool, provider).unwrap();
+        record_bonus(&pool, issuer, 1_000).unwrap();
+        let minted = mint_share_key(&pool, issuer, None, 3600, 1_000).unwrap();
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 0);
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Share {
+                issuer_device_id: issuer.to_string(),
+                key_id: minted.key_id.clone(),
+            },
+            Some(provider),
+            &[provider.to_string()],
+            300,
+            "reqR",
+            "gemma",
+        )
+        .unwrap();
+
+        // Pool remainder = 700; revoke returns that much to the issuer.
+        assert!(revoke_share_key(&pool, issuer, &minted.key_id).unwrap());
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 700);
     }
 
     #[test]
@@ -1186,6 +1655,7 @@ mod tests {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "alice").unwrap();
         upsert_device(&pool, "mallory").unwrap();
+        record_bonus(&pool, "alice", 10).unwrap();
         let minted = mint_share_key(&pool, "alice", None, 3600, 10).unwrap();
         // Mallory can't revoke Alice's key.
         assert!(!revoke_share_key(&pool, "mallory", &minted.key_id).unwrap());
@@ -1223,6 +1693,7 @@ mod tests {
     fn exhausted_share_key_rejected() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "alice").unwrap();
+        record_bonus(&pool, "alice", 50).unwrap();
         let minted = mint_share_key(&pool, "alice", None, 3600, 50).unwrap();
         {
             let conn = pool.lock();
@@ -1243,6 +1714,8 @@ mod tests {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "a").unwrap();
         upsert_device(&pool, "b").unwrap();
+        record_bonus(&pool, "a", 30).unwrap();
+        record_bonus(&pool, "b", 30).unwrap();
         mint_share_key(&pool, "a", Some("a-1"), 3600, 10).unwrap();
         mint_share_key(&pool, "a", Some("a-2"), 3600, 20).unwrap();
         mint_share_key(&pool, "b", Some("b-1"), 3600, 30).unwrap();
@@ -1260,6 +1733,9 @@ mod tests {
     fn mint_share_key_rejects_bad_bounds() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "a").unwrap();
+        // Fund the issuer generously so the wallet-balance check doesn't
+        // mask bound-validation errors we're actually testing.
+        record_bonus(&pool, "a", 10_000).unwrap();
         assert!(
             mint_share_key(&pool, "a", None, 10, 100).is_err(),
             "too short TTL"
@@ -1288,11 +1764,145 @@ mod tests {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "a").unwrap();
         set_username(&pool, "a", "alice").unwrap();
+        record_bonus(&pool, "a", 100).unwrap();
         let minted = mint_share_key(&pool, "a", Some("demo"), 3600, 100).unwrap();
         let preview = preview_share_key(&pool, &minted.token).unwrap();
         assert_eq!(preview.issuer_display_name.as_deref(), Some("alice"));
         assert_eq!(preview.label.as_deref(), Some("demo"));
         assert_eq!(preview.budget_credits, 100);
         assert_eq!(preview.consumed_credits, 0);
+    }
+
+    // ── admin_mint ────────────────────────────────────────────────────────
+
+    #[test]
+    fn admin_mint_credits_wallet_and_debits_mint_pool() {
+        let pool = open_in_memory().unwrap();
+        let dev = "dev1";
+        let bal = admin_mint(&pool, dev, 50_000_000, "manual top-up").unwrap();
+        assert_eq!(bal, 50_000_000);
+        let snap = get_balance(&pool, dev);
+        assert_eq!(snap.balance_credits, 50_000_000);
+        assert_eq!(snap.total_earned_credits, 50_000_000);
+        // Ledger entry is of type ADMIN_MINT.
+        let entries = list_transactions(&pool, dev, 5);
+        assert!(entries.iter().any(|e| e.type_ == "ADMIN_MINT"));
+    }
+
+    #[test]
+    fn admin_mint_rejects_non_positive() {
+        let pool = open_in_memory().unwrap();
+        assert!(admin_mint(&pool, "d", 0, "").is_err());
+        assert!(admin_mint(&pool, "d", -1, "").is_err());
+    }
+
+    // ── Retroactive share-key funding migration ───────────────────────────
+
+    #[test]
+    fn migrate_unfunded_share_keys_retroactively_debits_issuer() {
+        let pool = open_in_memory().unwrap();
+        let issuer = "alice";
+        upsert_device(&pool, issuer).unwrap();
+        record_bonus(&pool, issuer, 1_000).unwrap();
+
+        // Simulate an OLD (pre-refactor) share key: funded=0, issuer wallet
+        // never debited at mint.
+        let now = unix_now();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at,
+                  budget_credits, consumed_credits, created_at, revoked_at, funded)
+                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 0)",
+                params!["ki1", "tok_share_old1", issuer, now + 3600, 400i64, 100i64, now],
+            )
+            .unwrap();
+        }
+
+        let report = migrate_unfunded_share_keys(&pool).unwrap();
+        assert_eq!(report.funded_fully, 1);
+        assert_eq!(report.funded_partially, 0);
+        assert_eq!(report.total_debited_credits, 300); // budget 400 - consumed 100
+        // Issuer debited by owed amount.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 700);
+
+        // Idempotent: running again is a no-op.
+        let again = migrate_unfunded_share_keys(&pool).unwrap();
+        assert_eq!(
+            again.funded_fully + again.funded_partially + again.skipped_revoked,
+            0
+        );
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 700);
+    }
+
+    #[test]
+    fn migrate_shrinks_budget_when_issuer_cant_cover() {
+        let pool = open_in_memory().unwrap();
+        let issuer = "alice";
+        upsert_device(&pool, issuer).unwrap();
+        record_bonus(&pool, issuer, 50).unwrap();
+
+        let now = unix_now();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at,
+                  budget_credits, consumed_credits, created_at, revoked_at, funded)
+                 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 0)",
+                params!["ki2", "tok_share_old2", issuer, now + 3600, 1_000i64, 10i64, now],
+            )
+            .unwrap();
+        }
+
+        let report = migrate_unfunded_share_keys(&pool).unwrap();
+        assert_eq!(report.funded_partially, 1);
+        assert_eq!(report.total_debited_credits, 50);
+        // Shrunk by (owed 990) - (debit 50) = 940.
+        assert_eq!(report.total_shrunk_credits, 940);
+        // Issuer drained to 0; pool budget reduced to consumed+50 = 60.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, 0);
+        let resolved = resolve_share_key(&pool, "tok_share_old2").unwrap().unwrap();
+        assert_eq!(resolved.budget_credits, 60);
+        assert_eq!(resolved.remaining(), 50);
+    }
+
+    #[test]
+    fn migrate_skips_revoked_and_expired_keys() {
+        let pool = open_in_memory().unwrap();
+        let issuer = "alice";
+        upsert_device(&pool, issuer).unwrap();
+        record_bonus(&pool, issuer, 1_000).unwrap();
+        let before = get_balance(&pool, issuer).balance_credits;
+
+        let now = unix_now();
+        {
+            let conn = pool.lock();
+            // Revoked — funded=0 but should be skipped (no debit).
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at,
+                  budget_credits, consumed_credits, created_at, revoked_at, funded)
+                 VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, 0)",
+                params!["kr", "tok_share_rev", issuer, now + 3600, 500i64, now, now - 1],
+            )
+            .unwrap();
+            // Already-expired.
+            conn.execute(
+                "INSERT INTO share_keys
+                 (key_id, token, issuer_device_id, label, expires_at,
+                  budget_credits, consumed_credits, created_at, revoked_at, funded)
+                 VALUES (?, ?, ?, NULL, ?, ?, 0, ?, NULL, 0)",
+                params!["ke", "tok_share_exp", issuer, now - 1, 500i64, now - 10],
+            )
+            .unwrap();
+        }
+
+        let report = migrate_unfunded_share_keys(&pool).unwrap();
+        assert_eq!(report.skipped_revoked, 2);
+        assert_eq!(report.total_debited_credits, 0);
+        // Issuer balance unchanged.
+        assert_eq!(get_balance(&pool, issuer).balance_credits, before);
     }
 }

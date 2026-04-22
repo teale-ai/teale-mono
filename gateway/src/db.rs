@@ -123,6 +123,13 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_share_keys_issuer
         ON share_keys(issuer_device_id, created_at DESC);
     "#,
+    // 003_share_keys_funded.sql — track whether a share key has been
+    // pre-funded from the issuer's wallet. Existing rows default to 0 and are
+    // brought forward by the startup `migrate_unfunded_share_keys` pass in
+    // the ledger module.
+    r#"
+    ALTER TABLE share_keys ADD COLUMN funded INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
@@ -146,8 +153,19 @@ pub fn open_in_memory() -> anyhow::Result<DbPool> {
 }
 
 fn migrate(conn: &Connection) -> anyhow::Result<()> {
-    for sql in MIGRATIONS {
-        conn.execute_batch(sql)?;
+    // SQLite's built-in `user_version` pragma tracks which migrations have
+    // already applied. Existing DBs from before versioning was added start at
+    // 0; migrations 1 and 2 are idempotent (CREATE … IF NOT EXISTS) so they
+    // re-run harmlessly, and we only advance the version after each batch.
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate() {
+        let target = (i + 1) as i64;
+        if target > current {
+            conn.execute_batch(sql)?;
+            // PRAGMA user_version doesn't accept a bound parameter; the value
+            // is a controlled integer so string interpolation is safe here.
+            conn.execute_batch(&format!("PRAGMA user_version = {}", target))?;
+        }
     }
     Ok(())
 }
