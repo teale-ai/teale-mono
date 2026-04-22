@@ -9,6 +9,9 @@ param(
     # When "1", allow supply while lid is closed on AC power. Set by the
     # installer wizard's Behavior page. Default off for conservative opt-in.
     [string]$AllowSupplyLidClosed = "1",
+    # Optional installer-provided backup directory used when an older Teale
+    # install is removed before upgrading. Models are restored from here.
+    [string]$PreservedModelsDir = "",
     # Optional test-only override to make Teale behave like a lower-RAM
     # machine for recommendation and compatibility gating.
     [string]$AssumedRamGB = ""
@@ -58,6 +61,15 @@ foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
 }
 
 Start-Transcript -Path $TranscriptPath -Force | Out-Null
+
+if ($PreservedModelsDir -and (Test-Path $PreservedModelsDir)) {
+    Write-Host "Restoring preserved models from $PreservedModelsDir"
+    New-Item -ItemType Directory -Path $ModelDir -Force | Out-Null
+    Get-ChildItem -LiteralPath $PreservedModelsDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        Move-Item -LiteralPath $_.FullName -Destination $ModelDir -Force
+    }
+    Remove-Item -LiteralPath $PreservedModelsDir -Force -Recurse -ErrorAction SilentlyContinue
+}
 
 # --- RAM gate: pilot is 16 GB+ only ---
 $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)

@@ -80,6 +80,8 @@ impl RegistryStore {
             return Ok(registry);
         }
 
+        let mut discovered_active_model_id = None;
+
         if let Some(path) = legacy_model_path
             .filter(|p| !p.trim().is_empty())
             .map(PathBuf::from)
@@ -100,8 +102,7 @@ impl RegistryStore {
                 registry.active_model_id = Some(model_id.clone());
                 registry.models.entry(model_id).or_default().downloaded_file_path =
                     Some(path.to_string_lossy().to_string());
-                self.save(&registry)?;
-                return Ok(registry);
+                discovered_active_model_id = registry.active_model_id.clone();
             }
         }
 
@@ -118,14 +119,24 @@ impl RegistryStore {
                     continue;
                 };
                 registry.ensure_catalog_entries();
-                registry.active_model_id = Some(model.id.to_string());
                 registry.models.entry(model.id.to_string()).or_default().downloaded_file_path =
                     Some(path.to_string_lossy().to_string());
-                self.save(&registry)?;
-                break;
             }
         }
 
+        if registry.active_model_id.is_none() {
+            registry.active_model_id = discovered_active_model_id.or_else(|| {
+                WINDOWS_MODEL_CATALOG.iter().find_map(|model| {
+                    registry
+                        .models
+                        .get(model.id)
+                        .and_then(|record| record.downloaded_file_path.as_ref())
+                        .map(|_| model.id.to_string())
+                })
+            });
+        }
+
+        self.save(&registry)?;
         Ok(registry)
     }
 }
@@ -171,6 +182,50 @@ mod tests {
                 .downloaded_file_path
                 .as_deref(),
             model_path.to_str()
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn discovers_all_downloaded_models_in_model_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "teale-registry-discovery-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let config_dir = base.join("config");
+        let models_dir = base.join("models");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::create_dir_all(&models_dir).expect("models dir");
+
+        let hermes_path = models_dir.join("hermes-3-llama-3.1-8b-Q5_K_M.gguf");
+        let llama_path = models_dir.join("llama-3.1-8b-instruct-Q4_K_M.gguf");
+        fs::write(&hermes_path, b"stub").expect("write hermes");
+        fs::write(&llama_path, b"stub").expect("write llama");
+
+        let store = RegistryStore::new(config_dir.join("model-registry.json"));
+        let registry = store
+            .load_or_init_with_legacy(None, None, &models_dir)
+            .expect("load registry");
+
+        assert_eq!(
+            registry.active_model_id.as_deref(),
+            Some("nousresearch/hermes-3-llama-3.1-8b")
+        );
+        assert_eq!(
+            registry.models["nousresearch/hermes-3-llama-3.1-8b"]
+                .downloaded_file_path
+                .as_deref(),
+            hermes_path.to_str()
+        );
+        assert_eq!(
+            registry.models["meta-llama/llama-3.1-8b-instruct"]
+                .downloaded_file_path
+                .as_deref(),
+            llama_path.to_str()
         );
 
         let _ = fs::remove_dir_all(base);

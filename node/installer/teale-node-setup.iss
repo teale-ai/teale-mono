@@ -19,9 +19,10 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.22.1248"
+#define AppVer "2026.04.22.1314"
 
 [Setup]
+AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
 AppName=Teale
 AppVersion={#AppVer}
 AppPublisher=Teale AI
@@ -84,7 +85,7 @@ Name: "installtray"; Description: "Run Teale Tray at login (shows live status an
 [Run]
 ; Run post-install: pass whether the user opted into lid-closed supply.
 Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -File ""{app}\post-install.ps1"" -InstallDir ""{app}"" -AllowSupplyLidClosed ""{code:GetLidClosedFlag}"""; \
+    Parameters: "-ExecutionPolicy Bypass -File ""{app}\post-install.ps1"" -InstallDir ""{app}"" -AllowSupplyLidClosed ""{code:GetLidClosedFlag}"" -PreservedModelsDir ""{code:GetPreservedModelsDir}"""; \
     StatusMsg: "Configuring Teale and starting service..."; \
     Flags: runhidden waituntilterminated
 
@@ -109,18 +110,20 @@ Filename: "powershell.exe"; \
     Flags: runhidden waituntilterminated
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\models"
 Type: filesandordirs; Name: "{app}\config"
 Type: filesandordirs; Name: "{app}\logs"
 ; Leave {app}\data intact so the identity key survives reinstalls — this
 ; preserves credit-earning history. Manual `rm -r C:\Teale\data` if the user
 ; really wants a fresh identity.
+; Leave {app}\models intact so downloaded GGUFs survive uninstall/reinstall.
+; Manual deletion is still possible if the user wants to reclaim disk space.
 Type: files; Name: "{app}\version.txt"
 
 [Code]
 var
   WelcomePage: TOutputMsgWizardPage;
   BehaviorPage: TInputOptionWizardPage;
+  PreservedModelsDir: String;
 
 procedure InitializeWizard;
 begin
@@ -210,10 +213,95 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM llama-server.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+function QuoteForPowerShell(const Value: String): String;
+begin
+  Result := '''' + StringChangeEx(Value, '''', '''''', True) + '''';
+end;
+
+function FindExistingUninstaller(): String;
+var
+  FindRec: TFindRec;
+begin
+  Result := '';
+  if FindFirst(ExpandConstant('{app}\unins*.exe'), FindRec) then
+  begin
+    try
+      Result := ExpandConstant('{app}\') + FindRec.Name;
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+procedure PreserveExistingModels;
+var
+  ResultCode: Integer;
+  SourceDir: String;
+  Command: String;
+begin
+  SourceDir := ExpandConstant('{app}\models');
+  PreservedModelsDir := ExpandConstant('{commonappdata}\Teale\installer-preserved-models');
+
+  if not DirExists(SourceDir) then
+    exit;
+
+  Command :=
+    '$source=' + QuoteForPowerShell(SourceDir) + ';' +
+    '$dest=' + QuoteForPowerShell(PreservedModelsDir) + ';' +
+    'if (!(Test-Path -LiteralPath $source)) { exit 0 };' +
+    'if (!(Test-Path -LiteralPath $dest)) {' +
+      'Move-Item -LiteralPath $source -Destination $dest -Force;' +
+      'exit 0' +
+    '};' +
+    'Get-ChildItem -LiteralPath $source -Force -ErrorAction SilentlyContinue | ForEach-Object {' +
+      'Move-Item -LiteralPath $_.FullName -Destination $dest -Force' +
+    '};' +
+    'Remove-Item -LiteralPath $source -Force -Recurse -ErrorAction SilentlyContinue;' +
+    'exit 0';
+
+  if not Exec('powershell.exe',
+    '-ExecutionPolicy Bypass -NoProfile -Command ' + AddQuotes(Command),
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    RaiseException('Failed to preserve previously downloaded models before upgrade.');
+  end;
+
+  if ResultCode <> 0 then
+    RaiseException('Preserving previously downloaded models failed with exit code ' + IntToStr(ResultCode) + '.');
+end;
+
+procedure UninstallExistingInstall;
+var
+  ResultCode: Integer;
+  UninstallerPath: String;
+begin
+  UninstallerPath := FindExistingUninstaller();
+  if UninstallerPath = '' then
+    exit;
+
+  if not Exec(UninstallerPath, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    RaiseException('Failed to launch the existing Teale uninstaller.');
+  end;
+
+  if ResultCode <> 0 then
+    RaiseException('The existing Teale install could not be removed cleanly (exit code ' + IntToStr(ResultCode) + ').');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  PreservedModelsDir := ExpandConstant('{commonappdata}\Teale\installer-preserved-models');
+  StopExistingInstall;
+  PreserveExistingModels;
+  UninstallExistingInstall;
   StopExistingInstall;
   Result := ''; // empty string = success
+end;
+
+function GetPreservedModelsDir(Param: String): String;
+begin
+  Result := PreservedModelsDir;
 end;
 
 function InitializeSetup(): Boolean;
