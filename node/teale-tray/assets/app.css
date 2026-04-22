@@ -1,0 +1,233 @@
+:root {
+  --bg: #f3efe6;
+  --panel: rgba(255, 252, 245, 0.9);
+  --ink: #1d2a26;
+  --muted: #5d6e68;
+  --border: rgba(29, 42, 38, 0.12);
+  --teale-green: #2db767;
+  --teale-red: #d93c35;
+  --accent: #e8f2eb;
+  --shadow: 0 18px 50px rgba(29, 42, 38, 0.1);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(45, 183, 103, 0.12), transparent 24rem),
+    radial-gradient(circle at bottom right, rgba(217, 60, 53, 0.1), transparent 26rem),
+    var(--bg);
+  color: var(--ink);
+}
+
+.app-shell {
+  width: min(1040px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.hero,
+.panel {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+}
+
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 28px;
+}
+
+.hero h1,
+.panel h2 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.hero h1 {
+  font-size: clamp(32px, 4vw, 46px);
+  line-height: 1;
+}
+
+.subhead,
+.muted {
+  color: var(--muted);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status-chip {
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(29, 42, 38, 0.08);
+  font-weight: 700;
+}
+
+.panel {
+  margin-top: 18px;
+  padding: 24px;
+}
+
+.grid-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 16px 0 0;
+}
+
+.stat-grid dt {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stat-grid dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.highlight {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  background:
+    linear-gradient(135deg, rgba(45, 183, 103, 0.14), rgba(255, 252, 245, 0.92)),
+    var(--panel);
+}
+
+.button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: var(--ink);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.button-secondary {
+  background: rgba(29, 42, 38, 0.1);
+  color: var(--ink);
+}
+
+.current-model {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 16px 0 8px;
+}
+
+.transfer-head,
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+}
+
+.progress-bar {
+  margin-top: 14px;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(29, 42, 38, 0.08);
+  overflow: hidden;
+}
+
+.progress-bar > div {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--teale-green), #76d87d);
+}
+
+.models-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.model-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.model-card h3 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(29, 42, 38, 0.06);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.is-loaded {
+  border-color: rgba(45, 183, 103, 0.3);
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    width: calc(100vw - 16px);
+    padding-top: 12px;
+  }
+
+  .hero,
+  .highlight,
+  .grid-two,
+  .model-card {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

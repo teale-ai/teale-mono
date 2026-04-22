@@ -22,6 +22,8 @@ tray-icon = "0.19"
 
 # OS interop for icon loading + (on Windows) the message loop.
 [target.'cfg(windows)'.dependencies]
+tao = "0.30"
+wry = { version = "0.45", features = ["protocol"] }
 windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Teale</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Teale for Windows</p>
+          <h1>Supply AI from this machine.</h1>
+          <p id="status-reason" class="subhead">Connecting to the local Teale service…</p>
+        </div>
+        <div class="status-chip" id="status-chip">Starting</div>
+      </header>
+
+      <section class="panel grid-two">
+        <div>
+          <h2>Device</h2>
+          <dl class="stat-grid">
+            <div><dt>Name</dt><dd id="device-name">-</dd></div>
+            <div><dt>RAM</dt><dd id="device-ram">-</dd></div>
+            <div><dt>Backend</dt><dd id="device-backend">-</dd></div>
+            <div><dt>Power</dt><dd id="device-power">-</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h2>Current Model</h2>
+          <div class="current-model">
+            <strong id="current-model">No model loaded</strong>
+            <button id="unload-button" class="button button-secondary" disabled>Unload</button>
+          </div>
+          <p class="muted">If no model is loaded, Teale cannot serve OpenClaw or Hermes requests yet.</p>
+        </div>
+      </section>
+
+      <section class="panel highlight" id="recommended-panel">
+        <div>
+          <p class="eyebrow">Recommended</p>
+          <h2 id="recommended-name">Finding the best fit…</h2>
+          <p id="recommended-meta" class="muted"></p>
+        </div>
+        <button id="recommended-action" class="button">Download and Start Supplying</button>
+      </section>
+
+      <section class="panel" id="transfer-panel" hidden>
+        <div class="transfer-head">
+          <div>
+            <h2>Transfer Progress</h2>
+            <p id="transfer-label" class="muted">Preparing…</p>
+          </div>
+          <strong id="transfer-percent">0%</strong>
+        </div>
+        <div class="progress-bar"><div id="transfer-bar"></div></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Models</p>
+            <h2>Compatible, sorted by current Teale demand</h2>
+          </div>
+        </div>
+        <div id="models-list" class="models-list"></div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+  </html>

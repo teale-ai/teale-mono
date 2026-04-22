@@ -9,6 +9,8 @@ pub struct Config {
     pub llama: Option<LlamaConfig>,
     pub mnn: Option<MnnConfig>,
     pub litert: Option<LiteRtConfig>,
+    #[serde(default)]
+    pub control: ControlConfig,
     pub node: NodeConfig,
 }
 
@@ -58,6 +60,23 @@ impl LlamaConfig {
             stem
         );
         stem
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ControlConfig {
+    #[serde(default = "default_control_port")]
+    pub port: u16,
+    #[serde(default = "default_registry_path")]
+    pub registry_path: String,
+}
+
+impl Default for ControlConfig {
+    fn default() -> Self {
+        Self {
+            port: default_control_port(),
+            registry_path: default_registry_path(),
+        }
     }
 }
 
@@ -118,6 +137,12 @@ pub struct NodeConfig {
 
 fn default_backend() -> String {
     "llama".to_string()
+}
+fn default_control_port() -> u16 {
+    11437
+}
+fn default_registry_path() -> String {
+    "config/model-registry.json".to_string()
 }
 fn default_relay_url() -> String {
     "wss://relay.teale.com/ws".to_string()

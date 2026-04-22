@@ -12,7 +12,14 @@ pub fn detect_hardware(node_config: &NodeConfig) -> HardwareCapability {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let total_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
+    let detected_total_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
+    // Escape hatch for Windows bring-up and reproducible testing on larger
+    // machines where Teale should behave like a lower-RAM device.
+    let total_ram_gb = std::env::var("TEALE_TOTAL_RAM_GB")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(detected_total_ram_gb);
     let cpu_name = sys
         .cpus()
         .first()

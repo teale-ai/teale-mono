@@ -24,9 +24,9 @@ CI-based build (the default path):
 Manual build (fallback, on a Windows dev box):
 
   1. Install Inno Setup 6 (https://jrsoftware.org/isdl.php) — accept defaults.
-  2. Install Inno Download Plugin (https://mitrichsoftware.wordpress.com/inno-download-plugin/)
-     so the wizard can show a visible progress bar during the ~5.7 GB Hermes
-     model download instead of a silent hang.
+  2. Install Inno Download Plugin only if you want it available for future
+     installer experiments. The current installer no longer downloads a
+     model during setup.
   3. Build the Rust binaries:
        cargo build --release --target x86_64-pc-windows-msvc -p teale-node
        cargo build --release --target x86_64-pc-windows-msvc -p teale-tray
@@ -47,18 +47,17 @@ WHAT STAFF/CONTRIBUTORS DO:
   4. Installer wizard: Welcome → Behavior (tick ✓ for lid-closed supply on
      AC, pre-checked by default) → Install.
   5. If the machine has <16 GB RAM, the installer shows a polite message
-     and exits cleanly. Otherwise it downloads the Hermes-3-Llama-3.1-8B
-     Q5 model (~5.7 GB) with a visible progress bar.
-  6. Finishes → tray icon appears → service is running → first inference
-     request should land within a minute or two.
+     and exits cleanly.
+  6. Finishes → tray icon appears → local Teale window opens → contributor
+     clicks the recommended model to download and start supplying.
 
 PER-USER BEHAVIOR:
   - NSSM-wrapped service (TealeNode, LocalSystem account) auto-starts at boot.
   - Tray app (teale-tray.exe, per-user) auto-starts at login.
   - Service runs at Below Normal priority (contributor's apps always win).
   - On AC power: supplies normally, holds a wake-lock so lid-close stays up.
-  - On battery: pauses automatically, tray icon flips yellow. Resumes on reconnect.
-  - Right-click tray → Pause / Resume / Open dashboard / Quit.
+  - On battery: pauses automatically. Resumes on reconnect.
+  - Tray icon opens the local Teale window; right-click tray → Pause / Resume / Open Teale / Close tray icon.
 
 AUTO-UPDATE:
   - On every login, the TealeUpdateCheck scheduled task pings

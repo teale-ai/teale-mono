@@ -1,8 +1,9 @@
 ; TealeNode Inno Setup Script
 ;
 ; Builds a self-contained installer: extracts all binaries, shows the
-; contributor a 2-page wizard (Welcome, Behavior), downloads the model
-; with a visible progress bar, and registers Teale as a Windows service.
+; contributor a 2-page wizard (Welcome, Behavior), registers Teale as a
+; Windows service, and launches the local Teale companion window so the
+; contributor can choose/download the recommended model after install.
 ;
 ; Build steps:
 ;   1. Install Inno Setup 6 from https://jrsoftware.org/isinfo.php
@@ -18,11 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.21.2021"
-
-; NOTE: pilot builds rely on post-install.ps1's Start-BitsTransfer for the
-; ~5.7 GB model download. A follow-up release will wire in Inno Download
-; Plugin for an inline progress bar inside the wizard UI.
+#define AppVer "2026.04.22.1113"
 
 [Setup]
 AppName=Teale
@@ -77,8 +74,8 @@ Name: "{app}\data"
 ; itself (machine-level, via NSSM) starts independently at boot.
 Name: "{userstartup}\Teale Tray"; Filename: "{app}\bin\teale-tray.exe"; \
     WorkingDir: "{app}"; Tasks: installtray
-; Start-menu shortcut to open the Teale dashboard in the default browser.
-Name: "{group}\Open Teale Dashboard"; Filename: "https://teale.com/supply"
+; Start-menu shortcut to open the local Teale companion window.
+Name: "{group}\Open Teale"; Filename: "{app}\bin\teale-tray.exe"; Parameters: "--open-window"
 
 [Tasks]
 Name: "installtray"; Description: "Run Teale Tray at login (shows live status and earnings)"; \
@@ -91,8 +88,8 @@ Filename: "powershell.exe"; \
     StatusMsg: "Configuring Teale and starting service..."; \
     Flags: runhidden waituntilterminated
 
-; Launch the tray immediately after install (per-user process).
-Filename: "{app}\bin\teale-tray.exe"; Description: "Launch Teale Tray now"; \
+; Launch the tray immediately after install and open the companion window.
+Filename: "{app}\bin\teale-tray.exe"; Parameters: "--open-window"; Description: "Launch Teale now"; \
     Flags: postinstall skipifsilent nowait skipifdoesntexist
 
 ; Write version file.
@@ -136,8 +133,8 @@ begin
     'to run AI inference for other people.' + #13#10 + #13#10 +
     'It only runs when you''re plugged in to AC power. It pauses automatically on battery.' + #13#10 +
     'It runs at a lower priority than your own apps — you won''t notice it while you work.' + #13#10 +
-    'You can pause or quit it any time from the system tray.' + #13#10 + #13#10 +
-    'Needs: Windows 10/11, 16 GB RAM or more, ~6 GB free disk for the model download.'
+    'You can pause supply or close the tray icon any time without uninstalling it.' + #13#10 + #13#10 +
+    'Needs: Windows 10/11, 16 GB RAM or more. After install, Teale recommends the best model for this machine and downloads it in the app window.'
   );
 
   // Behavior — one checkbox, pre-checked, for lid-closed supply
@@ -239,8 +236,3 @@ begin
   end;
   Result := True;
 end;
-
-// Pilot: the 5.7 GB model download happens inside post-install.ps1 via
-// BITS. The installer wizard shows "Configuring Teale and starting
-// service..." while that runs. A follow-up release will move the download
-// here with Inno Download Plugin so users see a real progress bar.
