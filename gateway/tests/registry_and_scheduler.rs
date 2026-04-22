@@ -228,6 +228,24 @@ fn catalog_load_from_file() {
     }
 }
 
+#[test]
+fn catalog_contains_kimi_conductor_alias() {
+    let path = env_models_yaml();
+    let models = catalog::load(&path).expect("load models.yaml");
+    let kimi = models
+        .iter()
+        .find(|m| m.id == "moonshotai/kimi-k2")
+        .expect("kimi k2 present");
+    assert_eq!(kimi.context_length, 131072);
+    assert_eq!(kimi.max_output_tokens, 32768);
+    assert!(
+        kimi.aliases.iter().any(|a| a == "kimi2.6"),
+        "kimi catalog entry must keep the Conductor-facing alias"
+    );
+    assert!(kimi.matches("moonshotai/kimi-k2"));
+    assert!(kimi.matches("kimi2.6"));
+}
+
 fn env_models_yaml() -> String {
     // Tests run with CWD at the crate (gateway/). models.yaml is alongside.
     "models.yaml".to_string()

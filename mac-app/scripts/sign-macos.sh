@@ -47,7 +47,25 @@ echo "==> Re-zipping with stapled ticket for distribution"
 rm -f "${ZIP}"
 ditto -c -k --keepParent "${APP}" "${ZIP}"
 
+echo "==> Creating DMG for drag-to-Applications install"
+DMG=".build/Teale.dmg"
+STAGING=".build/dmg-staging"
+rm -rf "${STAGING}" "${DMG}"
+mkdir -p "${STAGING}"
+cp -R "${APP}" "${STAGING}/"
+ln -s /Applications "${STAGING}/Applications"
+hdiutil create -volname "Teale" -srcfolder "${STAGING}" -ov -format UDZO "${DMG}"
+codesign --force --sign "${SIGNING_IDENTITY}" --timestamp "${DMG}"
+
+echo "==> Notarizing DMG"
+xcrun notarytool submit "${DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait
+xcrun stapler staple "${DMG}"
+spctl -a -vvv --type install "${DMG}"
+rm -rf "${STAGING}"
+
 SIZE=$(du -sh "${APP}" | cut -f1)
+DMG_SIZE=$(du -sh "${DMG}" | cut -f1)
 echo ""
 echo "Signed + notarized + stapled: ${APP} (${SIZE})"
 echo "Distributable archive:        ${ZIP}"
+echo "Distributable DMG:            ${DMG} (${DMG_SIZE})"

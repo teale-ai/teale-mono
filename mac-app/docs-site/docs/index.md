@@ -29,6 +29,12 @@ OpenAI-compatible API at `localhost:11435`. Drop-in replacement for any app that
 
 [Explore the API](getting-started/quickstart-api.md)
 
+### Use Teale from Conductor
+
+Point Conductor workspace tools at `gateway.teale.com` and use hosted fleet models such as Kimi once they are available.
+
+[Set up Conductor](guides/use-with-conductor.md)
+
 ---
 
 ## What is Teale?
@@ -66,3 +72,4 @@ Teale organizes nodes into four network tiers --- local, LAN, personal trusted n
 - [Quickstart: Chat](getting-started/quickstart-chat.md)
 - [Quickstart: API](getting-started/quickstart-api.md)
 - [Quickstart: Earn](getting-started/quickstart-earn.md)
+- [Use with Conductor](guides/use-with-conductor.md)

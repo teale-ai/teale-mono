@@ -1,0 +1,20 @@
+name = "or_readiness_kimi"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 120
+rps = 0.05
+warmup_seconds = 10
+concurrency_cap = 2
+
+# Minimal hosted-gateway smoke test for the Kimi alias used by Conductor
+# workspace tools. This passes only after the gateway catalog advertises
+# `moonshotai/kimi-k2` and accepts the client-facing alias `kimi2.6`.
+
+[[requests]]
+model = "kimi2.6"
+weight = 1
+prompt_tokens_mean = 64
+prompt_tokens_stddev = 16
+max_tokens = 32
+streaming = false
+system_prompt = "Reply concisely and exactly."

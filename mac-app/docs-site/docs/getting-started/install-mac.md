@@ -14,15 +14,17 @@ Install the Teale desktop app on macOS. Includes the menu bar app, built-in chat
 
 ### Option A: Download the DMG
 
-1. Download the installer from [teale.com/download](https://teale.com/download).
+1. Grab the latest **Teale.dmg** from the [GitHub releases page](https://github.com/teale-ai/teale-mono/releases/latest).
 2. Open the DMG and drag Teale to your Applications folder.
-3. Launch Teale from Applications.
+3. Launch Teale from Applications. The app is notarized by Apple, so Gatekeeper opens it without warnings.
 
-### Option B: Homebrew
+### Option B: One-line install
 
 ```bash
-brew install --cask teale
+curl -fsSL https://raw.githubusercontent.com/teale-ai/teale-mono/main/mac-app/scripts/install.sh | sh
 ```
+
+Downloads the latest release, installs to `/Applications/Teale.app`, and launches it.
 
 ## First launch
 
@@ -48,19 +50,11 @@ teale status
 
 ## Updating
 
-Teale checks for updates automatically. You can also update manually:
-
-```bash
-brew upgrade --cask teale
-```
+Teale checks for updates automatically. When one is available, click **Update** in Settings → About, or re-run the one-line install.
 
 ## Uninstall
 
-```bash
-brew uninstall --cask teale
-```
-
-Or drag Teale from Applications to the Trash. To remove downloaded models and configuration:
+Drag Teale from Applications to the Trash. To also remove downloaded models and configuration:
 
 ```bash
 rm -rf ~/Library/Application\ Support/Teale

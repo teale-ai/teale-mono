@@ -115,14 +115,14 @@ Add under Settings → Secrets and variables → Actions:
 - `KEYCHAIN_PASSWORD` — any random string; scoped to the ephemeral CI keychain.
 - `APPLE_TEAM_ID` — 10-char team ID.
 
-**macOS release** (`.github/workflows/release.yml`)
+**macOS release** (monorepo root `.github/workflows/mac-app-release.yml`)
 - `DEVELOPER_ID_P12_BASE64` — `base64 -i DeveloperID.p12` output.
 - `DEVELOPER_ID_P12_PASSWORD` — the export password you set.
 - `DEVELOPER_ID_IDENTITY` — e.g. `Developer ID Application: Taylor Hou (TEAMID1234)`.
 - `APPLE_ID` — your Apple ID email.
 - `APPLE_APP_PASSWORD` — app-specific password from <https://appleid.apple.com> (**not** your login password).
 
-**iOS TestFlight** (`.github/workflows/testflight.yml`)
+**iOS TestFlight** (monorepo root `.github/workflows/mac-app-testflight.yml`)
 - `IOS_DISTRIBUTION_P12_BASE64`, `IOS_DISTRIBUTION_P12_PASSWORD` — Apple Distribution cert.
 - `IOS_APPSTORE_PROFILE_BASE64` — `base64 -i teale-companion.mobileprovision`.
 - `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID` — from App Store Connect API key.
@@ -130,14 +130,14 @@ Add under Settings → Secrets and variables → Actions:
 
 ### Triggering a release
 
-**macOS** — push a `v*` tag:
+**macOS** — push a `mac-v*` tag:
 
 ```bash
-git tag v2026.04.17.0001
-git push origin v2026.04.17.0001
+git tag mac-v2026.04.21.1200
+git push origin mac-v2026.04.21.1200
 ```
 
-The `Release` workflow runs: imports cert → signs bundle → notarizes → staples → publishes to GitHub Releases.
+The `Mac App Release` workflow runs: imports cert → signs bundle (Hardened Runtime + timestamp) → notarizes `.app` → staples → builds + signs + notarizes + staples `Teale.dmg` → publishes to GitHub Releases.
 
 **iOS TestFlight** — either push an `ios-v*` tag or manually dispatch `TestFlight` from the Actions tab.
 
@@ -145,13 +145,13 @@ The `Release` workflow runs: imports cert → signs bundle → notarizes → sta
 
 | Path | Role |
 |---|---|
-| `bundle.sh` | Build + sign (already parameterized via `SIGNING_IDENTITY`). |
-| `scripts/sign-macos.sh` | Local wrapper: bundle → notarize → staple → zip. |
+| `bundle.sh` | Build + sign (already parameterized via `SIGNING_IDENTITY`). Inside-out sign with Hardened Runtime + timestamp. |
+| `scripts/sign-macos.sh` | Local wrapper: bundle → notarize → staple → zip → build + sign + notarize + staple `Teale.dmg`. |
 | `scripts/upload-testflight.sh` | Local: archive → export → upload IPA. |
 | `scripts/ExportOptions.plist` | Template; `__TEAM_ID__` is substituted at runtime. |
-| `.env.signing.example` | Copy to `.env.signing`; gitignored. |
-| `.github/workflows/release.yml` | macOS CI: signed + notarized release. |
-| `.github/workflows/testflight.yml` | iOS CI: TestFlight upload. |
+| `.env.signing.example` | Copy to `mac-app/.env.signing`; gitignored. |
+| `../.github/workflows/mac-app-release.yml` | macOS CI: signed + notarized `.app` + `.dmg` release (monorepo root). |
+| `../.github/workflows/mac-app-testflight.yml` | iOS CI: TestFlight upload (monorepo root). |
 | `Sources/InferencePoolApp/InferencePool.entitlements` | App Sandbox off, network, multicast. |
 | `Sources/TealeCompanion/Info.plist` | `ITSAppUsesNonExemptEncryption=false` to skip the export-compliance prompt. |
 

@@ -7,7 +7,7 @@ import AppKit
 /// Lightweight auto-updater that checks GitHub Releases for newer versions.
 @MainActor
 public final class UpdateChecker {
-    private static let repo = "taylorhou/teale-mac-app"
+    private static let repo = "teale-ai/teale-mono"
     private static let checkIntervalKey = "teale.lastUpdateCheck"
     private static let dismissedVersionKey = "teale.dismissedUpdateVersion"
     private static let checkInterval: TimeInterval = 4 * 3600 // 4 hours
