@@ -660,6 +660,10 @@ async fn route(
     body: &[u8],
     state: Arc<StatusState>,
 ) -> Result<HttpResponse, (&'static str, String)> {
+    if method == "OPTIONS" {
+        return Ok(HttpResponse::empty("204 No Content"));
+    }
+
     match (method, path) {
         ("GET", "/status") => {
             let body = serde_json::to_string(&state.legacy_status().await)
@@ -732,9 +736,29 @@ impl HttpResponse {
         }
     }
 
+    fn empty(status: &'static str) -> Self {
+        Self {
+            status,
+            body: String::new(),
+            content_type: "text/plain; charset=utf-8",
+        }
+    }
+
     fn render(&self) -> String {
         format!(
-            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            concat!(
+                "HTTP/1.1 {}\r\n",
+                "Content-Type: {}\r\n",
+                "Content-Length: {}\r\n",
+                "Connection: close\r\n",
+                "Cache-Control: no-store\r\n",
+                "Access-Control-Allow-Origin: *\r\n",
+                "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n",
+                "Access-Control-Allow-Headers: Content-Type\r\n",
+                "Access-Control-Max-Age: 86400\r\n",
+                "Access-Control-Allow-Private-Network: true\r\n",
+                "\r\n{}"
+            ),
             self.status,
             self.content_type,
             self.body.len(),
@@ -747,7 +771,7 @@ impl HttpResponse {
 mod tests {
     use std::sync::Arc;
 
-    use super::{ServiceState, StatusState};
+    use super::{route, ServiceState, StatusState};
     use crate::backend::Backend;
     use crate::cluster::NodeRuntimeState;
     use crate::config::LlamaConfig;
@@ -809,6 +833,39 @@ mod tests {
 
         let snapshot = state.snapshot().await;
         assert_eq!(snapshot.service_state, ServiceState::NeedsModel.as_str());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn options_preflight_returns_cors_headers() {
+        let tmp = std::env::temp_dir().join(format!("teale-status-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).expect("temp dir");
+        let registry_store = RegistryStore::new(tmp.join("model-registry.json"));
+        let node_state = Arc::new(NodeRuntimeState::new(1));
+        let state = Arc::new(StatusState::new(
+            "WIN".to_string(),
+            dummy_hw(16.0),
+            tmp.clone(),
+            registry_store,
+            PersistedRegistry::default(),
+            SwapManager::new(
+                Backend::Unavailable,
+                None,
+                String::new(),
+                dummy_llama(),
+                vec![],
+                node_state.clone(),
+            ),
+            Some(dummy_llama()),
+            node_state,
+        ));
+
+        let response = route("OPTIONS", "/v1/app", b"", state).await.expect("preflight ok");
+        let rendered = response.render();
+        assert!(rendered.contains("204 No Content"));
+        assert!(rendered.contains("Access-Control-Allow-Origin: *"));
+        assert!(rendered.contains("Access-Control-Allow-Methods: GET, POST, OPTIONS"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

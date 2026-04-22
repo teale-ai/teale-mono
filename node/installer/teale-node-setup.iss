@@ -19,7 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.22.1124"
+#define AppVer "2026.04.22.1139"
 
 [Setup]
 AppName=Teale
