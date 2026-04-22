@@ -17,11 +17,13 @@ swap_penalty = 0.3
 tps_weight = 1.0
 
 [scheduler.per_model_floor]
-# 2026-04-19: small=2 restored (meta-llama/llama-3.1-8b-instruct now
-# served by 4 supply nodes). Large stays at 1 until ≥3 supply nodes
-# carry a ≥50B model; raise to 3 then.
+# 2026-04-21: small=1 so single-supplier models (qwen3-32b on tailor64,
+# qwen3.6-35b-a3b on tailor96, hermes-3-8b on tailor16) all appear on
+# /v1/models for the Kimi K2.6 public launch. Trade-off: if a sole
+# supplier drops, the model still shows until the heartbeat prunes it.
+# Raise back to 2 once we have ≥2 nodes carrying each small model.
 large = 1
-small = 2
+small = 1
 
 [reliability]
 request_timeout_seconds = 300
