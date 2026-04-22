@@ -19,7 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.22.1201"
+#define AppVer "2026.04.22.1210"
 
 [Setup]
 AppName=Teale
@@ -84,7 +84,7 @@ Name: "installtray"; Description: "Run Teale Tray at login (shows live status an
 [Run]
 ; Run post-install: pass whether the user opted into lid-closed supply.
 Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -File ""{app}\post-install.ps1"" -InstallDir ""{app}"" -AllowSupplyLidClosed ""{code:GetLidClosedFlag}"" -AssumedRamGB ""16"""; \
+    Parameters: "-ExecutionPolicy Bypass -File ""{app}\post-install.ps1"" -InstallDir ""{app}"" -AllowSupplyLidClosed ""{code:GetLidClosedFlag}"""; \
     StatusMsg: "Configuring Teale and starting service..."; \
     Flags: runhidden waituntilterminated
 
