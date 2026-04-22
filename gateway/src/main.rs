@@ -176,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/privacy", get(handlers::privacy::privacy))
         // Public catalog — just metadata + live TTFT/TPS; safe to expose
         // unauthenticated so share links and curl-based tinkering work.
+        // Served at both `/` (root landing page) and `/v1/models` (OpenAI
+        // API compatibility). Content-negotiated: HTML for browsers, JSON for
+        // SDKs.
+        .route("/", get(handlers::models::list_models))
         .route("/v1/models", get(handlers::models::list_models))
         .route("/favicon.ico", get(handlers::favicon::favicon_ico))
         .route("/favicon.png", get(handlers::favicon::favicon_png))
