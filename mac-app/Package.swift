@@ -163,6 +163,14 @@ let package = Package(
             ]
         ),
 
+        // MARK: - GatewayKit (gateway device identity + auth — macOS and iOS)
+        .target(
+            name: "GatewayKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
         // MARK: - LocalAPI
         .target(
             name: "LocalAPI",
@@ -204,6 +212,7 @@ let package = Package(
                 "SharedTypes",
                 "LocalAPI",
                 "AuthKit",
+                "GatewayKit",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -247,6 +256,7 @@ let package = Package(
                 "AuthKit",
                 "WANKit",
                 "ChatKit",
+                "GatewayKit",
             ],
             exclude: ["Info.plist"],
             resources: [
