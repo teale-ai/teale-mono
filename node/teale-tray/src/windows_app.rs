@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::io::Read;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -162,10 +161,6 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    if request.uri().path().starts_with("/api/") {
-        return proxy_api_request(request);
-    }
-
     let path = match request.uri().path() {
         "/" | "" => "index.html",
         other => other.trim_start_matches('/'),
@@ -187,59 +182,6 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         })
         .body(Cow::Owned(body))
         .expect("custom protocol response")
-}
-
-fn proxy_api_request(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let api_path = request
-        .uri()
-        .path_and_query()
-        .map(|value| value.as_str())
-        .unwrap_or(request.uri().path());
-    let upstream_url = format!("http://127.0.0.1:11437{}", api_path.trim_start_matches("/api"));
-    let mut upstream = ureq::request(request.method().as_str(), &upstream_url)
-        .timeout(Duration::from_secs(10));
-
-    if let Some(content_type) = request
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-    {
-        upstream = upstream.set(CONTENT_TYPE.as_str(), content_type);
-    }
-
-    let result = match request.method().as_str() {
-        "GET" | "OPTIONS" => upstream.call(),
-        _ => upstream.send_bytes(request.body()),
-    };
-
-    match result {
-        Ok(response) => response_to_protocol(response),
-        Err(ureq::Error::Status(_, response)) => response_to_protocol(response),
-        Err(ureq::Error::Transport(err)) => Response::builder()
-            .header(CONTENT_TYPE, "application/json")
-            .status(502)
-            .body(Cow::Owned(
-                format!(r#"{{"error":"{}"}}"#, err).into_bytes(),
-            ))
-            .expect("proxy error response"),
-    }
-}
-
-fn response_to_protocol(response: ureq::Response) -> Response<Cow<'static, [u8]>> {
-    let status = response.status();
-    let content_type = response
-        .header("Content-Type")
-        .unwrap_or("application/json")
-        .to_string();
-    let mut reader = response.into_reader();
-    let mut body = Vec::new();
-    let _ = reader.read_to_end(&mut body);
-
-    Response::builder()
-        .header(CONTENT_TYPE, content_type)
-        .status(status)
-        .body(Cow::Owned(body))
-        .expect("proxy response")
 }
 
 fn show_window(window: &tao::window::Window) {

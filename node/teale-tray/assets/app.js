@@ -10,7 +10,7 @@ const STATUS_COLORS = {
   offline: "#f87171",
 };
 
-const API_BASE = "/api";
+const API_BASE = "http://127.0.0.1:11437";
 
 const els = {
   statusChip: document.getElementById("status-chip"),
@@ -37,7 +37,7 @@ let currentSnapshot = null;
 function friendlyError(error) {
   const message = error?.message || "Unknown error";
   if (message === "Failed to fetch") {
-    return "Couldn't reach the local Teale service yet. Keep this window open while Teale starts.";
+    return "Couldn't reach the local TealeNode service on this PC yet. Keep this window open while Teale starts.";
   }
   return message;
 }
