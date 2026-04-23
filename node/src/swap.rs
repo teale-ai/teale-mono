@@ -75,6 +75,7 @@ struct Inner {
     backend: Backend,
     supervisor: Option<Supervisor>,
     model_id: String,
+    context_size: Option<u32>,
 }
 
 impl SwapManager {
@@ -82,6 +83,7 @@ impl SwapManager {
         backend: Backend,
         supervisor: Option<Supervisor>,
         model_id: String,
+        initial_context_size: Option<u32>,
         llama_base: LlamaConfig,
         swappable_slots: Vec<ModelSlot>,
         state: Arc<NodeRuntimeState>,
@@ -95,6 +97,7 @@ impl SwapManager {
                 backend,
                 supervisor,
                 model_id,
+                context_size: initial_context_size,
             })),
             llama_base,
             whitelist,
@@ -120,6 +123,10 @@ impl SwapManager {
         } else {
             Some(model_id)
         }
+    }
+
+    pub async fn current_context_size(&self) -> Option<u32> {
+        self.inner.read().await.context_size
     }
 
     /// Forward an inference request to whatever backend is loaded now.
@@ -205,6 +212,7 @@ impl SwapManager {
         }
         inner.backend = Backend::Unavailable;
         inner.model_id.clear();
+        inner.context_size = None;
     }
 
     async fn swap_to_path(
@@ -298,6 +306,7 @@ impl SwapManager {
         inner.backend = Backend::Http(proxy);
         inner.supervisor = Some(new_sup);
         inner.model_id = model_id.clone();
+        inner.context_size = Some(new_cfg.context_size);
 
         let load_ms = total_started.elapsed().as_millis() as u64;
         info!(model_id, load_ms, "swap complete");

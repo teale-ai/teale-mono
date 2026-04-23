@@ -26,7 +26,7 @@ use crate::hardware::HardwareCapability;
 use crate::model_registry::{PersistedRegistry, RegistryStore};
 use crate::swap::SwapManager;
 use crate::windows_model_catalog::{
-    compatible_models, model_by_id, recommended_model, WindowsCatalogModel,
+    compatible_models, context_for_model, model_by_id, recommended_model, WindowsCatalogModel,
     AVAILABILITY_TICK_SECONDS,
 };
 
@@ -552,14 +552,14 @@ impl StatusState {
         };
 
         let request_id = uuid::Uuid::new_v4().to_string();
+        let context_size = context_for_model(
+            &model,
+            self.hardware.total_ram_gb,
+            self.hardware.gpu_backend.as_deref(),
+        );
         let result = self
             .swap
-            .load_local_model(
-                request_id,
-                model.id.to_string(),
-                path,
-                Some(model.default_context),
-            )
+            .load_local_model(request_id, model.id.to_string(), path, Some(context_size))
             .await;
 
         let mut inner = self.inner.lock().await;
@@ -1457,6 +1457,7 @@ mod tests {
             Backend::Unavailable,
             None,
             String::new(),
+            None,
             dummy_llama(),
             vec![],
             Arc::new(NodeRuntimeState::new(1)),
@@ -1498,6 +1499,7 @@ mod tests {
                 Backend::Unavailable,
                 None,
                 String::new(),
+                None,
                 dummy_llama(),
                 vec![],
                 node_state.clone(),

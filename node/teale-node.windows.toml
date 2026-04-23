@@ -12,14 +12,14 @@
 url = "wss://relay.teale.com/ws"
 
 [llama]
-# Path to llama-server binary — must be the Vulkan build
-# (llama-bXXXX-bin-win-vulkan-x64.zip from llama.cpp releases).
+# Path to llama-server binary. The Windows installer can stage a Vulkan build
+# and still fall back to CPU-only inference by setting gpu_layers = 0 on
+# older Intel laptops.
 binary = "C:/Teale/bin/llama-server.exe"
 # Boot without a model; the companion app downloads and loads one later.
 model = ""
-# Full offload to Vulkan-capable iGPU. llama-server falls back to CPU
-# automatically if Vulkan init fails (e.g., missing drivers); teale-node's
-# supervisor loop notices the crash and restarts with gpu_layers=0 on retry.
+# Full offload on modern Vulkan-capable machines. Older Intel laptops should
+# be generated with gpu_layers = 0 instead.
 gpu_layers = 999
 context_size = 8192
 # Local port for llama-server HTTP API (bound to 127.0.0.1 only).
@@ -37,7 +37,6 @@ supabase_redirect_url = "teale://auth/callback"
 
 [node]
 display_name = "WIN-HOSTNAME"
-# Reported in NodeCapabilities; gateway scheduler uses it to estimate
-# decode throughput (EWMA prior starts from bandwidth / active-param-size).
-gpu_backend = "vulkan"
+# Leave gpu_backend unset so teale-node can auto-detect and protect older
+# Intel laptops by falling back to CPU mode when Vulkan is not a good fit.
 # gpu_vram_gb omitted — max_model_size_gb = 0.75 * total_ram_gb ≈ 12 GB.

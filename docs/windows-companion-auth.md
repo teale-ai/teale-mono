@@ -38,6 +38,18 @@ What the official docs require:
 - client entry point:
   `supabase.auth.signInWithOAuth({ provider: 'github' })`
 
+Common failure modes to look for on Windows:
+
+- If the browser lands on `github.com/login/oauth/authorize?...client_id=Teale+App...`,
+  the GitHub provider in Supabase is misconfigured. `client_id` must be the
+  actual GitHub OAuth Client ID, not the human app name.
+- If Google returns `401: invalid_client`, the Supabase Google provider is
+  still pointing at the wrong Google OAuth client or secret. The Google client
+  must be a Web application, and its Authorized redirect URIs must include
+  `https://<project-ref>.supabase.co/auth/v1/callback`.
+- `teale://auth/callback` must be present in Supabase Auth → URL Configuration
+  as an allowed redirect URL for the companion deep link.
+
 For callback handling, Supabase documents a redirect-based OAuth flow and, for
 PKCE/server-side handling, a follow-up code exchange at the callback route.
 
