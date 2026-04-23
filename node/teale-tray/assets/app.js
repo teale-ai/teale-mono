@@ -58,6 +58,14 @@ const els = {
   networkTokenCopy: document.getElementById("network-token-copy"),
   networkCurlCopy: document.getElementById("network-curl-copy"),
 
+  chatThreadStrip: document.getElementById("chat-thread-strip"),
+  chatModelSelect: document.getElementById("chat-model-select"),
+  chatModelNote: document.getElementById("chat-model-note"),
+  chatStatusNote: document.getElementById("chat-status-note"),
+  chatTranscript: document.getElementById("chat-transcript"),
+  chatInput: document.getElementById("chat-input"),
+  chatSendButton: document.getElementById("chat-send-button"),
+
   walletDeviceName: document.getElementById("wallet-device-name"),
   walletDeviceId: document.getElementById("wallet-device-id"),
   walletStatus: document.getElementById("wallet-status"),
@@ -106,6 +114,7 @@ const els = {
 };
 
 const LANGUAGE_STORAGE_KEY = "teale.language";
+const CHAT_STORAGE_KEY = "teale.chat.v1";
 const OAUTH_CALLBACK_STORAGE_KEY = "__teale_pending_oauth_callback";
 const OAUTH_PROVIDER_STORAGE_KEY = "__teale_pending_oauth_provider";
 const SHARE_STORY_TEXT = "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.";
@@ -159,7 +168,7 @@ const translations = {
     "account.code": "Code",
     "account.input.phone": "+1 555 123 4567",
     "account.input.code": "123456",
-    "account.auth.note.default": "Sign in to link this machine to a person. Device wallet earnings continue working without human sign-in.",
+    "account.auth.note.default": "Signing in is not required. Teale works without an account. Sign in if you want a human account that can manage multiple devices and get support.",
     "account.send.note": "Account wallet transfers are not wired in the Windows companion backend yet.",
     "common.asset": "Asset",
     "common.recipient": "Recipient",
@@ -174,10 +183,10 @@ const translations = {
     "auth.status.notConfigured": "Sign-in not configured",
     "auth.status.notSignedIn": "Not signed in",
     "auth.status.signedIn": "Signed in",
-    "auth.user.configure": "Add Supabase config to the node to enable account sign-in.",
-    "auth.user.prompt": "Use GitHub, Google, or SMS to attach a person to this machine.",
-    "auth.note.walletStillWorks": "Wallet and supply still work through Teale device auth.",
-    "auth.note.claimsDevice": "Phone, GitHub, or Google sign-in claims this device for one account.",
+    "auth.user.configure": "Signing in is optional. Teale works without an account on this PC.",
+    "auth.user.prompt": "Signing in is optional. Teale works without an account.",
+    "auth.note.walletStillWorks": "Account sign-in is only for people who want to manage multiple devices and get support.",
+    "auth.note.claimsDevice": "Sign in with GitHub, Google, or SMS to manage multiple devices and get support.",
     "auth.note.phoneCanLink": "GitHub and Google can be linked onto this phone account.",
     "auth.note.allLinked": "This account already has phone, GitHub, and Google linked.",
     "auth.note.phoneLinkNotYet": "Phone linking onto an existing account is not enabled in this companion yet.",
@@ -273,7 +282,7 @@ const translations = {
     "account.code": "验证码",
     "account.input.phone": "+86 138 0013 8000",
     "account.input.code": "123456",
-    "account.auth.note.default": "登录后可将这台机器关联到个人账户。即使不做人类登录，设备钱包收益仍会继续工作。",
+    "account.auth.note.default": "登录不是必需的。Teale 没有账户也能使用。若你想用一个人类账户来管理多台设备并获得支持，再登录即可。",
     "account.send.note": "Windows companion 后端尚未接通账户钱包转账。",
     "common.asset": "资产",
     "common.recipient": "接收方",
@@ -288,10 +297,10 @@ const translations = {
     "auth.status.notConfigured": "未配置登录",
     "auth.status.notSignedIn": "未登录",
     "auth.status.signedIn": "已登录",
-    "auth.user.configure": "请在节点中添加 Supabase 配置以启用账户登录。",
-    "auth.user.prompt": "使用 GitHub、Google 或短信，将个人账户关联到这台机器。",
-    "auth.note.walletStillWorks": "钱包和供给仍可通过 Teale 设备认证继续工作。",
-    "auth.note.claimsDevice": "手机号、GitHub 或 Google 登录会将此设备归属到一个账户。",
+    "auth.user.configure": "登录是可选的。这台电脑上的 Teale 无需账户也能使用。",
+    "auth.user.prompt": "登录是可选的。Teale 没有账户也能使用。",
+    "auth.note.walletStillWorks": "账户登录只面向想要管理多台设备并获得支持的人。",
+    "auth.note.claimsDevice": "使用 GitHub、Google 或短信登录，以管理多台设备并获得支持。",
     "auth.note.phoneCanLink": "GitHub 和 Google 可以关联到这个手机号账户。",
     "auth.note.allLinked": "此账户已关联手机号、GitHub 和 Google。",
     "auth.note.phoneLinkNotYet": "此 companion 暂不支持在现有账户上补充手机号关联。",
@@ -387,7 +396,7 @@ const translations = {
     "account.code": "Código",
     "account.input.phone": "+55 11 99999-9999",
     "account.input.code": "123456",
-    "account.auth.note.default": "Faça login para vincular esta máquina a uma pessoa. Os ganhos da carteira do dispositivo continuam funcionando sem login humano.",
+    "account.auth.note.default": "Fazer login não é obrigatório. O Teale funciona sem conta. Entre apenas se quiser uma conta humana para gerenciar vários dispositivos e obter suporte.",
     "account.send.note": "As transferências da carteira da conta ainda não estão conectadas no backend do companion para Windows.",
     "common.asset": "Ativo",
     "common.recipient": "Destinatário",
@@ -402,10 +411,10 @@ const translations = {
     "auth.status.notConfigured": "Login não configurado",
     "auth.status.notSignedIn": "Sem login",
     "auth.status.signedIn": "Conectado",
-    "auth.user.configure": "Adicione a configuração do Supabase ao nó para habilitar o login da conta.",
-    "auth.user.prompt": "Use GitHub, Google ou SMS para vincular uma pessoa a esta máquina.",
-    "auth.note.walletStillWorks": "Carteira e oferta continuam funcionando via autenticação do dispositivo Teale.",
-    "auth.note.claimsDevice": "Login por telefone, GitHub ou Google vincula este dispositivo a uma conta.",
+    "auth.user.configure": "Fazer login é opcional. O Teale funciona sem conta neste PC.",
+    "auth.user.prompt": "Fazer login é opcional. O Teale funciona sem conta.",
+    "auth.note.walletStillWorks": "O login da conta é apenas para pessoas que querem gerenciar vários dispositivos e obter suporte.",
+    "auth.note.claimsDevice": "Entre com GitHub, Google ou SMS para gerenciar vários dispositivos e obter suporte.",
     "auth.note.phoneCanLink": "GitHub e Google podem ser vinculados a esta conta por telefone.",
     "auth.note.allLinked": "Esta conta já tem telefone, GitHub e Google vinculados.",
     "auth.note.phoneLinkNotYet": "Vincular telefone a uma conta existente ainda não está disponível neste companion.",
@@ -501,7 +510,7 @@ const translations = {
     "account.code": "Código",
     "account.input.phone": "+34 600 123 456",
     "account.input.code": "123456",
-    "account.auth.note.default": "Inicia sesión para vincular esta máquina a una persona. Las ganancias de la cartera del dispositivo siguen funcionando sin inicio de sesión humano.",
+    "account.auth.note.default": "Iniciar sesión no es obligatorio. Teale funciona sin una cuenta. Inicia sesión solo si quieres una cuenta humana para administrar varios dispositivos y obtener soporte.",
     "account.send.note": "Las transferencias de la cartera de la cuenta todavía no están conectadas en el backend del companion de Windows.",
     "common.asset": "Activo",
     "common.recipient": "Destinatario",
@@ -516,10 +525,10 @@ const translations = {
     "auth.status.notConfigured": "Inicio de sesión no configurado",
     "auth.status.notSignedIn": "Sin iniciar sesión",
     "auth.status.signedIn": "Sesión iniciada",
-    "auth.user.configure": "Agrega la configuración de Supabase al nodo para habilitar el inicio de sesión de la cuenta.",
-    "auth.user.prompt": "Usa GitHub, Google o SMS para vincular una persona a esta máquina.",
-    "auth.note.walletStillWorks": "La cartera y la oferta siguen funcionando mediante la autenticación del dispositivo Teale.",
-    "auth.note.claimsDevice": "El inicio de sesión por teléfono, GitHub o Google vincula este dispositivo a una sola cuenta.",
+    "auth.user.configure": "Iniciar sesión es opcional. Teale funciona sin una cuenta en esta PC.",
+    "auth.user.prompt": "Iniciar sesión es opcional. Teale funciona sin una cuenta.",
+    "auth.note.walletStillWorks": "El inicio de sesión de la cuenta es solo para personas que quieren administrar varios dispositivos y obtener soporte.",
+    "auth.note.claimsDevice": "Inicia sesión con GitHub, Google o SMS para administrar varios dispositivos y obtener soporte.",
     "auth.note.phoneCanLink": "GitHub y Google pueden vincularse a esta cuenta de teléfono.",
     "auth.note.allLinked": "Esta cuenta ya tiene teléfono, GitHub y Google vinculados.",
     "auth.note.phoneLinkNotYet": "Vincular teléfono a una cuenta existente todavía no está habilitado en este companion.",
@@ -615,7 +624,7 @@ const translations = {
     "account.code": "Code",
     "account.input.phone": "+63 917 123 4567",
     "account.input.code": "123456",
-    "account.auth.note.default": "Mag-sign in para i-link ang makinang ito sa isang tao. Patuloy pa ring gagana ang kita ng device wallet kahit walang human sign-in.",
+    "account.auth.note.default": "Hindi kailangan ang pag-sign in. Gumagana ang Teale kahit walang account. Mag-sign in lang kung gusto mo ng human account para mamahala ng maraming device at makakuha ng support.",
     "account.send.note": "Hindi pa naka-wire ang account wallet transfers sa Windows companion backend.",
     "common.asset": "Asset",
     "common.recipient": "Tatanggap",
@@ -630,10 +639,10 @@ const translations = {
     "auth.status.notConfigured": "Hindi naka-configure ang sign-in",
     "auth.status.notSignedIn": "Hindi naka-sign in",
     "auth.status.signedIn": "Naka-sign in",
-    "auth.user.configure": "Magdagdag ng Supabase config sa node para ma-enable ang account sign-in.",
-    "auth.user.prompt": "Gamitin ang GitHub, Google, o SMS para i-attach ang isang tao sa makinang ito.",
-    "auth.note.walletStillWorks": "Gumagana pa rin ang wallet at supply sa pamamagitan ng Teale device auth.",
-    "auth.note.claimsDevice": "Inaangkin ng phone, GitHub, o Google sign-in ang device na ito para sa isang account.",
+    "auth.user.configure": "Opsyonal ang pag-sign in. Gumagana ang Teale kahit walang account sa PC na ito.",
+    "auth.user.prompt": "Opsyonal ang pag-sign in. Gumagana ang Teale kahit walang account.",
+    "auth.note.walletStillWorks": "Ang account sign-in ay para lang sa mga taong gustong mamahala ng maraming device at makakuha ng support.",
+    "auth.note.claimsDevice": "Mag-sign in gamit ang GitHub, Google, o SMS para mamahala ng maraming device at makakuha ng support.",
     "auth.note.phoneCanLink": "Puwedeng i-link ang GitHub at Google sa phone account na ito.",
     "auth.note.allLinked": "Naka-link na sa account na ito ang phone, GitHub, at Google.",
     "auth.note.phoneLinkNotYet": "Hindi pa naka-enable ang phone linking sa existing account sa companion na ito.",
@@ -681,6 +690,41 @@ const translations = {
     "supply.models.noneCompatible": "Wala pang compatible na model para sa device na ito.",
   },
 };
+
+const chatTranslationDefaults = {
+  "nav.chat": "chat",
+  "view.chat.description": "single-thread chat with local and network models",
+  "chat.prompt.thread": "thread",
+  "chat.prompt.message": "message",
+  "chat.model.label": "Model",
+  "chat.model.note": "Local is free on this PC. Network models spend Teale credits.",
+  "chat.model.localNote": "Local is free on this PC.",
+  "chat.model.networkNote": "Network models spend Teale credits.",
+  "chat.model.waitingOption": "Waiting for available models...",
+  "chat.input.placeholder": "Ask something...",
+  "chat.input.hint": "Enter sends. Shift+Enter adds a newline.",
+  "chat.action.send": "Send",
+  "chat.action.newThread": "+ New thread",
+  "chat.thread.defaultTitle": "New thread",
+  "chat.thread.close": "Close thread",
+  "chat.tokens.input": "{{count}} input tokens",
+  "chat.tokens.inputApprox": "~{{count}} input tokens",
+  "chat.tokens.output": "{{count}} output tokens",
+  "chat.tokens.outputApprox": "~{{count}} output tokens",
+  "chat.thread.empty": "Start a new thread. Only messages in this thread are sent as context.",
+  "chat.thread.pending": "Teale is thinking...",
+  "chat.thread.partialReply": "Partial reply from an interrupted stream.",
+  "chat.thread.interrupted": "This partial reply stays visible for this session, but it will not be sent as context.",
+  "chat.thread.streamInterrupted": "The chat stream ended before completion. The partial reply stayed on screen but was not saved to the thread.",
+  "chat.thread.noModel": "No chat models are available yet.",
+  "chat.thread.waitingLocal": "Load a local model or wait for live network models.",
+  "chat.thread.waitingNetwork": "Waiting for the network bearer token from the gateway wallet sync.",
+  "chat.thread.fallbackPrefix": "Switched to {{model}} because {{previous}} is not available on this PC.",
+};
+
+for (const locale of Object.keys(translations)) {
+  Object.assign(translations[locale], chatTranslationDefaults);
+}
 
 function normalizeLanguage(candidate) {
   const value = String(candidate || "").toLowerCase();
@@ -752,6 +796,13 @@ let networkStatsFetchedAt = 0;
 let selectedNetworkModelId = null;
 let demandSort = { key: "devices", dir: "desc" };
 let pendingModelAction = null;
+let chatState = loadChatState();
+let chatRuntime = {
+  inFlight: null,
+  interruptedDrafts: {},
+  infoMessage: "",
+  errorMessage: "",
+};
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
@@ -779,6 +830,7 @@ function setLanguage(language) {
   if (lastSnapshot) {
     render(lastSnapshot);
   } else {
+    renderChat(lastSnapshot);
     renderAuthState();
     renderAccountWallet();
     renderAccountDevices();
@@ -1409,6 +1461,796 @@ function currentNetworkModel() {
   return networkModels.find((model) => model.id === selectedNetworkModelId) || networkModels[0] || null;
 }
 
+function createId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function cloneModelTarget(target) {
+  if (!target?.provider || !target?.modelId) {
+    return null;
+  }
+  return {
+    provider: target.provider,
+    modelId: target.modelId,
+  };
+}
+
+function normalizeChatTimestamp(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Date.now();
+}
+
+function createChatThread(initialTarget = null) {
+  const now = Date.now();
+  return {
+    id: createId(),
+    title: t("chat.thread.defaultTitle"),
+    modelTarget: cloneModelTarget(initialTarget),
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+  };
+}
+
+function createInitialChatState() {
+  const thread = createChatThread();
+  return {
+    selectedThreadId: thread.id,
+    threads: [thread],
+  };
+}
+
+function sanitizeChatMessage(raw) {
+  if (!raw || (raw.role !== "user" && raw.role !== "assistant")) {
+    return null;
+  }
+  const content = typeof raw.content === "string" ? raw.content : "";
+  if (!content) {
+    return null;
+  }
+  return {
+    id: typeof raw.id === "string" && raw.id ? raw.id : createId(),
+    role: raw.role,
+    content,
+    createdAt: normalizeChatTimestamp(raw.createdAt),
+    tokenCount: normalizeTokenCount(raw.tokenCount),
+    tokenEstimated: Boolean(raw.tokenEstimated),
+  };
+}
+
+function sanitizeChatThread(raw) {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const id = typeof raw.id === "string" && raw.id ? raw.id : createId();
+  const messages = Array.isArray(raw.messages) ? raw.messages.map(sanitizeChatMessage).filter(Boolean) : [];
+  const modelTarget = cloneModelTarget(raw.modelTarget);
+  const createdAt = normalizeChatTimestamp(raw.createdAt);
+  const updatedAt = normalizeChatTimestamp(raw.updatedAt);
+  return {
+    id,
+    title: typeof raw.title === "string" && raw.title ? raw.title : t("chat.thread.defaultTitle"),
+    modelTarget,
+    createdAt,
+    updatedAt: Math.max(updatedAt, createdAt),
+    messages,
+  };
+}
+
+function sortedChatThreads() {
+  return chatState.threads
+    .slice()
+    .sort((left, right) => (right.updatedAt - left.updatedAt) || (right.createdAt - left.createdAt));
+}
+
+function ensureSelectedThread() {
+  if (!chatState.threads.length) {
+    chatState = createInitialChatState();
+    persistChatState();
+    return chatState.threads[0];
+  }
+  const selected = chatState.threads.find((thread) => thread.id === chatState.selectedThreadId);
+  if (selected) {
+    return selected;
+  }
+  const fallback = sortedChatThreads()[0];
+  chatState.selectedThreadId = fallback.id;
+  persistChatState();
+  return fallback;
+}
+
+function loadChatState() {
+  try {
+    const raw = window.localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) {
+      return createInitialChatState();
+    }
+    const parsed = JSON.parse(raw);
+    const threads = Array.isArray(parsed?.threads) ? parsed.threads.map(sanitizeChatThread).filter(Boolean) : [];
+    if (!threads.length) {
+      return createInitialChatState();
+    }
+    const selectedThreadId = typeof parsed.selectedThreadId === "string" ? parsed.selectedThreadId : threads[0].id;
+    return { selectedThreadId, threads };
+  } catch (_error) {
+    return createInitialChatState();
+  }
+}
+
+function persistChatState() {
+  try {
+    window.localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify({
+        selectedThreadId: chatState.selectedThreadId,
+        threads: chatState.threads,
+      })
+    );
+  } catch (_error) {}
+}
+
+function selectedChatThread() {
+  return ensureSelectedThread();
+}
+
+function normalizeThreadTitle(text) {
+  const compact = String(text || "").trim().replace(/\s+/g, " ");
+  if (!compact) {
+    return t("chat.thread.defaultTitle");
+  }
+  if (compact.length <= 32) {
+    return compact;
+  }
+  return `${compact.slice(0, 32).trimEnd()}...`;
+}
+
+function normalizeTokenCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return null;
+  }
+  return Math.round(numeric);
+}
+
+function estimateChatTextTokens(text) {
+  const bytes = new TextEncoder().encode(String(text || "")).length;
+  if (!bytes) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(bytes / 4));
+}
+
+function estimateChatPromptTokens(messages) {
+  const promptBytes = (messages || []).reduce((sum, message) => {
+    return sum + new TextEncoder().encode(String(message?.content || "")).length;
+  }, 0);
+  return Math.ceil(promptBytes / 4) + 16;
+}
+
+function formatChatUsageMeta(role, tokenCount, estimated = false) {
+  const normalized = normalizeTokenCount(tokenCount);
+  if (normalized == null) {
+    return "";
+  }
+  const count = formatCredits(normalized);
+  if (role === "user") {
+    return t(estimated ? "chat.tokens.inputApprox" : "chat.tokens.input", { count });
+  }
+  return t(estimated ? "chat.tokens.outputApprox" : "chat.tokens.output", { count });
+}
+
+function chatMessageUsageMeta(message) {
+  if (!message) {
+    return "";
+  }
+  return formatChatUsageMeta(message.role, message.tokenCount, Boolean(message.tokenEstimated));
+}
+
+function parseChatUsage(raw) {
+  const promptTokens = normalizeTokenCount(raw?.prompt_tokens);
+  const completionTokens = normalizeTokenCount(raw?.completion_tokens);
+  if (promptTokens == null && completionTokens == null) {
+    return null;
+  }
+  return {
+    promptTokens,
+    completionTokens,
+  };
+}
+
+function creditsPerMillionFromUsdToken(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric * 1_000_000 * 1_000_000;
+}
+
+function formatCompactCredits(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "-";
+  }
+  const abs = Math.abs(numeric);
+  if (abs >= 1_000_000) {
+    return `${Math.max(1, Math.round(numeric / 1_000_000))}M`;
+  }
+  if (abs >= 1_000) {
+    return `${Math.max(1, Math.round(numeric / 1_000))}K`;
+  }
+  return `${Math.max(0, Math.round(numeric))}`;
+}
+
+function chatTargetKey(target) {
+  return target?.provider && target?.modelId ? `${target.provider}:${target.modelId}` : "";
+}
+
+function describeChatTarget(target) {
+  if (!target?.modelId) {
+    return "-";
+  }
+  return target.provider === "local"
+    ? `FREE - ${shortModelLabel(target.modelId)}`
+    : shortModelLabel(target.modelId);
+}
+
+function currentChatModelOptions(snapshot = lastSnapshot) {
+  const options = [];
+
+  if (snapshot?.loaded_model_id) {
+    options.push({
+      provider: "local",
+      modelId: snapshot.loaded_model_id,
+      label: `FREE - ${shortModelLabel(snapshot.loaded_model_id)}`,
+      note: t("chat.model.localNote"),
+    });
+  }
+
+  const paid = networkModels
+    .filter((model) => Number(model.devices) > 0)
+    .slice()
+    .sort((left, right) => {
+      const deviceDelta = Number(right.devices || 0) - Number(left.devices || 0);
+      if (deviceDelta) {
+        return deviceDelta;
+      }
+      const leftCompletion = creditsPerMillionFromUsdToken(left.completion) ?? Number.POSITIVE_INFINITY;
+      const rightCompletion = creditsPerMillionFromUsdToken(right.completion) ?? Number.POSITIVE_INFINITY;
+      if (leftCompletion !== rightCompletion) {
+        return leftCompletion - rightCompletion;
+      }
+      return String(left.id).localeCompare(String(right.id));
+    });
+
+  for (const model of paid) {
+    const inputCredits = formatCompactCredits(creditsPerMillionFromUsdToken(model.prompt));
+    const outputCredits = formatCompactCredits(creditsPerMillionFromUsdToken(model.completion));
+    options.push({
+      provider: "network",
+      modelId: model.id,
+      label: `${inputCredits}i/${outputCredits}o/1M - ${shortModelLabel(model.id)}`,
+      note: t("chat.model.networkNote"),
+    });
+  }
+
+  return options;
+}
+
+function reconcileChatState(snapshot = lastSnapshot, announceFallback = true) {
+  if (!chatState?.threads?.length) {
+    chatState = createInitialChatState();
+  }
+
+  const options = currentChatModelOptions(snapshot);
+  const optionMap = new Map(options.map((option) => [chatTargetKey(option), option]));
+  let changed = false;
+  let announced = false;
+
+  for (const thread of chatState.threads) {
+    const previousTarget = cloneModelTarget(thread.modelTarget);
+    const previousKey = chatTargetKey(previousTarget);
+    if (previousKey && optionMap.has(previousKey)) {
+      continue;
+    }
+
+    const fallback = options[0] ? { provider: options[0].provider, modelId: options[0].modelId } : null;
+    if (!fallback) {
+      continue;
+    }
+    const fallbackKey = chatTargetKey(fallback);
+    if (previousKey !== fallbackKey) {
+      thread.modelTarget = cloneModelTarget(fallback);
+      changed = true;
+      if (
+        announceFallback &&
+        !announced &&
+        thread.id === chatState.selectedThreadId &&
+        previousTarget?.modelId &&
+        fallback?.modelId
+      ) {
+        chatRuntime.infoMessage = t("chat.thread.fallbackPrefix", {
+          model: describeChatTarget(fallback),
+          previous: describeChatTarget(previousTarget),
+        });
+        announced = true;
+      }
+    }
+  }
+
+  const selected = ensureSelectedThread();
+  if (!selected.modelTarget && options[0]) {
+    selected.modelTarget = { provider: options[0].provider, modelId: options[0].modelId };
+    changed = true;
+  }
+
+  if (changed) {
+    persistChatState();
+  }
+
+  return {
+    thread: selected,
+    options,
+  };
+}
+
+function isChatBusy() {
+  return Boolean(chatRuntime.inFlight);
+}
+
+function currentInterruptedDraft(threadId) {
+  return chatRuntime.interruptedDrafts[threadId] || "";
+}
+
+function closeChatThread(threadId) {
+  if (isChatBusy()) {
+    return;
+  }
+
+  const index = chatState.threads.findIndex((thread) => thread.id === threadId);
+  if (index === -1) {
+    return;
+  }
+
+  const [closedThread] = chatState.threads.splice(index, 1);
+  const wasSelected = chatState.selectedThreadId === threadId;
+  delete chatRuntime.interruptedDrafts[threadId];
+
+  if (!chatState.threads.length) {
+    const replacement = createChatThread(cloneModelTarget(closedThread?.modelTarget));
+    chatState.threads = [replacement];
+    chatState.selectedThreadId = replacement.id;
+  } else if (wasSelected) {
+    const fallback = sortedChatThreads()[0];
+    chatState.selectedThreadId = fallback.id;
+  }
+
+  chatRuntime.errorMessage = "";
+  chatRuntime.infoMessage = "";
+  persistChatState();
+  renderChat(lastSnapshot);
+  els.chatInput?.focus();
+}
+
+function renderChatStatus() {
+  const message = chatRuntime.errorMessage || chatRuntime.infoMessage;
+  if (!message) {
+    els.chatStatusNote.hidden = true;
+    els.chatStatusNote.textContent = "";
+    els.chatStatusNote.className = "chat-status";
+    return;
+  }
+  els.chatStatusNote.hidden = false;
+  els.chatStatusNote.textContent = message;
+  els.chatStatusNote.className = chatRuntime.errorMessage ? "chat-status is-error" : "chat-status is-note";
+}
+
+function renderChatThreadStrip(activeThread) {
+  els.chatThreadStrip.innerHTML = "";
+
+  for (const thread of sortedChatThreads()) {
+    const chip = document.createElement("div");
+    chip.className = "chat-thread-chip";
+    if (thread.id === activeThread.id) {
+      chip.classList.add("is-active");
+    }
+    if (isChatBusy()) {
+      chip.classList.add("is-disabled");
+    }
+
+    const selectThread = () => {
+      if (isChatBusy()) {
+        return;
+      }
+      chatState.selectedThreadId = thread.id;
+      chatRuntime.errorMessage = "";
+      chatRuntime.infoMessage = "";
+      persistChatState();
+      renderChat(lastSnapshot);
+    };
+
+    chip.addEventListener("click", selectThread);
+
+    const labelButton = document.createElement("button");
+    labelButton.type = "button";
+    labelButton.className = "chat-thread-chip-label";
+    labelButton.textContent = thread.title;
+    labelButton.disabled = isChatBusy();
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-thread-chip-close";
+    closeButton.disabled = isChatBusy();
+    closeButton.setAttribute("aria-label", t("chat.thread.close"));
+    closeButton.title = t("chat.thread.close");
+    closeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeChatThread(thread.id);
+    });
+
+    chip.append(labelButton, closeButton);
+    els.chatThreadStrip.appendChild(chip);
+  }
+
+  const createButton = document.createElement("button");
+  createButton.type = "button";
+  createButton.className = "chat-thread-create";
+  createButton.textContent = t("chat.action.newThread");
+  createButton.disabled = isChatBusy();
+  createButton.addEventListener("click", () => {
+    if (isChatBusy()) {
+      return;
+    }
+    const options = currentChatModelOptions(lastSnapshot);
+    const thread = createChatThread(options[0] ? { provider: options[0].provider, modelId: options[0].modelId } : null);
+    chatState.threads.push(thread);
+    chatState.selectedThreadId = thread.id;
+    chatRuntime.errorMessage = "";
+    chatRuntime.infoMessage = "";
+    persistChatState();
+    renderChat(lastSnapshot);
+  });
+  els.chatThreadStrip.appendChild(createButton);
+}
+
+function renderChatModelPicker(thread, options, snapshot) {
+  els.chatModelSelect.innerHTML = "";
+
+  if (!options.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = t("chat.model.waitingOption");
+    els.chatModelSelect.appendChild(emptyOption);
+    els.chatModelSelect.disabled = true;
+    if (snapshot?.loaded_model_id) {
+      els.chatModelNote.textContent = t("chat.thread.waitingLocal");
+    } else {
+      els.chatModelNote.textContent = t("chat.thread.noModel");
+    }
+    return;
+  }
+
+  for (const option of options) {
+    const item = document.createElement("option");
+    item.value = chatTargetKey(option);
+    item.textContent = option.label;
+    els.chatModelSelect.appendChild(item);
+  }
+
+  els.chatModelSelect.value = chatTargetKey(thread.modelTarget) || chatTargetKey(options[0]);
+  els.chatModelSelect.disabled = isChatBusy();
+
+  const selectedOption = options.find((option) => chatTargetKey(option) === els.chatModelSelect.value) || options[0];
+  if (selectedOption?.provider === "network" && !snapshot?.demand?.network_bearer_token) {
+    els.chatModelNote.textContent = t("chat.thread.waitingNetwork");
+  } else {
+    els.chatModelNote.textContent = selectedOption?.note || t("chat.model.note");
+  }
+}
+
+function appendChatBubble(container, role, text, metaText = "", extraClass = "") {
+  const row = document.createElement("div");
+  row.className = `chat-message chat-message-${role}`;
+
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble";
+  if (extraClass) {
+    bubble.classList.add(extraClass);
+  }
+  bubble.textContent = text;
+
+  if (metaText) {
+    const meta = document.createElement("div");
+    meta.className = "chat-bubble-meta";
+    meta.textContent = metaText;
+    bubble.appendChild(meta);
+  }
+
+  row.appendChild(bubble);
+  container.appendChild(row);
+}
+
+function renderChatTranscript(thread) {
+  els.chatTranscript.innerHTML = "";
+  const draft = chatRuntime.inFlight?.threadId === thread.id ? chatRuntime.inFlight.assistantText : "";
+  const interrupted = !isChatBusy() ? currentInterruptedDraft(thread.id) : "";
+
+  if (!thread.messages.length && !draft && !interrupted) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty";
+    empty.textContent = t("chat.thread.empty");
+    els.chatTranscript.appendChild(empty);
+    return;
+  }
+
+  for (const message of thread.messages) {
+    appendChatBubble(
+      els.chatTranscript,
+      message.role,
+      message.content,
+      chatMessageUsageMeta(message)
+    );
+  }
+
+  if (draft || (chatRuntime.inFlight?.threadId === thread.id && !draft)) {
+    const draftMeta = draft
+      ? formatChatUsageMeta(
+          "assistant",
+          chatRuntime.inFlight?.completionTokens ?? estimateChatTextTokens(draft),
+          chatRuntime.inFlight?.completionTokensEstimated ?? true
+        )
+      : "";
+    appendChatBubble(
+      els.chatTranscript,
+      "assistant",
+      draft || t("chat.thread.pending"),
+      draftMeta
+    );
+  }
+
+  if (interrupted) {
+    const interruptedMeta = [
+      formatChatUsageMeta("assistant", estimateChatTextTokens(interrupted), true),
+      t("chat.thread.interrupted"),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    appendChatBubble(
+      els.chatTranscript,
+      "assistant",
+      interrupted,
+      interruptedMeta,
+      "is-interrupted"
+    );
+  }
+
+  window.requestAnimationFrame(() => {
+    els.chatTranscript.scrollTop = els.chatTranscript.scrollHeight;
+  });
+}
+
+function renderChat(snapshot = lastSnapshot) {
+  const { thread, options } = reconcileChatState(snapshot);
+  renderChatThreadStrip(thread);
+  renderChatModelPicker(thread, options, snapshot);
+  renderChatStatus();
+  renderChatTranscript(thread);
+
+  const activeOption = options.find((option) => chatTargetKey(option) === chatTargetKey(thread.modelTarget)) || options[0] || null;
+  const inputText = els.chatInput.value.trim();
+  const networkBlocked = activeOption?.provider === "network" && !snapshot?.demand?.network_bearer_token;
+  const canSend = !isChatBusy() && Boolean(activeOption) && !networkBlocked && inputText.length > 0;
+
+  els.chatSendButton.disabled = !canSend;
+}
+
+async function streamChatCompletion(payload) {
+  const response = await fetch(apiUrl("/v1/app/chat/completions"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(errorPayload.error || `Chat request failed: ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error("Chat stream was not available.");
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  let sawDone = false;
+  let usage = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r/g, "");
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+
+      const data = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+
+      if (data === "[DONE]") {
+        sawDone = true;
+        return;
+      }
+
+      if (data) {
+        const payload = JSON.parse(data);
+        const nextUsage = parseChatUsage(payload?.usage);
+        if (nextUsage) {
+          usage = {
+            promptTokens: nextUsage.promptTokens ?? usage?.promptTokens ?? null,
+            completionTokens: nextUsage.completionTokens ?? usage?.completionTokens ?? null,
+          };
+          if (chatRuntime.inFlight) {
+            if (usage.promptTokens != null) {
+              chatRuntime.inFlight.promptTokens = usage.promptTokens;
+              chatRuntime.inFlight.promptTokensEstimated = false;
+            }
+            if (usage.completionTokens != null) {
+              chatRuntime.inFlight.completionTokens = usage.completionTokens;
+              chatRuntime.inFlight.completionTokensEstimated = false;
+            }
+            renderChat(lastSnapshot);
+          }
+        }
+        const delta = payload?.choices?.[0]?.delta?.content;
+        if (typeof delta === "string" && delta) {
+          chatRuntime.inFlight.assistantText += delta;
+          if (chatRuntime.inFlight && usage?.completionTokens == null) {
+            chatRuntime.inFlight.completionTokens = estimateChatTextTokens(chatRuntime.inFlight.assistantText);
+            chatRuntime.inFlight.completionTokensEstimated = true;
+          }
+          renderChat(lastSnapshot);
+        }
+      }
+
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+
+  if (!sawDone) {
+    throw new Error(t("chat.thread.streamInterrupted"));
+  }
+
+  return usage;
+}
+
+async function sendChatMessage() {
+  const thread = selectedChatThread();
+  const input = els.chatInput.value.trim();
+  if (!thread || !input || isChatBusy()) {
+    return;
+  }
+
+  const { options } = reconcileChatState(lastSnapshot, false);
+  const activeOption = options.find((option) => chatTargetKey(option) === chatTargetKey(thread.modelTarget)) || options[0] || null;
+  if (!activeOption) {
+    chatRuntime.errorMessage = t("chat.thread.noModel");
+    renderChat(lastSnapshot);
+    return;
+  }
+  if (activeOption.provider === "network" && !lastSnapshot?.demand?.network_bearer_token) {
+    chatRuntime.errorMessage = t("chat.thread.waitingNetwork");
+    renderChat(lastSnapshot);
+    return;
+  }
+
+  chatRuntime.errorMessage = "";
+  chatRuntime.infoMessage = "";
+  delete chatRuntime.interruptedDrafts[thread.id];
+
+  const userMessagesBefore = thread.messages.filter((message) => message.role === "user").length;
+  const userMessage = {
+    id: createId(),
+    role: "user",
+    content: input,
+    createdAt: Date.now(),
+    tokenCount: null,
+    tokenEstimated: false,
+  };
+  thread.messages.push(userMessage);
+  if (userMessagesBefore === 0) {
+    thread.title = normalizeThreadTitle(input);
+  }
+  thread.updatedAt = Date.now();
+  const requestMessages = thread.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+  userMessage.tokenCount = estimateChatPromptTokens(requestMessages);
+  userMessage.tokenEstimated = true;
+  persistChatState();
+
+  els.chatInput.value = "";
+  chatRuntime.inFlight = {
+    threadId: thread.id,
+    assistantText: "",
+    modelTarget: { provider: activeOption.provider, modelId: activeOption.modelId },
+    promptTokens: userMessage.tokenCount,
+    promptTokensEstimated: true,
+    completionTokens: null,
+    completionTokensEstimated: true,
+  };
+  renderChat(lastSnapshot);
+
+  try {
+    await streamChatCompletion({
+      provider: activeOption.provider,
+      model: activeOption.modelId,
+      messages: requestMessages,
+      temperature: 0.7,
+      max_tokens: 1024,
+      stream: true,
+    });
+
+    const inFlight = chatRuntime.inFlight;
+    const finalText = inFlight?.assistantText || "";
+    const promptTokenCount = normalizeTokenCount(inFlight?.promptTokens);
+    if (promptTokenCount != null && promptTokenCount > 0) {
+      userMessage.tokenCount = promptTokenCount;
+      userMessage.tokenEstimated = Boolean(inFlight?.promptTokensEstimated);
+    }
+    if (finalText) {
+      const completionTokenCount = normalizeTokenCount(inFlight?.completionTokens);
+      thread.messages.push({
+        id: createId(),
+        role: "assistant",
+        content: finalText,
+        createdAt: Date.now(),
+        tokenCount: completionTokenCount != null && completionTokenCount > 0
+          ? completionTokenCount
+          : estimateChatTextTokens(finalText),
+        tokenEstimated: completionTokenCount != null && completionTokenCount > 0
+          ? Boolean(inFlight?.completionTokensEstimated)
+          : true,
+      });
+      thread.updatedAt = Date.now();
+    }
+
+    persistChatState();
+    chatRuntime.inFlight = null;
+    renderChat(lastSnapshot);
+  } catch (error) {
+    const inFlight = chatRuntime.inFlight;
+    const partial = inFlight?.assistantText || "";
+    const promptTokenCount = normalizeTokenCount(inFlight?.promptTokens);
+    if (promptTokenCount != null && promptTokenCount > 0) {
+      userMessage.tokenCount = promptTokenCount;
+      userMessage.tokenEstimated = Boolean(inFlight?.promptTokensEstimated);
+    }
+    persistChatState();
+    chatRuntime.inFlight = null;
+    if (partial) {
+      chatRuntime.interruptedDrafts[thread.id] = partial;
+    }
+    chatRuntime.errorMessage = error.message || t("chat.thread.streamInterrupted");
+    renderChat(lastSnapshot);
+  }
+}
+
 function renderHomeNetworkStats() {
   if (!networkStats) {
     els.homeNetworkDevices.textContent = "Loading...";
@@ -1554,8 +2396,12 @@ function setActiveView(view) {
   }
   els.headerLine.textContent = viewDescription(view) || viewDescription("home");
   if (view === "home") {
+    renderChat(lastSnapshot);
     refreshNetworkStats().catch((error) => {
       console.error("network stats refresh failed", error);
+    });
+    refreshNetworkModels().catch((error) => {
+      console.error("home chat model refresh failed", error);
     });
   }
   if (view === "demand") {
@@ -2829,11 +3675,13 @@ async function refreshNetworkModels(force = false) {
     networkModelsFetchedAt = now;
     renderNetworkModels();
     renderDemand(lastSnapshot);
+    renderChat(lastSnapshot);
   } catch (error) {
     console.error(error);
     networkModels = [];
     els.networkModelTableBody.innerHTML = "";
     els.networkModelEmpty.textContent = "Could not load live gateway models yet.";
+    renderChat(lastSnapshot);
   }
 }
 
@@ -2953,6 +3801,7 @@ function render(snapshot) {
   renderHome(snapshot);
   renderSupply(snapshot);
   renderDemand(snapshot);
+  renderChat(snapshot);
   renderWallet(snapshot);
   renderAccountWallet();
   renderAuthState();
@@ -2978,6 +3827,7 @@ async function refresh() {
   render(snapshot);
   if (activeView === "home") {
     await refreshNetworkStats();
+    await refreshNetworkModels();
   }
   if (activeView === "demand") {
     await refreshNetworkModels();
@@ -3150,6 +4000,36 @@ els.networkToken.addEventListener("click", async () => {
 
 els.networkCurlCopy.addEventListener("click", async () => {
   await copyText(els.networkCurl.textContent, "Network curl");
+});
+
+els.chatModelSelect.addEventListener("change", () => {
+  const thread = selectedChatThread();
+  const selectedKey = els.chatModelSelect.value;
+  const option = currentChatModelOptions(lastSnapshot).find((item) => chatTargetKey(item) === selectedKey);
+  if (!thread || !option || isChatBusy()) {
+    renderChat(lastSnapshot);
+    return;
+  }
+  thread.modelTarget = { provider: option.provider, modelId: option.modelId };
+  chatRuntime.errorMessage = "";
+  chatRuntime.infoMessage = "";
+  persistChatState();
+  renderChat(lastSnapshot);
+});
+
+els.chatInput.addEventListener("input", () => {
+  renderChat(lastSnapshot);
+});
+
+els.chatInput.addEventListener("keydown", async (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    await sendChatMessage();
+  }
+});
+
+els.chatSendButton.addEventListener("click", async () => {
+  await sendChatMessage();
 });
 
 els.walletDeviceId.addEventListener("click", async () => {

@@ -13,9 +13,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 use url::Url;
@@ -29,6 +30,10 @@ use crate::windows_model_catalog::{
     compatible_models, context_for_model, model_by_id, recommended_model, WindowsCatalogModel,
     AVAILABILITY_TICK_SECONDS,
 };
+use teale_protocol::openai::ChatCompletionRequest;
+
+const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServiceState {
@@ -288,11 +293,32 @@ struct AuthSessionLookupRequest {
     access_token: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ChatProvider {
+    Local,
+    Network,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AppChatRequest {
+    provider: ChatProvider,
+    #[serde(flatten)]
+    request: ChatCompletionRequest,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AccountSweepResponse {
     swept_credits: i64,
     swept_usdc_cents: i64,
     account: AccountSnapshot,
+}
+
+#[derive(Debug)]
+struct ParsedHttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1331,6 +1357,269 @@ fn relay_to_gateway_base_url(relay_url: &str) -> String {
     relay.to_string().trim_end_matches('/').to_string()
 }
 
+fn find_headers_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+async fn read_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<Option<ParsedHttpRequest>, (&'static str, String)> {
+    let mut buffer = Vec::<u8>::new();
+    let mut headers_end = None;
+
+    loop {
+        let mut chunk = [0u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|e| ("400 Bad Request", format!("could not read request: {e}")))?;
+        if read == 0 {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            return Err((
+                "400 Bad Request",
+                "request ended before headers completed".to_string(),
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+
+        if headers_end.is_none() {
+            headers_end = find_headers_end(&buffer);
+        }
+
+        if headers_end.is_some() {
+            break;
+        }
+        if buffer.len() > MAX_HTTP_HEADER_BYTES {
+            return Err((
+                "431 Request Header Fields Too Large",
+                "request headers exceeded the local control API limit".to_string(),
+            ));
+        }
+    }
+
+    let headers_end = headers_end.expect("headers end checked above");
+    let body_start = headers_end + 4;
+    let header_text = std::str::from_utf8(&buffer[..headers_end]).map_err(|e| {
+        (
+            "400 Bad Request",
+            format!("request headers were not utf-8: {e}"),
+        )
+    })?;
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            (
+                "400 Bad Request",
+                "request line was missing an HTTP method".to_string(),
+            )
+        })?
+        .to_string();
+    let path = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            (
+                "400 Bad Request",
+                "request line was missing a request path".to_string(),
+            )
+        })?
+        .to_string();
+
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().map_err(|e| {
+                    (
+                        "400 Bad Request",
+                        format!("invalid Content-Length header: {e}"),
+                    )
+                })?;
+            }
+        }
+    }
+
+    if content_length > MAX_HTTP_BODY_BYTES {
+        return Err((
+            "413 Payload Too Large",
+            format!("request body exceeded {} bytes", MAX_HTTP_BODY_BYTES),
+        ));
+    }
+
+    while buffer.len() < body_start + content_length {
+        let mut chunk = [0u8; 4096];
+        let read = stream.read(&mut chunk).await.map_err(|e| {
+            (
+                "400 Bad Request",
+                format!("could not read request body: {e}"),
+            )
+        })?;
+        if read == 0 {
+            return Err((
+                "400 Bad Request",
+                "request ended before the full body was received".to_string(),
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.len() > body_start + content_length {
+            break;
+        }
+    }
+
+    Ok(Some(ParsedHttpRequest {
+        method,
+        path,
+        body: buffer[body_start..body_start + content_length].to_vec(),
+    }))
+}
+
+async fn proxy_chat_completion(
+    body: &[u8],
+    state: Arc<StatusState>,
+) -> Result<reqwest::Response, (&'static str, String)> {
+    let payload: AppChatRequest = serde_json::from_slice(body)
+        .map_err(|e| ("400 Bad Request", format!("invalid chat payload: {e}")))?;
+
+    let mut request = payload.request;
+    request.stream = Some(true);
+    request.stream_options = Some(json!({ "include_usage": true }));
+
+    let (url, bearer_token) = match payload.provider {
+        ChatProvider::Local => {
+            let loaded_model_id = state
+                .swap
+                .current_model_id()
+                .await
+                .ok_or_else(|| ("409 Conflict", "no local model is loaded".to_string()))?;
+            request.model = Some(loaded_model_id);
+            let port = state
+                .llama_template
+                .as_ref()
+                .map(|config| config.port)
+                .unwrap_or(11436);
+            (format!("http://127.0.0.1:{port}/v1/chat/completions"), None)
+        }
+        ChatProvider::Network => {
+            if request
+                .model
+                .as_ref()
+                .map(|model| model.trim().is_empty())
+                .unwrap_or(true)
+            {
+                return Err((
+                    "400 Bad Request",
+                    "`model` is required for network chat".to_string(),
+                ));
+            }
+            let token = state
+                .gateway_device_token()
+                .await
+                .map_err(|e| ("409 Conflict", e.to_string()))?;
+            (
+                format!(
+                    "{}/chat/completions",
+                    relay_to_gateway_base_url(&state.relay_url)
+                ),
+                Some(token),
+            )
+        }
+    };
+
+    let client = gateway_client(Duration::from_secs(600)).map_err(|e| {
+        (
+            "500 Internal Server Error",
+            format!("chat client init failed: {e:#}"),
+        )
+    })?;
+    let mut builder = client
+        .post(&url)
+        .header("Accept", "text/event-stream")
+        .json(&request);
+    if let Some(token) = bearer_token {
+        builder = builder.bearer_auth(token);
+    }
+
+    let response = builder
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))
+        .map_err(|e| {
+            (
+                "502 Bad Gateway",
+                format!("chat proxy request failed: {e:#}"),
+            )
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err((
+            "502 Bad Gateway",
+            format!("upstream chat returned {status}: {text}"),
+        ));
+    }
+
+    Ok(response)
+}
+
+async fn write_sse_response<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    response: reqwest::Response,
+) -> Result<(), (&'static str, String)> {
+    let headers = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: text/event-stream; charset=utf-8\r\n",
+        "Connection: close\r\n",
+        "Cache-Control: no-store\r\n",
+        "Access-Control-Allow-Origin: *\r\n",
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n",
+        "Access-Control-Allow-Headers: Content-Type, Accept\r\n",
+        "Access-Control-Max-Age: 86400\r\n",
+        "Access-Control-Allow-Private-Network: true\r\n",
+        "\r\n"
+    );
+    writer.write_all(headers.as_bytes()).await.map_err(|e| {
+        (
+            "500 Internal Server Error",
+            format!("could not write SSE headers: {e}"),
+        )
+    })?;
+
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                if let Err(err) = writer.write_all(&bytes).await {
+                    warn!("chat proxy write failed: {err}");
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                warn!("chat proxy stream failed: {err:#}");
+                return Ok(());
+            }
+        }
+    }
+
+    let _ = writer.flush().await;
+    Ok(())
+}
+
+async fn handle_chat_proxy(
+    stream: &mut tokio::net::TcpStream,
+    body: &[u8],
+    state: Arc<StatusState>,
+) -> Result<(), (&'static str, String)> {
+    let response = proxy_chat_completion(body, state).await?;
+    write_sse_response(stream, response).await
+}
+
 pub fn spawn(state: Arc<StatusState>, port: u16) {
     tokio::spawn(async move {
         let addr: SocketAddr = match format!("127.0.0.1:{port}").parse() {
@@ -1372,23 +1661,27 @@ async fn handle(
     mut stream: tokio::net::TcpStream,
     state: Arc<StatusState>,
 ) -> Result<(), Infallible> {
-    let mut buf = vec![0u8; 8192];
-    let n = match stream.read(&mut buf).await {
-        Ok(n) => n,
-        Err(_) => return Ok(()),
+    let request = match read_http_request(&mut stream).await {
+        Ok(Some(request)) => request,
+        Ok(None) => return Ok(()),
+        Err((status, message)) => {
+            let response = HttpResponse::json(status, json!({ "error": message }).to_string());
+            let _ = stream.write_all(response.render().as_bytes()).await;
+            return Ok(());
+        }
     };
-    if n == 0 {
+
+    if request.method == "POST" && request.path == "/v1/app/chat/completions" {
+        if let Err((status, message)) =
+            handle_chat_proxy(&mut stream, &request.body, state.clone()).await
+        {
+            let response = HttpResponse::json(status, json!({ "error": message }).to_string());
+            let _ = stream.write_all(response.render().as_bytes()).await;
+        }
         return Ok(());
     }
 
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let first_line = req.lines().next().unwrap_or("");
-    let mut parts = first_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
-    let body = req.split("\r\n\r\n").nth(1).unwrap_or("").as_bytes();
-
-    let response = match route(method, path, body, state).await {
+    let response = match route(&request.method, &request.path, &request.body, state).await {
         Ok(resp) => resp,
         Err((status, message)) => {
             HttpResponse::json(status, json!({ "error": message }).to_string())
@@ -1602,7 +1895,7 @@ impl HttpResponse {
                 "Cache-Control: no-store\r\n",
                 "Access-Control-Allow-Origin: *\r\n",
                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n",
-                "Access-Control-Allow-Headers: Content-Type\r\n",
+                "Access-Control-Allow-Headers: Content-Type, Accept\r\n",
                 "Access-Control-Max-Age: 86400\r\n",
                 "Access-Control-Allow-Private-Network: true\r\n",
                 "\r\n{}"
@@ -1617,15 +1910,21 @@ impl HttpResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use super::{route, ServiceState, StatusState};
+    use super::{
+        proxy_chat_completion, read_http_request, route, write_sse_response, ServiceState,
+        StatusState,
+    };
     use crate::backend::Backend;
     use crate::cluster::NodeRuntimeState;
     use crate::config::{ControlConfig, LlamaConfig};
     use crate::hardware::HardwareCapability;
     use crate::model_registry::{PersistedRegistry, RegistryStore};
     use crate::swap::SwapManager;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     fn dummy_hw(ram: f64) -> HardwareCapability {
         HardwareCapability {
@@ -1653,32 +1952,51 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn snapshot_serializes_needs_model_state() {
+    fn dummy_llama_with_port(port: u16) -> LlamaConfig {
+        let mut config = dummy_llama();
+        config.port = port;
+        config
+    }
+
+    fn temp_dir() -> PathBuf {
         let tmp = std::env::temp_dir().join(format!("teale-status-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).expect("temp dir");
+        tmp
+    }
+
+    fn build_state(tmp: &Path, relay_url: String, llama: Option<LlamaConfig>) -> Arc<StatusState> {
         let registry_store = RegistryStore::new(tmp.join("model-registry.json"));
+        let node_state = Arc::new(NodeRuntimeState::new(1));
         let swap = SwapManager::new(
             Backend::Unavailable,
             None,
             String::new(),
             None,
-            dummy_llama(),
+            llama.clone().unwrap_or_else(dummy_llama),
             vec![],
-            Arc::new(NodeRuntimeState::new(1)),
+            node_state.clone(),
         );
-        let node_state = Arc::new(NodeRuntimeState::new(1));
-        let state = StatusState::new(
+        Arc::new(StatusState::new(
             "WIN".to_string(),
             dummy_hw(16.0),
-            tmp.clone(),
+            tmp.to_path_buf(),
             registry_store,
             PersistedRegistry::default(),
             swap,
-            Some(dummy_llama()),
+            llama,
             ControlConfig::default(),
-            "wss://relay.teale.com/ws".to_string(),
+            relay_url,
             node_state,
+        ))
+    }
+
+    #[tokio::test]
+    async fn snapshot_serializes_needs_model_state() {
+        let tmp = temp_dir();
+        let state = build_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
         );
         state.clear_starting().await;
 
@@ -1690,30 +2008,12 @@ mod tests {
 
     #[tokio::test]
     async fn options_preflight_returns_cors_headers() {
-        let tmp = std::env::temp_dir().join(format!("teale-status-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp).expect("temp dir");
-        let registry_store = RegistryStore::new(tmp.join("model-registry.json"));
-        let node_state = Arc::new(NodeRuntimeState::new(1));
-        let state = Arc::new(StatusState::new(
-            "WIN".to_string(),
-            dummy_hw(16.0),
-            tmp.clone(),
-            registry_store,
-            PersistedRegistry::default(),
-            SwapManager::new(
-                Backend::Unavailable,
-                None,
-                String::new(),
-                None,
-                dummy_llama(),
-                vec![],
-                node_state.clone(),
-            ),
-            Some(dummy_llama()),
-            ControlConfig::default(),
+        let tmp = temp_dir();
+        let state = build_state(
+            &tmp,
             "wss://relay.teale.com/ws".to_string(),
-            node_state,
-        ));
+            Some(dummy_llama()),
+        );
 
         let response = route("OPTIONS", "/v1/app", b"", state)
             .await
@@ -1722,6 +2022,177 @@ mod tests {
         assert!(rendered.contains("204 No Content"));
         assert!(rendered.contains("Access-Control-Allow-Origin: *"));
         assert!(rendered.contains("Access-Control-Allow-Methods: GET, POST, OPTIONS"));
+        assert!(rendered.contains("Access-Control-Allow-Headers: Content-Type, Accept"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn request_parser_reads_large_body_from_content_length() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind parser test listener");
+        let addr = listener.local_addr().expect("parser test addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept parser test client");
+            read_http_request(&mut socket)
+                .await
+                .expect("parsed request")
+                .expect("request should exist")
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect parser test");
+        let body = vec![b'a'; 9000];
+        let headers = format!(
+            "POST /v1/app/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        client
+            .write_all(headers.as_bytes())
+            .await
+            .expect("write parser headers");
+        client.write_all(&body).await.expect("write parser body");
+
+        let request = server.await.expect("parser server task");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/app/chat/completions");
+        assert_eq!(request.body.len(), body.len());
+    }
+
+    #[tokio::test]
+    async fn chat_proxy_rejects_malformed_payload() {
+        let tmp = temp_dir();
+        let state = build_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
+        );
+
+        let err = proxy_chat_completion(
+            br#"{"provider":"network","model":"meta-llama/test","messages":"bad"}"#,
+            state,
+        )
+        .await
+        .expect_err("malformed payload should fail");
+
+        assert_eq!(err.0, "400 Bad Request");
+        assert!(err.1.contains("invalid chat payload"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn local_chat_requires_a_loaded_model() {
+        let tmp = temp_dir();
+        let state = build_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
+        );
+
+        let err = proxy_chat_completion(
+            br#"{"provider":"local","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+            state,
+        )
+        .await
+        .expect_err("local chat should fail without a loaded model");
+
+        assert_eq!(err.0, "409 Conflict");
+        assert!(err.1.contains("no local model"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn network_chat_requires_a_device_token() {
+        let tmp = temp_dir();
+        let state = build_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
+        );
+
+        let err = proxy_chat_completion(
+            br#"{"provider":"network","model":"meta-llama/test","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+            state,
+        )
+        .await
+        .expect_err("network chat should fail without a device token");
+
+        assert_eq!(err.0, "409 Conflict");
+        assert!(err.1.contains("gateway device token"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn streaming_proxy_emits_sse_headers_and_forwards_done() {
+        let upstream = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let upstream_addr = upstream.local_addr().expect("upstream addr");
+        let upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.expect("accept upstream");
+            let mut request_buf = vec![0u8; 4096];
+            let read = socket
+                .read(&mut request_buf)
+                .await
+                .expect("read upstream request");
+            let request = String::from_utf8_lossy(&request_buf[..read]);
+            assert!(request.contains("POST /v1/chat/completions HTTP/1.1"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-device-token"));
+            assert!(request.contains("\"stream_options\":{\"include_usage\":true}"));
+
+            let body =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write upstream response");
+        });
+
+        let tmp = temp_dir();
+        let relay_url = format!("http://127.0.0.1:{}/ws", upstream_addr.port());
+        let state = build_state(&tmp, relay_url, Some(dummy_llama_with_port(11436)));
+        {
+            let mut inner = state.inner.lock().await;
+            inner.gateway_device_token = Some("test-device-token".to_string());
+        }
+
+        let response = proxy_chat_completion(
+            br#"{"provider":"network","model":"meta-llama/test","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+            state,
+        )
+        .await
+        .expect("proxy chat response");
+
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        let forward_task = tokio::spawn(async move {
+            write_sse_response(&mut writer, response)
+                .await
+                .expect("write sse response");
+        });
+
+        let mut rendered = Vec::new();
+        reader
+            .read_to_end(&mut rendered)
+            .await
+            .expect("read forwarded stream");
+        forward_task.await.expect("forward task");
+        upstream_task.await.expect("upstream task");
+
+        let output = String::from_utf8(rendered).expect("stream output utf8");
+        assert!(output.contains("HTTP/1.1 200 OK"));
+        assert!(output.contains("Content-Type: text/event-stream; charset=utf-8"));
+        assert!(output.contains("data: [DONE]"));
+        assert!(output.contains("\"hello\""));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
