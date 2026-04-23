@@ -558,25 +558,9 @@ type ShareKeyBackfillRow = (
     i64,
 );
 
-type ShareKeyMigrationRow = (
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    Option<i64>,
-    Option<String>,
-);
+type ShareKeyMigrationRow = (String, String, i64, i64, i64, Option<i64>, Option<String>);
 
-type ShareKeyFundingPreviewRow = (
-    Option<String>,
-    i64,
-    i64,
-    i64,
-    String,
-    Option<i64>,
-    i64,
-);
+type ShareKeyFundingPreviewRow = (Option<String>, i64, i64, i64, String, Option<i64>, i64);
 
 fn sum_share_key_contributions_tx(
     tx: &rusqlite::Transaction<'_>,
