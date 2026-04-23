@@ -160,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(ledger::DripRecipient {
                         device_id: d.node_id,
                         credits,
-                        note: model_id.map(|model_id| format!("drip tick // model={model_id}")),
+                        model_id,
                     })
                 })
                 .collect()
@@ -243,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
         // SDKs.
         .route("/", get(handlers::models::list_models))
         .route("/v1/models", get(handlers::models::list_models))
+        .route("/v1/network/stats", get(handlers::network::network_stats))
         .route("/favicon.ico", get(handlers::favicon::favicon_ico))
         .route("/favicon.png", get(handlers::favicon::favicon_png))
         .route("/favicon.svg", get(handlers::favicon::favicon_svg))

@@ -9,7 +9,11 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
+use crate::catalog::is_large;
+use crate::ledger;
 use crate::state::AppState;
+
+const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2"];
 
 #[derive(Serialize)]
 struct DeviceView {
@@ -55,6 +59,26 @@ struct DeviceView {
     #[serde(rename = "lastSeenAgeSecs")]
     last_seen_age_secs: u64,
     role: &'static str, // "supply" | "idle" | "quarantined"
+}
+
+#[derive(Serialize)]
+struct NetworkStatsView {
+    #[serde(rename = "totalDevices")]
+    total_devices: usize,
+    #[serde(rename = "totalRamGB")]
+    total_ram_gb: f64,
+    #[serde(rename = "totalModels")]
+    total_models: usize,
+    #[serde(rename = "avgTtftMs")]
+    avg_ttft_ms: Option<u32>,
+    #[serde(rename = "avgTps")]
+    avg_tps: Option<f32>,
+    #[serde(rename = "totalCreditsEarned")]
+    total_credits_earned: i64,
+    #[serde(rename = "totalCreditsSpent")]
+    total_credits_spent: i64,
+    #[serde(rename = "totalUsdcDistributedCents")]
+    total_usdc_distributed_cents: i64,
 }
 
 pub async fn network(State(state): State<AppState>) -> Json<Value> {
@@ -145,5 +169,80 @@ pub async fn network(State(state): State<AppState>) -> Json<Value> {
             "uniqueModelsServed": models_served.len(),
             "modelsServed": models_served.into_iter().collect::<Vec<_>>(),
         }
+    }))
+}
+
+pub async fn network_stats(State(state): State<AppState>) -> Json<Value> {
+    let totals = state
+        .db
+        .as_ref()
+        .and_then(|pool| ledger::network_ledger_totals(pool).ok())
+        .unwrap_or(ledger::NetworkLedgerTotals {
+            total_credits_earned: 0,
+            total_credits_spent: 0,
+            total_usdc_distributed_cents: 0,
+        });
+
+    let total_devices = state.registry.device_count();
+    let total_ram_gb: f64 = state
+        .registry
+        .snapshot_devices()
+        .iter()
+        .map(|dev| dev.capabilities.hardware.total_ram_gb)
+        .sum();
+
+    let floor = &state.config.scheduler.per_model_floor;
+    let mut total_models = 0usize;
+    let mut ttft_weighted_sum = 0u64;
+    let mut ttft_samples = 0u64;
+    let mut tps_weighted_sum = 0.0f64;
+    let mut tps_samples = 0u64;
+
+    for model in state.catalog.iter() {
+        if HIDDEN_MODEL_IDS.contains(&model.id.as_str()) || model.is_virtual {
+            continue;
+        }
+        let min = if is_large(model.params_b) {
+            floor.large
+        } else {
+            floor.small
+        };
+        if state.registry.loaded_count(&model.id) < min {
+            continue;
+        }
+        total_models += 1;
+        if let Some(metrics) = state.model_metrics.snapshot(&model.id) {
+            let weight = metrics.sample_count.max(1) as u64;
+            if let Some(ttft_ms_avg) = metrics.ttft_ms_avg {
+                ttft_weighted_sum += ttft_ms_avg as u64 * weight;
+                ttft_samples += weight;
+            }
+            if let Some(tps_avg) = metrics.tps_avg {
+                tps_weighted_sum += tps_avg as f64 * weight as f64;
+                tps_samples += weight;
+            }
+        }
+    }
+
+    let avg_ttft_ms = if ttft_samples > 0 {
+        Some((ttft_weighted_sum / ttft_samples) as u32)
+    } else {
+        None
+    };
+    let avg_tps = if tps_samples > 0 {
+        Some((tps_weighted_sum / tps_samples as f64) as f32)
+    } else {
+        None
+    };
+
+    Json(json!(NetworkStatsView {
+        total_devices,
+        total_ram_gb,
+        total_models,
+        avg_ttft_ms,
+        avg_tps,
+        total_credits_earned: totals.total_credits_earned,
+        total_credits_spent: totals.total_credits_spent,
+        total_usdc_distributed_cents: totals.total_usdc_distributed_cents,
     }))
 }

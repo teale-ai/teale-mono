@@ -206,6 +206,18 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_account_ledger_account_ts
         ON account_ledger(account_user_id, timestamp DESC);
     "#,
+    // 007_availability_sessions.sql - active per-device availability accrual
+    // that is flushed into a single ledger row when the session ends.
+    r#"
+    CREATE TABLE IF NOT EXISTS availability_sessions (
+        device_id TEXT PRIMARY KEY,
+        model_id TEXT,
+        started_at INTEGER NOT NULL,
+        last_accrued_at INTEGER NOT NULL,
+        accrued_credits INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
+    );
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

@@ -1,10 +1,12 @@
 use std::borrow::Cow;
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -19,7 +21,8 @@ use wry::{
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const APP_CSS: &[u8] = include_bytes!("../assets/app.css");
 const APP_JS: &[u8] = include_bytes!("../assets/app.js");
-const AUTH_CALLBACK_PORT: u16 = 11438;
+const IPC_PORT: u16 = 11438;
+static PENDING_OAUTH_CALLBACK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 enum UserEvent {
@@ -27,6 +30,7 @@ enum UserEvent {
     Menu(MenuEvent),
     Status(Option<AppSnapshot>),
     AuthCallback(String),
+    OpenWindow,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -56,17 +60,40 @@ enum IconState {
     Inactive,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IpcMessage {
+    kind: String,
+    #[serde(default)]
+    url: Option<String>,
+}
+
 pub fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let initial_auth_callback = args.iter().find(|arg| arg.starts_with("teale://")).cloned();
     if let Some(callback_url) = initial_auth_callback.as_deref() {
-        if forward_auth_callback(callback_url).is_ok() {
+        if forward_ipc_message(IpcMessage {
+            kind: "authCallback".into(),
+            url: Some(callback_url.to_string()),
+        })
+        .is_ok()
+        {
             return Ok(());
         }
     }
 
+    let launch_without_args = args.len() <= 1;
     let open_on_start =
         args.iter().any(|arg| arg == "--open-window") || initial_auth_callback.is_some();
+    if initial_auth_callback.is_none() && (open_on_start || launch_without_args) {
+        if forward_ipc_message(IpcMessage {
+            kind: "openWindow".into(),
+            url: None,
+        })
+        .is_ok()
+        {
+            return Ok(());
+        }
+    }
 
     let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
     let event_loop = event_loop_builder.build();
@@ -99,6 +126,10 @@ pub fn run() -> anyhow::Result<()> {
                 if message.kind == "openExternal" {
                     if let Some(url) = message.url {
                         let _ = webbrowser::open(&url);
+                    }
+                } else if message.kind == "authLog" {
+                    if let Some(text) = message.message {
+                        append_auth_log(&text);
                     }
                 }
             }
@@ -161,9 +192,15 @@ pub fn run() -> anyhow::Result<()> {
                 let _ = tray.set_tooltip(Some(tooltip));
             }
             Event::UserEvent(UserEvent::AuthCallback(callback_url)) => {
+                append_auth_log(&format!(
+                    "received callback {}",
+                    summarize_callback_url(&callback_url)
+                ));
+                set_pending_oauth_callback(&callback_url);
                 show_window(&window);
                 dispatch_auth_callback(&webview, &callback_url);
             }
+            Event::UserEvent(UserEvent::OpenWindow) => show_window(&window),
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id == item_pause.id() {
                     post("http://127.0.0.1:11437/v1/app/service/pause");
@@ -198,6 +235,8 @@ struct NativeMessage {
     kind: String,
     #[serde(default)]
     url: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
@@ -211,20 +250,23 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         raw_path.trim_start_matches('/')
     };
 
-    let (body, mime) = match path {
-        "index.html" => (INDEX_HTML.as_bytes().to_vec(), "text/html"),
-        "app.css" => (APP_CSS.to_vec(), "text/css"),
-        "app.js" => (APP_JS.to_vec(), "text/javascript"),
-        _ => (b"Not Found".to_vec(), "text/plain"),
+    let (body, mime, status) = match path {
+        "index.html" => (INDEX_HTML.as_bytes().to_vec(), "text/html", 200),
+        "app.css" => (APP_CSS.to_vec(), "text/css", 200),
+        "app.js" => (APP_JS.to_vec(), "text/javascript", 200),
+        "auth/pending" => {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "url": take_pending_oauth_callback()
+            }))
+            .unwrap_or_else(|_| b"{\"url\":null}".to_vec());
+            (body, "application/json", 200)
+        }
+        _ => (b"Not Found".to_vec(), "text/plain", 404),
     };
 
     Response::builder()
         .header(CONTENT_TYPE, mime)
-        .status(if matches!(path, "index.html" | "app.css" | "app.js") {
-            200
-        } else {
-            404
-        })
+        .status(status)
         .body(Cow::Owned(body))
         .expect("custom protocol response")
 }
@@ -237,7 +279,7 @@ fn show_window(window: &tao::window::Window) {
 
 fn start_auth_callback_listener(proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
-        let listener = match TcpListener::bind(("127.0.0.1", AUTH_CALLBACK_PORT)) {
+        let listener = match TcpListener::bind(("127.0.0.1", IPC_PORT)) {
             Ok(listener) => listener,
             Err(_) => return,
         };
@@ -247,30 +289,38 @@ fn start_auth_callback_listener(proxy: tao::event_loop::EventLoopProxy<UserEvent
                 continue;
             };
 
-            let mut url = String::new();
-            if stream.read_to_string(&mut url).is_err() {
+            let mut payload = String::new();
+            if stream.read_to_string(&mut payload).is_err() {
                 continue;
             }
-            let callback_url = url.trim().to_string();
-            if callback_url.is_empty() {
+            let Ok(message) = serde_json::from_str::<IpcMessage>(payload.trim()) else {
                 continue;
-            }
-            if proxy
-                .send_event(UserEvent::AuthCallback(callback_url))
-                .is_err()
-            {
+            };
+
+            let result = match message.kind.as_str() {
+                "authCallback" => message
+                    .url
+                    .filter(|url| !url.trim().is_empty())
+                    .map(UserEvent::AuthCallback)
+                    .map(|event| proxy.send_event(event)),
+                "openWindow" => Some(proxy.send_event(UserEvent::OpenWindow)),
+                _ => None,
+            };
+
+            if matches!(result, Some(Err(_))) {
                 break;
             }
         }
     });
 }
 
-fn forward_auth_callback(callback_url: &str) -> anyhow::Result<()> {
-    let mut stream = TcpStream::connect(("127.0.0.1", AUTH_CALLBACK_PORT))
-        .context("connect to running Teale tray auth relay")?;
+fn forward_ipc_message(message: IpcMessage) -> anyhow::Result<()> {
+    let mut stream =
+        TcpStream::connect(("127.0.0.1", IPC_PORT)).context("connect to running Teale tray")?;
+    let payload = serde_json::to_string(&message).context("serialize tray IPC message")?;
     stream
-        .write_all(callback_url.as_bytes())
-        .context("forward auth callback to tray")?;
+        .write_all(payload.as_bytes())
+        .context("forward IPC message to tray")?;
     Ok(())
 }
 
@@ -278,8 +328,75 @@ fn dispatch_auth_callback(webview: &wry::WebView, callback_url: &str) {
     let Ok(payload) = serde_json::to_string(callback_url) else {
         return;
     };
-    let script = format!("window.__tealeHandleOAuthCallback({payload});");
+    let script = format!(
+        r#"
+        window.__tealePendingOAuthCallbackUrl = {payload};
+        try {{
+          window.localStorage.setItem("__teale_pending_oauth_callback", {payload});
+        }} catch (_error) {{}}
+        if (typeof window.__tealeHandleOAuthCallback === "function") {{
+          window.__tealeHandleOAuthCallback({payload});
+        }}
+        "#
+    );
     let _ = webview.evaluate_script(&script);
+}
+
+fn summarize_callback_url(callback_url: &str) -> String {
+    let mut keys = Vec::new();
+    let without_fragment = callback_url.split('#').next().unwrap_or(callback_url);
+    let fragment = callback_url.split_once('#').map(|(_, fragment)| fragment);
+    let base = without_fragment
+        .split_once('?')
+        .map(|(base, _)| base)
+        .unwrap_or(without_fragment);
+    if let Some(query) = without_fragment.split_once('?').map(|(_, query)| query) {
+        keys.extend(
+            query
+                .split('&')
+                .filter_map(|pair| pair.split('=').next())
+                .map(str::to_string),
+        );
+    }
+    if let Some(fragment) = fragment {
+        keys.extend(
+            fragment
+                .split('&')
+                .filter_map(|pair| pair.split('=').next())
+                .map(str::to_string),
+        );
+    }
+    keys.sort();
+    keys.dedup();
+    format!("{base} keys=[{}]", keys.join(","))
+}
+
+fn append_auth_log(line: &str) {
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("C:\\Teale\\logs\\tray-oauth.log")
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{line}");
+}
+
+fn pending_oauth_callback() -> &'static Mutex<Option<String>> {
+    PENDING_OAUTH_CALLBACK.get_or_init(|| Mutex::new(None))
+}
+
+fn set_pending_oauth_callback(callback_url: &str) {
+    if let Ok(mut pending) = pending_oauth_callback().lock() {
+        *pending = Some(callback_url.to_string());
+    }
+}
+
+fn take_pending_oauth_callback() -> Option<String> {
+    pending_oauth_callback()
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 fn fetch_snapshot() -> Option<AppSnapshot> {

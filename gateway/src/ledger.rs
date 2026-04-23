@@ -1,7 +1,7 @@
 //! Teale Credit ledger operations.
 //!
 //! The gateway is the source of truth for balances. All credit flows
-//! (bonus, direct earn, availability earn, availability drip, spent, ops fee)
+//! (bonus, direct earn, availability earn, availability session, spent, ops fee)
 //! are recorded as append-only rows in the `ledger` table, with a denormalized
 //! `balances` table kept in sync for fast reads.
 //!
@@ -17,6 +17,7 @@
 //! shortfall is noted on the SPENT row.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rusqlite::params;
@@ -38,7 +39,7 @@ pub const SHARE_KEY_MAX_LABEL_LEN: usize = 64;
 
 // Availability drip is priced off model cost. Hermes 3 / Llama 3.1 8B is the
 // calibration point: 1 credit every 10 seconds while the model is available.
-pub const DRIP_INTERVAL_SECS: u64 = 10;
+pub const DRIP_INTERVAL_SECS: u64 = 1;
 pub const HERMES_REFERENCE_PROMPT_PRICE_USD: f64 = 0.00000010;
 pub const HERMES_REFERENCE_COMPLETION_PRICE_USD: f64 = 0.00000020;
 
@@ -46,7 +47,7 @@ pub const HERMES_REFERENCE_COMPLETION_PRICE_USD: f64 = 0.00000020;
 pub struct DripRecipient {
     pub device_id: String,
     pub credits: i64,
-    pub note: Option<String>,
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub enum LedgerType {
     DirectEarn,
     AvailabilityEarn,
     AvailabilityDrip,
+    AvailabilitySession,
     Spent,
     OpsFee,
     /// Issuer → share-key pool transfer at mint time (pre-funds the key).
@@ -76,6 +78,7 @@ impl LedgerType {
             LedgerType::DirectEarn => "DIRECT_EARN",
             LedgerType::AvailabilityEarn => "AVAILABILITY_EARN",
             LedgerType::AvailabilityDrip => "AVAILABILITY_DRIP",
+            LedgerType::AvailabilitySession => "AVAILABILITY_SESSION",
             LedgerType::Spent => "SPENT",
             LedgerType::OpsFee => "OPS_FEE",
             LedgerType::ShareKeyFund => "SHARE_KEY_FUND",
@@ -284,6 +287,21 @@ pub struct AccountLinkMetadata {
     pub github_username: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ActiveAvailabilitySession {
+    device_id: String,
+    model_id: Option<String>,
+    started_at: i64,
+    _last_accrued_at: i64,
+    accrued_credits: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AvailabilityReconcileReport {
+    pub credited_devices: usize,
+    pub finalized_sessions: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountDeviceSnapshot {
     pub device_id: String,
@@ -326,6 +344,13 @@ pub struct AccountSweepResult {
     pub swept_credits: i64,
     pub swept_usdc_cents: i64,
     pub account: AccountWalletSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkLedgerTotals {
+    pub total_credits_earned: i64,
+    pub total_credits_spent: i64,
+    pub total_usdc_distributed_cents: i64,
 }
 
 pub fn availability_credits_per_tick(prompt_price_usd: f64, completion_price_usd: f64) -> i64 {
@@ -1050,11 +1075,33 @@ pub fn get_balance(pool: &DbPool, device_id: &str) -> BalanceSnapshot {
 }
 
 pub fn list_transactions(pool: &DbPool, device_id: &str, limit: i64) -> Vec<LedgerEntry> {
+    list_transactions_with_options(pool, device_id, limit, true)
+}
+
+pub fn list_transactions_without_availability(
+    pool: &DbPool,
+    device_id: &str,
+    limit: i64,
+) -> Vec<LedgerEntry> {
+    list_transactions_with_options(pool, device_id, limit, false)
+}
+
+fn list_transactions_with_options(
+    pool: &DbPool,
+    device_id: &str,
+    limit: i64,
+    include_availability: bool,
+) -> Vec<LedgerEntry> {
     let conn = pool.lock();
-    let mut stmt = match conn.prepare(
+    let sql = if include_availability {
         "SELECT id, device_id, type, amount, timestamp, ref_request_id, note
-         FROM ledger WHERE device_id = ? ORDER BY timestamp DESC LIMIT ?",
-    ) {
+         FROM ledger WHERE device_id = ? ORDER BY timestamp DESC LIMIT ?"
+    } else {
+        "SELECT id, device_id, type, amount, timestamp, ref_request_id, note
+         FROM ledger WHERE device_id = ? AND type != 'AVAILABILITY_DRIP'
+         ORDER BY timestamp DESC LIMIT ?"
+    };
+    let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
@@ -1072,6 +1119,26 @@ pub fn list_transactions(pool: &DbPool, device_id: &str, limit: i64) -> Vec<Ledg
     .ok()
     .map(|iter| iter.filter_map(|r| r.ok()).collect())
     .unwrap_or_default()
+}
+
+pub fn network_ledger_totals(pool: &DbPool) -> anyhow::Result<NetworkLedgerTotals> {
+    let conn = pool.lock();
+    let (total_credits_earned, total_credits_spent): (i64, i64) = conn.query_row(
+        "SELECT COALESCE(SUM(total_earned), 0), COALESCE(SUM(total_spent), 0) FROM balances",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let total_usdc_distributed_cents: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(usdc_cents), 0) FROM account_wallets",
+        [],
+        |r| r.get(0),
+    )?;
+
+    Ok(NetworkLedgerTotals {
+        total_credits_earned,
+        total_credits_spent,
+        total_usdc_distributed_cents,
+    })
 }
 
 pub fn link_device_to_account(
@@ -1646,47 +1713,114 @@ pub fn settle_request(
     Ok(())
 }
 
-/// Mint a drip payout to every online device. Debits the mint_pool and records
-/// AVAILABILITY_DRIP entries.
-pub fn run_drip(pool: &DbPool, recipients: &[DripRecipient]) -> anyhow::Result<usize> {
-    if recipients.is_empty() {
-        return Ok(0);
-    }
-    let mut conn = pool.lock();
-    let now = unix_now();
-    let tx = conn.transaction()?;
-
-    let remaining: i64 = tx.query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
-        r.get(0)
+fn load_active_availability_sessions(
+    tx: &rusqlite::Transaction<'_>,
+) -> anyhow::Result<Vec<ActiveAvailabilitySession>> {
+    let mut stmt = tx.prepare(
+        "SELECT device_id, model_id, started_at, last_accrued_at, accrued_credits
+         FROM availability_sessions",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ActiveAvailabilitySession {
+            device_id: row.get(0)?,
+            model_id: row.get(1)?,
+            started_at: row.get(2)?,
+            _last_accrued_at: row.get(3)?,
+            accrued_credits: row.get(4)?,
+        })
     })?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+fn finalize_availability_session(
+    tx: &rusqlite::Transaction<'_>,
+    session: &ActiveAvailabilitySession,
+    ended_at: i64,
+) -> anyhow::Result<()> {
+    if session.accrued_credits > 0 {
+        let duration_secs = ended_at.saturating_sub(session.started_at).max(1);
+        let note = match session.model_id.as_deref() {
+            Some(model_id) => format!(
+                "availability session ended // model={} // duration={}s",
+                model_id, duration_secs
+            ),
+            None => format!("availability session ended // duration={}s", duration_secs),
+        };
+        tx.execute(
+            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                session.device_id,
+                LedgerType::AvailabilitySession.as_str(),
+                session.accrued_credits,
+                ended_at,
+                note,
+            ],
+        )?;
+    }
+
+    tx.execute(
+        "DELETE FROM availability_sessions WHERE device_id = ?",
+        [session.device_id.as_str()],
+    )?;
+    Ok(())
+}
+
+/// Credit currently available devices immediately while keeping one active
+/// availability session per device. A single ledger row is emitted only when a
+/// session ends because the device disappears, becomes unavailable, or changes
+/// models.
+pub fn reconcile_availability_sessions(
+    pool: &DbPool,
+    recipients: &[DripRecipient],
+) -> anyhow::Result<AvailabilityReconcileReport> {
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let now = unix_now();
+    let active_sessions = load_active_availability_sessions(&tx)?;
+    let recipient_map: HashMap<&str, &DripRecipient> = recipients
+        .iter()
+        .map(|recipient| (recipient.device_id.as_str(), recipient))
+        .collect();
+    let mut report = AvailabilityReconcileReport::default();
+
+    for session in &active_sessions {
+        let still_matching = recipient_map
+            .get(session.device_id.as_str())
+            .is_some_and(|recipient| recipient.model_id == session.model_id);
+        if !still_matching {
+            finalize_availability_session(&tx, session, now)?;
+            report.finalized_sessions += 1;
+        }
+    }
+
     let total_needed: i64 = recipients
         .iter()
         .map(|recipient| recipient.credits.max(0))
         .sum();
-    if remaining < total_needed {
-        tracing::warn!(
-            "mint_pool remaining ({}) < drip amount ({}), skipping",
-            remaining,
-            total_needed
-        );
-        tx.rollback()?;
-        return Ok(0);
+    if total_needed > 0 {
+        let remaining: i64 =
+            tx.query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| r.get(0))?;
+        if remaining < total_needed {
+            tracing::warn!(
+                "mint_pool remaining ({}) < drip amount ({}), skipping",
+                remaining,
+                total_needed
+            );
+            tx.commit()?;
+            return Ok(report);
+        }
+
+        tx.execute(
+            "UPDATE mint_pool SET remaining = remaining - ? WHERE id = 1",
+            params![total_needed],
+        )?;
     }
-    tx.execute(
-        "UPDATE mint_pool SET remaining = remaining - ? WHERE id = 1",
-        params![total_needed],
-    )?;
 
     for recipient in recipients {
-        let note = recipient.note.as_deref().unwrap_or("drip tick");
         tx.execute(
             "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
             [recipient.device_id.as_str()],
-        )?;
-        tx.execute(
-            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
-             VALUES (?, 'AVAILABILITY_DRIP', ?, ?, ?)",
-            params![recipient.device_id.as_str(), recipient.credits, now, note],
         )?;
         tx.execute(
             "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
@@ -1697,9 +1831,27 @@ pub fn run_drip(pool: &DbPool, recipients: &[DripRecipient]) -> anyhow::Result<u
                 recipient.device_id.as_str()
             ],
         )?;
+        tx.execute(
+            "INSERT INTO availability_sessions
+                 (device_id, model_id, started_at, last_accrued_at, accrued_credits)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(device_id) DO UPDATE SET
+                 model_id = excluded.model_id,
+                 last_accrued_at = excluded.last_accrued_at,
+                 accrued_credits = availability_sessions.accrued_credits + excluded.accrued_credits",
+            params![
+                recipient.device_id.as_str(),
+                recipient.model_id.as_deref(),
+                now,
+                now,
+                recipient.credits,
+            ],
+        )?;
+        report.credited_devices += 1;
     }
+
     tx.commit()?;
-    Ok(recipients.len())
+    Ok(report)
 }
 
 /// Spawn the drip loop.
@@ -1711,13 +1863,14 @@ pub fn spawn_drip_loop(pool: DbPool, snapshot: impl Fn() -> Vec<DripRecipient> +
         loop {
             ticker.tick().await;
             let recipients = snapshot();
-            if recipients.is_empty() {
-                continue;
-            }
-            match run_drip(&pool, &recipients) {
-                Ok(n) => {
-                    if n > 0 {
-                        tracing::debug!("drip tick: credited {} online devices", n);
+            match reconcile_availability_sessions(&pool, &recipients) {
+                Ok(report) => {
+                    if report.credited_devices > 0 || report.finalized_sessions > 0 {
+                        tracing::debug!(
+                            "availability reconcile: credited {} devices, finalized {} sessions",
+                            report.credited_devices,
+                            report.finalized_sessions
+                        );
                     }
                 }
                 Err(e) => tracing::warn!("drip error: {}", e),
@@ -2449,20 +2602,18 @@ mod tests {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "a").unwrap();
         upsert_device(&pool, "b").unwrap();
-        run_drip(
+        reconcile_availability_sessions(
             &pool,
             &[
                 DripRecipient {
                     device_id: "a".into(),
                     credits: 1,
-                    note: Some("drip tick // model=nousresearch/hermes-3-llama-3.1-8b".into()),
+                    model_id: Some("nousresearch/hermes-3-llama-3.1-8b".into()),
                 },
                 DripRecipient {
                     device_id: "b".into(),
                     credits: 4,
-                    note: Some(
-                        "drip tick // model=mistralai/mistral-small-3.2-24b-instruct".into(),
-                    ),
+                    model_id: Some("mistralai/mistral-small-3.2-24b-instruct".into()),
                 },
             ],
         )
@@ -2470,11 +2621,53 @@ mod tests {
         assert_eq!(get_balance(&pool, "a").balance_credits, 1);
         assert_eq!(get_balance(&pool, "b").balance_credits, 4);
 
+        assert!(list_transactions(&pool, "b", 1).is_empty());
+
+        reconcile_availability_sessions(&pool, &[]).unwrap();
         let entries = list_transactions(&pool, "b", 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].type_, "AVAILABILITY_SESSION");
+        assert_eq!(entries[0].amount, 4);
         assert!(entries[0]
             .note
             .as_deref()
             .is_some_and(|note| note.contains("mistralai/mistral-small-3.2-24b-instruct")));
+    }
+
+    #[test]
+    fn model_change_finalizes_previous_availability_session() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "a").unwrap();
+
+        reconcile_availability_sessions(
+            &pool,
+            &[DripRecipient {
+                device_id: "a".into(),
+                credits: 1,
+                model_id: Some("nousresearch/hermes-3-llama-3.1-8b".into()),
+            }],
+        )
+        .unwrap();
+
+        reconcile_availability_sessions(
+            &pool,
+            &[DripRecipient {
+                device_id: "a".into(),
+                credits: 4,
+                model_id: Some("mistralai/mistral-small-3.2-24b-instruct".into()),
+            }],
+        )
+        .unwrap();
+
+        let entries = list_transactions(&pool, "a", 10);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].type_, "AVAILABILITY_SESSION");
+        assert_eq!(entries[0].amount, 1);
+        assert!(entries[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("nousresearch/hermes-3-llama-3.1-8b")));
+        assert_eq!(get_balance(&pool, "a").balance_credits, 5);
     }
 
     #[test]

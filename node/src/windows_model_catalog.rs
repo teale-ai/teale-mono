@@ -15,7 +15,7 @@ pub struct WindowsCatalogModel {
     pub pricing_completion_usd: f64,
 }
 
-pub const AVAILABILITY_TICK_SECONDS: u64 = 10;
+pub const AVAILABILITY_TICK_SECONDS: u64 = 1;
 pub const HERMES_REFERENCE_PROMPT_PRICE_USD: f64 = 0.00000010;
 pub const HERMES_REFERENCE_COMPLETION_PRICE_USD: f64 = 0.00000020;
 

@@ -18,6 +18,8 @@ use crate::state::AppState;
 pub struct TxQuery {
     #[serde(default = "default_limit")]
     limit: i64,
+    #[serde(default)]
+    include_availability: bool,
 }
 
 fn default_limit() -> i64 {
@@ -69,6 +71,10 @@ pub async fn transactions(
         .as_ref()
         .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
     let limit = q.limit.clamp(1, 500);
-    let list = ledger::list_transactions(pool, &device_id, limit);
+    let list = if q.include_availability {
+        ledger::list_transactions(pool, &device_id, limit)
+    } else {
+        ledger::list_transactions_without_availability(pool, &device_id, limit)
+    };
     Ok(Json(TxListRes { transactions: list }))
 }

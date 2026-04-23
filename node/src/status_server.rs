@@ -178,6 +178,26 @@ pub struct NetworkModelSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkStatsSnapshot {
+    #[serde(alias = "totalDevices")]
+    pub total_devices: usize,
+    #[serde(alias = "totalRamGB")]
+    pub total_ram_gb: f64,
+    #[serde(alias = "totalModels")]
+    pub total_models: usize,
+    #[serde(alias = "avgTtftMs")]
+    pub avg_ttft_ms: Option<u32>,
+    #[serde(alias = "avgTps")]
+    pub avg_tps: Option<f32>,
+    #[serde(alias = "totalCreditsEarned")]
+    pub total_credits_earned: i64,
+    #[serde(alias = "totalCreditsSpent")]
+    pub total_credits_spent: i64,
+    #[serde(alias = "totalUsdcDistributedCents")]
+    pub total_usdc_distributed_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSnapshot {
     pub account_user_id: String,
     pub balance_credits: i64,
@@ -262,11 +282,60 @@ struct AccountDeviceControlRequest {
     device_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthSessionLookupRequest {
+    #[serde(rename = "accessToken")]
+    access_token: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AccountSweepResponse {
     swept_credits: i64,
     swept_usdc_cents: i64,
     account: AccountSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SupabaseAuthSessionSnapshot {
+    user: SupabaseAuthUserSnapshot,
+    identities: Vec<SupabaseAuthIdentitySnapshot>,
+    devices: Vec<SupabaseDeviceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SupabaseAuthUserSnapshot {
+    id: String,
+    phone: Option<String>,
+    email: Option<String>,
+    #[serde(default)]
+    app_metadata: serde_json::Value,
+    #[serde(default)]
+    user_metadata: serde_json::Value,
+    #[serde(default)]
+    identities: Vec<SupabaseAuthIdentitySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SupabaseAuthIdentitySnapshot {
+    id: Option<String>,
+    provider: String,
+    #[serde(default)]
+    identity_data: serde_json::Value,
+    email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SupabaseDeviceRecord {
+    id: String,
+    user_id: String,
+    device_name: Option<String>,
+    platform: Option<String>,
+    chip_name: Option<String>,
+    ram_gb: Option<i64>,
+    wan_node_id: Option<String>,
+    registered_at: Option<String>,
+    last_seen: Option<String>,
+    is_active: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -850,6 +919,103 @@ impl StatusState {
             .collect())
     }
 
+    async fn network_stats_snapshot(&self) -> anyhow::Result<NetworkStatsSnapshot> {
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/network/stats");
+        let client = gateway_client(Duration::from_secs(10))?;
+        client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?
+            .error_for_status()
+            .with_context(|| format!("network stats request failed at {url}"))?
+            .json::<NetworkStatsSnapshot>()
+            .await
+            .context("decode network stats response")
+    }
+
+    async fn auth_session_snapshot(
+        &self,
+        access_token: &str,
+    ) -> anyhow::Result<SupabaseAuthSessionSnapshot> {
+        let supabase_url = self.control.supabase_url.trim();
+        let supabase_anon_key = self.control.supabase_anon_key.trim();
+        if supabase_url.is_empty() || supabase_anon_key.is_empty() {
+            anyhow::bail!("supabase auth is not configured");
+        }
+        if access_token.trim().is_empty() {
+            anyhow::bail!("missing supabase access token");
+        }
+
+        let url = format!("{}/auth/v1/user", supabase_url.trim_end_matches('/'));
+        let client = supabase_client(Duration::from_secs(10))?;
+        let response = client
+            .get(&url)
+            .header("apikey", supabase_anon_key)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let response = response
+            .error_for_status()
+            .with_context(|| format!("supabase user lookup failed at {url}"))?;
+        let user = response
+            .json::<SupabaseAuthUserSnapshot>()
+            .await
+            .context("decode supabase auth user response")?;
+        let identities = user.identities.clone();
+        let devices = self
+            .supabase_devices_snapshot(
+                &client,
+                supabase_url,
+                supabase_anon_key,
+                access_token,
+                &user.id,
+            )
+            .await
+            .unwrap_or_default();
+
+        Ok(SupabaseAuthSessionSnapshot {
+            user,
+            identities,
+            devices,
+        })
+    }
+
+    async fn supabase_devices_snapshot(
+        &self,
+        client: &reqwest::Client,
+        supabase_url: &str,
+        supabase_anon_key: &str,
+        access_token: &str,
+        user_id: &str,
+    ) -> anyhow::Result<Vec<SupabaseDeviceRecord>> {
+        let url = format!("{}/rest/v1/devices", supabase_url.trim_end_matches('/'));
+        let response = client
+            .get(&url)
+            .query(&[
+                (
+                    "select",
+                    "id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active",
+                ),
+                ("user_id", &format!("eq.{user_id}")),
+                ("order", "last_seen.desc"),
+            ])
+            .header("apikey", supabase_anon_key)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let response = response
+            .error_for_status()
+            .with_context(|| format!("supabase devices lookup failed at {url}"))?;
+        response
+            .json::<Vec<SupabaseDeviceRecord>>()
+            .await
+            .context("decode supabase devices response")
+    }
+
     async fn link_account(&self, payload: AccountLinkRequest) -> anyhow::Result<AccountSnapshot> {
         let token = self.gateway_device_token().await?;
         let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
@@ -1131,6 +1297,18 @@ fn gateway_client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
     Ok(builder.build()?)
 }
 
+fn supabase_client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .user_agent(format!("teale-node/{}", env!("CARGO_PKG_VERSION")));
+    #[cfg(windows)]
+    let builder = builder.use_native_tls();
+    #[cfg(not(windows))]
+    let builder = builder.use_rustls_tls();
+    Ok(builder.build()?)
+}
+
 fn relay_to_gateway_base_url(relay_url: &str) -> String {
     let Ok(mut relay) = Url::parse(relay_url) else {
         return "https://gateway.teale.com/v1".to_string();
@@ -1251,6 +1429,22 @@ async fn route(
                 json!({ "ok": true }).to_string(),
             ))
         }
+        ("POST", "/v1/app/auth/session") => {
+            let payload: AuthSessionLookupRequest = serde_json::from_slice(body).map_err(|e| {
+                (
+                    "400 Bad Request",
+                    format!("invalid auth session payload: {e}"),
+                )
+            })?;
+            let body = serde_json::to_string(
+                &state
+                    .auth_session_snapshot(&payload.access_token)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
         ("GET", "/v1/app") => {
             let body = serde_json::to_string(&state.snapshot().await)
                 .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
@@ -1262,6 +1456,17 @@ async fn route(
                     (
                         "502 Bad Gateway",
                         format!("could not load gateway models: {e:#}"),
+                    )
+                })?)
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("GET", "/v1/app/network/stats") => {
+            let body =
+                serde_json::to_string(&state.network_stats_snapshot().await.map_err(|e| {
+                    (
+                        "502 Bad Gateway",
+                        format!("could not load network stats: {e:#}"),
                     )
                 })?)
                 .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
