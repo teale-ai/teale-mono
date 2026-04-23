@@ -9,6 +9,7 @@ pub struct WindowsCatalogModel {
     pub size_gb: f64,
     pub required_ram_gb: f64,
     pub default_context: u32,
+    pub max_context: u32,
     pub demand_rank: u32,
     pub pricing_prompt_usd: f64,
     pub pricing_completion_usd: f64,
@@ -29,6 +30,7 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
         size_gb: 5.7,
         required_ram_gb: 16.0,
         default_context: 8192,
+        max_context: 32768,
         demand_rank: 1,
         pricing_prompt_usd: 0.00000010,
         pricing_completion_usd: 0.00000020,
@@ -43,6 +45,7 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
         size_gb: 4.9,
         required_ram_gb: 16.0,
         default_context: 8192,
+        max_context: 16384,
         demand_rank: 2,
         pricing_prompt_usd: 0.00000010,
         pricing_completion_usd: 0.00000020,
@@ -57,6 +60,7 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
         size_gb: 5.1,
         required_ram_gb: 24.0,
         default_context: 16384,
+        max_context: 40960,
         demand_rank: 3,
         pricing_prompt_usd: 0.00000010,
         pricing_completion_usd: 0.00000020,
@@ -71,6 +75,7 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
         size_gb: 15.2,
         required_ram_gb: 32.0,
         default_context: 16384,
+        max_context: 131072,
         demand_rank: 4,
         pricing_prompt_usd: 0.00000040,
         pricing_completion_usd: 0.00000080,
@@ -85,6 +90,7 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
         size_gb: 42.5,
         required_ram_gb: 64.0,
         default_context: 32768,
+        max_context: 65536,
         demand_rank: 5,
         pricing_prompt_usd: 0.00000080,
         pricing_completion_usd: 0.00000160,
@@ -156,9 +162,36 @@ pub fn model_by_file_name(file_name: &str) -> Option<WindowsCatalogModel> {
         .cloned()
 }
 
+pub fn context_for_model(
+    model: &WindowsCatalogModel,
+    total_ram_gb: f64,
+    gpu_backend: Option<&str>,
+) -> u32 {
+    if matches!(gpu_backend, Some("cpu")) {
+        return model.default_context;
+    }
+
+    let spare_ram_gb = (total_ram_gb - model.required_ram_gb).max(0.0);
+    let mut context = model.default_context;
+
+    if spare_ram_gb >= 4.0 {
+        context = context.saturating_mul(2);
+    }
+    if spare_ram_gb >= 12.0 {
+        context = context.saturating_mul(2);
+    }
+    if spare_ram_gb >= 24.0 {
+        context = context.saturating_mul(2);
+    }
+
+    context.min(model.max_context)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{availability_credits_per_tick, recommended_model, WINDOWS_MODEL_CATALOG};
+    use super::{
+        availability_credits_per_tick, context_for_model, recommended_model, WINDOWS_MODEL_CATALOG,
+    };
 
     #[test]
     fn recommendation_prefers_first_that_fits_budget() {
@@ -177,5 +210,19 @@ mod tests {
         assert_eq!(availability_credits_per_tick(0.00000010, 0.00000020), 1);
         assert_eq!(availability_credits_per_tick(0.00000040, 0.00000080), 4);
         assert_eq!(availability_credits_per_tick(0.00000080, 0.00000160), 8);
+    }
+
+    #[test]
+    fn larger_ram_devices_get_more_context_for_same_model() {
+        let hermes = &WINDOWS_MODEL_CATALOG[0];
+        assert_eq!(context_for_model(hermes, 16.0, Some("vulkan")), 8192);
+        assert_eq!(context_for_model(hermes, 24.0, Some("vulkan")), 16384);
+        assert_eq!(context_for_model(hermes, 32.0, Some("vulkan")), 32768);
+    }
+
+    #[test]
+    fn cpu_backend_keeps_default_context() {
+        let hermes = &WINDOWS_MODEL_CATALOG[0];
+        assert_eq!(context_for_model(hermes, 32.0, Some("cpu")), 8192);
     }
 }

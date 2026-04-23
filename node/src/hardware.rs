@@ -28,10 +28,12 @@ pub fn detect_hardware(node_config: &NodeConfig) -> HardwareCapability {
 
     let (chip_family, chip_name, gpu_cores, bandwidth) = detect_chip_info(&cpu_name, total_ram_gb);
 
-    let gpu_backend = node_config
-        .gpu_backend
-        .clone()
-        .or_else(|| Some(infer_gpu_backend(&chip_family).to_string()));
+    let inferred_backend = infer_gpu_backend(&chip_family, &chip_name);
+    let gpu_backend = match node_config.gpu_backend.as_deref() {
+        Some("vulkan") if inferred_backend == "cpu" => Some("cpu".to_string()),
+        Some(configured) if !configured.trim().is_empty() => Some(configured.to_string()),
+        _ => Some(inferred_backend.to_string()),
+    };
 
     let tier = determine_tier(&chip_family, total_ram_gb);
 
@@ -79,11 +81,19 @@ fn detect_chip_info(cpu_name: &str, _total_ram: f64) -> (String, String, u32, f6
         // the bandwidth estimate from ~50 GB/s (CPU DDR5 effective) to
         // ~80 GB/s (iGPU against unified LPDDR5) — conservative since we
         // don't know the exact SKU.
-        let bw = if has_vulkan_runtime() { 80.0 } else { 50.0 };
+        let bw = if prefers_vulkan_backend("intelCPU", cpu_name) {
+            80.0
+        } else {
+            50.0
+        };
         return ("intelCPU".to_string(), cpu_name.to_string(), 0, bw);
     }
     if lower.contains("amd") {
-        let bw = if has_vulkan_runtime() { 80.0 } else { 50.0 };
+        let bw = if prefers_vulkan_backend("amdCPU", cpu_name) {
+            80.0
+        } else {
+            50.0
+        };
         return ("amdCPU".to_string(), cpu_name.to_string(), 0, bw);
     }
     if lower.contains("arm")
@@ -149,7 +159,7 @@ fn apple_bandwidth(family: &str) -> f64 {
     }
 }
 
-fn infer_gpu_backend(chip_family: &str) -> &'static str {
+fn infer_gpu_backend(chip_family: &str, chip_name: &str) -> &'static str {
     match chip_family {
         f if f.starts_with('m') && f.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) => "metal",
         f if f.starts_with("tensor") || f == "snapdragon" => "vulkan",
@@ -164,11 +174,74 @@ fn infer_gpu_backend(chip_family: &str) -> &'static str {
         "nvidiaGPU" => "cuda",
         "amdGPU" => "rocm",
         // Intel/AMD CPU with integrated graphics on Windows: prefer Vulkan
-        // when the runtime is present (Intel Arc / Iris Xe / UHD, AMD Vega /
-        // RDNA iGPUs). llama.cpp's Vulkan backend decodes 2-3x faster than
-        // CPU-only on 8B-class models on these chips.
-        "intelCPU" | "amdCPU" if cfg!(target_os = "windows") && has_vulkan_runtime() => "vulkan",
+        // only when the runtime is present and the machine is modern enough
+        // to benefit. Older ThinkPads with 16 GB RAM often have Vulkan
+        // installed but still run Hermes more reliably in CPU mode.
+        "intelCPU" | "amdCPU" if prefers_vulkan_backend(chip_family, chip_name) => "vulkan",
         _ => "cpu",
+    }
+}
+
+fn prefers_vulkan_backend(chip_family: &str, chip_name: &str) -> bool {
+    if !cfg!(target_os = "windows") || !has_vulkan_runtime() {
+        return false;
+    }
+
+    match chip_family {
+        "intelCPU" => intel_prefers_vulkan(chip_name),
+        "amdCPU" => amd_prefers_vulkan(chip_name),
+        _ => false,
+    }
+}
+
+fn intel_prefers_vulkan(chip_name: &str) -> bool {
+    let lower = chip_name.to_lowercase();
+    if (lower.contains("core") && lower.contains("ultra"))
+        || lower.contains("iris xe")
+        || lower.contains("arc")
+    {
+        return true;
+    }
+
+    intel_generation(&lower).is_some_and(|generation| generation >= 11)
+}
+
+fn amd_prefers_vulkan(chip_name: &str) -> bool {
+    let lower = chip_name.to_lowercase();
+    if lower.contains("ryzen ai")
+        || lower.contains("radeon 780m")
+        || lower.contains("radeon 880m")
+        || lower.contains("rdna 3")
+        || lower.contains("rdna3")
+    {
+        return true;
+    }
+
+    true
+}
+
+fn intel_generation(lower_chip_name: &str) -> Option<u32> {
+    let marker = lower_chip_name
+        .find("i3-")
+        .or_else(|| lower_chip_name.find("i5-"))
+        .or_else(|| lower_chip_name.find("i7-"))
+        .or_else(|| lower_chip_name.find("i9-"))?;
+    let digits: String = lower_chip_name[marker + 3..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+
+    match digits.len() {
+        5 => digits[..2].parse().ok(),
+        4 => {
+            let first_two: u32 = digits[..2].parse().ok()?;
+            if (10..=29).contains(&first_two) {
+                Some(first_two)
+            } else {
+                digits[..1].parse().ok()
+            }
+        }
+        _ => None,
     }
 }
 
@@ -368,5 +441,33 @@ pub fn build_capabilities(
         max_concurrent_requests: Some(max_concurrent),
         effective_context,
         on_ac_power,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{intel_generation, intel_prefers_vulkan};
+
+    #[test]
+    fn older_intel_generations_stay_on_cpu() {
+        assert_eq!(
+            intel_generation("intel(r) core(tm) i7-8650u cpu @ 1.90ghz"),
+            Some(8)
+        );
+        assert!(!intel_prefers_vulkan(
+            "Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz"
+        ));
+    }
+
+    #[test]
+    fn newer_intel_generations_and_core_ultra_prefer_vulkan() {
+        assert_eq!(
+            intel_generation("11th gen intel(r) core(tm) i7-1165g7 @ 2.80ghz"),
+            Some(11)
+        );
+        assert!(intel_prefers_vulkan(
+            "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz"
+        ));
+        assert!(intel_prefers_vulkan("Intel(R) Core(TM) Ultra 7 155U"));
     }
 }

@@ -62,6 +62,44 @@ function Invoke-Checked {
     }
 }
 
+function Test-TealePrefersVulkan {
+    param(
+        [string]$CpuName
+    )
+
+    if ($null -eq $CpuName) {
+        $CpuName = ""
+    }
+    $lower = $CpuName.ToLowerInvariant()
+    if ($lower.Contains("intel")) {
+        if ((($lower.Contains("core")) -and ($lower.Contains("ultra"))) -or $lower.Contains("iris xe") -or $lower.Contains("arc")) {
+            return $true
+        }
+
+        $match = [regex]::Match($lower, 'i[3579]-([0-9]{4,5})')
+        if ($match.Success) {
+            $digits = $match.Groups[1].Value
+            if ($digits.Length -ge 5) {
+                return [int]$digits.Substring(0, 2) -ge 11
+            }
+            if ($digits.Length -eq 4) {
+                $firstTwo = [int]$digits.Substring(0, 2)
+                if ($firstTwo -ge 10 -and $firstTwo -le 29) {
+                    return $firstTwo -ge 11
+                }
+                return [int]$digits.Substring(0, 1) -ge 11
+            }
+        }
+        return $false
+    }
+
+    if ($lower.Contains("amd")) {
+        return $true
+    }
+
+    return $true
+}
+
 # --- Create directories ---
 foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
     if (-not (Test-Path $dir)) {
@@ -100,15 +138,16 @@ try {
         return
     }
 
+    $cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
     $vulkanDll = "$env:SystemRoot\System32\vulkan-1.dll"
-    if (Test-Path $vulkanDll) {
+    if ((Test-Path $vulkanDll) -and (Test-TealePrefersVulkan -CpuName $cpuName)) {
         $gpuBackend = "vulkan"
         $gpuLayers = 999
-        Write-InstallLog "Vulkan runtime detected. GPU offload enabled."
+        Write-InstallLog "Vulkan backend selected for CPU: $cpuName"
     } else {
         $gpuBackend = "cpu"
         $gpuLayers = 0
-        Write-InstallLog "No Vulkan runtime found. Falling back to CPU-only inference."
+        Write-InstallLog "CPU backend selected for CPU: $cpuName"
     }
 
     $logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum

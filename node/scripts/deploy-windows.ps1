@@ -5,7 +5,8 @@
 
 .DESCRIPTION
     Fully provisions a Windows machine as a TealeNet supply node:
-    - Downloads llama-server (CPU variant) from llama.cpp releases
+    - Downloads llama-server from llama.cpp releases (auto-selecting Vulkan on
+      newer integrated GPUs, CPU on older Intel laptops)
     - Downloads NSSM (Non-Sucking Service Manager) for service wrapping
     - Downloads or copies the GGUF model file
     - Generates teale-node.toml with machine-specific settings
@@ -44,10 +45,11 @@ param(
     # Model filename (derived from URL if not set)
     [string]$ModelFilename = "",
 
-    # llama.cpp release tag for downloading llama-server (Vulkan build)
+    # llama.cpp release tag for downloading llama-server
     [string]$LlamaRelease = "b8840",
 
-    # llama-server build variant: "vulkan" (Intel/AMD iGPU, recommended) or "cpu"
+    # llama-server build variant: "vulkan" or "cpu". If omitted, the script
+    # auto-selects CPU for older Intel laptops even when a Vulkan runtime is installed.
     [ValidateSet("vulkan","cpu")]
     [string]$LlamaBuild = "vulkan",
 
@@ -79,6 +81,44 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ServiceName = "TealeNode"
+
+function Test-TealePrefersVulkan {
+    param(
+        [string]$CpuName
+    )
+
+    if ($null -eq $CpuName) {
+        $CpuName = ""
+    }
+    $lower = $CpuName.ToLowerInvariant()
+    if ($lower.Contains("intel")) {
+        if ((($lower.Contains("core")) -and ($lower.Contains("ultra"))) -or $lower.Contains("iris xe") -or $lower.Contains("arc")) {
+            return $true
+        }
+
+        $match = [regex]::Match($lower, 'i[3579]-([0-9]{4,5})')
+        if ($match.Success) {
+            $digits = $match.Groups[1].Value
+            if ($digits.Length -ge 5) {
+                return [int]$digits.Substring(0, 2) -ge 11
+            }
+            if ($digits.Length -eq 4) {
+                $firstTwo = [int]$digits.Substring(0, 2)
+                if ($firstTwo -ge 10 -and $firstTwo -le 29) {
+                    return $firstTwo -ge 11
+                }
+                return $false
+            }
+        }
+        return $false
+    }
+
+    if ($lower.Contains("amd")) {
+        return $true
+    }
+
+    return $true
+}
 
 # --- Paths ---
 $BinDir    = Join-Path $InstallDir "bin"
@@ -135,6 +175,16 @@ if (-not $SkipRamGate -and $ramGB -lt 16) {
     exit 1
 }
 
+$cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
+if (-not $PSBoundParameters.ContainsKey('LlamaBuild')) {
+    $vulkanDll = Join-Path $env:SystemRoot "System32\vulkan-1.dll"
+    if ((Test-Path $vulkanDll) -and (Test-TealePrefersVulkan -CpuName $cpuName)) {
+        $LlamaBuild = "vulkan"
+    } else {
+        $LlamaBuild = "cpu"
+    }
+}
+
 # Pick the right default for GPU layers based on llama build:
 #   vulkan → 999 (full offload), cpu → 0.
 if ($GpuLayers -eq -1) {
@@ -145,6 +195,7 @@ Write-Host "=== Deploying TealeNode ===" -ForegroundColor Cyan
 Write-Host "  Install dir:  $InstallDir"
 Write-Host "  Display name: $DisplayName"
 Write-Host "  RAM:          $ramGB GB"
+Write-Host "  CPU:          $cpuName"
 Write-Host "  llama build:  $LlamaBuild"
 Write-Host "  GPU layers:   $GpuLayers"
 Write-Host "  Context size: $ContextSize"

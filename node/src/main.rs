@@ -45,6 +45,7 @@ use crate::model_registry::RegistryStore;
 use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
 use crate::swap::{ModelSlot, SwapManager};
+use crate::windows_model_catalog::{context_for_model, model_by_id};
 
 #[derive(Parser)]
 #[command(
@@ -110,6 +111,18 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(llama) = config.llama.as_mut() {
+        if matches!(hw.gpu_backend.as_deref(), Some("cpu")) {
+            llama.gpu_layers = 0;
+        }
+        if let Some(active_model_id) = registry.active_model_id.as_ref() {
+            if let Some(model) = model_by_id(active_model_id) {
+                llama.context_size =
+                    context_for_model(&model, hw.total_ram_gb, hw.gpu_backend.as_deref());
+            }
+        }
+    }
+
     let initial_on_ac = initial_on_ac_power();
     let state = Arc::new(
         NodeRuntimeState::new(config.node.max_concurrent_requests)
@@ -124,6 +137,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Start inference backend (supervised — restarts on crash).
     let (backend, model_id, supervisor_opt) = start_backend(&config, &args).await?;
+    let initial_context_size = if model_id.is_empty() {
+        None
+    } else {
+        match config.backend.as_str() {
+            "litert" => config.litert.as_ref().map(|c| c.context_size),
+            "mnn" => config.mnn.as_ref().map(|c| c.context_size),
+            _ => config.llama.as_ref().map(|c| c.context_size),
+        }
+    };
 
     // Build the SwapManager: owns the current backend + supervisor and can
     // swap to any of `config.node.swappable_models` on `loadModel` requests.
@@ -141,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         backend,
         supervisor_opt,
         model_id.clone(),
+        initial_context_size,
         llama_base,
         swap_slots,
         state.clone(),
@@ -168,15 +191,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = &ac_state; // Reserved for supervisor wiring in a follow-up.
 
     let loaded_models = swap_manager_loaded_models_from_registry(&registry, &config);
-    let effective_context = if loaded_models.is_empty() {
-        None
-    } else {
-        match config.backend.as_str() {
-            "litert" => config.litert.as_ref().map(|c| c.context_size),
-            "mnn" => config.mnn.as_ref().map(|c| c.context_size),
-            _ => config.llama.as_ref().map(|c| c.context_size),
-        }
-    };
+    let effective_context = initial_context_size;
     let capabilities = build_capabilities(
         hw,
         loaded_models.first().map(String::as_str),
@@ -449,6 +464,7 @@ async fn run_relay_session(
                 snapshot.is_available = swap.is_ready().await
                     && state.can_supply()
                     && !state.shutting_down.load(Ordering::Relaxed);
+                snapshot.effective_context = swap.current_context_size().await;
                 snapshot.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
                 let payload = serde_json::json!({
                     "register": {

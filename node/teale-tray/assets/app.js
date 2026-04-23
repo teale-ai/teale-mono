@@ -111,7 +111,7 @@ const translations = {
     "view.home.description": "distributed ai inference supply and demand",
     "view.supply.description": "earn teale credits by supplying ai inference to users around the world",
     "view.demand.description": "use local models for free or buy and spend credits for more powerful models",
-    "view.wallet.description": "Device balances, send assets, and ledger history",
+    "view.wallet.description": "device balances, send assets, and ledger history",
     "view.account.description": "account details, balances, send assets, and linked devices.",
     "home.prompt.overview": "overview",
     "home.lede": "Teale turns this machine into a supply node and a demand client at the same time.",
@@ -767,6 +767,70 @@ function setLanguage(language) {
 
 function providerDisplayName(provider) {
   return t(`provider.${provider}`);
+}
+
+function authConfigHint(provider, message) {
+  const lower = String(message || "").toLowerCase();
+  if (
+    provider === "github" &&
+    (lower.includes("client_id") ||
+      lower.includes("client id") ||
+      lower.includes("oauth app") ||
+      lower.includes("teale app"))
+  ) {
+    return "GitHub sign-in is misconfigured in Supabase. Set the GitHub provider client ID to the real GitHub OAuth Client ID, not the app name, and keep the callback URL at https://<project-ref>.supabase.co/auth/v1/callback.";
+  }
+  if (provider === "google" && lower.includes("invalid_client")) {
+    return "Google sign-in is misconfigured in Supabase. Use a Google Web application OAuth client, put the Supabase callback URL under Authorized redirect URIs, and save the same client ID and secret in the Supabase Google provider.";
+  }
+  return message;
+}
+
+function authConfigHintFromMessage(message) {
+  const lower = String(message || "").toLowerCase();
+  if (lower.includes("github")) {
+    return authConfigHint("github", message);
+  }
+  if (lower.includes("google") || lower.includes("invalid_client")) {
+    return authConfigHint("google", message);
+  }
+  return message;
+}
+
+function setAuthErrorState(message) {
+  els.authStatus.textContent = "Sign-in failed";
+  els.authUser.textContent = message;
+}
+
+function callbackParams(url) {
+  const parsed = new URL(url);
+  const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
+  return {
+    parsed,
+    search: parsed.searchParams,
+    hash: new URLSearchParams(hash),
+  };
+}
+
+function callbackValue(params, key) {
+  return params.search.get(key) || params.hash.get(key);
+}
+
+function oauthMisconfigFromUrl(provider, rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    const clientId = parsed.searchParams.get("client_id");
+    if (!clientId) {
+      return null;
+    }
+    if (provider === "github" && /\s/.test(clientId)) {
+      return authConfigHint(provider, clientId);
+    }
+    if (provider === "google" && !clientId.includes(".apps.googleusercontent.com")) {
+      return authConfigHint(provider, clientId);
+    }
+  } catch (_error) {}
+  return null;
 }
 
 function friendlyError(error) {
@@ -1901,15 +1965,38 @@ async function consumePendingOAuthCallback() {
   if (!pendingOAuthCallbackUrl || !supabaseClient) {
     return;
   }
-  const url = new URL(pendingOAuthCallbackUrl);
-  const oauthError = url.searchParams.get("error_description") || url.searchParams.get("error");
+  const params = callbackParams(pendingOAuthCallbackUrl);
+  const oauthError =
+    callbackValue(params, "error_description") ||
+    callbackValue(params, "error") ||
+    callbackValue(params, "error_code");
   if (oauthError) {
-    els.authStatus.textContent = "Sign-in failed";
-    els.authUser.textContent = oauthError;
+    setAuthErrorState(authConfigHintFromMessage(oauthError));
     pendingOAuthCallbackUrl = null;
     return;
   }
-  const code = url.searchParams.get("code");
+  const accessToken = callbackValue(params, "access_token");
+  const refreshToken = callbackValue(params, "refresh_token");
+  if (accessToken && refreshToken) {
+    try {
+      const { data, error } = await supabaseClient.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      });
+      if (error) {
+        throw error;
+      }
+      authSession = data.session;
+      authUser = data.session?.user || null;
+      pendingOAuthCallbackUrl = null;
+      window.history.replaceState({}, "", "teale://localhost/");
+    } catch (error) {
+      setAuthErrorState(authConfigHintFromMessage(error.message));
+      pendingOAuthCallbackUrl = null;
+    }
+    return;
+  }
+  const code = callbackValue(params, "code");
   if (!code) {
     pendingOAuthCallbackUrl = null;
     return;
@@ -1924,8 +2011,7 @@ async function consumePendingOAuthCallback() {
     pendingOAuthCallbackUrl = null;
     window.history.replaceState({}, "", "teale://localhost/");
   } catch (error) {
-    els.authStatus.textContent = "Sign-in failed";
-    els.authUser.textContent = error.message;
+    setAuthErrorState(authConfigHintFromMessage(error.message));
     pendingOAuthCallbackUrl = null;
   }
 }
@@ -2069,23 +2155,32 @@ async function startOAuth(provider) {
   if (!supabaseClient || !lastSnapshot?.auth?.configured) {
     return;
   }
+  const redirectUrl = lastSnapshot.auth.redirect_url || "teale://auth/callback";
+  const options = {
+    redirectTo: redirectUrl,
+    skipBrowserRedirect: true,
+  };
+  if (provider === "github") {
+    options.scopes = "user:email";
+  }
+  if (provider === "google") {
+    options.scopes = "email profile";
+    options.queryParams = {
+      access_type: "offline",
+      prompt: "select_account",
+    };
+  }
   try {
     let response;
     if (authUser) {
       response = await supabaseClient.auth.linkIdentity({
         provider,
-        options: {
-          redirectTo: lastSnapshot.auth.redirect_url,
-          skipBrowserRedirect: true,
-        },
+        options,
       });
     } else {
       response = await supabaseClient.auth.signInWithOAuth({
         provider,
-        options: {
-          redirectTo: lastSnapshot.auth.redirect_url,
-          skipBrowserRedirect: true,
-        },
+        options,
       });
     }
 
@@ -2095,11 +2190,15 @@ async function startOAuth(provider) {
     if (!response.data?.url) {
       throw new Error(`${providerDisplayName(provider)} sign-in URL was not returned.`);
     }
+    const oauthConfigError = oauthMisconfigFromUrl(provider, response.data.url);
+    if (oauthConfigError) {
+      throw new Error(oauthConfigError);
+    }
     if (!postNativeMessage({ type: "openExternal", url: response.data.url })) {
       window.open(response.data.url, "_blank", "noopener,noreferrer");
     }
   } catch (error) {
-    alert(error.message);
+    alert(authConfigHint(provider, error.message));
   }
 }
 
