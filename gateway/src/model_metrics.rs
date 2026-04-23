@@ -86,6 +86,13 @@ impl ModelMetricsTracker {
         ttfts.sort_unstable();
         let mut tpss: Vec<f32> = fresh.iter().filter_map(|s| s.tps).collect();
         tpss.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let ttft_ms_avg =
+            Some((fresh.iter().map(|s| s.ttft_ms as u64).sum::<u64>() / fresh.len() as u64) as u32);
+        let tps_avg = if tpss.is_empty() {
+            None
+        } else {
+            Some(tpss.iter().sum::<f32>() / tpss.len() as f32)
+        };
 
         let last_age = fresh
             .iter()
@@ -93,8 +100,10 @@ impl ModelMetricsTracker {
             .min();
 
         Some(ModelMetrics {
+            ttft_ms_avg,
             ttft_ms_p50: percentile_u32(&ttfts, 0.5),
             ttft_ms_p95: percentile_u32(&ttfts, 0.95),
+            tps_avg,
             tps_p50: percentile_f32(&tpss, 0.5),
             tps_p95: percentile_f32(&tpss, 0.95),
             sample_count: fresh.len() as u32,
@@ -132,7 +141,9 @@ mod tests {
         t.record("m", 300, Some(150), 1000); // tps = 150
         let s = t.snapshot("m").unwrap();
         assert_eq!(s.sample_count, 3);
+        assert_eq!(s.ttft_ms_avg, Some(200));
         assert_eq!(s.ttft_ms_p50, Some(200));
+        assert_eq!(s.tps_avg, Some(100.0));
         assert_eq!(s.tps_p50, Some(100.0));
     }
 
@@ -149,6 +160,8 @@ mod tests {
         t.record("m", 200, Some(50), 1000);
         let s = t.snapshot("m").unwrap();
         assert_eq!(s.sample_count, 2); // both contribute to ttft
+        assert_eq!(s.ttft_ms_avg, Some(150));
+        assert_eq!(s.tps_avg, Some(50.0)); // only the one with tokens contributes to tps
         assert_eq!(s.tps_p50, Some(50.0)); // only the one with tokens contributes to tps
     }
 

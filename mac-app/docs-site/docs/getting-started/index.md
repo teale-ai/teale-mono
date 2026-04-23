@@ -32,6 +32,12 @@ Teale exposes an OpenAI-compatible API at `localhost:11435`. If your code works 
 
 [Quickstart: API](quickstart-api.md)
 
+### Use Teale from Conductor
+
+If you run coding tools inside Conductor workspaces, point them at `https://gateway.teale.com/v1` and use the Teale fleet from there.
+
+[Use with Conductor](../guides/use-with-conductor.md)
+
 ### Earn with Teale
 
 Share your idle compute with the Teale network and earn USDC. Teale auto-selects the best model for your hardware and handles everything else.

@@ -40,7 +40,7 @@ use crate::state::AppState;
 pub async fn chat_completions(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
-    Json(req): Json<Value>,
+    Json(mut req): Json<Value>,
 ) -> Result<Response, GatewayError> {
     // Parse the inbound request loosely so we can copy pass-through fields.
     let parsed: ChatCompletionRequest = serde_json::from_value(req.clone())
@@ -111,30 +111,59 @@ pub async fn chat_completions(
     let streaming = parsed.stream.unwrap_or(false);
     let consumer = consumer_principal(&principal);
 
-    // Pre-flight balance check — ledger must never go negative. Reject
-    // before dispatching if the paying device (or share-key issuer) can't
-    // cover a conservative max-cost reservation. See `reservation_credits`
-    // for the reservation shape (rough prompt-tokens estimate plus full
-    // max_tokens at the catalog's completion rate).
+    // Pre-flight budget clamp — ledger must never go negative. Instead of
+    // rejecting when the paying device (or share-key) can't cover a full
+    // catalog-max reservation, we clamp `max_tokens` down to what the
+    // effective budget can afford and forward that clamp to the upstream
+    // request. Only reject when the budget can't cover the prompt itself
+    // plus at least one completion token.
     if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
-        let required = reservation_credits(&catalog_model, &parsed);
-        let paying_device = consumer_p.paying_device_id();
-        let balance = ledger::get_balance(pool, paying_device).balance_credits;
-        if balance < required {
-            return Err(GatewayError::InsufficientCredits { balance, required });
-        }
-        // For share-keys, the per-key budget is also a hard cap: even if the
-        // issuer is rich, a key minted with a small budget must still refuse
-        // the request rather than draining the issuer's wallet beyond the
-        // bearer's share-key allowance.
-        if let ledger::ConsumerPrincipal::Share { key_id, .. } = consumer_p {
-            if let Some(remaining) = share_key_remaining(pool, key_id) {
-                if remaining < required {
-                    return Err(GatewayError::InsufficientCredits {
-                        balance: remaining,
-                        required,
-                    });
+        // Compute the spending ceiling for this principal:
+        //   Device → wallet balance.
+        //   Share-key (funded=1) → pre-funded pool remainder.
+        //   Share-key (funded=0, legacy) → min(pool remainder, issuer wallet).
+        //     (Old semantics where the pool was just a cap on issuer spend.)
+        let effective_budget = match consumer_p {
+            ledger::ConsumerPrincipal::Share { key_id, .. } => {
+                let pool_remaining = share_key_remaining(pool, key_id).unwrap_or(0);
+                if share_key_is_funded(pool, key_id) {
+                    pool_remaining
+                } else {
+                    let issuer_balance =
+                        ledger::get_balance(pool, consumer_p.paying_device_id()).balance_credits;
+                    pool_remaining.min(issuer_balance)
                 }
+            }
+            ledger::ConsumerPrincipal::Device(_) => {
+                ledger::get_balance(pool, consumer_p.paying_device_id()).balance_credits
+            }
+        };
+
+        match compute_clamp(&catalog_model, &parsed, effective_budget) {
+            Ok(decision) => {
+                // Rewrite `max_tokens` on the outbound JSON so the supplier
+                // honors the clamp.
+                if let Some(obj) = req.as_object_mut() {
+                    obj.insert(
+                        "max_tokens".into(),
+                        Value::Number(serde_json::Number::from(decision.effective_max)),
+                    );
+                }
+                if decision.clamped {
+                    debug!(
+                        model = %catalog_model.id,
+                        client_max = decision.client_max,
+                        effective_max = decision.effective_max,
+                        effective_budget = effective_budget,
+                        "clamped max_tokens to fit budget"
+                    );
+                }
+            }
+            Err(required) => {
+                return Err(GatewayError::InsufficientCredits {
+                    balance: effective_budget,
+                    required,
+                });
             }
         }
     }
@@ -152,12 +181,60 @@ pub async fn chat_completions(
     }
 }
 
-/// Conservative cost upper bound in credits for a request, used by the
-/// pre-flight non-negative guard. Uses the catalog's per-token prices and a
-/// cheap `bytes / 4` estimate for prompt tokens (the exact count isn't known
-/// until upstream tokenizes). Completion side uses the request's `max_tokens`
-/// bounded by the catalog's `max_output_tokens`.
-fn reservation_credits(model: &CatalogModel, req: &ChatCompletionRequest) -> i64 {
+/// Outcome of the pre-flight budget clamp. Public so unit tests can pin the
+/// arithmetic down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClampDecision {
+    /// The value we'll force onto the outbound `max_tokens`. Always ≥1.
+    pub effective_max: u64,
+    /// What the client asked for (or implied via the catalog's hard ceiling).
+    pub client_max: u64,
+    /// True iff `effective_max < client_max` — i.e. budget bit us.
+    pub clamped: bool,
+}
+
+/// Compute the clamp. Returns `Err(min_required_credits)` when the budget
+/// can't cover the prompt plus at least one completion token; otherwise an
+/// accepted decision.
+pub(crate) fn compute_clamp(
+    model: &CatalogModel,
+    req: &ChatCompletionRequest,
+    effective_budget: i64,
+) -> Result<ClampDecision, i64> {
+    let prompt_tokens_est = prompt_tokens_estimate(req);
+    let prompt_cost = ledger::cost_credits(
+        prompt_tokens_est,
+        0,
+        model.prompt_price_usd(),
+        model.completion_price_usd(),
+    );
+    let one_out_cost =
+        ledger::cost_credits(0, 1, model.prompt_price_usd(), model.completion_price_usd());
+    let min_required = prompt_cost.saturating_add(one_out_cost);
+    if effective_budget < min_required {
+        return Err(min_required);
+    }
+
+    let catalog_max = model.max_output_tokens as u64;
+    let client_max = req
+        .max_tokens
+        .map(|v| v as u64)
+        .unwrap_or(catalog_max)
+        .min(catalog_max)
+        .max(1);
+    let affordable_out = affordable_out_tokens(model, effective_budget - prompt_cost);
+    let effective_max = client_max.min(affordable_out).max(1);
+    Ok(ClampDecision {
+        effective_max,
+        client_max,
+        clamped: effective_max < client_max,
+    })
+}
+
+/// Rough prompt-tokens estimate: `bytes/4 + 16` (fixed padding for role /
+/// control tokens upstream will add). Conservative over-estimate for English —
+/// keeps our reservation on the safe side of actual tokenizer output.
+fn prompt_tokens_estimate(req: &ChatCompletionRequest) -> u64 {
     let prompt_bytes: usize = req
         .messages
         .iter()
@@ -166,22 +243,26 @@ fn reservation_credits(model: &CatalogModel, req: &ChatCompletionRequest) -> i64
             other => other.to_string().len(),
         })
         .sum();
-    // ~4 bytes/token is a conservative over-estimate for English; keeps the
-    // reservation on the generous side of actual usage so settlement rarely
-    // hits the shortfall path.
-    let prompt_tokens_est = (prompt_bytes as u64).div_ceil(4) + 16;
-    let max_out = req
-        .max_tokens
-        .map(|v| v as u64)
-        .unwrap_or(model.max_output_tokens as u64)
-        .min(model.max_output_tokens as u64)
-        .max(1);
-    ledger::cost_credits(
-        prompt_tokens_est,
-        max_out,
-        model.prompt_price_usd(),
-        model.completion_price_usd(),
-    )
+    (prompt_bytes as u64).div_ceil(4) + 16
+}
+
+/// Given a remaining credit budget after the prompt has been accounted for,
+/// return the largest completion-token count that still fits. Floored at 1
+/// so the caller can always allow at least one token of response; the caller
+/// is responsible for catching the "budget can't cover prompt + 1 token" case
+/// up front.
+fn affordable_out_tokens(model: &CatalogModel, remaining_after_prompt: i64) -> u64 {
+    if remaining_after_prompt <= 0 {
+        return 1;
+    }
+    let completion_price_credits = model.completion_price_usd() * 1_000_000.0;
+    if completion_price_credits <= 0.0 {
+        // Free completion: the catalog ceiling is the only bound — let the
+        // rest of the clamp handle that via min(catalog_max, ...).
+        return u64::MAX;
+    }
+    let affordable = (remaining_after_prompt as f64 / completion_price_credits).floor();
+    (affordable as i64).max(1) as u64
 }
 
 /// Rough estimate of the context window a request will consume. Used only
@@ -218,6 +299,20 @@ fn share_key_remaining(pool: &crate::db::DbPool, key_id: &str) -> Option<i64> {
         |r| r.get::<_, i64>(0),
     )
     .ok()
+}
+
+/// Whether a share-key has been migrated to the pre-funded-pool model.
+/// Returns true for `funded=1`; false for `funded=0` or lookup failure (the
+/// safer default — legacy semantics fall back to debiting the issuer wallet).
+fn share_key_is_funded(pool: &crate::db::DbPool, key_id: &str) -> bool {
+    let conn = pool.lock();
+    conn.query_row(
+        "SELECT funded FROM share_keys WHERE key_id = ?",
+        [key_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|f| f == 1)
+    .unwrap_or(false)
 }
 
 /// Build the ledger-facing consumer from an authenticated principal.
@@ -658,6 +753,7 @@ async fn run_buffered(
     let mut last_chunk_obj: Option<serde_json::Map<String, Value>> = None;
     let mut captured_usage: Option<Value> = None;
     let mut tokens_out: u64 = 0;
+    let mut first_token_at: Option<Instant> = None;
 
     loop {
         tried += 1;
@@ -684,7 +780,13 @@ async fn run_buffered(
             let next = tokio::time::timeout(deadline, rx.recv()).await;
             match next {
                 Ok(Some(SessionEvent::Chunk(chunk))) => {
-                    got_first = true;
+                    if !got_first {
+                        got_first = true;
+                        first_token_at = Some(Instant::now());
+                        metrics::TTFT_SECONDS
+                            .with_label_values(&[&model_id])
+                            .observe(started.elapsed().as_secs_f64());
+                    }
                     tokens_out += 1;
                     if let Some(text) = extract_delta_content(&chunk) {
                         accumulated_text.push_str(&text);
@@ -750,6 +852,14 @@ async fn run_buffered(
             metrics::TOKENS_OUT_TOTAL
                 .with_label_values(&[&model_id])
                 .inc_by(tokens_out as f64);
+            if let Some(ft) = first_token_at {
+                let ttft_ms = ft.duration_since(started).as_millis() as u32;
+                let total_ms = started.elapsed().as_millis() as u64;
+                let gen_ms = total_ms.saturating_sub(ttft_ms as u64);
+                state
+                    .model_metrics
+                    .record(&model_id, ttft_ms, Some(tokens_out.max(1)), gen_ms);
+            }
 
             // Settle Teale Credit ledger.
             if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
@@ -887,6 +997,7 @@ fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::ModelNotFound(_) => "model_not_found",
         GatewayError::NotFound(_) => "not_found",
         GatewayError::Forbidden(_) => "forbidden",
+        GatewayError::Conflict(_) => "conflict",
         GatewayError::BudgetExhausted => "budget_exhausted",
         GatewayError::InsufficientCredits { .. } => "insufficient_credits",
         GatewayError::BadRequest(_) => "bad_request",
@@ -914,4 +1025,166 @@ pub const CONTENT_TYPE: &str = "application/json";
 #[allow(dead_code)]
 fn _touch_unused_headers() -> header::HeaderName {
     header::CONTENT_TYPE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use teale_protocol::openai::ApiMessage;
+
+    fn kimi_like() -> CatalogModel {
+        // Mirrors the catalog entry for moonshotai/kimi-k2.6: $0.50/M prompt,
+        // $1.00/M completion, 16384 max output.
+        serde_yaml::from_str(
+            r#"
+id: moonshotai/kimi-k2.6
+display_name: Kimi K2.6 (test)
+owned_by: moonshotai
+context_length: 32000
+max_output_tokens: 16384
+params_b: 1000.0
+pricing_prompt: "0.00000050"
+pricing_completion: "0.00000100"
+quantization: null
+"#,
+        )
+        .unwrap()
+    }
+
+    fn free_like() -> CatalogModel {
+        serde_yaml::from_str(
+            r#"
+id: free/tiny
+display_name: Free Tiny
+owned_by: test
+context_length: 4096
+max_output_tokens: 2048
+params_b: 1.0
+pricing_prompt: "0"
+pricing_completion: "0"
+quantization: null
+"#,
+        )
+        .unwrap()
+    }
+
+    fn req_with(user: &str, max_tokens: Option<u32>) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: Some("moonshotai/kimi-k2.6".into()),
+            messages: vec![ApiMessage {
+                role: "user".into(),
+                content: Value::String(user.into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens,
+            stream: None,
+            stream_options: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            seed: None,
+            user: None,
+        }
+    }
+
+    #[test]
+    fn tight_budget_no_max_tokens_accepts_with_clamp() {
+        // Reproduces the production bug: "hi" to kimi-k2.6 with a 4535-credit
+        // effective budget. Before: rejected (need 16393). After: accepted,
+        // clamped to what fits.
+        let model = kimi_like();
+        let req = req_with("hi", None);
+        let decision = compute_clamp(&model, &req, 4535).expect("should accept, not reject");
+        // client_max defaults to the catalog ceiling.
+        assert_eq!(decision.client_max, 16384);
+        // prompt_tokens_est = (2/4).ceil() + 16 = 17 → 17*0.5e-6*1e6 = 8.5 → 9 credits.
+        // remaining = 4535 - 9 = 4526 → affordable = floor(4526 / 1.0) = 4526.
+        assert_eq!(decision.effective_max, 4526);
+        assert!(decision.clamped);
+        // Post-clamp reservation must be within budget.
+        let reserved = ledger::cost_credits(
+            prompt_tokens_estimate(&req),
+            decision.effective_max,
+            model.prompt_price_usd(),
+            model.completion_price_usd(),
+        );
+        assert!(reserved <= 4535, "reserved={} should fit in 4535", reserved);
+    }
+
+    #[test]
+    fn budget_below_prompt_plus_one_rejects() {
+        // Effective budget smaller than prompt_cost + 1 completion credit must
+        // still reject. For kimi with "hi" the floor is 9 + 1 = 10 credits.
+        let model = kimi_like();
+        let req = req_with("hi", None);
+        let err = compute_clamp(&model, &req, 5).expect_err("should reject");
+        assert_eq!(err, 10);
+    }
+
+    #[test]
+    fn client_max_tokens_smaller_than_affordable_is_preserved() {
+        // Well-funded caller with max_tokens=500 should NOT be scaled up.
+        let model = kimi_like();
+        let req = req_with("hi", Some(500));
+        let decision = compute_clamp(&model, &req, 10_000_000).expect("should accept");
+        assert_eq!(decision.client_max, 500);
+        assert_eq!(decision.effective_max, 500);
+        assert!(!decision.clamped);
+    }
+
+    #[test]
+    fn well_funded_no_max_tokens_uses_catalog_ceiling() {
+        // A paying user who omits max_tokens still gets the full catalog
+        // ceiling as before — no regression.
+        let model = kimi_like();
+        let req = req_with("hi", None);
+        let decision = compute_clamp(&model, &req, 10_000_000).expect("should accept");
+        assert_eq!(decision.effective_max, 16384);
+        assert_eq!(decision.client_max, 16384);
+        assert!(!decision.clamped);
+    }
+
+    #[test]
+    fn client_max_above_catalog_clamped_down_to_ceiling() {
+        // Client asked for more than the catalog allows; we never reserve
+        // past the ceiling regardless of budget.
+        let model = kimi_like();
+        let req = req_with("hi", Some(50_000));
+        let decision = compute_clamp(&model, &req, 10_000_000).expect("should accept");
+        assert_eq!(decision.effective_max, 16384);
+        // client_max is already capped to catalog_max before the clamp, so
+        // the decision reports "not clamped by budget" — the ceiling applied
+        // at parse time, not the budget path.
+        assert_eq!(decision.client_max, 16384);
+    }
+
+    #[test]
+    fn free_model_skips_affordability_and_takes_ceiling() {
+        // For a free model, the completion-price inverse is undefined; we
+        // should clamp to the catalog ceiling without dividing by zero.
+        let model = free_like();
+        let req = req_with("hello world", None);
+        // 2 credits covers prompt_cost(=1) + one_out_cost(=1) since free.
+        let decision = compute_clamp(&model, &req, 2).expect("should accept");
+        assert_eq!(decision.effective_max, 2048);
+    }
+
+    #[test]
+    fn tiny_budget_one_token_floor() {
+        // Budget equal to prompt_cost + 1 completion token: accepts with a
+        // 1-token ceiling.
+        let model = kimi_like();
+        let req = req_with("hi", None);
+        // 10 = 9 prompt + 1 completion.
+        let decision = compute_clamp(&model, &req, 10).expect("should accept at floor");
+        assert_eq!(decision.effective_max, 1);
+        assert!(decision.clamped);
+    }
 }

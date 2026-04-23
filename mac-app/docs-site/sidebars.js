@@ -38,6 +38,7 @@ module.exports = {
         'guides/index',
         'guides/earn-credits',
         'guides/setup-ptn',
+        'guides/use-with-conductor',
         'guides/use-with-openai-sdk',
         'guides/use-with-continue-dev',
         'guides/connect-ios-companion',

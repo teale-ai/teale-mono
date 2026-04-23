@@ -17,7 +17,7 @@ models:
     pricing_completion: "0.00000020" # $0.20 / M tokens output
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, frequency_penalty, presence_penalty]
-    description: "Meta Llama 3.1 8B, instruction-tuned. Universal 16GB+ supply."
+    description: "General-purpose assistant model for chat, extraction, and lightweight coding."
     aliases: [llama-3.1-8b-instruct, llama3.1-8b]
 
   - id: qwen/qwen3-8b
@@ -30,7 +30,7 @@ models:
     pricing_completion: "0.00000020"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Qwen 3 8B dense. Strong reasoning, Apache-2.0."
+    description: "Fast general-purpose Qwen model with solid reasoning for everyday tasks."
     aliases: [qwen3-8b]
 
   - id: qwen/qwen3-30b-a3b-instruct-2507
@@ -43,7 +43,7 @@ models:
     pricing_completion: "0.00000100"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
-    description: "Qwen 3 30B/3B-active MoE. Best throughput-per-GB. 32GB+ required."
+    description: "Efficient mixture-of-experts model for stronger reasoning, coding, and tool use."
     aliases: [qwen3-30b-a3b-instruct, qwen3-30b-a3b]
 
   - id: mistralai/mistral-small-3.2-24b-instruct
@@ -56,7 +56,7 @@ models:
     pricing_completion: "0.00000080"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice, response_format]
-    description: "Apache-2.0 Mistral Small. Excellent tool-use. 24GB+."
+    description: "Reliable small instruct model with strong tool use and structured output."
     aliases: [mistral-small-3.2-24b, mistral-small-3.2]
 
   - id: meta-llama/llama-3.3-70b-instruct
@@ -69,7 +69,7 @@ models:
     pricing_completion: "0.00000160"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
-    description: "The 70B flagship everyone asks for. 64GB+ unified RAM."
+    description: "Large general-purpose model for stronger writing, reasoning, and coding."
     aliases: [llama-3.3-70b-instruct, llama3.3-70b]
 
   - id: openai/gpt-oss-120b
@@ -82,7 +82,7 @@ models:
     pricing_completion: "0.00000200"
     quantization: MXFP4
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
-    description: "OpenAI Apache-2.0 release. 5.1B active = fast on Ultras. 128GB+ required."
+    description: "Open-weight reasoning model with strong coding and tool-use performance."
     aliases: [gpt-oss-120b]
 
   - id: google/gemma-3-27b-it
@@ -95,7 +95,7 @@ models:
     pricing_completion: "0.00000080"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Gemma 3 27B with vision. 32GB+ required."
+    description: "Multimodal Gemma model for text and image understanding."
     aliases: [gemma-3-27b-it, gemma3-27b]
 
   - id: nousresearch/hermes-3-llama-3.1-8b
@@ -108,7 +108,7 @@ models:
     pricing_completion: "0.00000020"
     quantization: Q5_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "NousResearch Hermes 3 fine-tune of Llama 3.1 8B."
+    description: "Helpful assistant-tuned Llama variant for general chat and lightweight coding."
     aliases: [hermes-3-llama-3.1-8b, hermes-3-8b]
 
   - id: qwen/qwen3-32b
@@ -121,7 +121,7 @@ models:
     pricing_completion: "0.00000060"
     quantization: Q8_0
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Qwen 3 32B dense model."
+    description: "Higher-capability dense Qwen model for stronger reasoning and writing."
     aliases: [qwen3-32b]
 
   - id: qwen/qwen3.6-35b-a3b
@@ -134,7 +134,7 @@ models:
     pricing_completion: "0.00000060"
     quantization: "bf16"
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
-    description: "Qwen 3.6 35B/3B-active MoE with vision. Fits single 512 GB Ultra or distributes via exo."
+    description: "Multimodal Qwen model for vision, reasoning, and tool use."
     aliases: [qwen3.6-35b-a3b, qwen3-6-35b-a3b, qwen3.6-35b]
 
   - id: deepseek/deepseek-v3.2
@@ -147,8 +147,21 @@ models:
     pricing_completion: "0.00000050"
     quantization: "8bit"
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "DeepSeek V3.2 MoE (671B total, ~37B active). 704 GB on disk at 8-bit; requires multi-Ultra exo cluster."
+    description: "Large mixture-of-experts model aimed at strong coding and reasoning."
     aliases: [deepseek-v3.2, deepseek-v3-2, deepseek-v3.2-8bit]
+
+  - id: moonshotai/kimi-k2
+    display_name: Kimi K2 (exo cluster)
+    owned_by: moonshotai
+    context_length: 131072
+    max_output_tokens: 32768
+    params_b: 1000
+    pricing_prompt: "0.00000035"
+    pricing_completion: "0.00000070"
+    quantization: MLX
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Kimi K2 served from a paired 512 GB Ultra exo cluster. Client-friendly alias: kimi2.6."
+    aliases: [kimi2.6, kimi-k2, kimi2-6]
 
   - id: zai/glm-5.1
     display_name: GLM-5.1 (MoE)
@@ -160,7 +173,7 @@ models:
     pricing_completion: "0.00000050"
     quantization: UD-Q4_K_XL
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
-    description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL (434 GB). Flagship coding quality (Opus 4.6 parity). Each 512 GB Mac Studio serves an independent replica; the gateway load-balances requests across the fleet."
+    description: "High-end Z.ai model for strong coding, reasoning, and agent-style work."
     aliases: [glm-5.1, glm5.1, glm-5, glm5]
 
   - id: moonshotai/kimi-k2.6
@@ -173,7 +186,7 @@ models:
     pricing_completion: "0.00000100"
     quantization: INT4
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice, reasoning]
-    description: "Moonshot AI Kimi K2.6 — 1T MoE (32B active), natively int4, multimodal (MoonViT vision encoder), 256K context via MLA attention. Sharded across two 512 GB Mac Studios over Thunderbolt 5 via exo. Recommended sampling: temperature 1.0 / top_p 0.95 (thinking mode default)."
+    description: "Flagship Moonshot model for deep reasoning, coding, and multimodal work."
     aliases: [kimi-k2.6, kimi-k26, k2.6, kimi]
 
   - id: google/gemma-4-1b-it
@@ -186,7 +199,7 @@ models:
     pricing_completion: "0.00000004"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Gemma 4 1B instruction-tuned — runs on phones (Android / HarmonyOS) via llama.cpp."
+    description: "Compact instruction model for lightweight on-device tasks."
     aliases: [gemma-4-1b-it, gemma4-1b, gemma-4-1b]
 
   - id: google/gemma-3-1b-it
@@ -199,7 +212,7 @@ models:
     pricing_completion: "0.00000004"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Gemma 3 1B — fallback phone-class model when Gemma 4 GGUFs aren't published yet."
+    description: "Small fallback model for lightweight on-device tasks."
     aliases: [gemma-3-1b-it, gemma3-1b]
 
   - id: qwen/qwen2.5-0.5b-instruct
@@ -212,7 +225,7 @@ models:
     pricing_completion: "0.00000002"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Qwen 2.5 0.5B — tiny, fits low-RAM HarmonyOS/Android via MNN-LLM or llama.cpp."
+    description: "Tiny instruct model for the lowest-memory mobile devices."
     aliases: [qwen2.5-0.5b-instruct, qwen2.5-0.5b]
 
   - id: qwen/qwen2.5-1.5b-instruct
@@ -225,7 +238,7 @@ models:
     pricing_completion: "0.00000004"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Qwen 2.5 1.5B — natural fit for Huawei Kirin + Android mid-tier via MNN-LLM."
+    description: "Small mobile model for lightweight everyday assistant tasks."
     aliases: [qwen2.5-1.5b-instruct, qwen2.5-1.5b]
 
   - id: qwen/qwen2.5-3b-instruct
@@ -238,7 +251,7 @@ models:
     pricing_completion: "0.00000008"
     quantization: Q4_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
-    description: "Qwen 2.5 3B — flagship Android/Huawei phone-class model."
+    description: "Stronger phone-class Qwen model for better mobile responses."
     aliases: [qwen2.5-3b-instruct, qwen2.5-3b]
 
   # --- Virtual meta-model: auto-selects a concrete model at request time ---

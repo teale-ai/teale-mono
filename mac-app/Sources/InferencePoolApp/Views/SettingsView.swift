@@ -424,7 +424,7 @@ struct SettingsView: View {
             Section(appState.loc("settings.about")) {
                 LabeledContent(appState.loc("settings.version"), value: displayVersion)
                 LabeledContent(appState.loc("settings.engine"), value: appState.inferenceEngineName)
-                Link(appState.loc("settings.sourceCode"), destination: URL(string: "https://github.com/taylorhou/teale-mac-app")!)
+                Link(appState.loc("settings.sourceCode"), destination: URL(string: "https://github.com/teale-ai/teale-mono")!)
 
                 if appState.updateChecker.updateAvailable, let tag = appState.updateChecker.latestTag {
                     HStack {

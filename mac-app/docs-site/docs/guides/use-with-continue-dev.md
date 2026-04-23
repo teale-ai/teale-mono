@@ -62,6 +62,29 @@ To use Teale for tab completions, add a `tabAutocompleteModel` entry:
 6. Select the model name from the dropdown (Cursor will query the `/v1/models` endpoint).
 7. Save and start using Teale in Cursor's chat and inline edit features.
 
+### Conductor workspace path
+
+If Cursor or Continue is launched from a Conductor workspace and you want it to use the hosted Teale fleet, inherit these environment variables from Conductor:
+
+```bash
+OPENAI_BASE_URL=https://gateway.teale.com/v1
+OPENAI_API_KEY=<your-teale-gateway-token>
+```
+
+Then choose:
+
+```text
+model = kimi2.6
+```
+
+Canonical fallback:
+
+```text
+moonshotai/kimi-k2
+```
+
+See [Use with Conductor](use-with-conductor.md) for the full gateway-based setup and smoke tests.
+
 ## Open WebUI
 
 [Open WebUI](https://openwebui.com) is a self-hosted chat interface that supports OpenAI-compatible backends.
@@ -113,6 +136,7 @@ If the tool requires a specific model name, run `teale models list` to see what 
 
 ## Next steps
 
+- [Use with Conductor](use-with-conductor.md) --- point Conductor workspace tools at the hosted gateway
 - [Use Teale with OpenAI SDK](use-with-openai-sdk.md) --- programmatic access from Python and Node.js
 - [Manage Models](manage-models.md) --- switch between models for different tasks
 - [API Key Management](api-keys.md) --- secure access when sharing over the network

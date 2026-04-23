@@ -37,6 +37,24 @@ public struct LoginView: View {
             }
             .padding(.bottom, 40)
 
+            // Sign in with Google
+            Button {
+                Task { await handleOAuth(provider: .google) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "g.circle.fill")
+                        .font(.title3)
+                    Text("Sign in with Google")
+                        .fontWeight(.medium)
+                }
+                .frame(maxWidth: 300)
+                .frame(height: 50)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(isLoading)
+            .padding(.bottom, 12)
+
             // Sign in with GitHub
             Button {
                 Task { await handleOAuth(provider: .github) }

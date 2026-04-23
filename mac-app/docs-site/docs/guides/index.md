@@ -24,6 +24,7 @@ Step-by-step how-to guides for common Teale tasks. Each guide covers a specific 
 
 | Guide | Description |
 |-------|-------------|
+| [Use with Conductor](use-with-conductor.md) | Point Conductor workspace tools at `gateway.teale.com` |
 | [Use with OpenAI SDK](use-with-openai-sdk.md) | Drop-in replacement for OpenAI API in Python and Node.js |
 | [IDE Integration](use-with-continue-dev.md) | Set up Continue.dev, Cursor, Open WebUI, and Zed |
 | [TealeSDK Integration](integrate-tealeSdk.md) | Embed Teale compute into your own Swift app |

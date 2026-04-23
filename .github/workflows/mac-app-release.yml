@@ -1,8 +1,8 @@
-name: Release
+name: Mac App Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['mac-v*']
   workflow_dispatch:
 
 jobs:
@@ -10,6 +10,9 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    defaults:
+      run:
+        working-directory: mac-app
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,11 +21,11 @@ jobs:
       - name: Generate version tag
         id: version
         run: |
-          # Use the same YYYY.MM.DD.HHMM format as internal builds
+          # Use the same YYYY.MM.DD.HHMM format as internal builds, prefixed mac-v.
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${{ github.ref_name }}"
           else
-            TAG="v$(date -u '+%Y.%m.%d.%H%M')"
+            TAG="mac-v$(date -u '+%Y.%m.%d.%H%M')"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -49,7 +52,7 @@ jobs:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
         run: ./bundle.sh
 
-      - name: Notarize and staple
+      - name: Notarize and staple .app
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -65,6 +68,29 @@ jobs:
           spctl -a -vvv --type execute .build/Teale.app
           rm .build/Teale-unstapled.zip
 
+      - name: Build, sign, notarize, staple DMG
+        env:
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          STAGING=.build/dmg-staging
+          rm -rf "$STAGING" .build/Teale.dmg
+          mkdir -p "$STAGING"
+          cp -R .build/Teale.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Teale" -srcfolder "$STAGING" -ov -format UDZO .build/Teale.dmg
+          codesign --force --sign "$SIGNING_IDENTITY" --timestamp .build/Teale.dmg
+          xcrun notarytool submit .build/Teale.dmg \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple .build/Teale.dmg
+          spctl -a -vvv --type install .build/Teale.dmg
+          rm -rf "$STAGING"
+
       - name: Build CLI binary
         run: |
           swift build -c release --product teale
@@ -75,7 +101,8 @@ jobs:
         run: |
           cd .build
           ditto -c -k --keepParent Teale.app Teale.zip
-          shasum -a 256 Teale.zip > checksums.txt
+          shasum -a 256 Teale.dmg > checksums.txt
+          shasum -a 256 Teale.zip >> checksums.txt
           shasum -a 256 teale-macos-arm64 >> checksums.txt
 
       - name: Create Release
@@ -88,19 +115,17 @@ jobs:
             --notes "$(cat <<'EOF'
           ## Install
 
-          **One command:**
-          ```
-          curl -fsSL https://teale.com/install.sh | sh
-          ```
+          **Recommended:** download **Teale.dmg** below, double-click to open, drag Teale to Applications, then launch from Launchpad.
 
-          Or using the raw GitHub URL:
+          **Or one command:**
           ```
-          curl -fsSL https://raw.githubusercontent.com/taylorhou/teale-mac-app/main/scripts/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/teale-ai/teale-mono/main/mac-app/scripts/install.sh | sh
           ```
 
           Requires macOS 14 Sonoma or later. Apple Silicon only.
           EOF
           )" \
+            .build/Teale.dmg \
             .build/Teale.zip \
             .build/teale-macos-arm64 \
             .build/checksums.txt

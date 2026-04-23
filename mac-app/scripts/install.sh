@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="taylorhou/teale-mac-app"
+REPO="teale-ai/teale-mono"
 APP_NAME="Teale"
 APP_DIR="/Applications/${APP_NAME}.app"
 
@@ -84,7 +84,7 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 git clone --depth 1 "https://github.com/$REPO.git" "$TMPDIR/teale"
-cd "$TMPDIR/teale"
+cd "$TMPDIR/teale/mac-app"
 
 echo "  Building (this takes a few minutes)..."
 ./bundle.sh

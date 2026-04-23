@@ -104,6 +104,30 @@ for model in models:
     print(model.id)
 ```
 
+## Use the hosted gateway
+
+When you want workspace tools inside Conductor to use the Teale fleet instead of your local node, point the SDK at `https://gateway.teale.com/v1` and pass your gateway bearer token:
+
+```python
+client = OpenAI(
+    base_url="https://gateway.teale.com/v1",
+    api_key="your-teale-gateway-token",
+)
+
+response = client.chat.completions.create(
+    model="kimi2.6",
+    messages=[{"role": "user", "content": "Write a tiny Rust retry helper."}],
+)
+```
+
+Canonical fallback:
+
+```text
+moonshotai/kimi-k2
+```
+
+See [Use with Conductor](use-with-conductor.md) for the Conductor-specific environment setup.
+
 ## Compatible libraries and tools
 
 Teale's OpenAI-compatible API works with any client that supports custom base URLs:
@@ -136,6 +160,7 @@ See [API Key Management](api-keys.md) for details.
 
 ## Next steps
 
+- [Use with Conductor](use-with-conductor.md) --- route Conductor workspace tools to the hosted gateway
 - [IDE Integration](use-with-continue-dev.md) --- use Teale with Continue.dev, Cursor, and other editors
 - [Chat Completions API](../api/chat-completions.md) --- full API reference
 - [Manage Models](manage-models.md) --- download and load different models

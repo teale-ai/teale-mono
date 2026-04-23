@@ -8,6 +8,9 @@ on:
 jobs:
   upload:
     runs-on: macos-14
+    defaults:
+      run:
+        working-directory: mac-app
     steps:
       - uses: actions/checkout@v4
         with:

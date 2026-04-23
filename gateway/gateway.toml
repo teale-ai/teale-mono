@@ -17,13 +17,13 @@ swap_penalty = 0.3
 tps_weight = 1.0
 
 [scheduler.per_model_floor]
-# Production floors. Small models (<50B params) need ≥2 healthy suppliers
-# so a single quarantine doesn't drop a slug from /v1/models. Large models
-# stay at 1 until ≥3 suppliers carry a ≥50B model, then raise to 3.
-# Virtual models (teale/auto) bypass the floor — they resolve to a concrete
-# slug at request time which is then subject to these floors.
+# 2026-04-21: small=1 so single-supplier models (qwen3-32b on tailor64,
+# qwen3.6-35b-a3b on tailor96, hermes-3-8b on tailor16) all appear on
+# /v1/models for the Kimi K2.6 public launch. Trade-off: if a sole
+# supplier drops, the model still shows until the heartbeat prunes it.
+# Raise back to 2 once we have ≥2 nodes carrying each small model.
 large = 1
-small = 2
+small = 1
 
 [reliability]
 request_timeout_seconds = 300
@@ -46,3 +46,13 @@ max_retries = 1
 heartbeat_stale_seconds = 3600
 quarantine_seconds = 30
 discover_interval_seconds = 10
+
+[synthetic_probes]
+# Keep /v1/models TTFT/TPS from going stale when real traffic is quiet.
+# These probes only hit idle, loaded suppliers, use a tiny prompt, and
+# bypass wallet settlement. With the current 30-minute cadence the cost is
+# low enough to keep Kimi/GLM-class models fresh without materially stealing
+# capacity from user traffic.
+enabled = true
+interval_seconds = 1800
+max_tokens = 16

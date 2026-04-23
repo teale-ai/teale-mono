@@ -49,7 +49,7 @@ pub enum PrincipalKind {
     /// Device-bound token issued by /v1/auth/device/exchange
     Device { device_id: String },
     /// Temporary share key minted by a device for community previews.
-    /// Spending debits the issuer's wallet and ticks the key's
+    /// Spending debits the key's funded pool and ticks the key's
     /// `consumed_credits`; exhaustion/expiry/revoke is enforced in middleware.
     Share {
         issuer_device_id: String,
