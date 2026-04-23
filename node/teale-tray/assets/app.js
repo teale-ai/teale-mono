@@ -3,6 +3,8 @@ const API_BASE = "http://127.0.0.1:11437";
 const els = {
   headerLine: document.getElementById("header-line"),
   languageSelect: document.getElementById("language-select"),
+  followXButton: document.getElementById("follow-x-button"),
+  shareStoryButton: document.getElementById("share-story-button"),
   viewButtons: Array.from(document.querySelectorAll("[data-view-button]")),
   views: Array.from(document.querySelectorAll("[data-view]")),
 
@@ -10,10 +12,14 @@ const els = {
   homeModel: document.getElementById("home-model"),
   homeBalance: document.getElementById("home-balance"),
   homeAccount: document.getElementById("home-account"),
-  homeOpenSupply: document.getElementById("home-open-supply"),
-  homeOpenDemand: document.getElementById("home-open-demand"),
-  homeOpenWallet: document.getElementById("home-open-wallet"),
-  homeOpenAccount: document.getElementById("home-open-account"),
+  homeNetworkDevices: document.getElementById("home-network-devices"),
+  homeNetworkRam: document.getElementById("home-network-ram"),
+  homeNetworkModels: document.getElementById("home-network-models"),
+  homeNetworkTtft: document.getElementById("home-network-ttft"),
+  homeNetworkTps: document.getElementById("home-network-tps"),
+  homeNetworkEarned: document.getElementById("home-network-earned"),
+  homeNetworkSpent: document.getElementById("home-network-spent"),
+  homeNetworkUsdc: document.getElementById("home-network-usdc"),
 
   statusChip: document.getElementById("status-chip"),
   statusLine: document.getElementById("status-line"),
@@ -52,13 +58,12 @@ const els = {
   networkTokenCopy: document.getElementById("network-token-copy"),
   networkCurlCopy: document.getElementById("network-curl-copy"),
 
+  walletDeviceName: document.getElementById("wallet-device-name"),
+  walletDeviceId: document.getElementById("wallet-device-id"),
+  walletStatus: document.getElementById("wallet-status"),
+  walletModel: document.getElementById("wallet-model"),
   walletBalance: document.getElementById("wallet-balance"),
   walletUsdc: document.getElementById("wallet-usdc"),
-  walletSessionCredits: document.getElementById("wallet-session-credits"),
-  walletCreditsToday: document.getElementById("wallet-credits-today"),
-  walletEarned: document.getElementById("wallet-earned"),
-  walletSpent: document.getElementById("wallet-spent"),
-  walletRequests: document.getElementById("wallet-requests"),
   walletSince: document.getElementById("wallet-since"),
   walletRate: document.getElementById("wallet-rate"),
   walletNote: document.getElementById("wallet-note"),
@@ -84,6 +89,7 @@ const els = {
   authNote: document.getElementById("auth-note"),
   accountId: document.getElementById("account-id"),
   accountEmail: document.getElementById("account-email"),
+  accountGithub: document.getElementById("account-github"),
   accountPhone: document.getElementById("account-phone"),
   accountWalletBalance: document.getElementById("account-wallet-balance"),
   accountWalletUsdc: document.getElementById("account-wallet-usdc"),
@@ -100,20 +106,24 @@ const els = {
 };
 
 const LANGUAGE_STORAGE_KEY = "teale.language";
+const OAUTH_CALLBACK_STORAGE_KEY = "__teale_pending_oauth_callback";
+const OAUTH_PROVIDER_STORAGE_KEY = "__teale_pending_oauth_provider";
+const SHARE_STORY_TEXT = "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.";
 const translations = {
   en: {
-    "nav.home": "teale.com",
+    "nav.home": "teale",
     "nav.supply": "supply",
     "nav.demand": "demand",
     "nav.wallet": "wallet",
     "nav.account": "account",
     "language.label": "language",
-    "view.home.description": "distributed ai inference supply and demand",
+    "view.home.description": "supply and demand distributed ai inference",
     "view.supply.description": "earn teale credits by supplying ai inference to users around the world",
     "view.demand.description": "use local models for free or buy and spend credits for more powerful models",
     "view.wallet.description": "device balances, send assets, and ledger history",
     "view.account.description": "account details, balances, send assets, and linked devices.",
     "home.prompt.overview": "overview",
+    "home.prompt.network": "network",
     "home.lede": "Teale turns this machine into a supply node and a demand client at the same time.",
     "home.action.supply": "Open supply",
     "home.action.demand": "Open demand",
@@ -132,14 +142,14 @@ const translations = {
     "demand.action.copyLocalCurl": "Copy local curl",
     "demand.action.copyBearer": "Copy bearer token",
     "demand.action.copyNetworkCurl": "Copy network curl",
-    "wallet.prompt.balances": "balances",
+    "wallet.prompt.device": "device info",
     "wallet.prompt.send": "send",
     "wallet.prompt.ledger": "ledger",
     "wallet.asset.credits": "Teale credits",
     "wallet.asset.usdc": "USDC",
     "wallet.input.recipient": "device id, key, phone, or github username",
     "wallet.action.sendSoon": "Send coming soon",
-    "wallet.send.note": "Transfers are not wired in the Windows companion backend yet. This will eventually support device IDs, keys, account phone numbers, and GitHub usernames.",
+    "wallet.send.note": "Transfers are not wired in the Windows companion backend yet. This will eventually support device IDs that route to device wallets, keys, account phone numbers, and GitHub usernames.",
     "wallet.action.export": "Export CSV",
     "account.prompt.account": "account",
     "account.prompt.wallet": "account wallet",
@@ -160,7 +170,7 @@ const translations = {
     "common.waitingLocalService": "Waiting for the local Teale service on this PC.",
     "common.noModelLoaded": "No model loaded",
     "common.syncing": "Syncing...",
-    "footer.tagline": "teale - distributed ai inference for the world",
+    "footer.tagline": "teale.com - distributed ai inference for the world",
     "auth.status.notConfigured": "Sign-in not configured",
     "auth.status.notSignedIn": "Not signed in",
     "auth.status.signedIn": "Signed in",
@@ -215,7 +225,7 @@ const translations = {
     "supply.models.noneCompatible": "No compatible models are available for this device yet.",
   },
   "zh-Hans": {
-    "nav.home": "teale.com",
+    "nav.home": "teale",
     "nav.supply": "供给",
     "nav.demand": "需求",
     "nav.wallet": "钱包",
@@ -227,6 +237,7 @@ const translations = {
     "view.wallet.description": "设备余额、资产发送和账本历史",
     "view.account.description": "账户详情、余额、资产发送和已关联设备。",
     "home.prompt.overview": "概览",
+    "home.prompt.network": "网络",
     "home.lede": "Teale 让这台机器同时成为供给节点和需求客户端。",
     "home.action.supply": "打开供给",
     "home.action.demand": "打开需求",
@@ -273,7 +284,7 @@ const translations = {
     "common.waitingLocalService": "正在等待这台电脑上的本地 Teale 服务。",
     "common.noModelLoaded": "未加载模型",
     "common.syncing": "同步中...",
-    "footer.tagline": "teale - 面向世界的分布式 AI 推理",
+    "footer.tagline": "teale.com - distributed ai inference for the world",
     "auth.status.notConfigured": "未配置登录",
     "auth.status.notSignedIn": "未登录",
     "auth.status.signedIn": "已登录",
@@ -328,7 +339,7 @@ const translations = {
     "supply.models.noneCompatible": "这台设备暂时没有兼容模型。",
   },
   "pt-BR": {
-    "nav.home": "teale.com",
+    "nav.home": "teale",
     "nav.supply": "oferta",
     "nav.demand": "demanda",
     "nav.wallet": "carteira",
@@ -340,6 +351,7 @@ const translations = {
     "view.wallet.description": "Saldos do dispositivo, envio de ativos e histórico do razão",
     "view.account.description": "detalhes da conta, saldos, envio de ativos e dispositivos vinculados.",
     "home.prompt.overview": "visão geral",
+    "home.prompt.network": "rede",
     "home.lede": "O Teale transforma esta máquina em um nó de oferta e um cliente de demanda ao mesmo tempo.",
     "home.action.supply": "Abrir oferta",
     "home.action.demand": "Abrir demanda",
@@ -386,7 +398,7 @@ const translations = {
     "common.waitingLocalService": "Aguardando o serviço local do Teale neste PC.",
     "common.noModelLoaded": "Nenhum modelo carregado",
     "common.syncing": "Sincronizando...",
-    "footer.tagline": "teale - inferência distribuída de IA para o mundo",
+    "footer.tagline": "teale.com - distributed ai inference for the world",
     "auth.status.notConfigured": "Login não configurado",
     "auth.status.notSignedIn": "Sem login",
     "auth.status.signedIn": "Conectado",
@@ -441,7 +453,7 @@ const translations = {
     "supply.models.noneCompatible": "Ainda não há modelos compatíveis para este dispositivo.",
   },
   es: {
-    "nav.home": "teale.com",
+    "nav.home": "teale",
     "nav.supply": "oferta",
     "nav.demand": "demanda",
     "nav.wallet": "cartera",
@@ -453,6 +465,7 @@ const translations = {
     "view.wallet.description": "Saldos del dispositivo, envío de activos e historial del libro",
     "view.account.description": "detalles de la cuenta, saldos, envío de activos y dispositivos vinculados.",
     "home.prompt.overview": "resumen",
+    "home.prompt.network": "red",
     "home.lede": "Teale convierte esta máquina en un nodo de oferta y un cliente de demanda al mismo tiempo.",
     "home.action.supply": "Abrir oferta",
     "home.action.demand": "Abrir demanda",
@@ -499,7 +512,7 @@ const translations = {
     "common.waitingLocalService": "Esperando el servicio local de Teale en esta PC.",
     "common.noModelLoaded": "Ningún modelo cargado",
     "common.syncing": "Sincronizando...",
-    "footer.tagline": "teale - inferencia distribuida de IA para el mundo",
+    "footer.tagline": "teale.com - distributed ai inference for the world",
     "auth.status.notConfigured": "Inicio de sesión no configurado",
     "auth.status.notSignedIn": "Sin iniciar sesión",
     "auth.status.signedIn": "Sesión iniciada",
@@ -554,7 +567,7 @@ const translations = {
     "supply.models.noneCompatible": "Todavía no hay modelos compatibles para este dispositivo.",
   },
   "fil-PH": {
-    "nav.home": "teale.com",
+    "nav.home": "teale",
     "nav.supply": "suplay",
     "nav.demand": "demand",
     "nav.wallet": "wallet",
@@ -566,6 +579,7 @@ const translations = {
     "view.wallet.description": "Mga balanse ng device, pagpapadala ng assets, at ledger history",
     "view.account.description": "mga detalye ng account, mga balanse, pagpapadala ng assets, at mga naka-link na device.",
     "home.prompt.overview": "overview",
+    "home.prompt.network": "network",
     "home.lede": "Ginagawang sabay na supply node at demand client ng Teale ang makinang ito.",
     "home.action.supply": "Buksan ang supply",
     "home.action.demand": "Buksan ang demand",
@@ -612,7 +626,7 @@ const translations = {
     "common.waitingLocalService": "Naghihintay sa local Teale service sa PC na ito.",
     "common.noModelLoaded": "Walang naka-load na model",
     "common.syncing": "Nagsi-sync...",
-    "footer.tagline": "teale - distributed ai inference para sa mundo",
+    "footer.tagline": "teale.com - distributed ai inference for the world",
     "auth.status.notConfigured": "Hindi naka-configure ang sign-in",
     "auth.status.notSignedIn": "Hindi naka-sign in",
     "auth.status.signedIn": "Naka-sign in",
@@ -725,10 +739,16 @@ let accountDevices = [];
 let accountSummary = null;
 let supabaseAccountDevices = [];
 let linkedSupabaseUserId = null;
-let linkedGatewayAccountUserId = null;
+let linkedGatewayAccountStateKey = null;
 let pendingOAuthCallbackUrl = null;
+let pendingOAuthProvider = null;
+let authErrorMessage = null;
+let oauthReconcileInFlight = false;
+let oauthCallbackExchangeInFlight = false;
 let networkModels = [];
 let networkModelsFetchedAt = 0;
+let networkStats = null;
+let networkStatsFetchedAt = 0;
 let selectedNetworkModelId = null;
 let demandSort = { key: "devices", dir: "desc" };
 let pendingModelAction = null;
@@ -780,7 +800,17 @@ function authConfigHint(provider, message) {
   ) {
     return "GitHub sign-in is misconfigured in Supabase. Set the GitHub provider client ID to the real GitHub OAuth Client ID, not the app name, and keep the callback URL at https://<project-ref>.supabase.co/auth/v1/callback.";
   }
-  if (provider === "google" && lower.includes("invalid_client")) {
+  if (
+    provider === "google" &&
+    (
+      lower.includes("invalid_client") ||
+      lower.includes("client_id") ||
+      lower.includes("client id") ||
+      lower.includes("oauth client") ||
+      lower === "teale.com" ||
+      (lower.includes(".") && !lower.includes(".apps.googleusercontent.com"))
+    )
+  ) {
     return "Google sign-in is misconfigured in Supabase. Use a Google Web application OAuth client, put the Supabase callback URL under Authorized redirect URIs, and save the same client ID and secret in the Supabase Google provider.";
   }
   return message;
@@ -794,12 +824,73 @@ function authConfigHintFromMessage(message) {
   if (lower.includes("google") || lower.includes("invalid_client")) {
     return authConfigHint("google", message);
   }
+  if (
+    lower.includes("pkce") ||
+    lower.includes("code verifier") ||
+    lower.includes("code_verifier")
+  ) {
+    return "Sign-in expired before Teale could finish it. Try signing in again from the Teale app.";
+  }
   return message;
 }
 
 function setAuthErrorState(message) {
+  authErrorMessage = message;
   els.authStatus.textContent = "Sign-in failed";
   els.authUser.textContent = message;
+}
+
+function clearAuthErrorState() {
+  authErrorMessage = null;
+}
+
+function currentSupabaseProjectRef() {
+  const supabaseUrl = lastSnapshot?.auth?.supabase_url;
+  if (!supabaseUrl) {
+    return null;
+  }
+  try {
+    return new URL(supabaseUrl).host.split(".")[0] || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function clearPersistedSupabaseSession() {
+  const projectRef = currentSupabaseProjectRef();
+  if (!projectRef) {
+    return;
+  }
+  const keys = [
+    `sb-${projectRef}-auth-token`,
+    `sb-${projectRef}-auth-token-code-verifier`,
+    `sb-${projectRef}-auth-token-code-verifiers`,
+  ];
+  for (const key of keys) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch (_error) {}
+  }
+}
+
+function resetAccountAuthState() {
+  authSession = null;
+  authUser = null;
+  authIdentities = [];
+  linkedSupabaseUserId = null;
+  linkedGatewayAccountStateKey = null;
+  accountDevices = [];
+  accountSummary = null;
+  supabaseAccountDevices = [];
+  clearAuthErrorState();
+  clearPendingOAuthProvider();
+  clearStoredOAuthCallback();
+  els.authPhoneInput.value = "";
+  els.authPhoneCodeInput.value = "";
+  renderAccountWallet();
+  renderAuthState();
+  renderAccountDevices();
+  renderHome(lastSnapshot);
 }
 
 function callbackParams(url) {
@@ -814,6 +905,88 @@ function callbackParams(url) {
 
 function callbackValue(params, key) {
   return params.search.get(key) || params.hash.get(key);
+}
+
+function summarizeCallbackUrl(url) {
+  try {
+    const params = callbackParams(url);
+    const keys = Array.from(new Set([
+      ...Array.from(params.search.keys()),
+      ...Array.from(params.hash.keys()),
+    ])).sort();
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname} keys=[${keys.join(",")}]`;
+  } catch (_error) {
+    return "unparseable";
+  }
+}
+
+function loadStoredOAuthCallback() {
+  if (pendingOAuthCallbackUrl) {
+    return pendingOAuthCallbackUrl;
+  }
+  try {
+    const stored = window.localStorage.getItem(OAUTH_CALLBACK_STORAGE_KEY);
+    if (stored) {
+      pendingOAuthCallbackUrl = stored;
+      return stored;
+    }
+  } catch (_error) {}
+  return pendingOAuthCallbackUrl;
+}
+
+function clearStoredOAuthCallback() {
+  pendingOAuthCallbackUrl = null;
+  try {
+    window.localStorage.removeItem(OAUTH_CALLBACK_STORAGE_KEY);
+  } catch (_error) {}
+}
+
+function setPendingOAuthProvider(provider) {
+  pendingOAuthProvider = provider || null;
+  try {
+    if (pendingOAuthProvider) {
+      window.localStorage.setItem(OAUTH_PROVIDER_STORAGE_KEY, pendingOAuthProvider);
+    } else {
+      window.localStorage.removeItem(OAUTH_PROVIDER_STORAGE_KEY);
+    }
+  } catch (_error) {}
+}
+
+function loadPendingOAuthProvider() {
+  if (pendingOAuthProvider) {
+    return pendingOAuthProvider;
+  }
+  try {
+    const stored = window.localStorage.getItem(OAUTH_PROVIDER_STORAGE_KEY);
+    if (stored) {
+      pendingOAuthProvider = stored;
+      return stored;
+    }
+  } catch (_error) {}
+  return pendingOAuthProvider;
+}
+
+function clearPendingOAuthProvider() {
+  setPendingOAuthProvider(null);
+}
+
+async function syncNativePendingOAuthCallback() {
+  try {
+    const response = await fetch("teale://localhost/auth/pending", { cache: "no-store" });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    if (!payload?.url) {
+      return;
+    }
+    authTrace(`native pending callback ${summarizeCallbackUrl(payload.url)}`);
+    pendingOAuthCallbackUrl = payload.url;
+    try {
+      window.localStorage.setItem(OAUTH_CALLBACK_STORAGE_KEY, payload.url);
+    } catch (_error) {}
+  } catch (_error) {}
 }
 
 function oauthMisconfigFromUrl(provider, rawUrl) {
@@ -831,6 +1004,45 @@ function oauthMisconfigFromUrl(provider, rawUrl) {
     }
   } catch (_error) {}
   return null;
+}
+
+function userDisplayName(user) {
+  const metadata = user?.user_metadata || {};
+  return metadata.full_name || metadata.name || metadata.user_name || user?.email || user?.phone || null;
+}
+
+function identityDataValue(identity, ...keys) {
+  const identityData = identity?.identity_data || {};
+  for (const key of keys) {
+    const value = identityData[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function githubUsernameForIdentities(identities) {
+  const githubIdentity = (identities || []).find((identity) => identity.provider === "github");
+  return identityDataValue(githubIdentity, "user_name", "preferred_username", "login", "name");
+}
+
+function accountLinkStateKey(user, identities) {
+  if (!user?.id) {
+    return null;
+  }
+  const identityKey = (identities || [])
+    .map((identity) => {
+      const providerKey =
+        identityDataValue(identity, "user_name", "preferred_username", "login", "email", "phone", "sub") ||
+        identity.id ||
+        identity.identity_id ||
+        "";
+      return `${identity.provider || "unknown"}:${providerKey}`;
+    })
+    .sort()
+    .join("|");
+  return [user.id, user.phone || "", user.email || "", identityKey].join("||");
 }
 
 function friendlyError(error) {
@@ -1001,6 +1213,22 @@ function truncateDeviceId(value) {
   return `${value.slice(0, 8)}...${value.slice(-8)}`;
 }
 
+async function copyValueWithFlash(button, value, label, renderValue) {
+  if (!value || value === "-") {
+    return;
+  }
+  const original = renderValue(value);
+  try {
+    await copyTextQuiet(value);
+    button.textContent = t("common.copied", { fallback: "copied" });
+    window.setTimeout(() => {
+      button.textContent = original;
+    }, 900);
+  } catch (error) {
+    alert(`Could not copy ${label.toLowerCase()}: ${error.message}`);
+  }
+}
+
 function userLabel(user) {
   if (!user) {
     return t("auth.status.notSignedIn");
@@ -1015,10 +1243,77 @@ function providerLabel(identities) {
   return identities.map((identity) => providerDisplayName(identity.provider)).join(" | ");
 }
 
+function linkedProviderNames() {
+  const providers = new Set();
+  for (const identity of authIdentities || []) {
+    if (identity?.provider) {
+      providers.add(identity.provider);
+    }
+  }
+  for (const identity of authUser?.identities || []) {
+    if (identity?.provider) {
+      providers.add(identity.provider);
+    }
+  }
+  const metadataProviders = authUser?.app_metadata?.providers;
+  if (Array.isArray(metadataProviders)) {
+    for (const provider of metadataProviders) {
+      if (typeof provider === "string" && provider) {
+        providers.add(provider);
+      }
+    }
+  }
+  if (authUser?.phone || accountSummary?.phone) {
+    providers.add("phone");
+  }
+  if (accountSummary?.github_username) {
+    providers.add("github");
+  }
+  return Array.from(providers);
+}
+
+function linkedEmails() {
+  const emails = new Set();
+  const pushEmail = (value) => {
+    if (typeof value === "string" && value.trim()) {
+      emails.add(value.trim().toLowerCase());
+    }
+  };
+
+  pushEmail(authUser?.email);
+  pushEmail(accountSummary?.email);
+
+  for (const identity of authIdentities || []) {
+    pushEmail(identity?.email);
+    pushEmail(identityDataValue(identity, "email"));
+  }
+
+  for (const identity of authUser?.identities || []) {
+    pushEmail(identity?.email);
+    pushEmail(identityDataValue(identity, "email"));
+  }
+
+  return Array.from(emails);
+}
+
+function primaryLinkedEmail() {
+  return linkedEmails()[0] || null;
+}
+
+function linkedGithubUsername() {
+  return githubUsernameForIdentities(authIdentities)
+    || githubUsernameForIdentities(authUser?.identities || [])
+    || accountSummary?.github_username
+    || null;
+}
+
 function availabilityRateLabel(wallet) {
   const tickCredits = wallet?.availability_credits_per_tick ?? 0;
   const tickSeconds = wallet?.availability_tick_seconds ?? 10;
   if (tickCredits > 0) {
+    if (tickSeconds === 1) {
+      return `+${tickCredits} / sec`;
+    }
     return `+${tickCredits} / ${tickSeconds} sec`;
   }
   const perMinute = wallet?.availability_rate_credits_per_minute ?? 0;
@@ -1041,6 +1336,10 @@ function walletStatusNote(wallet) {
   });
 }
 
+function visibleWalletTransactions(entries) {
+  return (entries || []).filter((entry) => (entry?.type || entry?.type_ || "").toUpperCase() !== "AVAILABILITY_DRIP");
+}
+
 function activeWalletBalance() {
   if (accountSummary) {
     return {
@@ -1049,14 +1348,14 @@ function activeWalletBalance() {
       note: t("account.wallet.note.live", {
         fallback: "Account balance includes swept device balances. Local demand still uses this device bearer.",
       }),
-      transactions: accountSummary.transactions || [],
+      transactions: visibleWalletTransactions(accountSummary.transactions),
     };
   }
   return {
     credits: lastSnapshot?.wallet?.gateway_balance_credits ?? null,
     usdcCents: lastSnapshot?.wallet?.gateway_usdc_cents ?? 0,
     note: walletStatusNote(lastSnapshot?.wallet),
-    transactions: lastSnapshot?.wallet_transactions || [],
+    transactions: visibleWalletTransactions(lastSnapshot?.wallet_transactions),
   };
 }
 
@@ -1110,6 +1409,29 @@ function currentNetworkModel() {
   return networkModels.find((model) => model.id === selectedNetworkModelId) || networkModels[0] || null;
 }
 
+function renderHomeNetworkStats() {
+  if (!networkStats) {
+    els.homeNetworkDevices.textContent = "Loading...";
+    els.homeNetworkRam.textContent = "Loading...";
+    els.homeNetworkModels.textContent = "Loading...";
+    els.homeNetworkTtft.textContent = "Loading...";
+    els.homeNetworkTps.textContent = "Loading...";
+    els.homeNetworkEarned.textContent = "Loading...";
+    els.homeNetworkSpent.textContent = "Loading...";
+    els.homeNetworkUsdc.textContent = "Loading...";
+    return;
+  }
+
+  els.homeNetworkDevices.textContent = formatCredits(networkStats.total_devices ?? 0);
+  els.homeNetworkRam.textContent = formatRamGB(networkStats.total_ram_gb);
+  els.homeNetworkModels.textContent = formatCredits(networkStats.total_models ?? 0);
+  els.homeNetworkTtft.textContent = formatMs(networkStats.avg_ttft_ms);
+  els.homeNetworkTps.textContent = formatTps(networkStats.avg_tps);
+  els.homeNetworkEarned.textContent = `${formatCredits(networkStats.total_credits_earned ?? 0)} credits`;
+  els.homeNetworkSpent.textContent = `${formatCredits(networkStats.total_credits_spent ?? 0)} credits`;
+  els.homeNetworkUsdc.textContent = `${formatUsdc(networkStats.total_usdc_distributed_cents ?? 0)} USDC`;
+}
+
 function buildLocalCurl(demand) {
   if (!demand?.local_base_url || !demand?.local_model_id) {
     return "Waiting for a local model...";
@@ -1147,6 +1469,29 @@ function postNativeMessage(payload) {
     return true;
   }
   return false;
+}
+
+function authTrace(message) {
+  console.log(`[auth] ${message}`);
+  postNativeMessage({ type: "authLog", message });
+}
+
+async function withTimeout(promise, ms, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = window.setTimeout(() => {
+          reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      window.clearTimeout(timer);
+    }
+  }
 }
 
 async function copyText(text, label) {
@@ -1208,6 +1553,11 @@ function setActiveView(view) {
     panel.classList.toggle("view-active", panel.dataset.view === view);
   }
   els.headerLine.textContent = viewDescription(view) || viewDescription("home");
+  if (view === "home") {
+    refreshNetworkStats().catch((error) => {
+      console.error("network stats refresh failed", error);
+    });
+  }
   if (view === "demand") {
     refreshNetworkModels().catch((error) => {
       console.error("network models refresh failed", error);
@@ -1270,6 +1620,8 @@ function setDisconnected(error) {
   els.homeModel.textContent = t("common.noModelLoaded");
   els.homeBalance.textContent = t("common.waitingLocalService");
   els.homeAccount.textContent = userLabel(authUser);
+  networkStats = null;
+  renderHomeNetworkStats();
 
   els.supplyEarningRate.textContent = "Waiting for a loaded model...";
   els.supplySessionCredits.textContent = "0";
@@ -1280,21 +1632,23 @@ function setDisconnected(error) {
   els.localCurl.textContent = "Waiting for a local model...";
   els.networkBaseUrl.textContent = "-";
   els.networkToken.textContent = t("common.syncing");
+  els.networkToken.title = "Copy bearer token";
+  els.networkToken.disabled = true;
   els.networkSelectedModel.textContent = "Waiting for gateway models...";
   els.networkCurl.textContent = "Waiting for a network bearer token...";
   els.networkModelTableBody.innerHTML = "";
   els.networkModelEmpty.textContent = "The network model table appears once Teale responds locally.";
 
+  els.walletDeviceName.textContent = "-";
+  els.walletDeviceId.textContent = "-";
+  els.walletDeviceId.title = "Copy device ID";
+  els.walletStatus.textContent = "Offline";
+  els.walletModel.textContent = t("common.noModelLoaded");
   els.walletBalance.textContent = t("common.waitingLocalService");
   els.walletUsdc.textContent = "0.00";
-  els.walletSessionCredits.textContent = "0";
-  els.walletCreditsToday.textContent = "0";
-  els.walletEarned.textContent = "-";
-  els.walletSpent.textContent = "-";
-  els.walletRequests.textContent = "0";
   els.walletSince.textContent = "Not serving yet";
   els.walletRate.textContent = "Availability credits begin once a compatible model is loaded and serving.";
-  els.walletNote.textContent = "The companion will sync wallet data once Teale responds locally.";
+  els.walletNote.textContent = "The companion will sync the device wallet once Teale responds locally.";
   renderEmptyLedger("No ledger entries yet.");
   els.accountWalletBalance.textContent = t("common.waitingLocalService");
   els.accountWalletUsdc.textContent = "0.00";
@@ -1579,7 +1933,9 @@ function renderLedger(entries) {
 
     const info = document.createElement("div");
     const title = document.createElement("h3");
-    title.textContent = entry.type;
+    title.textContent = entry.type === "AVAILABILITY_SESSION"
+      ? "Availability session"
+      : entry.type;
     const meta = document.createElement("p");
     meta.className = "ledger-meta";
     meta.textContent = [formatTimestamp(entry.timestamp), entry.device_id].filter(Boolean).join(" // ");
@@ -1609,10 +1965,12 @@ function renderAccountWallet() {
     return;
   }
 
-  if (authUser) {
-    els.accountWalletBalance.textContent = t("common.syncing");
+  if (authUser || authSession?.user?.id) {
+    els.accountWalletBalance.textContent = formatCredits(0);
     els.accountWalletUsdc.textContent = "0.00";
-    els.accountWalletNote.textContent = t("account.wallet.note.pending");
+    els.accountWalletNote.textContent = t("account.wallet.note.pending", {
+      fallback: "Account wallet starts at 0 until device balances are swept here.",
+    });
     return;
   }
 
@@ -1643,7 +2001,8 @@ function buildAccountDeviceRows() {
 
   for (const device of supabaseAccountDevices) {
     const deviceId = device.wan_node_id || device.id || "-";
-    const key = device.wan_node_id || `supabase:${device.id}`;
+    const key = device.wan_node_id
+      || `${device.platform || "unknown"}:${(device.device_name || "unknown").toLowerCase()}`;
     const existing = rows.get(deviceId) || rows.get(key);
     if (existing) {
       existing.label = existing.label === "Unknown device" && device.device_name
@@ -1688,6 +2047,50 @@ function buildAccountDeviceRows() {
     }
     return (right.lastSeen || 0) - (left.lastSeen || 0);
   });
+}
+
+function supabaseDeviceMergeKey(device) {
+  return device?.wan_node_id
+    || `${device?.platform || "unknown"}:${(device?.device_name || "unknown").toLowerCase()}`;
+}
+
+function mergeSupabaseDeviceLists(...lists) {
+  const merged = new Map();
+
+  for (const list of lists) {
+    for (const device of list || []) {
+      if (!device) {
+        continue;
+      }
+
+      const key = supabaseDeviceMergeKey(device);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, { ...device });
+        continue;
+      }
+
+      merged.set(key, {
+        ...existing,
+        ...device,
+        id: existing.id || device.id,
+        wan_node_id: existing.wan_node_id || device.wan_node_id,
+        device_name: existing.device_name || device.device_name,
+        platform: existing.platform || device.platform,
+        chip_name: existing.chip_name || device.chip_name,
+        ram_gb: existing.ram_gb ?? device.ram_gb,
+        registered_at: existing.registered_at || device.registered_at,
+        last_seen: normalizeSupabaseTimestamp(existing.last_seen) >= normalizeSupabaseTimestamp(device.last_seen)
+          ? existing.last_seen
+          : device.last_seen,
+        is_active: existing.is_active ?? device.is_active,
+      });
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => (
+    normalizeSupabaseTimestamp(right?.last_seen) - normalizeSupabaseTimestamp(left?.last_seen)
+  ));
 }
 
 function renderAccountDevices() {
@@ -1799,14 +2202,29 @@ function renderAccountDevices() {
 }
 
 function renderAuthState() {
+  const linkedProviders = linkedProviderNames();
+  const githubLinked = linkedProviders.includes("github");
+  const googleLinked = linkedProviders.includes("google");
+  const phoneLinked = linkedProviders.includes("phone");
   const githubIdentity = authIdentities.find((identity) => identity.provider === "github");
   const googleIdentity = authIdentities.find((identity) => identity.provider === "google");
   const phoneIdentity = authIdentities.find((identity) => identity.provider === "phone");
+  const signedInViaPhone = Boolean(authUser?.phone || phoneIdentity || accountSummary?.phone);
+  const signedInToAccount = Boolean(
+    authUser?.id || authSession?.user?.id || accountSummary?.account_user_id || signedInViaPhone
+  );
+  const emails = linkedEmails();
+  const githubUsername = linkedGithubUsername();
 
-  els.accountId.textContent = authUser?.id || "-";
-  els.accountEmail.textContent = authUser?.email || "-";
-  els.accountPhone.textContent = authUser?.phone || "-";
-  els.accountIdentities.textContent = providerLabel(authIdentities);
+  els.accountId.textContent = authUser?.id || accountSummary?.account_user_id || "-";
+  els.accountEmail.textContent = emails.length ? emails.join(" | ") : "-";
+  if (els.accountGithub) {
+    els.accountGithub.textContent = githubUsername || "-";
+  }
+  els.accountPhone.textContent = authUser?.phone || accountSummary?.phone || "-";
+  els.accountIdentities.textContent = authIdentities.length
+    ? providerLabel(authIdentities)
+    : linkedProviders.map((provider) => providerDisplayName(provider)).join(" | ") || "-";
   els.authPhoneSendButton.textContent = t("auth.button.sendSms");
   els.authPhoneVerifyButton.textContent = t("auth.button.verifyCode");
   els.authSignoutButton.textContent = t("auth.button.signOut");
@@ -1820,30 +2238,36 @@ function renderAuthState() {
     els.authPhoneVerifyButton.disabled = true;
     els.authSignoutButton.hidden = true;
     els.authPhonePanel.hidden = false;
+    els.authPhonePanel.style.display = "";
     els.authNote.textContent = t("auth.note.walletStillWorks");
     return;
   }
 
-  if (!authUser) {
+  if (!signedInToAccount) {
     els.authStatus.textContent = t("auth.status.notSignedIn");
-    els.authUser.textContent = t("auth.user.prompt");
+    els.authUser.textContent = authErrorMessage || t("auth.user.prompt");
     els.authGithubButton.textContent = t("auth.button.signInGithub");
     els.authGithubButton.disabled = false;
     els.authGoogleButton.textContent = t("auth.button.signInGoogle");
     els.authGoogleButton.disabled = false;
     els.authPhonePanel.hidden = false;
+    els.authPhonePanel.style.display = "";
     els.authPhoneSendButton.disabled = false;
     els.authPhoneVerifyButton.disabled = false;
     els.authSignoutButton.hidden = true;
-    els.authNote.textContent = t("auth.note.claimsDevice");
+    els.authNote.textContent = authErrorMessage || t("auth.note.claimsDevice");
     return;
   }
 
   els.authStatus.textContent = t("auth.status.signedIn");
-  els.authUser.textContent = userLabel(authUser);
+  els.authUser.textContent = userLabel(authUser) !== t("auth.status.notSignedIn")
+    ? userLabel(authUser)
+    : accountSummary?.phone || accountSummary?.email || accountSummary?.account_user_id || t("auth.status.signedIn");
   els.authSignoutButton.hidden = false;
+  els.authPhonePanel.hidden = true;
+  els.authPhonePanel.style.display = "none";
 
-  if (githubIdentity) {
+  if (githubLinked || githubIdentity) {
     els.authGithubButton.textContent = t("auth.button.githubLinked");
     els.authGithubButton.disabled = true;
   } else {
@@ -1851,7 +2275,7 @@ function renderAuthState() {
     els.authGithubButton.disabled = false;
   }
 
-  if (googleIdentity) {
+  if (googleLinked || googleIdentity) {
     els.authGoogleButton.textContent = t("auth.button.googleLinked");
     els.authGoogleButton.disabled = true;
   } else {
@@ -1859,13 +2283,11 @@ function renderAuthState() {
     els.authGoogleButton.disabled = false;
   }
 
-  if (phoneIdentity) {
-    els.authPhonePanel.hidden = true;
-    els.authNote.textContent = githubIdentity && googleIdentity
+  if (phoneLinked || signedInViaPhone) {
+    els.authNote.textContent = (githubLinked || githubIdentity) && (googleLinked || googleIdentity)
       ? t("auth.note.allLinked")
       : t("auth.note.phoneCanLink");
   } else {
-    els.authPhonePanel.hidden = true;
     els.authNote.textContent = t("auth.note.phoneLinkNotYet");
   }
 }
@@ -1878,10 +2300,11 @@ async function ensureAuthClient(authConfig) {
     authUser = null;
     authIdentities = [];
     linkedSupabaseUserId = null;
-    linkedGatewayAccountUserId = null;
+    linkedGatewayAccountStateKey = null;
     accountDevices = [];
     accountSummary = null;
     supabaseAccountDevices = [];
+    clearAuthErrorState();
     renderAuthState();
     renderAccountDevices();
     return;
@@ -1904,15 +2327,20 @@ async function ensureAuthClient(authConfig) {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: false,
+      flowType: "pkce",
     },
   });
 
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     authSession = session;
     authUser = session?.user || null;
+    if (authUser) {
+      clearAuthErrorState();
+    }
     linkedSupabaseUserId = authUser ? linkedSupabaseUserId : null;
-    linkedGatewayAccountUserId = authUser ? linkedGatewayAccountUserId : null;
+    linkedGatewayAccountStateKey = authUser ? linkedGatewayAccountStateKey : null;
     await ensureSupabaseIdentity();
+    await refreshAccountState();
     await ensureGatewayAccountLink();
     await refreshAccountState();
     renderAccountWallet();
@@ -1926,6 +2354,7 @@ async function ensureAuthClient(authConfig) {
   authUser = data.session?.user || null;
   await consumePendingOAuthCallback();
   await ensureSupabaseIdentity();
+  await refreshAccountState();
   await ensureGatewayAccountLink();
   await refreshAccountState();
   renderAccountWallet();
@@ -1942,77 +2371,226 @@ async function refreshAccountState() {
     return;
   }
 
-  const [{ data: identitiesData }, devicesResult, summary] = await Promise.all([
-    supabaseClient.auth.getUserIdentities(),
-    supabaseClient
-      .from("devices")
-      .select("id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active")
-      .eq("user_id", authUser.id)
-      .order("last_seen", { ascending: false }),
+  const [sessionState, summary, directSupabaseDevices] = await Promise.all([
+    refreshAuthoritativeAuthState("refreshAccountState"),
     getJsonMaybeMissing("/v1/app/account").catch((error) => {
       console.warn("account summary fetch failed", error);
       return null;
     }),
+    supabaseClient
+      .from("devices")
+      .select("id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active")
+      .eq("user_id", authUser.id)
+      .order("last_seen", { ascending: false })
+      .then(({ data, error }) => {
+        if (error) {
+          throw error;
+        }
+        return data || [];
+      })
+      .catch((error) => {
+        console.warn("supabase account devices fetch failed", error);
+        authTrace(`supabase account devices fetch failed ${friendlyError(error)}`);
+        return [];
+      }),
   ]);
 
-  authIdentities = identitiesData?.identities || authUser.identities || [];
   accountSummary = summary;
   accountDevices = summary?.devices || [];
-  supabaseAccountDevices = devicesResult?.data || [];
+  supabaseAccountDevices = mergeSupabaseDeviceLists(
+    supabaseAccountDevices,
+    sessionState?.devices || [],
+    directSupabaseDevices || []
+  );
+  authTrace(
+    `account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=${supabaseAccountDevices.length}`
+  );
+}
+
+async function refreshAuthoritativeAuthState(reason, { throwOnError = false } = {}) {
+  if (!authSession?.access_token) {
+    authTrace(`local auth session skipped reason=${reason} missing access token`);
+    return null;
+  }
+
+  try {
+    const sessionState = await post("/v1/app/auth/session", {
+      accessToken: authSession.access_token,
+    });
+    const identities = sessionState?.identities || sessionState?.user?.identities || [];
+    if (sessionState?.user) {
+      authUser = {
+        ...(authUser || {}),
+        ...sessionState.user,
+        identities,
+      };
+    }
+    authIdentities = identities;
+    supabaseAccountDevices = mergeSupabaseDeviceLists(supabaseAccountDevices, sessionState?.devices || []);
+    authTrace(
+      `local auth session success reason=${reason} providers=${identities.map((identity) => identity.provider).join(",") || "none"} devices=${supabaseAccountDevices.length}`
+    );
+    return sessionState;
+  } catch (error) {
+    authTrace(`local auth session failed reason=${reason} error=${error.message}`);
+    if (throwOnError) {
+      throw error;
+    }
+    return null;
+  }
+}
+
+async function reconcileAlreadyLinkedIdentity() {
+  const provider = loadPendingOAuthProvider();
+  authTrace(`reconcile already linked provider=${provider || "unknown"}`);
+  if (oauthReconcileInFlight) {
+    authTrace("reconcile skipped because another reconcile is already in flight");
+    return false;
+  }
+  oauthReconcileInFlight = true;
+
+  try {
+    try {
+      await refreshAuthoritativeAuthState("reconcileAlreadyLinkedIdentity", { throwOnError: true });
+    } catch (error) {
+      authTrace(`reconcile authoritative refresh threw ${error.message}`);
+    }
+
+    await refreshAccountState();
+
+    if (provider && authIdentities.some((identity) => identity.provider === provider)) {
+      clearAuthErrorState();
+      linkedGatewayAccountStateKey = null;
+      await ensureGatewayAccountLink();
+      await refreshAccountState();
+      authTrace(`reconcile success provider=${provider}`);
+      clearPendingOAuthProvider();
+      return true;
+    }
+
+    authTrace(
+      `reconcile unresolved provider=${provider || "unknown"} providers=${authIdentities.map((identity) => identity.provider).join(",") || "none"}`
+    );
+    return false;
+  } finally {
+    oauthReconcileInFlight = false;
+  }
 }
 
 async function consumePendingOAuthCallback() {
-  if (!pendingOAuthCallbackUrl || !supabaseClient) {
+  if (oauthCallbackExchangeInFlight) {
+    authTrace("consume callback skipped because an auth exchange is already in flight");
     return;
   }
-  const params = callbackParams(pendingOAuthCallbackUrl);
-  const oauthError =
-    callbackValue(params, "error_description") ||
-    callbackValue(params, "error") ||
-    callbackValue(params, "error_code");
-  if (oauthError) {
-    setAuthErrorState(authConfigHintFromMessage(oauthError));
-    pendingOAuthCallbackUrl = null;
+  const callbackUrl = loadStoredOAuthCallback();
+  if (!callbackUrl || !supabaseClient) {
     return;
   }
-  const accessToken = callbackValue(params, "access_token");
-  const refreshToken = callbackValue(params, "refresh_token");
-  if (accessToken && refreshToken) {
+  oauthCallbackExchangeInFlight = true;
+  try {
+    authTrace(`consume callback ${summarizeCallbackUrl(callbackUrl)}`);
+    const params = callbackParams(callbackUrl);
+    const oauthError =
+      callbackValue(params, "error_description") ||
+      callbackValue(params, "error") ||
+      callbackValue(params, "error_code");
+    if (oauthError) {
+      const normalizedOauthError = String(oauthError || "").normalize("NFKC").toLowerCase();
+      authTrace(`callback oauth error ${oauthError}`);
+      authTrace(`callback oauth error normalized=${normalizedOauthError}`);
+      if (
+        authUser &&
+        (
+          normalizedOauthError.includes("already linked") ||
+          (normalizedOauthError.includes("identity") && normalizedOauthError.includes("linked"))
+        )
+      ) {
+        authTrace("callback oauth error entering already-linked reconcile path");
+        clearStoredOAuthCallback();
+        const reconciled = await reconcileAlreadyLinkedIdentity();
+        if (!reconciled) {
+          const provider = loadPendingOAuthProvider();
+          setAuthErrorState(
+            provider
+              ? `${providerDisplayName(provider)} is already linked, but Supabase did not return it on this current session.`
+              : "Identity is already linked, but it did not appear on this current session."
+          );
+          clearPendingOAuthProvider();
+        }
+        return;
+      }
+      setAuthErrorState(authConfigHintFromMessage(oauthError));
+      clearStoredOAuthCallback();
+      clearPendingOAuthProvider();
+      return;
+    }
+
+    const accessToken = callbackValue(params, "access_token");
+    const refreshToken = callbackValue(params, "refresh_token");
+    if (accessToken && refreshToken) {
+      try {
+        authTrace("setSession from callback tokens");
+        const { data, error } = await withTimeout(
+          supabaseClient.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          }),
+          15000,
+          "setSession"
+        );
+        if (error) {
+          throw error;
+        }
+        authTrace(`setSession success user=${data.session?.user?.id || "none"}`);
+        authSession = data.session;
+        authUser = data.session?.user || null;
+        clearAuthErrorState();
+        linkedGatewayAccountStateKey = null;
+        clearStoredOAuthCallback();
+        clearPendingOAuthProvider();
+        window.history.replaceState({}, "", "teale://localhost/");
+      } catch (error) {
+        authTrace(`setSession failed ${error.message}`);
+        setAuthErrorState(authConfigHintFromMessage(error.message));
+        clearStoredOAuthCallback();
+        clearPendingOAuthProvider();
+      }
+      return;
+    }
+
+    const code = callbackValue(params, "code");
+    if (!code) {
+      authTrace("callback missing code and tokens");
+      clearStoredOAuthCallback();
+      clearPendingOAuthProvider();
+      return;
+    }
     try {
-      const { data, error } = await supabaseClient.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      });
+      authTrace("exchangeCodeForSession start");
+      const { data, error } = await withTimeout(
+        supabaseClient.auth.exchangeCodeForSession(code),
+        15000,
+        "exchangeCodeForSession"
+      );
       if (error) {
         throw error;
       }
+      authTrace(`exchangeCodeForSession success user=${data.session?.user?.id || "none"}`);
       authSession = data.session;
       authUser = data.session?.user || null;
-      pendingOAuthCallbackUrl = null;
+      clearAuthErrorState();
+      linkedGatewayAccountStateKey = null;
+      clearStoredOAuthCallback();
+      clearPendingOAuthProvider();
       window.history.replaceState({}, "", "teale://localhost/");
     } catch (error) {
+      authTrace(`exchangeCodeForSession failed ${error.message}`);
       setAuthErrorState(authConfigHintFromMessage(error.message));
-      pendingOAuthCallbackUrl = null;
+      clearStoredOAuthCallback();
+      clearPendingOAuthProvider();
     }
-    return;
-  }
-  const code = callbackValue(params, "code");
-  if (!code) {
-    pendingOAuthCallbackUrl = null;
-    return;
-  }
-  try {
-    const { data, error } = await supabaseClient.auth.exchangeCodeForSession(code);
-    if (error) {
-      throw error;
-    }
-    authSession = data.session;
-    authUser = data.session?.user || null;
-    pendingOAuthCallbackUrl = null;
-    window.history.replaceState({}, "", "teale://localhost/");
-  } catch (error) {
-    setAuthErrorState(authConfigHintFromMessage(error.message));
-    pendingOAuthCallbackUrl = null;
+  } finally {
+    oauthCallbackExchangeInFlight = false;
   }
 }
 
@@ -2024,11 +2602,9 @@ async function ensureSupabaseIdentity() {
     return;
   }
 
-  const metadata = authUser.user_metadata || {};
-  const displayName = metadata.user_name || metadata.full_name || metadata.name || authUser.email || authUser.phone || null;
   const profilePayload = {
     id: authUser.id,
-    display_name: displayName,
+    display_name: userDisplayName(authUser),
     phone: authUser.phone || null,
     email: authUser.email || null,
   };
@@ -2111,24 +2687,48 @@ async function ensureGatewayAccountLink() {
   if (!authUser || !lastSnapshot?.wallet?.current_device_id) {
     return;
   }
-  if (linkedGatewayAccountUserId === authUser.id) {
+
+  let identities = authIdentities;
+  if (!identities.length) {
+    try {
+      const authoritative = await refreshAuthoritativeAuthState("ensureGatewayAccountLink", { throwOnError: true });
+      identities = authoritative?.identities || authUser.identities || [];
+      authIdentities = identities;
+    } catch (error) {
+      console.warn("authoritative identity refresh failed", error);
+    }
+  }
+
+  const primaryEmail = primaryLinkedEmail() || authUser.email || null;
+  const githubUsername = linkedGithubUsername();
+  const stateKey = accountLinkStateKey(authUser, identities);
+  const needsMetadataBackfill = Boolean(
+    accountSummary?.account_user_id === authUser.id &&
+    (
+      (primaryEmail && !accountSummary?.email) ||
+      (githubUsername && !accountSummary?.github_username)
+    )
+  );
+  if (!stateKey || (linkedGatewayAccountStateKey === stateKey && !needsMetadataBackfill)) {
     return;
   }
 
-  const githubIdentity = (authUser.identities || []).find((identity) => identity.provider === "github");
-  const metadata = authUser.user_metadata || {};
   const payload = {
     accountUserID: authUser.id,
-    displayName: metadata.user_name || metadata.full_name || metadata.name || null,
+    displayName: userDisplayName(authUser),
     phone: authUser.phone || null,
-    email: authUser.email || null,
-    githubUsername: metadata.user_name || githubIdentity?.identity_data?.user_name || null,
+    email: primaryEmail,
+    githubUsername: githubUsername,
   };
 
   try {
     accountSummary = await post("/v1/app/account/link", payload);
-    linkedGatewayAccountUserId = authUser.id;
+    authTrace(
+      `gateway account link success providers=${authIdentities.map((identity) => identity.provider).join(",") || "none"} github=${payload.githubUsername || "none"}`
+    );
+    linkedGatewayAccountStateKey = stateKey;
   } catch (error) {
+    authTrace(`gateway account link failed ${error.message}`);
     console.warn("gateway account link failed", error);
   }
 }
@@ -2155,6 +2755,9 @@ async function startOAuth(provider) {
   if (!supabaseClient || !lastSnapshot?.auth?.configured) {
     return;
   }
+  clearAuthErrorState();
+  setPendingOAuthProvider(provider);
+  authTrace(`startOAuth provider=${provider} signedIn=${Boolean(authUser)}`);
   const redirectUrl = lastSnapshot.auth.redirect_url || "teale://auth/callback";
   const options = {
     redirectTo: redirectUrl,
@@ -2194,10 +2797,12 @@ async function startOAuth(provider) {
     if (oauthConfigError) {
       throw new Error(oauthConfigError);
     }
+    authTrace(`startOAuth url ready provider=${provider}`);
     if (!postNativeMessage({ type: "openExternal", url: response.data.url })) {
       window.open(response.data.url, "_blank", "noopener,noreferrer");
     }
   } catch (error) {
+    authTrace(`startOAuth failed provider=${provider} error=${error.message}`);
     alert(authConfigHint(provider, error.message));
   }
 }
@@ -2232,6 +2837,25 @@ async function refreshNetworkModels(force = false) {
   }
 }
 
+async function refreshNetworkStats(force = false) {
+  if (!lastSnapshot) {
+    return;
+  }
+  const now = Date.now();
+  if (!force && now - networkStatsFetchedAt < 15_000) {
+    return;
+  }
+  try {
+    networkStats = await getJson("/v1/app/network/stats");
+    networkStatsFetchedAt = now;
+    renderHomeNetworkStats();
+  } catch (error) {
+    console.error("network stats refresh failed", error);
+    networkStats = null;
+    renderHomeNetworkStats();
+  }
+}
+
 function renderHome(snapshot) {
   const walletView = activeWalletBalance();
   els.homeStatus.textContent = labelForState(snapshot?.service_state);
@@ -2240,6 +2864,7 @@ function renderHome(snapshot) {
     ? `${formatCredits(walletView.credits)} credits`
     : "Syncing...";
   els.homeAccount.textContent = userLabel(authUser);
+  renderHomeNetworkStats();
 }
 
 function renderSupply(snapshot) {
@@ -2291,6 +2916,10 @@ function renderDemand(snapshot) {
 
   els.networkBaseUrl.textContent = demand.network_base_url || "-";
   els.networkToken.textContent = maskToken(demand.network_bearer_token);
+  els.networkToken.title = demand.network_bearer_token
+    ? "Click to copy bearer token"
+    : "Copy bearer token";
+  els.networkToken.disabled = !demand.network_bearer_token;
   els.networkTokenNote.textContent = demand.network_bearer_token
       ? "Use this bearer against gateway.teale.com. Requests spend from Teale credits."
       : "Waiting for the device bearer token from the gateway wallet sync.";
@@ -2302,21 +2931,17 @@ function renderDemand(snapshot) {
 function renderWallet(snapshot) {
   const walletView = activeWalletBalance();
   const wallet = snapshot.wallet || {};
+  els.walletDeviceName.textContent = snapshot.device?.display_name || "-";
+  els.walletDeviceId.textContent = truncateDeviceId(wallet.current_device_id || "-");
+  els.walletDeviceId.title = wallet.current_device_id || "Copy device ID";
+  els.walletStatus.textContent = labelForState(snapshot.service_state);
+  els.walletModel.textContent = snapshot.loaded_model_id || t("common.noModelLoaded");
   els.walletBalance.textContent = walletView.credits != null
     ? formatCredits(walletView.credits)
     : wallet.gateway_sync_error
       ? "Retrying sync"
       : "Syncing...";
   els.walletUsdc.textContent = formatUsdc(walletView.usdcCents ?? 0);
-  els.walletSessionCredits.textContent = formatCredits(wallet.estimated_session_credits ?? 0);
-  els.walletCreditsToday.textContent = formatCredits(wallet.credits_today ?? 0);
-  els.walletEarned.textContent = wallet.gateway_total_earned_credits != null
-    ? formatCredits(wallet.gateway_total_earned_credits)
-    : "-";
-  els.walletSpent.textContent = wallet.gateway_total_spent_credits != null
-    ? formatCredits(wallet.gateway_total_spent_credits)
-    : "-";
-  els.walletRequests.textContent = formatCredits(wallet.completed_requests ?? 0);
   els.walletSince.textContent = formatRelativeFromUnix(wallet.supplying_since);
   els.walletRate.textContent = availabilityRateLabel(wallet);
   els.walletNote.textContent = walletView.note;
@@ -2343,7 +2968,17 @@ async function refresh() {
   reconcilePendingAction(snapshot);
   lastSnapshot = snapshot;
   await ensureAuthClient(snapshot.auth);
+  await syncNativePendingOAuthCallback();
+  if (pendingOAuthCallbackUrl) {
+    await consumePendingOAuthCallback();
+    await refreshAccountState();
+    await ensureGatewayAccountLink();
+    await refreshAccountState();
+  }
   render(snapshot);
+  if (activeView === "home") {
+    await refreshNetworkStats();
+  }
   if (activeView === "demand") {
     await refreshNetworkModels();
   }
@@ -2400,10 +3035,6 @@ els.unloadButton.addEventListener("click", async () => {
 });
 
 els.supplyWalletLink.addEventListener("click", () => setActiveView("wallet"));
-els.homeOpenSupply.addEventListener("click", () => setActiveView("supply"));
-els.homeOpenDemand.addEventListener("click", () => setActiveView("demand"));
-els.homeOpenWallet.addEventListener("click", () => setActiveView("wallet"));
-els.homeOpenAccount.addEventListener("click", () => setActiveView("account"));
 
 els.authGithubButton.addEventListener("click", () => startOAuth("github"));
 els.authGoogleButton.addEventListener("click", () => startOAuth("google"));
@@ -2443,7 +3074,10 @@ els.authPhoneVerifyButton.addEventListener("click", async () => {
     }
     authSession = data.session;
     authUser = data.user;
+    clearAuthErrorState();
+    clearPendingOAuthProvider();
     await ensureSupabaseIdentity();
+    await refreshAccountState();
     await ensureGatewayAccountLink();
     await refreshAccountState();
     renderAccountWallet();
@@ -2459,26 +3093,42 @@ els.authSignoutButton.addEventListener("click", async () => {
   if (!supabaseClient) {
     return;
   }
+  authTrace("signOut start");
+  els.authSignoutButton.disabled = true;
+  clearPersistedSupabaseSession();
+  resetAccountAuthState();
+  render(lastSnapshot);
+  const signOutTask = supabaseClient.auth
+    .signOut({ scope: "local" })
+    .then(({ error }) => {
+      if (error) {
+        authTrace(`signOut local failed ${error.message}`);
+      } else {
+        authTrace("signOut local success");
+      }
+    })
+    .catch((error) => {
+      authTrace(`signOut threw ${error.message}`);
+    });
   try {
-    const { error } = await supabaseClient.auth.signOut();
-    if (error) {
-      throw error;
-    }
-    authSession = null;
-    authUser = null;
-    authIdentities = [];
-    linkedSupabaseUserId = null;
-    linkedGatewayAccountUserId = null;
-    accountDevices = [];
-    accountSummary = null;
-    supabaseAccountDevices = [];
-    renderAccountWallet();
-    renderAuthState();
-    renderAccountDevices();
-    renderHome(lastSnapshot);
-  } catch (error) {
-    alert(error.message);
+    await Promise.race([
+      signOutTask,
+      new Promise((resolve) => window.setTimeout(resolve, 1500)),
+    ]);
+  } finally {
+    els.authSignoutButton.disabled = false;
   }
+});
+
+els.followXButton.addEventListener("click", () => {
+  const url = "https://x.com/teale_ai";
+  if (!postNativeMessage({ type: "openExternal", url })) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+});
+
+els.shareStoryButton.addEventListener("click", async () => {
+  await copyText(SHARE_STORY_TEXT, "Share text");
 });
 
 els.localCurlCopy.addEventListener("click", async () => {
@@ -2489,8 +3139,26 @@ els.networkTokenCopy.addEventListener("click", async () => {
   await copyText(lastSnapshot?.demand?.network_bearer_token || "", "Bearer token");
 });
 
+els.networkToken.addEventListener("click", async () => {
+  await copyValueWithFlash(
+    els.networkToken,
+    lastSnapshot?.demand?.network_bearer_token || "",
+    "Bearer token",
+    (value) => maskToken(value)
+  );
+});
+
 els.networkCurlCopy.addEventListener("click", async () => {
   await copyText(els.networkCurl.textContent, "Network curl");
+});
+
+els.walletDeviceId.addEventListener("click", async () => {
+  await copyValueWithFlash(
+    els.walletDeviceId,
+    lastSnapshot?.wallet?.current_device_id || "",
+    "Device ID",
+    (value) => truncateDeviceId(value)
+  );
 });
 
 els.ledgerExport.addEventListener("click", () => {
@@ -2530,7 +3198,11 @@ for (const button of els.networkModelSortButtons) {
 document.addEventListener("visibilitychange", startPolling);
 window.__tealeHandleOAuthCallback = async (url) => {
   pendingOAuthCallbackUrl = url;
+  try {
+    window.localStorage.setItem(OAUTH_CALLBACK_STORAGE_KEY, url);
+  } catch (_error) {}
   await consumePendingOAuthCallback();
+  await refreshAccountState();
   await ensureGatewayAccountLink();
   await refreshAccountState();
   renderAccountWallet();
@@ -2541,5 +3213,6 @@ window.__tealeHandleOAuthCallback = async (url) => {
 
 applyTranslations();
 setActiveView("home");
+loadStoredOAuthCallback();
 refresh().catch((error) => setDisconnected(error));
 startPolling();

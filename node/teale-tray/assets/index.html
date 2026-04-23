@@ -10,7 +10,7 @@
   <body>
     <main class="page">
       <header class="title">
-        <button class="nav-link active" data-view-button="home" type="button" data-i18n="nav.home">teale.com</button>
+        <button class="nav-link active" data-view-button="home" type="button" data-i18n="nav.home">teale</button>
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="supply" type="button" data-i18n="nav.supply">supply</button>
         <span class="sep">|</span>
@@ -20,21 +20,33 @@
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="account" type="button" data-i18n="nav.account">account</button>
         <div class="title-spacer"></div>
-        <label class="language-picker">
-          <span data-i18n="language.label">language</span>
-          <select id="language-select">
-            <option value="en">English</option>
-            <option value="zh-Hans">简体中文</option>
-            <option value="pt-BR">Português (Brasil)</option>
-            <option value="es">Español</option>
-            <option value="fil-PH">Filipino (PH)</option>
-          </select>
-        </label>
+        <div class="header-tools">
+          <label class="language-picker">
+            <span data-i18n="language.label">language</span>
+            <select id="language-select">
+              <option value="en">English</option>
+              <option value="zh-Hans">简体中文</option>
+              <option value="pt-BR">Português (Brasil)</option>
+              <option value="es">Español</option>
+              <option value="fil-PH">Filipino (PH)</option>
+            </select>
+          </label>
+          <button id="follow-x-button" class="icon-action" type="button" title="Follow @teale_ai on X" aria-label="Follow @teale_ai on X">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18.901 2H21.98l-6.72 7.68L23.2 22h-6.217l-4.87-7.45L5.6 22H2.52l7.188-8.215L1.6 2h6.375l4.402 6.73L18.9 2Zm-1.09 18h1.706L7.05 3.895H5.22L17.81 20Z"></path>
+            </svg>
+          </button>
+          <button id="share-story-button" class="icon-action" type="button" title="Copy share text" aria-label="Copy share text">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 14.75a.75.75 0 0 1-.75-.75V5.81L8.53 8.53a.75.75 0 1 1-1.06-1.06l4-4a.75.75 0 0 1 1.06 0l4 4a.75.75 0 1 1-1.06 1.06l-2.72-2.72V14a.75.75 0 0 1-.75.75ZM4.75 12.5a.75.75 0 0 1 .75.75v5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-5a.75.75 0 0 1 1.5 0v5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.25v-5a.75.75 0 0 1 .75-.75Z"></path>
+            </svg>
+          </button>
+        </div>
         <span class="cursor" aria-hidden="true"></span>
       </header>
 
       <p id="header-line" class="header-line">
-        distributed ai inference supply and demand
+        supply and demand distributed ai inference
       </p>
 
       <hr class="rule" />
@@ -56,12 +68,30 @@
               <dt>Account</dt>
               <dd id="home-account">Not signed in</dd>
             </dl>
-            <div class="actions">
-              <button id="home-open-supply" class="action action-primary" type="button" data-i18n="home.action.supply">Open supply</button>
-              <button id="home-open-demand" class="action" type="button" data-i18n="home.action.demand">Open demand</button>
-              <button id="home-open-wallet" class="action" type="button" data-i18n="home.action.wallet">Open wallet</button>
-              <button id="home-open-account" class="action" type="button" data-i18n="home.action.account">Open account</button>
-            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="home.prompt.network">network</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Total devices</dt>
+              <dd id="home-network-devices">Loading...</dd>
+              <dt>Total RAM</dt>
+              <dd id="home-network-ram">Loading...</dd>
+              <dt>Total models</dt>
+              <dd id="home-network-models">Loading...</dd>
+              <dt>Avg TTFT</dt>
+              <dd id="home-network-ttft">Loading...</dd>
+              <dt>Avg TPS</dt>
+              <dd id="home-network-tps">Loading...</dd>
+              <dt>Total credits earned</dt>
+              <dd id="home-network-earned">Loading...</dd>
+              <dt>Total credits spent</dt>
+              <dd id="home-network-spent">Loading...</dd>
+              <dt>Total USDC distributed</dt>
+              <dd id="home-network-usdc">Loading...</dd>
+            </dl>
           </div>
         </section>
       </section>
@@ -198,7 +228,7 @@
               <dd id="network-base-url">-</dd>
               <dt>Bearer</dt>
               <dd>
-                <span id="network-token">Syncing...</span>
+                <button id="network-token" class="device-id-button" type="button" title="Copy bearer token">Syncing...</button>
                 <small id="network-token-note">Requests deduct from Teale credits.</small>
               </dd>
               <dt>Selected</dt>
@@ -215,9 +245,19 @@
 
       <section class="view" data-view="wallet">
         <section class="section">
-          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="wallet.prompt.balances">balances</span></p>
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="wallet.prompt.device">device info</span></p>
           <div class="card">
             <dl class="stats">
+              <dt>Device</dt>
+              <dd id="wallet-device-name">-</dd>
+              <dt>Device ID</dt>
+              <dd>
+                <button id="wallet-device-id" class="device-id-button" type="button" title="Copy device ID">-</button>
+              </dd>
+              <dt>State</dt>
+              <dd id="wallet-status">Offline</dd>
+              <dt>Model</dt>
+              <dd id="wallet-model">No model loaded</dd>
               <dt>Teale credits</dt>
               <dd>
                 <span id="wallet-balance">Syncing...</span>
@@ -225,19 +265,8 @@
               </dd>
               <dt>USDC</dt>
               <dd id="wallet-usdc">0.00</dd>
-              <dt>Session</dt>
-              <dd>
-                <span id="wallet-session-credits">0</span>
-                <small id="wallet-rate">Availability credits begin once a compatible model is loaded and serving.</small>
-              </dd>
-              <dt>Today</dt>
-              <dd id="wallet-credits-today">0</dd>
-              <dt>Lifetime earned</dt>
-              <dd id="wallet-earned">-</dd>
-              <dt>Spent</dt>
-              <dd id="wallet-spent">-</dd>
-              <dt>Requests</dt>
-              <dd id="wallet-requests">0</dd>
+              <dt>Rate</dt>
+              <dd id="wallet-rate">Availability credits begin once a compatible model is loaded and serving.</dd>
               <dt>Available since</dt>
               <dd id="wallet-since">Not serving yet</dd>
             </dl>
@@ -304,7 +333,7 @@
               <button id="auth-google-button" class="action" type="button">Sign in with Google</button>
               <button id="auth-signout-button" class="action" type="button" hidden>Sign out</button>
             </div>
-            <div id="auth-phone-panel" class="auth-phone-panel">
+            <div id="auth-phone-panel" class="auth-phone-panel" hidden>
               <label class="field">
                 <span data-i18n="account.phone">Phone</span>
                 <input id="auth-phone-input" type="tel" placeholder="+1 555 123 4567" data-i18n-placeholder="account.input.phone" />
@@ -370,8 +399,10 @@
             <dl class="stats">
               <dt>User ID</dt>
               <dd id="account-id">-</dd>
-              <dt>Email</dt>
+              <dt>Emails</dt>
               <dd id="account-email">-</dd>
+              <dt>GitHub</dt>
+              <dd id="account-github">-</dd>
               <dt>Phone</dt>
               <dd id="account-phone">-</dd>
               <dt>Providers</dt>
@@ -402,7 +433,7 @@
       </section>
 
       <footer>
-        <div class="tagline" data-i18n="footer.tagline">teale - distributed ai inference for the world</div>
+        <div class="tagline" data-i18n="footer.tagline">teale.com - distributed ai inference for the world</div>
       </footer>
     </main>
 
