@@ -516,6 +516,7 @@ fn new_share_key_contribution_id() -> String {
     format!("skc_{}", uuid::Uuid::new_v4().simple())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_share_key_contribution_tx(
     tx: &rusqlite::Transaction<'_>,
     key_id: &str,
@@ -544,6 +545,38 @@ fn insert_share_key_contribution_tx(
     )?;
     Ok(())
 }
+
+type ShareKeyBackfillRow = (
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<i64>,
+    i64,
+);
+
+type ShareKeyMigrationRow = (
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<i64>,
+    Option<String>,
+);
+
+type ShareKeyFundingPreviewRow = (
+    Option<String>,
+    i64,
+    i64,
+    i64,
+    String,
+    Option<i64>,
+    i64,
+);
 
 fn sum_share_key_contributions_tx(
     tx: &rusqlite::Transaction<'_>,
@@ -717,17 +750,7 @@ pub fn backfill_funded_share_key_contributions(
     let now = unix_now();
     let tx = conn.transaction()?;
 
-    let rows: Vec<(
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-        Option<i64>,
-        Option<String>,
-        Option<i64>,
-        i64,
-    )> = {
+    let rows: Vec<ShareKeyBackfillRow> = {
         let mut stmt = tx.prepare(
             "SELECT sk.key_id, sk.issuer_device_id, sk.budget_credits, sk.consumed_credits,
                     sk.expires_at, sk.revoked_at, sk.funding_id, sk.refunds_settled_at,
@@ -2030,7 +2053,7 @@ pub fn migrate_unfunded_share_keys(pool: &DbPool) -> anyhow::Result<ShareKeyMigr
     let now = unix_now();
     let tx = conn.transaction()?;
 
-    let rows: Vec<(String, String, i64, i64, i64, Option<i64>, Option<String>)> = {
+    let rows: Vec<ShareKeyMigrationRow> = {
         let mut stmt = tx.prepare(
             "SELECT key_id, issuer_device_id, budget_credits, consumed_credits,
                     expires_at, revoked_at, funding_id
@@ -2227,7 +2250,7 @@ pub fn preview_share_key_funding(
 ) -> Option<ShareKeyFundingPreview> {
     let conn = pool.lock();
     let now = unix_now();
-    let row: Option<(Option<String>, i64, i64, i64, String, Option<i64>, i64)> = conn
+    let row: Option<ShareKeyFundingPreviewRow> = conn
         .query_row(
             "SELECT sk.label, sk.budget_credits, sk.consumed_credits, sk.expires_at,
                     sk.issuer_device_id, sk.revoked_at, sk.funded
@@ -3105,10 +3128,9 @@ mod tests {
         assert_eq!(get_balance(&pool, issuer).balance_credits, before);
     }
 
-    fn contribution_rows(
-        pool: &DbPool,
-        key_id: &str,
-    ) -> Vec<(String, i64, i64, Option<i64>, Option<String>)> {
+    type ContributionRow = (String, i64, i64, Option<i64>, Option<String>);
+
+    fn contribution_rows(pool: &DbPool, key_id: &str) -> Vec<ContributionRow> {
         let conn = pool.lock();
         let mut stmt = conn
             .prepare(

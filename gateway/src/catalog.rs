@@ -135,13 +135,13 @@ pub fn estimated_size_gb(params_b: f64, quantization: Option<&str>) -> f64 {
 /// the per-model floor. Returns `None` if no catalog model satisfies both
 /// — caller must translate to 503 `NoEligibleDevice` (strict, per the
 /// project's fallback policy).
-pub fn resolve_auto<'a>(
-    catalog: &'a [CatalogModel],
+pub fn resolve_auto(
+    catalog: &[CatalogModel],
     required_ctx: u32,
     loaded_count: impl Fn(&str) -> u32,
     floor_small: u32,
     floor_large: u32,
-) -> Option<&'a CatalogModel> {
+) -> Option<&CatalogModel> {
     let mut candidates: Vec<&CatalogModel> = catalog
         .iter()
         .filter(|m| !m.is_virtual)
