@@ -10,19 +10,15 @@ name = "teale-tray"
 path = "src/main.rs"
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
 anyhow = { workspace = true }
-webbrowser = "1"
-
-# Sync HTTP client (smaller than reqwest for a tray process).
-ureq = { version = "2", default-features = false, features = ["json"] }
-
-# Cross-platform tray + menu. Windows uses Shell_NotifyIconW under the hood.
-tray-icon = "0.19"
 
 # OS interop for icon loading + (on Windows) the message loop.
 [target.'cfg(windows)'.dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+webbrowser = "1"
+ureq = { version = "2", default-features = false, features = ["json"] }
+tray-icon = "0.19"
 tao = "0.30"
 wry = { version = "0.45", features = ["protocol"] }
 windows = { version = "0.58", features = [
