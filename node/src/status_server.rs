@@ -1488,6 +1488,7 @@ async fn proxy_chat_completion(
 
     let mut request = payload.request;
     request.stream = Some(true);
+    request.stream_options = Some(json!({ "include_usage": true }));
 
     let (url, bearer_token) = match payload.provider {
         ChatProvider::Local => {
@@ -2142,6 +2143,7 @@ mod tests {
             assert!(request
                 .to_ascii_lowercase()
                 .contains("authorization: bearer test-device-token"));
+            assert!(request.contains("\"stream_options\":{\"include_usage\":true}"));
 
             let body =
                 "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n";

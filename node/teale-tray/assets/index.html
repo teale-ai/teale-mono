@@ -16,8 +16,6 @@
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="demand" type="button" data-i18n="nav.demand">demand</button>
         <span class="sep">|</span>
-        <button class="nav-link" data-view-button="chat" type="button" data-i18n="nav.chat">chat</button>
-        <span class="sep">|</span>
         <button class="nav-link" data-view-button="wallet" type="button" data-i18n="nav.wallet">wallet</button>
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="account" type="button" data-i18n="nav.account">account</button>
@@ -94,6 +92,41 @@
               <dt>Total USDC distributed</dt>
               <dd id="home-network-usdc">Loading...</dd>
             </dl>
+          </div>
+        </section>
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="chat.prompt.thread">thread</span></p>
+          <div class="card">
+            <div id="chat-thread-strip" class="chat-thread-strip"></div>
+
+            <div class="chat-select-wrap">
+              <label class="field field-wide">
+                <span data-i18n="chat.model.label">Model</span>
+                <select id="chat-model-select"></select>
+              </label>
+              <p id="chat-model-note" class="chat-picker-note" data-i18n="chat.model.note">
+                Local is free on this PC. Network models spend Teale credits.
+              </p>
+            </div>
+
+            <p id="chat-status-note" class="chat-status" hidden></p>
+            <div id="chat-transcript" class="chat-transcript"></div>
+
+            <div class="chat-composer">
+              <label class="field">
+                <span data-i18n="chat.prompt.message">message</span>
+                <textarea
+                  id="chat-input"
+                  class="chat-input"
+                  placeholder="Ask something..."
+                  data-i18n-placeholder="chat.input.placeholder"
+                ></textarea>
+              </label>
+              <div class="chat-composer-row">
+                <span class="chat-hint" data-i18n="chat.input.hint">Enter sends. Shift+Enter adds a newline.</span>
+                <button id="chat-send-button" class="action action-primary" type="button" data-i18n="chat.action.send">Send</button>
+              </div>
+            </div>
           </div>
         </section>
       </section>
@@ -240,44 +273,6 @@
             <div class="actions">
               <button id="network-token-copy" class="action" type="button" data-i18n="demand.action.copyBearer">Copy bearer token</button>
               <button id="network-curl-copy" class="action" type="button" data-i18n="demand.action.copyNetworkCurl">Copy network curl</button>
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <section class="view" data-view="chat">
-        <section class="section">
-          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="chat.prompt.thread">thread</span></p>
-          <div class="card">
-            <div id="chat-thread-strip" class="chat-thread-strip"></div>
-
-            <div class="chat-select-wrap">
-              <label class="field field-wide">
-                <span data-i18n="chat.model.label">Model</span>
-                <select id="chat-model-select"></select>
-              </label>
-              <p id="chat-model-note" class="chat-picker-note" data-i18n="chat.model.note">
-                Local is free on this PC. Network models spend Teale credits.
-              </p>
-            </div>
-
-            <p id="chat-status-note" class="chat-status" hidden></p>
-            <div id="chat-transcript" class="chat-transcript"></div>
-
-            <div class="chat-composer">
-              <label class="field">
-                <span data-i18n="chat.prompt.message">message</span>
-                <textarea
-                  id="chat-input"
-                  class="chat-input"
-                  placeholder="Ask something..."
-                  data-i18n-placeholder="chat.input.placeholder"
-                ></textarea>
-              </label>
-              <div class="chat-composer-row">
-                <span class="chat-hint" data-i18n="chat.input.hint">Enter sends. Shift+Enter adds a newline.</span>
-                <button id="chat-send-button" class="action action-primary" type="button" data-i18n="chat.action.send">Send</button>
-              </div>
             </div>
           </div>
         </section>

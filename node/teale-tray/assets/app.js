@@ -706,6 +706,11 @@ const chatTranslationDefaults = {
   "chat.action.send": "Send",
   "chat.action.newThread": "+ New thread",
   "chat.thread.defaultTitle": "New thread",
+  "chat.thread.close": "Close thread",
+  "chat.tokens.input": "{{count}} input tokens",
+  "chat.tokens.inputApprox": "~{{count}} input tokens",
+  "chat.tokens.output": "{{count}} output tokens",
+  "chat.tokens.outputApprox": "~{{count}} output tokens",
   "chat.thread.empty": "Start a new thread. Only messages in this thread are sent as context.",
   "chat.thread.pending": "Teale is thinking...",
   "chat.thread.partialReply": "Partial reply from an interrupted stream.",
@@ -1511,6 +1516,8 @@ function sanitizeChatMessage(raw) {
     role: raw.role,
     content,
     createdAt: normalizeChatTimestamp(raw.createdAt),
+    tokenCount: normalizeTokenCount(raw.tokenCount),
+    tokenEstimated: Boolean(raw.tokenEstimated),
   };
 }
 
@@ -1598,6 +1605,60 @@ function normalizeThreadTitle(text) {
     return compact;
   }
   return `${compact.slice(0, 32).trimEnd()}...`;
+}
+
+function normalizeTokenCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return null;
+  }
+  return Math.round(numeric);
+}
+
+function estimateChatTextTokens(text) {
+  const bytes = new TextEncoder().encode(String(text || "")).length;
+  if (!bytes) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(bytes / 4));
+}
+
+function estimateChatPromptTokens(messages) {
+  const promptBytes = (messages || []).reduce((sum, message) => {
+    return sum + new TextEncoder().encode(String(message?.content || "")).length;
+  }, 0);
+  return Math.ceil(promptBytes / 4) + 16;
+}
+
+function formatChatUsageMeta(role, tokenCount, estimated = false) {
+  const normalized = normalizeTokenCount(tokenCount);
+  if (normalized == null) {
+    return "";
+  }
+  const count = formatCredits(normalized);
+  if (role === "user") {
+    return t(estimated ? "chat.tokens.inputApprox" : "chat.tokens.input", { count });
+  }
+  return t(estimated ? "chat.tokens.outputApprox" : "chat.tokens.output", { count });
+}
+
+function chatMessageUsageMeta(message) {
+  if (!message) {
+    return "";
+  }
+  return formatChatUsageMeta(message.role, message.tokenCount, Boolean(message.tokenEstimated));
+}
+
+function parseChatUsage(raw) {
+  const promptTokens = normalizeTokenCount(raw?.prompt_tokens);
+  const completionTokens = normalizeTokenCount(raw?.completion_tokens);
+  if (promptTokens == null && completionTokens == null) {
+    return null;
+  }
+  return {
+    promptTokens,
+    completionTokens,
+  };
 }
 
 function creditsPerMillionFromUsdToken(value) {
@@ -1743,6 +1804,36 @@ function currentInterruptedDraft(threadId) {
   return chatRuntime.interruptedDrafts[threadId] || "";
 }
 
+function closeChatThread(threadId) {
+  if (isChatBusy()) {
+    return;
+  }
+
+  const index = chatState.threads.findIndex((thread) => thread.id === threadId);
+  if (index === -1) {
+    return;
+  }
+
+  const [closedThread] = chatState.threads.splice(index, 1);
+  const wasSelected = chatState.selectedThreadId === threadId;
+  delete chatRuntime.interruptedDrafts[threadId];
+
+  if (!chatState.threads.length) {
+    const replacement = createChatThread(cloneModelTarget(closedThread?.modelTarget));
+    chatState.threads = [replacement];
+    chatState.selectedThreadId = replacement.id;
+  } else if (wasSelected) {
+    const fallback = sortedChatThreads()[0];
+    chatState.selectedThreadId = fallback.id;
+  }
+
+  chatRuntime.errorMessage = "";
+  chatRuntime.infoMessage = "";
+  persistChatState();
+  renderChat(lastSnapshot);
+  els.chatInput?.focus();
+}
+
 function renderChatStatus() {
   const message = chatRuntime.errorMessage || chatRuntime.infoMessage;
   if (!message) {
@@ -1760,15 +1851,16 @@ function renderChatThreadStrip(activeThread) {
   els.chatThreadStrip.innerHTML = "";
 
   for (const thread of sortedChatThreads()) {
-    const chip = document.createElement("button");
-    chip.type = "button";
+    const chip = document.createElement("div");
     chip.className = "chat-thread-chip";
     if (thread.id === activeThread.id) {
       chip.classList.add("is-active");
     }
-    chip.textContent = thread.title;
-    chip.disabled = isChatBusy();
-    chip.addEventListener("click", () => {
+    if (isChatBusy()) {
+      chip.classList.add("is-disabled");
+    }
+
+    const selectThread = () => {
       if (isChatBusy()) {
         return;
       }
@@ -1777,7 +1869,28 @@ function renderChatThreadStrip(activeThread) {
       chatRuntime.infoMessage = "";
       persistChatState();
       renderChat(lastSnapshot);
+    };
+
+    chip.addEventListener("click", selectThread);
+
+    const labelButton = document.createElement("button");
+    labelButton.type = "button";
+    labelButton.className = "chat-thread-chip-label";
+    labelButton.textContent = thread.title;
+    labelButton.disabled = isChatBusy();
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-thread-chip-close";
+    closeButton.disabled = isChatBusy();
+    closeButton.setAttribute("aria-label", t("chat.thread.close"));
+    closeButton.title = t("chat.thread.close");
+    closeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeChatThread(thread.id);
     });
+
+    chip.append(labelButton, closeButton);
     els.chatThreadStrip.appendChild(chip);
   }
 
@@ -1873,23 +1986,42 @@ function renderChatTranscript(thread) {
   }
 
   for (const message of thread.messages) {
-    appendChatBubble(els.chatTranscript, message.role, message.content);
+    appendChatBubble(
+      els.chatTranscript,
+      message.role,
+      message.content,
+      chatMessageUsageMeta(message)
+    );
   }
 
   if (draft || (chatRuntime.inFlight?.threadId === thread.id && !draft)) {
+    const draftMeta = draft
+      ? formatChatUsageMeta(
+          "assistant",
+          chatRuntime.inFlight?.completionTokens ?? estimateChatTextTokens(draft),
+          chatRuntime.inFlight?.completionTokensEstimated ?? true
+        )
+      : "";
     appendChatBubble(
       els.chatTranscript,
       "assistant",
-      draft || t("chat.thread.pending")
+      draft || t("chat.thread.pending"),
+      draftMeta
     );
   }
 
   if (interrupted) {
+    const interruptedMeta = [
+      formatChatUsageMeta("assistant", estimateChatTextTokens(interrupted), true),
+      t("chat.thread.interrupted"),
+    ]
+      .filter(Boolean)
+      .join(" · ");
     appendChatBubble(
       els.chatTranscript,
       "assistant",
       interrupted,
-      t("chat.thread.interrupted"),
+      interruptedMeta,
       "is-interrupted"
     );
   }
@@ -1937,6 +2069,7 @@ async function streamChatCompletion(payload) {
   const reader = response.body.getReader();
   let buffer = "";
   let sawDone = false;
+  let usage = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -1965,9 +2098,31 @@ async function streamChatCompletion(payload) {
 
       if (data) {
         const payload = JSON.parse(data);
+        const nextUsage = parseChatUsage(payload?.usage);
+        if (nextUsage) {
+          usage = {
+            promptTokens: nextUsage.promptTokens ?? usage?.promptTokens ?? null,
+            completionTokens: nextUsage.completionTokens ?? usage?.completionTokens ?? null,
+          };
+          if (chatRuntime.inFlight) {
+            if (usage.promptTokens != null) {
+              chatRuntime.inFlight.promptTokens = usage.promptTokens;
+              chatRuntime.inFlight.promptTokensEstimated = false;
+            }
+            if (usage.completionTokens != null) {
+              chatRuntime.inFlight.completionTokens = usage.completionTokens;
+              chatRuntime.inFlight.completionTokensEstimated = false;
+            }
+            renderChat(lastSnapshot);
+          }
+        }
         const delta = payload?.choices?.[0]?.delta?.content;
         if (typeof delta === "string" && delta) {
           chatRuntime.inFlight.assistantText += delta;
+          if (chatRuntime.inFlight && usage?.completionTokens == null) {
+            chatRuntime.inFlight.completionTokens = estimateChatTextTokens(chatRuntime.inFlight.assistantText);
+            chatRuntime.inFlight.completionTokensEstimated = true;
+          }
           renderChat(lastSnapshot);
         }
       }
@@ -1979,6 +2134,8 @@ async function streamChatCompletion(payload) {
   if (!sawDone) {
     throw new Error(t("chat.thread.streamInterrupted"));
   }
+
+  return usage;
 }
 
 async function sendChatMessage() {
@@ -2006,16 +2163,25 @@ async function sendChatMessage() {
   delete chatRuntime.interruptedDrafts[thread.id];
 
   const userMessagesBefore = thread.messages.filter((message) => message.role === "user").length;
-  thread.messages.push({
+  const userMessage = {
     id: createId(),
     role: "user",
     content: input,
     createdAt: Date.now(),
-  });
+    tokenCount: null,
+    tokenEstimated: false,
+  };
+  thread.messages.push(userMessage);
   if (userMessagesBefore === 0) {
     thread.title = normalizeThreadTitle(input);
   }
   thread.updatedAt = Date.now();
+  const requestMessages = thread.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+  userMessage.tokenCount = estimateChatPromptTokens(requestMessages);
+  userMessage.tokenEstimated = true;
   persistChatState();
 
   els.chatInput.value = "";
@@ -2023,6 +2189,10 @@ async function sendChatMessage() {
     threadId: thread.id,
     assistantText: "",
     modelTarget: { provider: activeOption.provider, modelId: activeOption.modelId },
+    promptTokens: userMessage.tokenCount,
+    promptTokensEstimated: true,
+    completionTokens: null,
+    completionTokensEstimated: true,
   };
   renderChat(lastSnapshot);
 
@@ -2030,31 +2200,48 @@ async function sendChatMessage() {
     await streamChatCompletion({
       provider: activeOption.provider,
       model: activeOption.modelId,
-      messages: thread.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
+      messages: requestMessages,
       temperature: 0.7,
       max_tokens: 1024,
       stream: true,
     });
 
-    const finalText = chatRuntime.inFlight?.assistantText || "";
+    const inFlight = chatRuntime.inFlight;
+    const finalText = inFlight?.assistantText || "";
+    const promptTokenCount = normalizeTokenCount(inFlight?.promptTokens);
+    if (promptTokenCount != null && promptTokenCount > 0) {
+      userMessage.tokenCount = promptTokenCount;
+      userMessage.tokenEstimated = Boolean(inFlight?.promptTokensEstimated);
+    }
     if (finalText) {
+      const completionTokenCount = normalizeTokenCount(inFlight?.completionTokens);
       thread.messages.push({
         id: createId(),
         role: "assistant",
         content: finalText,
         createdAt: Date.now(),
+        tokenCount: completionTokenCount != null && completionTokenCount > 0
+          ? completionTokenCount
+          : estimateChatTextTokens(finalText),
+        tokenEstimated: completionTokenCount != null && completionTokenCount > 0
+          ? Boolean(inFlight?.completionTokensEstimated)
+          : true,
       });
       thread.updatedAt = Date.now();
-      persistChatState();
     }
 
+    persistChatState();
     chatRuntime.inFlight = null;
     renderChat(lastSnapshot);
   } catch (error) {
-    const partial = chatRuntime.inFlight?.assistantText || "";
+    const inFlight = chatRuntime.inFlight;
+    const partial = inFlight?.assistantText || "";
+    const promptTokenCount = normalizeTokenCount(inFlight?.promptTokens);
+    if (promptTokenCount != null && promptTokenCount > 0) {
+      userMessage.tokenCount = promptTokenCount;
+      userMessage.tokenEstimated = Boolean(inFlight?.promptTokensEstimated);
+    }
+    persistChatState();
     chatRuntime.inFlight = null;
     if (partial) {
       chatRuntime.interruptedDrafts[thread.id] = partial;
@@ -2209,20 +2396,18 @@ function setActiveView(view) {
   }
   els.headerLine.textContent = viewDescription(view) || viewDescription("home");
   if (view === "home") {
+    renderChat(lastSnapshot);
     refreshNetworkStats().catch((error) => {
       console.error("network stats refresh failed", error);
+    });
+    refreshNetworkModels().catch((error) => {
+      console.error("home chat model refresh failed", error);
     });
   }
   if (view === "demand") {
     refreshNetworkModels().catch((error) => {
       console.error("network models refresh failed", error);
     });
-  }
-  if (view === "chat") {
-    refreshNetworkModels().catch((error) => {
-      console.error("chat model refresh failed", error);
-    });
-    renderChat(lastSnapshot);
   }
 }
 
@@ -3642,11 +3827,9 @@ async function refresh() {
   render(snapshot);
   if (activeView === "home") {
     await refreshNetworkStats();
-  }
-  if (activeView === "demand") {
     await refreshNetworkModels();
   }
-  if (activeView === "chat") {
+  if (activeView === "demand") {
     await refreshNetworkModels();
   }
 }
