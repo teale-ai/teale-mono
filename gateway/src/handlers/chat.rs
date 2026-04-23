@@ -30,7 +30,7 @@ use uuid::Uuid;
 use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
 use crate::auth::AuthPrincipal;
-use crate::catalog::{is_large, CatalogModel};
+use crate::catalog::{is_large, resolve_auto, CatalogModel};
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::metrics;
@@ -50,15 +50,52 @@ pub async fn chat_completions(
     };
 
     // Catalog lookup.
-    let catalog_model = state
+    let mut catalog_model = state
         .catalog
         .iter()
         .find(|m| m.matches(&requested_model))
         .cloned()
         .ok_or_else(|| GatewayError::ModelNotFound(requested_model.clone()))?;
 
-    // Per-model fleet floor: if we don't have enough healthy devices, 503.
     let floor = &state.config.scheduler.per_model_floor;
+
+    // Virtual model resolution (e.g. `teale/auto`). Estimate required context
+    // from the inbound messages + max_tokens, then ask the catalog for the
+    // smallest concrete model that fits and has healthy supply. Resolution
+    // is strict per project policy — no silent downgrade; on miss we 503.
+    if catalog_model.is_virtual {
+        let required_ctx = estimate_required_context(&parsed);
+        let registry = state.registry.clone();
+        let resolved = resolve_auto(
+            &state.catalog,
+            required_ctx,
+            |id| registry.loaded_count(id),
+            floor.small,
+            floor.large,
+        )
+        .cloned()
+        .ok_or_else(|| {
+            metrics::REQUESTS_TOTAL
+                .with_label_values(&[&catalog_model.id, "no_supply"])
+                .inc();
+            GatewayError::NoEligibleDevice(format!(
+                "{} (required_ctx={})",
+                catalog_model.id, required_ctx
+            ))
+        })?;
+        info!(
+            virtual_id = %catalog_model.id,
+            resolved_id = %resolved.id,
+            required_ctx,
+            "teale/auto resolved"
+        );
+        metrics::REQUESTS_TOTAL
+            .with_label_values(&[&catalog_model.id, "resolved"])
+            .inc();
+        catalog_model = resolved;
+    }
+
+    // Per-model fleet floor: if we don't have enough healthy devices, 503.
     let required = if is_large(catalog_model.params_b) {
         floor.large
     } else {
@@ -131,11 +168,15 @@ pub async fn chat_completions(
         }
     }
 
+    // Compute context budget once; scheduler uses it to filter out nodes
+    // whose effective_context can't cover the request.
+    let required_ctx = estimate_required_context(&parsed);
+
     if streaming {
-        let stream = run_streaming(state, catalog_model, req, consumer).await?;
+        let stream = run_streaming(state, catalog_model, req, consumer, required_ctx).await?;
         Ok(stream.into_response())
     } else {
-        let json = run_buffered(state, catalog_model, req, consumer).await?;
+        let json = run_buffered(state, catalog_model, req, consumer, required_ctx).await?;
         Ok(json.into_response())
     }
 }
@@ -224,6 +265,29 @@ fn affordable_out_tokens(model: &CatalogModel, remaining_after_prompt: i64) -> u
     (affordable as i64).max(1) as u64
 }
 
+/// Rough estimate of the context window a request will consume. Used only
+/// for `teale/auto` resolution and scheduler `min_context` filter — NOT for
+/// hard request validation (the gateway still trusts nodes to honor their
+/// advertised n_ctx).
+///
+/// char_count/4 is a widely-used "fair-enough" heuristic; it over-estimates
+/// for CJK and under-estimates for code. We don't pad with a safety margin
+/// because that pushes otherwise-legal requests (e.g. exactly 16k prompt
+/// + completion on a 16k-catalog model) past the ceiling and forces a 503.
+fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
+    let prompt_chars: usize = req
+        .messages
+        .iter()
+        .map(|m| match &m.content {
+            Value::String(s) => s.len(),
+            other => other.to_string().len(),
+        })
+        .sum();
+    let prompt_est = (prompt_chars / 4) as u32;
+    let completion_budget = req.max_tokens.unwrap_or(4096);
+    prompt_est.saturating_add(completion_budget)
+}
+
 /// Remaining credits on a share-key (budget - consumed), or None if the key
 /// can't be looked up — in that case we fall through and let the auth layer
 /// handle rejection.
@@ -271,11 +335,18 @@ async fn pick_and_dispatch(
     catalog_model: &CatalogModel,
     req_body: &Value,
     exclude: &[String],
+    min_context: Option<u32>,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String), GatewayError> {
     let candidates = state.registry.eligible_devices(&catalog_model.id);
     let selected = state
         .scheduler
-        .pick(&candidates, &catalog_model.id, exclude, &state.registry)
+        .pick(
+            &candidates,
+            &catalog_model.id,
+            exclude,
+            &state.registry,
+            min_context,
+        )
         .ok_or_else(|| GatewayError::NoEligibleDevice(catalog_model.id.clone()))?;
 
     let target_node = selected.node_id.clone();
@@ -366,6 +437,7 @@ async fn run_streaming(
     catalog_model: CatalogModel,
     req_body: Value,
     consumer: Option<ledger::ConsumerPrincipal>,
+    required_ctx: u32,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -390,7 +462,14 @@ async fn run_streaming(
 
         loop {
             tried += 1;
-            let dispatch = pick_and_dispatch(&state, &catalog_model, &req_body, &excluded).await;
+            let dispatch = pick_and_dispatch(
+                &state,
+                &catalog_model,
+                &req_body,
+                &excluded,
+                Some(required_ctx),
+            )
+            .await;
 
             let (mut rx, target_node, session_id) = match dispatch {
                 Ok(v) => v,
@@ -659,6 +738,7 @@ async fn run_buffered(
     catalog_model: CatalogModel,
     req_body: Value,
     consumer: Option<ledger::ConsumerPrincipal>,
+    required_ctx: u32,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -677,8 +757,14 @@ async fn run_buffered(
 
     loop {
         tried += 1;
-        let (mut rx, target_node, session_id) =
-            pick_and_dispatch(&state, &catalog_model, &req_body, &excluded).await?;
+        let (mut rx, target_node, session_id) = pick_and_dispatch(
+            &state,
+            &catalog_model,
+            &req_body,
+            &excluded,
+            Some(required_ctx),
+        )
+        .await?;
 
         let mut got_first = false;
         let mut retriable = false;

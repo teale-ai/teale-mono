@@ -100,13 +100,26 @@ impl SwapManager {
             whitelist,
             state,
             drain_budget: Duration::from_secs(10),
-            health_budget: Duration::from_secs(20),
+            health_budget: Duration::from_secs(120),
         })
     }
 
     /// Current loaded model ids. Source of truth for the heartbeat.
     pub async fn loaded_models(&self) -> Vec<String> {
         self.inner.read().await.backend.loaded_models()
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        self.inner.read().await.backend.is_ready()
+    }
+
+    pub async fn current_model_id(&self) -> Option<String> {
+        let model_id = self.inner.read().await.model_id.clone();
+        if model_id.is_empty() {
+            None
+        } else {
+            Some(model_id)
+        }
     }
 
     /// Forward an inference request to whatever backend is loaded now.
@@ -143,6 +156,24 @@ impl SwapManager {
         Ok(path.as_str())
     }
 
+    pub async fn load_local_model(
+        &self,
+        request_id: String,
+        model_id: String,
+        gguf_path: String,
+        context_size: Option<u32>,
+    ) -> Result<ModelLoadedPayload, ModelLoadErrorPayload> {
+        if !std::path::Path::new(&gguf_path).exists() {
+            return Err(ModelLoadErrorPayload {
+                request_id,
+                model_id,
+                reason: SwapRejection::GgufMissing.to_string(),
+            });
+        }
+        self.swap_to_path(request_id, model_id, gguf_path, context_size)
+            .await
+    }
+
     /// Perform the swap. Blocks the write lock for the duration — this
     /// serializes swaps but doesn't block already-returned streams.
     pub async fn swap(
@@ -163,6 +194,27 @@ impl SwapManager {
                 });
             }
         };
+        self.swap_to_path(request_id, model_id, target_path, None)
+            .await
+    }
+
+    pub async fn unload_current(&self) {
+        let mut inner = self.inner.write().await;
+        if let Some(sup) = inner.supervisor.take() {
+            sup.shutdown().await;
+        }
+        inner.backend = Backend::Unavailable;
+        inner.model_id.clear();
+    }
+
+    async fn swap_to_path(
+        &self,
+        request_id: String,
+        model_id: String,
+        target_path: String,
+        context_size: Option<u32>,
+    ) -> Result<ModelLoadedPayload, ModelLoadErrorPayload> {
+        info!(request_id, model_id, path = %target_path, "swap requested");
 
         // If we're already serving this model, return success immediately.
         {
@@ -204,6 +256,9 @@ impl SwapManager {
 
         let mut new_cfg = self.llama_base.clone();
         new_cfg.model = target_path.clone();
+        if let Some(ctx) = context_size {
+            new_cfg.context_size = ctx;
+        }
         let spawn_cfg = new_cfg.clone();
 
         info!(path = %target_path, "spawning llama-server for new model");

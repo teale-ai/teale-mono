@@ -1,0 +1,181 @@
+name: Windows installer (Teale.exe)
+
+# Builds the partner-pilot Windows installer:
+#   - cargo builds teale-node.exe + teale-tray.exe (x86_64-pc-windows-msvc)
+#   - downloads llama-server with Vulkan backend from llama.cpp's releases
+#   - stages all artifacts next to the .iss script and compiles with ISCC
+#   - uploads Teale.exe as a workflow artifact (manual upload to Drive for
+#     the pilot; will add signtool step once the EV cert arrives)
+#
+# Triggered on:
+#   - push of a tag matching `teale-v*` (canonical release path)
+#   - manual dispatch from the Actions tab (for testing the pipeline)
+
+on:
+  push:
+    tags:
+      # Timestamp-style tags like `teale-2026.04.21.1722` (matches the
+      # mac-app's CFBundleShortVersionString format in Info.plist).
+      - 'teale-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_RELEASE: b8840  # keep in sync with node/installer/post-install.ps1
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build Teale.exe
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build teale-node.exe and teale-tray.exe (release)
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc -p teale-node
+          # teale-tray is a separate binary crate in node/teale-tray/
+          cargo build --release --target x86_64-pc-windows-msvc -p teale-tray || echo "teale-tray not yet defined; installer treats it as skipifsourcedoesntexist"
+
+      - name: Download llama-server (Vulkan build)
+        shell: pwsh
+        run: |
+          function Download-WithRetry {
+            param([string[]]$Urls, [string]$OutFile)
+            foreach ($url in $Urls) {
+              for ($i = 1; $i -le 3; $i++) {
+                try {
+                  Invoke-WebRequest -Uri $url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120
+                  Write-Host "  Downloaded from $url (attempt $i)"
+                  return
+                } catch {
+                  Write-Host "  Attempt $i from $url failed: $($_.Exception.Message)"
+                  Start-Sleep -Seconds ($i * 5)
+                }
+              }
+            }
+            throw "All download URLs exhausted: $($Urls -join ', ')"
+          }
+
+          $llamaZip = "$env:RUNNER_TEMP\llama-vulkan.zip"
+          $llamaExtract = "$env:RUNNER_TEMP\llama"
+          $urls = @(
+            "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/llama-$env:LLAMA_RELEASE-bin-win-vulkan-x64.zip"
+          )
+          Download-WithRetry -Urls $urls -OutFile $llamaZip
+          Expand-Archive -Path $llamaZip -DestinationPath $llamaExtract -Force
+          $llamaServer = Get-ChildItem -Path $llamaExtract -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+          if (-not $llamaServer) { throw "llama-server.exe not found in extracted archive" }
+          Copy-Item -Path $llamaServer.FullName -Destination "node\installer\llama-server.exe" -Force
+          # Copy all DLLs from the same directory (Vulkan runtime + GGML backends)
+          $srcDir = Split-Path $llamaServer.FullName
+          Get-ChildItem -Path $srcDir -Filter "*.dll" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination "node\installer\" -Force
+          }
+
+      - name: Install NSSM (via Chocolatey)
+        shell: pwsh
+        run: |
+          # nssm.cc has been 503-ing all afternoon, so we pull NSSM from
+          # Chocolatey's CDN instead. Pre-installed on windows-latest.
+          choco install nssm -y --no-progress
+          # Never stage the Chocolatey shim from C:\ProgramData\chocolatey\bin.
+          # We need the real NSSM binary from the package payload.
+          $candidateRoots = @(
+            "C:\ProgramData\chocolatey\lib\nssm\tools",
+            "C:\ProgramData\chocolatey\lib\NSSM\tools"
+          )
+          $nssm = $null
+          foreach ($root in $candidateRoots) {
+            if (-not (Test-Path $root)) { continue }
+            $preferred = Join-Path $root "win64\nssm.exe"
+            if (Test-Path $preferred) {
+              $nssm = Get-Item $preferred
+              break
+            }
+
+            $fallback = Get-ChildItem -Path $root -Recurse -Filter "nssm.exe" |
+              Where-Object { $_.FullName -notmatch "\\chocolatey\\bin\\" } |
+              Sort-Object FullName |
+              Select-Object -First 1
+            if ($fallback) {
+              $nssm = $fallback
+              break
+            }
+          }
+
+          if (-not $nssm) { throw "real nssm.exe not found after choco install" }
+
+          Copy-Item -Path $nssm.FullName -Destination "node\installer\nssm.exe" -Force
+          $staged = Get-Item "node\installer\nssm.exe"
+          Write-Host "NSSM staged from $($nssm.FullName)"
+          Write-Host "Staged NSSM size: $($staged.Length) bytes"
+
+          if ($staged.Length -lt 100000) {
+            throw "staged nssm.exe looks too small to be the real binary: $($staged.Length) bytes"
+          }
+
+      - name: Stage teale-node.exe + teale-tray.exe
+        shell: pwsh
+        run: |
+          Copy-Item -Path "target\x86_64-pc-windows-msvc\release\teale-node.exe" -Destination "node\installer\teale-node.exe" -Force
+          $trayPath = "target\x86_64-pc-windows-msvc\release\teale-tray.exe"
+          if (Test-Path $trayPath) {
+            Copy-Item -Path $trayPath -Destination "node\installer\teale-tray.exe" -Force
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          # Chocolatey is pre-installed on windows-latest; it mirrors Inno
+          # Setup reliably without depending on jrsoftware.org's CDN.
+          choco install innosetup -y --no-progress
+          # Verify ISCC is on PATH after install.
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $default = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $default)) { throw "ISCC.exe not found after choco install innosetup" }
+          }
+
+      - name: Compile installer (ISCC)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "node\installer\teale-node-setup.iss"
+
+      # TODO: signtool step once the Authenticode / EV cert is in repo secrets.
+      # - name: Sign Teale.exe
+      #   shell: pwsh
+      #   env:
+      #     CERT_PFX_BASE64: ${{ secrets.CERT_PFX_BASE64 }}
+      #     CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+      #   run: |
+      #     $pfxPath = "$env:RUNNER_TEMP\cert.pfx"
+      #     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+      #     $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe"
+      #     & $signtool sign /f $pfxPath /p $env:CERT_PASSWORD /tr http://timestamp.sectigo.com /td sha256 /fd sha256 "node\installer\output\Teale.exe"
+
+      - name: Upload Teale.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Teale-${{ github.ref_name }}-unsigned
+          path: node/installer/output/Teale.exe
+          if-no-files-found: error
+          retention-days: 90

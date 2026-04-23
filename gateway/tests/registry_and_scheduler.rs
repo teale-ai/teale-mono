@@ -53,6 +53,8 @@ fn caps(loaded: &[&str], swap: &[&str], chip: &str, ram_gb: f64) -> NodeCapabili
         ptn_ids: None,
         swappable_models: swap.iter().map(|s| s.to_string()).collect(),
         max_concurrent_requests: Some(4),
+        effective_context: Some(32768),
+        on_ac_power: None,
     }
 }
 
@@ -82,7 +84,7 @@ fn upsert_and_eligible_picks_loaded_device() {
 
     let sched = scheduler();
     let picked = sched
-        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[], &r)
+        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[], &r, None)
         .expect("device");
     // node-a is loaded → should win against node-b's swap penalty.
     assert_eq!(picked.node_id, "node-a");
@@ -111,7 +113,7 @@ fn scheduler_excludes_failed_device() {
     let sched = scheduler();
 
     let first = sched
-        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[], &r)
+        .pick(&els, "meta-llama/llama-3.3-70b-instruct", &[], &r, None)
         .unwrap();
     let retry = sched
         .pick(
@@ -119,6 +121,7 @@ fn scheduler_excludes_failed_device() {
             "meta-llama/llama-3.3-70b-instruct",
             std::slice::from_ref(&first.node_id),
             &r,
+            None,
         )
         .unwrap();
     assert_ne!(
@@ -218,8 +221,13 @@ fn catalog_load_from_file() {
         .find(|m| m.id == "meta-llama/llama-3.1-8b-instruct")
         .expect("llama 3.1 8b present");
     assert_eq!(llama.context_length, 16384);
-    // Sanity-check tiers
+    // Sanity-check tiers — concrete models need params_b for the floor
+    // check; virtual entries (e.g. teale/auto) are exempt since they
+    // resolve to a concrete model at request time.
     for m in &models {
+        if m.is_virtual {
+            continue;
+        }
         assert!(
             m.params_b > 0.0,
             "model {} missing params_b for tier lookup",
@@ -266,11 +274,47 @@ fn catalog_aliases_match() {
         supported_parameters: vec![],
         description: None,
         aliases: vec!["llama-3.1-8b-instruct".into(), "llama3.1-8b".into()],
+        is_virtual: false,
     };
     assert!(m.matches("meta-llama/llama-3.1-8b-instruct"));
     assert!(m.matches("llama-3.1-8b-instruct"));
     assert!(m.matches("llama3.1-8b"));
     assert!(!m.matches("qwen/qwen3-8b"));
+}
+
+#[test]
+fn scheduler_skips_battery_paused_laptop() {
+    // A Windows contributor laptop that lost AC power advertises
+    // on_ac_power: Some(false). The scheduler must route around it even
+    // before the heartbeat expires.
+    let r = Registry::new(reliability());
+    let mut on_battery = caps(
+        &["nousresearch/hermes-3-llama-3.1-8b"],
+        &[],
+        "intelCPU",
+        16.0,
+    );
+    on_battery.on_ac_power = Some(false);
+    r.upsert_device("laptop-a".into(), "Laptop A".into(), on_battery);
+
+    let mut on_ac = caps(
+        &["nousresearch/hermes-3-llama-3.1-8b"],
+        &[],
+        "intelCPU",
+        16.0,
+    );
+    on_ac.on_ac_power = Some(true);
+    r.upsert_device("laptop-b".into(), "Laptop B".into(), on_ac);
+
+    let els = r.eligible_devices("nousresearch/hermes-3-llama-3.1-8b");
+    let sched = scheduler();
+    let picked = sched
+        .pick(&els, "nousresearch/hermes-3-llama-3.1-8b", &[], &r, None)
+        .expect("at least one AC-powered supplier eligible");
+    assert_eq!(
+        picked.node_id, "laptop-b",
+        "battery-paused node must be skipped"
+    );
 }
 
 #[test]

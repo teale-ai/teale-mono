@@ -53,6 +53,11 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .iter()
         .filter(|m| !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
         .filter(|m| {
+            // Virtual meta-models (e.g. teale/auto) are always advertised;
+            // resolution happens at request time against concrete supply.
+            if m.is_virtual {
+                return true;
+            }
             // Enforce per-model fleet floor: hide models we can't serve healthily.
             let min = if is_large(m.params_b) {
                 floor.large

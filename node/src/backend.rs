@@ -17,6 +17,7 @@ use crate::litert::LiteRtEngine;
 pub enum Backend {
     Http(InferenceProxy),
     LiteRt(LiteRtEngine),
+    Unavailable,
 }
 
 impl Backend {
@@ -24,7 +25,12 @@ impl Backend {
         match self {
             Backend::Http(proxy) => proxy.loaded_models(),
             Backend::LiteRt(engine) => engine.loaded_models(),
+            Backend::Unavailable => vec![],
         }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        !matches!(self, Backend::Unavailable)
     }
 
     pub async fn stream_completion(
@@ -34,6 +40,7 @@ impl Backend {
         match self {
             Backend::Http(proxy) => proxy.stream_completion(request).await,
             Backend::LiteRt(engine) => engine.stream_completion(request).await,
+            Backend::Unavailable => anyhow::bail!("no model loaded"),
         }
     }
 }

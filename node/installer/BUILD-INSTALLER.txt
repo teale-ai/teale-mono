@@ -1,54 +1,85 @@
-HOW TO BUILD Teale.exe
-===========================
+HOW TO BUILD Teale.exe (Windows installer for the partner pilot)
+===================================================================
 
-On your Windows test machine:
+CI-based build (the default path):
+  Push a tag matching `teale-*` in the same YYYY.MM.DD.HHMM timestamp
+  format as the mac-app's CFBundleShortVersionString — e.g.:
+    git tag teale-2026.04.21.1722 && git push --tags
+  GitHub Actions runs `.github/workflows/windows-installer.yml`:
+    1. cargo builds teale-node.exe and teale-tray.exe
+    2. downloads the Vulkan build of llama-server from llama.cpp releases
+    3. downloads NSSM
+    4. installs Inno Setup + Inno Download Plugin on the runner
+    5. runs ISCC to compile Teale.exe
+    6. uploads it as a workflow artifact (also available on the Actions run page)
 
-1. Install Inno Setup (free):
-   https://jrsoftware.org/isdl.php
-   Download and run the installer, accept defaults.
+  Pilot distribution: download the artifact, upload to the partner's shared
+  Google Drive folder, send the Drive link to contributors.
 
-2. Copy binaries into this folder so you have:
-   - teale-node.exe       (already here from SD card)
-   - llama-server.exe     (copy from C:\Teale\bin\llama-server.exe)
-   - nssm.exe             (copy from C:\Teale\bin\nssm.exe)
-   - post-install.ps1     (already here)
-   - uninstall.ps1        (already here)
-   - check-update.ps1     (already here)
-   - teale-node-setup.iss (already here)
+  Once code-signing cert arrives: uncomment the signtool step in the
+  workflow, add CERT_PFX_BASE64 + CERT_PASSWORD to repo secrets, re-run the
+  workflow — signed Teale.exe drops into the same artifact path and the
+  SmartScreen "Unknown publisher" friction disappears.
 
-   Also copy any .dll files from C:\Teale\bin\ into this folder.
+Manual build (fallback, on a Windows dev box):
 
-3. Double-click teale-node-setup.iss
-   It opens in Inno Setup Compiler.
+  1. Install Inno Setup 6 (https://jrsoftware.org/isdl.php) — accept defaults.
+  2. Install Inno Download Plugin only if you want it available for future
+     installer experiments. The current installer no longer downloads a
+     model during setup.
+  3. Build the Rust binaries:
+       cargo build --release --target x86_64-pc-windows-msvc -p teale-node
+       cargo build --release --target x86_64-pc-windows-msvc -p teale-tray
+  4. Copy these into node\installer\ (same folder as the .iss):
+       - teale-node.exe             (from target\x86_64-pc-windows-msvc\release\)
+       - teale-tray.exe             (same)
+       - llama-server.exe + DLLs    (from llama-bXXXX-bin-win-vulkan-x64.zip —
+                                      the Vulkan build, NOT the -cpu build)
+       - nssm.exe                   (from nssm-2.24\win64\nssm.exe)
+  5. Double-click teale-node-setup.iss → Build → Compile (or Ctrl+F9).
+  6. Output: node\installer\output\Teale.exe. Upload to the partner's Drive.
 
-4. Click Build > Compile (or press Ctrl+F9)
+WHAT STAFF/CONTRIBUTORS DO:
+  1. Download Teale.exe from the Drive link you send them.
+  2. Double-click. Windows SmartScreen will warn "Unknown publisher" —
+     click "More info" then "Run anyway". (Goes away once we're signed.)
+  3. UAC prompt → Yes.
+  4. Installer wizard: Welcome → Behavior (tick ✓ for lid-closed supply on
+     AC, pre-checked by default) → Install.
+  5. If the machine has <16 GB RAM, the installer shows a polite message
+     and exits cleanly.
+  6. Finishes → tray icon appears → local Teale window opens → contributor
+     clicks the recommended model to download and start supplying.
 
-5. The output is in the "output" folder: Teale.exe
-   Upload this to Google Drive for your staff.
+PER-USER BEHAVIOR:
+  - NSSM-wrapped service (TealeNode, LocalSystem account) auto-starts at boot.
+  - Tray app (teale-tray.exe, per-user) auto-starts at login.
+  - Service runs at Below Normal priority (contributor's apps always win).
+  - On AC power: supplies normally, holds a wake-lock so lid-close stays up.
+  - On battery: pauses automatically. Resumes on reconnect.
+  - Tray icon opens the local Teale window; right-click tray → Pause / Resume / Open Teale / Close tray icon.
 
-WHAT STAFF DOES
-===============
-1. Download Teale.exe from Google Drive
-2. Double-click it
-3. Click through the installer (requires admin)
-4. Wait for model download (~2.5 GB)
-5. Done -- TealeNode service starts automatically
+AUTO-UPDATE:
+  - On every login, the TealeUpdateCheck scheduled task pings
+    https://api.github.com/repos/teale-ai/teale-node/releases/latest.
+  - If installed version < latest version, shows a Windows toast and opens
+    the download page. User downloads the new Teale.exe, runs it — Inno
+    Setup upgrades in place.
 
-The node uses the computer hostname as its display name,
-auto-generates a unique identity, and connects to the relay.
-It starts on boot automatically.
+TO PUBLISH AN UPDATE:
+  1. Regenerate the timestamp (macOS/Linux: `date '+%Y.%m.%d.%H%M'`).
+  2. Update #define AppVer in teale-node-setup.iss to the new stamp.
+  3. Tag the commit with the same stamp prefixed `teale-`:
+       git tag teale-2026.04.21.1722 && git push --tags
+  4. CI runs; Teale.exe artifact appears in the Actions run.
+  5. Download + attach to the GitHub Release with the matching tag name.
+  6. Existing installs notify their users on next logon (via the
+     TealeUpdateCheck scheduled task).
 
-AUTO-UPDATE
-===========
-On every login, a scheduled task checks GitHub for a newer release.
-If one exists, it shows a Windows toast notification and opens the
-browser to the GitHub release page where the user can download the
-new Teale.exe and run it to upgrade in place.
-
-TO PUBLISH AN UPDATE
-====================
-1. Bump the version in teale-node-setup.iss (#define AppVer)
-2. Rebuild Teale.exe with Inno Setup
-3. Create a GitHub release at teale-ai/teale-node with a tag like v0.2.0
-4. Attach Teale.exe as a release asset
-5. Machines will notify users on next login
+DOING AN UNINSTALL / REINSTALL:
+  - "Add or remove programs" → Teale → Uninstall.
+  - The uninstaller stops the service and the tray, then removes files
+    under C:\Teale EXCEPT C:\Teale\data (which holds the identity key).
+    Leaving the identity intact preserves credit-earning history across
+    reinstalls. To start fresh: manually delete C:\Teale\data before
+    reinstalling.

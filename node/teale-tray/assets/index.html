@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Teale</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="title">
+        <button class="nav-link active" data-view-button="home" type="button" data-i18n="nav.home">teale.com</button>
+        <span class="sep">|</span>
+        <button class="nav-link" data-view-button="supply" type="button" data-i18n="nav.supply">supply</button>
+        <span class="sep">|</span>
+        <button class="nav-link" data-view-button="demand" type="button" data-i18n="nav.demand">demand</button>
+        <span class="sep">|</span>
+        <button class="nav-link" data-view-button="wallet" type="button" data-i18n="nav.wallet">wallet</button>
+        <span class="sep">|</span>
+        <button class="nav-link" data-view-button="account" type="button" data-i18n="nav.account">account</button>
+        <div class="title-spacer"></div>
+        <label class="language-picker">
+          <span data-i18n="language.label">language</span>
+          <select id="language-select">
+            <option value="en">English</option>
+            <option value="zh-Hans">简体中文</option>
+            <option value="pt-BR">Português (Brasil)</option>
+            <option value="es">Español</option>
+            <option value="fil-PH">Filipino (PH)</option>
+          </select>
+        </label>
+        <span class="cursor" aria-hidden="true"></span>
+      </header>
+
+      <p id="header-line" class="header-line">
+        distributed ai inference supply and demand
+      </p>
+
+      <hr class="rule" />
+
+      <section class="view view-active" data-view="home">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="home.prompt.overview">overview</span></p>
+          <div class="card">
+            <p class="lede" data-i18n="home.lede">
+              Teale turns this machine into a supply node and a demand client at the same time.
+            </p>
+            <dl class="stats">
+              <dt>State</dt>
+              <dd id="home-status">Starting</dd>
+              <dt>Model</dt>
+              <dd id="home-model">No model loaded</dd>
+              <dt>Wallet</dt>
+              <dd id="home-balance">Syncing...</dd>
+              <dt>Account</dt>
+              <dd id="home-account">Not signed in</dd>
+            </dl>
+            <div class="actions">
+              <button id="home-open-supply" class="action action-primary" type="button" data-i18n="home.action.supply">Open supply</button>
+              <button id="home-open-demand" class="action" type="button" data-i18n="home.action.demand">Open demand</button>
+              <button id="home-open-wallet" class="action" type="button" data-i18n="home.action.wallet">Open wallet</button>
+              <button id="home-open-account" class="action" type="button" data-i18n="home.action.account">Open account</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" data-view="supply">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="supply.prompt.status">status</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>State</dt>
+              <dd>
+                <span id="status-chip">Starting</span>
+                <small id="status-line">Connecting to the local Teale service...</small>
+              </dd>
+              <dt>Machine</dt>
+              <dd id="device-name">-</dd>
+              <dt>RAM</dt>
+              <dd id="device-ram">-</dd>
+              <dt>Backend</dt>
+              <dd id="device-backend">-</dd>
+              <dt>Power</dt>
+              <dd id="device-power">-</dd>
+              <dt>Model</dt>
+              <dd id="current-model">No model loaded</dd>
+            </dl>
+            <div class="actions">
+              <button id="unload-button" class="action" disabled>Unload current model</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="supply.prompt.earnings">earnings</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Rate</dt>
+              <dd id="supply-earning-rate">Waiting for a loaded model...</dd>
+              <dt>Session</dt>
+              <dd id="supply-session-credits">0</dd>
+              <dt>Wallet</dt>
+              <dd>
+                <span id="supply-wallet-balance">Syncing...</span>
+                <small data-i18n="supply.wallet.note">The wallet view shows the balance grow in real time.</small>
+              </dd>
+            </dl>
+            <div class="actions">
+              <button id="supply-wallet-link" class="action action-primary" type="button" data-i18n="supply.wallet.action">Open wallet</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="supply.prompt.recommended">recommended</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Model</dt>
+              <dd id="recommended-name">Finding the best fit...</dd>
+              <dt>Fit</dt>
+              <dd id="recommended-meta">Waiting for the local Teale service to recommend the best model.</dd>
+              <dt>Action</dt>
+              <dd>
+                <button id="recommended-action" class="action action-primary" type="button">Download and start supplying</button>
+                <small id="recommended-error" class="error-note" hidden></small>
+              </dd>
+            </dl>
+          </div>
+        </section>
+
+        <section id="transfer-panel" class="section" hidden>
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="supply.prompt.transfer">transfer</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Progress</dt>
+              <dd>
+                <span id="transfer-percent">0%</span>
+                <small id="transfer-label">Preparing...</small>
+              </dd>
+            </dl>
+            <pre id="transfer-bar-text" class="code-block">[░░░░░░░░░░░░░░░░░░░░] 0%</pre>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="supply.prompt.catalog">catalog</span></p>
+          <div id="models-list" class="models"></div>
+        </section>
+      </section>
+
+      <section class="view" data-view="demand">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="demand.prompt.local">local inference</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Base URL</dt>
+              <dd id="local-base-url">-</dd>
+              <dt>Model</dt>
+              <dd id="local-model-id">No local model loaded</dd>
+            </dl>
+            <pre id="local-curl" class="code-block">Waiting for a local model...</pre>
+            <div class="actions">
+              <button id="local-curl-copy" class="action" type="button" data-i18n="demand.action.copyLocalCurl">Copy local curl</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="demand.prompt.networkModels">teale network models</span></p>
+          <div class="card">
+            <div class="table-wrap">
+              <table class="model-table">
+                <thead>
+                  <tr>
+                    <th><button class="sort-button" data-model-sort="name" type="button">Model</button></th>
+                    <th><button class="sort-button" data-model-sort="context" type="button">Context</button></th>
+                    <th><button class="sort-button" data-model-sort="devices" type="button">Devices</button></th>
+                    <th><button class="sort-button" data-model-sort="ttft" type="button">TTFT</button></th>
+                    <th><button class="sort-button" data-model-sort="tps" type="button">TPS</button></th>
+                    <th><button class="sort-button" data-model-sort="prompt" type="button">Prompt</button></th>
+                    <th><button class="sort-button" data-model-sort="completion" type="button">Completion</button></th>
+                  </tr>
+                </thead>
+                <tbody id="network-model-table-body"></tbody>
+              </table>
+            </div>
+            <p id="network-model-empty" class="muted">Loading live gateway models...</p>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="demand.prompt.network">teale network</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Base URL</dt>
+              <dd id="network-base-url">-</dd>
+              <dt>Bearer</dt>
+              <dd>
+                <span id="network-token">Syncing...</span>
+                <small id="network-token-note">Requests deduct from Teale credits.</small>
+              </dd>
+              <dt>Selected</dt>
+              <dd id="network-selected-model">Waiting for gateway models...</dd>
+            </dl>
+            <pre id="network-curl" class="code-block">Waiting for a network bearer token...</pre>
+            <div class="actions">
+              <button id="network-token-copy" class="action" type="button" data-i18n="demand.action.copyBearer">Copy bearer token</button>
+              <button id="network-curl-copy" class="action" type="button" data-i18n="demand.action.copyNetworkCurl">Copy network curl</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" data-view="wallet">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="wallet.prompt.balances">balances</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Teale credits</dt>
+              <dd>
+                <span id="wallet-balance">Syncing...</span>
+                <small id="wallet-note">Credits go up while supply is on.</small>
+              </dd>
+              <dt>USDC</dt>
+              <dd id="wallet-usdc">0.00</dd>
+              <dt>Session</dt>
+              <dd>
+                <span id="wallet-session-credits">0</span>
+                <small id="wallet-rate">Availability credits begin once a compatible model is loaded and serving.</small>
+              </dd>
+              <dt>Today</dt>
+              <dd id="wallet-credits-today">0</dd>
+              <dt>Lifetime earned</dt>
+              <dd id="wallet-earned">-</dd>
+              <dt>Spent</dt>
+              <dd id="wallet-spent">-</dd>
+              <dt>Requests</dt>
+              <dd id="wallet-requests">0</dd>
+              <dt>Available since</dt>
+              <dd id="wallet-since">Not serving yet</dd>
+            </dl>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="wallet.prompt.send">send</span></p>
+          <div class="card">
+            <div class="form-grid">
+              <label class="field">
+                <span data-i18n="common.asset">Asset</span>
+                <select id="send-asset">
+                  <option value="credits" data-i18n="wallet.asset.credits">Teale credits</option>
+                  <option value="usdc" data-i18n="wallet.asset.usdc">USDC</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span data-i18n="common.recipient">Recipient</span>
+                <input id="send-recipient" type="text" placeholder="device id, key, phone, or github username" data-i18n-placeholder="wallet.input.recipient" />
+              </label>
+              <label class="field">
+                <span data-i18n="common.amount">Amount</span>
+                <input id="send-amount" type="text" inputmode="decimal" placeholder="0" data-i18n-placeholder="common.amountPlaceholder" />
+              </label>
+              <label class="field field-wide">
+                <span data-i18n="common.memo">Memo</span>
+                <input id="send-memo" type="text" placeholder="optional note" data-i18n-placeholder="common.memoPlaceholder" />
+              </label>
+            </div>
+            <div class="actions">
+              <button id="send-submit" class="action action-primary" type="button" disabled data-i18n="wallet.action.sendSoon">Send coming soon</button>
+            </div>
+            <p id="send-note" class="muted" data-i18n="wallet.send.note">
+              Transfers are not wired in the Windows companion backend yet. This will eventually support device IDs, keys, account phone numbers, and GitHub usernames.
+            </p>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="wallet.prompt.ledger">ledger</span></p>
+          <div class="card">
+            <div class="actions actions-tight">
+              <button id="ledger-export" class="action" type="button" data-i18n="wallet.action.export">Export CSV</button>
+            </div>
+            <div id="ledger-list" class="ledger-list"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" data-view="account">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="account.prompt.account">account</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Status</dt>
+              <dd>
+                <span id="auth-status">Checking sign-in state...</span>
+                <small id="auth-user">Not signed in</small>
+              </dd>
+            </dl>
+            <div class="actions">
+              <button id="auth-github-button" class="action action-primary" type="button">Sign in with GitHub</button>
+              <button id="auth-google-button" class="action" type="button">Sign in with Google</button>
+              <button id="auth-signout-button" class="action" type="button" hidden>Sign out</button>
+            </div>
+            <div id="auth-phone-panel" class="auth-phone-panel">
+              <label class="field">
+                <span data-i18n="account.phone">Phone</span>
+                <input id="auth-phone-input" type="tel" placeholder="+1 555 123 4567" data-i18n-placeholder="account.input.phone" />
+              </label>
+              <button id="auth-phone-send-button" class="action" type="button">Send SMS code</button>
+              <label class="field">
+                <span data-i18n="account.code">Code</span>
+                <input id="auth-phone-code-input" type="text" inputmode="numeric" placeholder="123456" data-i18n-placeholder="account.input.code" />
+              </label>
+              <button id="auth-phone-verify-button" class="action" type="button">Verify code</button>
+            </div>
+            <p id="auth-note" class="muted" data-i18n="account.auth.note.default">
+              Sign in to link this machine to a person. Device wallet earnings continue working without human sign-in.
+            </p>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="account.prompt.wallet">account wallet</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>Teale credits</dt>
+              <dd>
+                <span id="account-wallet-balance">-</span>
+                <small id="account-wallet-note">Sweep device balances here, then send from the account wallet.</small>
+              </dd>
+              <dt>USDC</dt>
+              <dd id="account-wallet-usdc">0.00</dd>
+            </dl>
+            <div class="form-grid">
+              <label class="field">
+                <span data-i18n="common.asset">Asset</span>
+                <select id="account-send-asset">
+                  <option value="credits" data-i18n="wallet.asset.credits">Teale credits</option>
+                  <option value="usdc" data-i18n="wallet.asset.usdc">USDC</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span data-i18n="common.recipient">Recipient</span>
+                <input id="account-send-recipient" type="text" placeholder="device id, key, phone, or github username" data-i18n-placeholder="wallet.input.recipient" />
+              </label>
+              <label class="field">
+                <span data-i18n="common.amount">Amount</span>
+                <input id="account-send-amount" type="text" inputmode="decimal" placeholder="0" data-i18n-placeholder="common.amountPlaceholder" />
+              </label>
+              <label class="field field-wide">
+                <span data-i18n="common.memo">Memo</span>
+                <input id="account-send-memo" type="text" placeholder="optional note" data-i18n-placeholder="common.memoPlaceholder" />
+              </label>
+            </div>
+            <div class="actions">
+              <button id="account-send-submit" class="action action-primary" type="button" disabled data-i18n="wallet.action.sendSoon">Send coming soon</button>
+            </div>
+            <p id="account-send-note" class="muted" data-i18n="account.send.note">
+              Account wallet transfers are not wired in the Windows companion backend yet.
+            </p>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="account.prompt.details">details</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt>User ID</dt>
+              <dd id="account-id">-</dd>
+              <dt>Email</dt>
+              <dd id="account-email">-</dd>
+              <dt>Phone</dt>
+              <dd id="account-phone">-</dd>
+              <dt>Providers</dt>
+              <dd id="account-identities">-</dd>
+            </dl>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="account.prompt.devices">devices</span></p>
+          <div class="card">
+            <div class="table-wrap">
+              <table class="model-table account-table">
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Device ID</th>
+                    <th>Wallet balance</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="account-devices"></tbody>
+              </table>
+            </div>
+            <p id="account-devices-empty" class="muted">Sign in to view devices on this account.</p>
+          </div>
+        </section>
+      </section>
+
+      <footer>
+        <div class="tagline" data-i18n="footer.tagline">teale - distributed ai inference for the world</div>
+      </footer>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

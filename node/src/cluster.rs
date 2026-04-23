@@ -30,6 +30,9 @@ pub struct NodeRuntimeState {
     pub device_id: String,
     pub queue_depth: AtomicU32,
     pub is_generating: AtomicBool,
+    pub user_paused: AtomicBool,
+    pub on_ac_power: AtomicBool,
+    pub battery_gated: bool,
     pub throttle_level: AtomicU32, // 0 (paused) .. 100 (full)
     pub thermal_level: AtomicU32,  // encoded ThermalLevel ordinal
     pub completed_requests: AtomicU64,
@@ -46,6 +49,9 @@ impl NodeRuntimeState {
             device_id: uuid::Uuid::new_v4().to_string(),
             queue_depth: AtomicU32::new(0),
             is_generating: AtomicBool::new(false),
+            user_paused: AtomicBool::new(false),
+            on_ac_power: AtomicBool::new(true),
+            battery_gated: false,
             throttle_level: AtomicU32::new(100),
             thermal_level: AtomicU32::new(thermal_to_ord(ThermalLevel::Nominal)),
             completed_requests: AtomicU64::new(0),
@@ -55,6 +61,17 @@ impl NodeRuntimeState {
             shutting_down: AtomicBool::new(false),
             semaphore: Arc::new(Semaphore::new(max_concurrent as usize)),
         }
+    }
+
+    pub fn with_power_gating(mut self, battery_gated: bool, on_ac_power: bool) -> Self {
+        self.battery_gated = battery_gated;
+        self.on_ac_power.store(on_ac_power, Ordering::Relaxed);
+        self
+    }
+
+    pub fn can_supply(&self) -> bool {
+        !self.user_paused.load(Ordering::Relaxed)
+            && (!self.battery_gated || self.on_ac_power.load(Ordering::Relaxed))
     }
 
     pub fn ewma_tokens_per_second(&self) -> Option<f64> {
@@ -164,6 +181,17 @@ pub async fn handle_relay_data(
                     session,
                     &req.request_id,
                     "node is shutting down",
+                    Some(InferenceErrorCode::Unavailable),
+                );
+                return;
+            }
+            if !state.can_supply() {
+                reply_err(
+                    relay,
+                    from,
+                    session,
+                    &req.request_id,
+                    "node is paused",
                     Some(InferenceErrorCode::Unavailable),
                 );
                 return;

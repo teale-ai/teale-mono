@@ -288,6 +288,7 @@ mod tests {
             supported_parameters: vec![],
             description: None,
             aliases: vec!["kimi".into()],
+            is_virtual: false,
         }];
 
         let mk_device = |node_id: &str,
@@ -317,6 +318,8 @@ mod tests {
                     ptn_ids: None,
                     swappable_models: vec![],
                     max_concurrent_requests: Some(1),
+                    effective_context: Some(262_144),
+                    on_ac_power: Some(true),
                 },
                 last_heartbeat: heartbeat_at,
                 last_seen: heartbeat_at,

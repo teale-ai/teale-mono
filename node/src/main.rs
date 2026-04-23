@@ -10,13 +10,19 @@
 mod backend;
 mod cluster;
 mod config;
+mod gateway_wallet;
 mod hardware;
 mod identity;
 mod inference;
 mod litert;
+mod model_registry;
+#[cfg(windows)]
+mod power_win;
 mod relay;
+mod status_server;
 mod supervisor;
 mod swap;
+mod windows_model_catalog;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -35,6 +41,7 @@ use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
 use crate::identity::NodeIdentity;
 use crate::inference::{build_llama_command, build_mnn_command, InferenceProxy};
+use crate::model_registry::RegistryStore;
 use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
 use crate::swap::{ModelSlot, SwapManager};
@@ -67,11 +74,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    let config = Config::load(&args.config)?;
+    let mut config = Config::load(&args.config)?;
 
     info!("teale-node v{}", env!("CARGO_PKG_VERSION"));
 
-    let identity = NodeIdentity::load_or_create()?;
+    let identity = Arc::new(NodeIdentity::load_or_create()?);
     info!("Node ID: {}", identity.node_id());
 
     let hw = detect_hardware(&config.node);
@@ -80,7 +87,34 @@ async fn main() -> anyhow::Result<()> {
         hw.chip_name, hw.chip_family, hw.total_ram_gb, hw.tier
     );
 
-    let state = Arc::new(NodeRuntimeState::new(config.node.max_concurrent_requests));
+    let registry_store = RegistryStore::new(&config.control.registry_path);
+    let model_dir = infer_model_dir(&config);
+    let registry = registry_store.load_or_init_with_legacy(
+        config.llama.as_ref().map(|l| l.model.as_str()),
+        config.llama.as_ref().and_then(|l| l.model_id.as_deref()),
+        &model_dir,
+    )?;
+
+    if let Some(active_model_id) = registry.active_model_id.as_ref() {
+        if let Some(path) = registry
+            .models
+            .get(active_model_id)
+            .and_then(|record| record.downloaded_file_path.as_deref())
+            .filter(|path| !path.trim().is_empty())
+            .filter(|path| std::path::Path::new(path).exists())
+        {
+            if let Some(llama) = config.llama.as_mut() {
+                llama.model = path.to_string();
+                llama.model_id = Some(active_model_id.clone());
+            }
+        }
+    }
+
+    let initial_on_ac = initial_on_ac_power();
+    let state = Arc::new(
+        NodeRuntimeState::new(config.node.max_concurrent_requests)
+            .with_power_gating(cfg!(windows), initial_on_ac),
+    );
     info!(
         "Runtime: max_concurrent={}, heartbeat_every={}s, shutdown_timeout={}s",
         config.node.max_concurrent_requests,
@@ -117,14 +151,84 @@ async fn main() -> anyhow::Result<()> {
         swap_model_ids.len()
     );
 
+    // Laptop-contributor power state. Only Windows participates today —
+    // Mac app uses its own lid-close UX, Android supply is phone-only.
+    // `None` means "don't gate on battery" (desktops, Mac Studios, Swift).
+    #[cfg(windows)]
+    let ac_state = {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(initial_on_ac));
+        power_win::spawn_ac_poller(flag.clone());
+        if !initial_on_ac {
+            warn!("Starting on battery power — supply will remain paused until AC restored");
+        }
+        Some(flag)
+    };
+    #[cfg(not(windows))]
+    let ac_state: Option<Arc<std::sync::atomic::AtomicBool>> = None;
+    let _ = &ac_state; // Reserved for supervisor wiring in a follow-up.
+
+    let loaded_models = swap_manager_loaded_models_from_registry(&registry, &config);
+    let effective_context = if loaded_models.is_empty() {
+        None
+    } else {
+        match config.backend.as_str() {
+            "litert" => config.litert.as_ref().map(|c| c.context_size),
+            "mnn" => config.mnn.as_ref().map(|c| c.context_size),
+            _ => config.llama.as_ref().map(|c| c.context_size),
+        }
+    };
     let capabilities = build_capabilities(
         hw,
-        Some(&model_id),
+        loaded_models.first().map(String::as_str),
         config.node.max_concurrent_requests,
         swap_model_ids,
+        effective_context,
+        Some(initial_on_ac),
     );
 
-    let device_info = build_device_info(&config, &identity, &capabilities);
+    // Localhost status endpoint for the tray app. Windows-pilot scoped —
+    // the tray only runs on Windows today, and the endpoint is bound to
+    // 127.0.0.1 so it's inert on any non-loopback-listening deployments.
+    let tray_status = Arc::new(status_server::StatusState::new(
+        config.node.display_name.clone(),
+        capabilities.hardware.clone(),
+        model_dir,
+        registry_store,
+        registry,
+        swap_manager.clone(),
+        config.llama.clone(),
+        config.control.clone(),
+        config.relay.url.clone(),
+        state.clone(),
+    ));
+    if !loaded_models.is_empty() {
+        tray_status.mark_supplying_now();
+    }
+    tray_status.clear_starting().await;
+    status_server::spawn(tray_status.clone(), config.control.port);
+    if let Err(err) = gateway_wallet::spawn(
+        tray_status.clone(),
+        identity.clone(),
+        config.relay.url.clone(),
+    ) {
+        warn!("wallet sync disabled: {err:#}");
+        tray_status
+            .set_gateway_wallet_error(format!("wallet sync disabled: {err:#}"))
+            .await;
+    }
+
+    if let Some(ac_state) = ac_state.clone() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                let current = ac_state.load(Ordering::SeqCst);
+                state.on_ac_power.store(current, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    let device_info = build_device_info(&config, identity.as_ref(), &capabilities);
 
     let display_name = args
         .name
@@ -142,12 +246,13 @@ async fn main() -> anyhow::Result<()> {
 
         let session_result = run_relay_session(
             &config,
-            &identity,
+            identity.as_ref(),
             &display_name,
             &capabilities,
             &swap_manager,
             &state,
             &device_info,
+            tray_status.clone(),
             shutdown_signal.clone(),
         )
         .await;
@@ -231,6 +336,9 @@ async fn start_backend(
                 }
                 _ => {
                     let llama = config.llama.as_ref().unwrap();
+                    if llama.model.trim().is_empty() {
+                        return Ok((Backend::Unavailable, String::new(), None));
+                    }
                     (llama.port, llama.resolved_model_id())
                 }
             };
@@ -300,12 +408,18 @@ async fn run_relay_session(
     swap: &Arc<SwapManager>,
     state: &Arc<NodeRuntimeState>,
     device_info: &Value,
+    tray_status: Arc<status_server::StatusState>,
     shutdown_signal: Arc<Notify>,
 ) -> anyhow::Result<()> {
     let (relay, mut incoming) = RelayClient::connect(&config.relay.url, identity).await?;
     let relay = Arc::new(relay);
 
-    relay.register(identity, display_name, capabilities)?;
+    let mut initial_capabilities = capabilities.clone();
+    initial_capabilities.loaded_models = swap.loaded_models().await;
+    initial_capabilities.is_available =
+        swap.is_ready().await && state.can_supply() && !state.shutting_down.load(Ordering::Relaxed);
+    initial_capabilities.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
+    relay.register(identity, display_name, &initial_capabilities)?;
 
     // Periodic re-register: keeps relay's capability cache fresh for the gateway's
     // `discover` poll. Cheap (few hundred bytes per interval) and simpler than
@@ -332,7 +446,10 @@ async fn run_relay_session(
                 // Rebuild capabilities snapshot with live model list + runtime state.
                 let mut snapshot = capabilities.clone();
                 snapshot.loaded_models = swap.loaded_models().await;
-                snapshot.is_available = !state.shutting_down.load(Ordering::Relaxed);
+                snapshot.is_available = swap.is_ready().await
+                    && state.can_supply()
+                    && !state.shutting_down.load(Ordering::Relaxed);
+                snapshot.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
                 let payload = serde_json::json!({
                     "register": {
                         "nodeID": identity_hex,
@@ -362,12 +479,15 @@ async fn run_relay_session(
         tokio::select! {
             _ = shutdown_signal.notified() => {
                 info!("Shutdown signal received inside relay loop");
+                tray_status.clear_last_error().await;
                 break Ok(());
             }
             msg_opt = incoming.recv() => {
                 let Some(msg) = msg_opt else {
+                    tray_status.set_last_error("Relay connection lost").await;
                     break Err(anyhow::anyhow!("Relay connection lost"));
                 };
+                tray_status.clear_last_error().await;
                 dispatch(&relay, msg, swap, state, device_info).await;
             }
         }
@@ -461,6 +581,52 @@ fn build_device_info(
         "isCurrentDevice": true,
         "loadedModels": capabilities.loaded_models
     })
+}
+
+fn infer_model_dir(config: &Config) -> std::path::PathBuf {
+    config
+        .llama
+        .as_ref()
+        .and_then(|llama| {
+            let path = std::path::Path::new(&llama.model);
+            if llama.model.trim().is_empty() {
+                None
+            } else {
+                path.parent().map(|p| p.to_path_buf())
+            }
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("models"))
+}
+
+fn swap_manager_loaded_models_from_registry(
+    registry: &crate::model_registry::PersistedRegistry,
+    config: &Config,
+) -> Vec<String> {
+    if let Some(active) = registry.active_model_id.clone() {
+        return vec![active];
+    }
+    config
+        .llama
+        .as_ref()
+        .and_then(|llama| {
+            if llama.model.trim().is_empty() {
+                None
+            } else {
+                Some(vec![llama.resolved_model_id()])
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn initial_on_ac_power() -> bool {
+    #[cfg(windows)]
+    {
+        power_win::initial_ac_state()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
 }
 
 fn install_signal_handlers(state: Arc<NodeRuntimeState>, notify: Arc<Notify>) {

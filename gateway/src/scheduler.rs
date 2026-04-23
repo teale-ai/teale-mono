@@ -32,10 +32,12 @@ impl Scheduler {
         model_id: &str,
         exclude: &[String],
         registry: &Registry,
+        min_context: Option<u32>,
     ) -> Option<&'a DeviceState> {
         // Two-stage:
         //   1. Filter to eligible, non-excluded, non-overloaded, non-zero-score
-        //      candidates.
+        //      candidates, AND any whose advertised effective_context can't
+        //      cover the request's min_context requirement (when known).
         //   2. Primary sort on in_flight ASC (least-loaded wins). Collect all
         //      tied-best candidates, then pick one at random. Pure least-
         //      in-flight with a deterministic score tiebreak pinned every
@@ -55,6 +57,26 @@ impl Scheduler {
                 Eligibility::Swappable => false,
                 _ => continue,
             };
+            // Context filter: if the request declared a min context, drop
+            // any node whose llama-server was launched with --ctx-size below
+            // it. Nodes that omit effective_context are older/legacy — we
+            // trust them (absent == unknown, not unfit), since the field is
+            // additive.
+            if let Some(need) = min_context {
+                if let Some(have) = d.capabilities.effective_context {
+                    if have < need {
+                        continue;
+                    }
+                }
+            }
+            // Battery filter: laptop contributor nodes advertise on_ac_power
+            // and pause themselves on battery. Skip Some(false) explicitly
+            // so we route around them even before their next re-register.
+            // None means "doesn't participate in battery gating" (desktops,
+            // Mac Studios, Swift Teale.app supply) — always eligible.
+            if matches!(d.capabilities.on_ac_power, Some(false)) {
+                continue;
+            }
             let in_flight = registry.in_flight(&d.node_id);
             if in_flight >= self.cfg.max_queue_depth {
                 continue;

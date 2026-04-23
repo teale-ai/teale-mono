@@ -1,8 +1,17 @@
-# TealeNode post-install script — run by the Inno Setup installer after file extraction.
-# Downloads the model, generates config, installs and starts the Windows service.
+# TealeNode post-install script - run by the Inno Setup installer after file
+# extraction. Generates config, installs and starts the Windows service, then
+# lets the Teale companion app drive runtime model download/load management.
+# Also applies power-configuration (powercfg) when the user opted into
+# lid-closed supply on the installer wizard.
 
 param(
-    [string]$InstallDir = "C:\Teale"
+    [string]$InstallDir = "C:\Teale",
+    # When "1", allow supply while lid is closed on AC power. Set by the
+    # installer wizard's Behavior page. Default off for conservative opt-in.
+    [string]$AllowSupplyLidClosed = "1",
+    # Optional installer-provided backup directory used when an older Teale
+    # install is removed before upgrading. Models are restored from here.
+    [string]$PreservedModelsDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +28,39 @@ $NssmExe    = Join-Path $BinDir "nssm.exe"
 $LlamaExe   = Join-Path $BinDir "llama-server.exe"
 $TealeExe   = Join-Path $BinDir "teale-node.exe"
 $ConfigFile = Join-Path $ConfigDir "teale-node.toml"
-$ModelUrl   = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
-$ModelFile  = Join-Path $ModelDir "Qwen3-4B-Q4_K_M.gguf"
+$TranscriptPath = Join-Path $LogDir "post-install.log"
+$TranscriptCapturePath = Join-Path $LogDir "post-install-transcript.log"
+$TranscriptStarted = $false
+
+function Write-InstallLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    $timestamp = [DateTime]::UtcNow.ToString("o")
+    Add-Content -Path $TranscriptPath -Value "[$timestamp] $Message"
+}
+
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+
+    if ($exitCode -ne 0) {
+        $renderedArgs = if ($Arguments) { $Arguments -join " " } else { "" }
+        throw ("Command failed with exit code {0}: {1} {2}" -f $exitCode, $FilePath, $renderedArgs)
+    }
+}
 
 # --- Create directories ---
 foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
@@ -29,72 +69,133 @@ foreach ($dir in @($ModelDir, $ConfigDir, $LogDir, $DataDir)) {
     }
 }
 
-# --- Download model if not present ---
-if (-not (Test-Path $ModelFile)) {
-    Write-Host "Downloading Qwen3-4B model (about 2.5 GB)..."
+Write-InstallLog "post-install.ps1 starting"
+
+try {
     try {
-        Start-BitsTransfer -Source $ModelUrl -Destination $ModelFile -Description "Downloading Qwen3-4B Q4_K_M"
+        Start-Transcript -Path $TranscriptCapturePath -Append -ErrorAction Stop | Out-Null
+        $TranscriptStarted = $true
     } catch {
-        Write-Host "BITS unavailable, using Invoke-WebRequest..."
-        Invoke-WebRequest -Uri $ModelUrl -OutFile $ModelFile -UseBasicParsing
+        Write-InstallLog "Start-Transcript failed: $($_.Exception.Message)"
     }
-}
 
-# --- Generate config ---
-$logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
-$threads = [math]::Max(2, $logicalCores - 2)
-$ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
+    if ($PreservedModelsDir -and (Test-Path $PreservedModelsDir)) {
+        Write-InstallLog "Restoring preserved models from $PreservedModelsDir"
+        New-Item -ItemType Directory -Path $ModelDir -Force | Out-Null
+        Get-ChildItem -LiteralPath $PreservedModelsDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            Move-Item -LiteralPath $_.FullName -Destination $ModelDir -Force
+        }
+        Remove-Item -LiteralPath $PreservedModelsDir -Force -Recurse -ErrorAction SilentlyContinue
+    }
 
-$llamaPath = $LlamaExe.Replace('\', '/')
-$modelPath = $ModelFile.Replace('\', '/')
+    # --- RAM gate: pilot is 16 GB+ only ---
+    $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
+    if ($ramGB -lt 16) {
+        $msg = "Teale needs 16 GB of RAM or more. This machine has $ramGB GB.`n`n" + `
+               "We are working on support for smaller devices and will let you know when it's ready. " + `
+               "You can uninstall Teale from Settings > Apps for now."
+        Add-Type -AssemblyName PresentationFramework
+        [System.Windows.MessageBox]::Show($msg, "Teale - Unsupported RAM", "OK", "Information") | Out-Null
+        Write-InstallLog "RAM check failed: $ramGB GB < 16 GB minimum. Exiting without installing service."
+        return
+    }
 
-$tomlContent = @"
+    $vulkanDll = "$env:SystemRoot\System32\vulkan-1.dll"
+    if (Test-Path $vulkanDll) {
+        $gpuBackend = "vulkan"
+        $gpuLayers = 999
+        Write-InstallLog "Vulkan runtime detected. GPU offload enabled."
+    } else {
+        $gpuBackend = "cpu"
+        $gpuLayers = 0
+        Write-InstallLog "No Vulkan runtime found. Falling back to CPU-only inference."
+    }
+
+    $logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+    $threads = [math]::Max(2, $logicalCores - 2)
+    $appEnvironment = @("APPDATA=$DataDir")
+    $supabaseUrl = if ($env:TEALE_SUPABASE_URL) { $env:TEALE_SUPABASE_URL } else { "" }
+    $supabaseAnonKey = if ($env:TEALE_SUPABASE_ANON_KEY) { $env:TEALE_SUPABASE_ANON_KEY } else { "" }
+    $supabaseRedirectUrl = if ($env:TEALE_SUPABASE_REDIRECT_URL) { $env:TEALE_SUPABASE_REDIRECT_URL } else { "teale://auth/callback" }
+
+    $llamaPath = $LlamaExe.Replace('\', '/')
+    $tomlContent = @"
 # teale-node configuration -- auto-generated by TealeNode installer
-# Machine: $env:COMPUTERNAME | RAM: $ramGB GB | Cores: $logicalCores
+# Machine: $env:COMPUTERNAME | RAM: $ramGB GB | Cores: $logicalCores | GPU: $gpuBackend
 
 [relay]
 url = "wss://relay.teale.com/ws"
 
 [llama]
 binary = "$llamaPath"
-model = "$modelPath"
-gpu_layers = 0
+model = ""
+gpu_layers = $gpuLayers
 context_size = 8192
 port = 11436
 extra_args = ["--threads", "$threads"]
 
+[control]
+port = 11437
+registry_path = "C:/Teale/config/model-registry.json"
+supabase_url = "$supabaseUrl"
+supabase_anon_key = "$supabaseAnonKey"
+supabase_redirect_url = "$supabaseRedirectUrl"
+
 [node]
 display_name = "$env:COMPUTERNAME"
-gpu_backend = "cpu"
+gpu_backend = "$gpuBackend"
 "@
 
-Set-Content -Path $ConfigFile -Value $tomlContent -Encoding UTF8
+    Set-Content -Path $ConfigFile -Value $tomlContent -Encoding UTF8
+    Write-InstallLog "Config written to $ConfigFile"
 
-# --- Stop existing service if upgrading ---
-if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    & $NssmExe remove $ServiceName confirm 2>$null
+    if ($AllowSupplyLidClosed -eq "1") {
+        Write-InstallLog "Configuring Windows power plan for lid-closed supply on AC."
+        powercfg /change standby-timeout-ac 0
+        powercfg /change hibernate-timeout-ac 0
+        powercfg /setacvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
+        powercfg /setactive SCHEME_CURRENT
+    } else {
+        Write-InstallLog "Lid-closed supply not enabled."
+    }
+
+    if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+        Write-InstallLog "Removing existing service definition."
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        Invoke-Checked $NssmExe remove $ServiceName confirm
+    }
+
+    if (-not (Test-Path $NssmExe)) {
+        throw "nssm.exe not found at $NssmExe"
+    }
+
+    Write-InstallLog "Installing service via NSSM."
+    Invoke-Checked $NssmExe install $ServiceName $TealeExe
+    Invoke-Checked $NssmExe set $ServiceName AppParameters "--config `"$ConfigFile`""
+    Invoke-Checked $NssmExe set $ServiceName AppDirectory $InstallDir
+    Invoke-Checked $NssmExe set $ServiceName DisplayName "Teale Node"
+    Invoke-Checked $NssmExe set $ServiceName Description "TealeNet inference supply node"
+
+    $stdoutLog = Join-Path $LogDir "teale-node-stdout.log"
+    $stderrLog = Join-Path $LogDir "teale-node-stderr.log"
+    Invoke-Checked $NssmExe set $ServiceName AppStdout $stdoutLog
+    Invoke-Checked $NssmExe set $ServiceName AppStderr $stderrLog
+    Invoke-Checked $NssmExe set $ServiceName AppRotateFiles 1
+    Invoke-Checked $NssmExe set $ServiceName AppRotateBytes 10485760
+    Invoke-Checked $NssmExe set $ServiceName AppRestartDelay 5000
+    Invoke-Checked $NssmExe set $ServiceName Start SERVICE_AUTO_START
+    Invoke-Checked $NssmExe set $ServiceName AppEnvironmentExtra ($appEnvironment -join "`n")
+    Invoke-Checked $NssmExe set $ServiceName AppPriority BELOW_NORMAL_PRIORITY_CLASS
+
+    Write-InstallLog "Starting TealeNode service."
+    Start-Service -Name $ServiceName
+    Write-InstallLog "TealeNode service installed and started."
+} catch {
+    Write-InstallLog "ERROR: $($_.Exception.Message)"
+    throw
+} finally {
+    if ($TranscriptStarted) {
+        Stop-Transcript | Out-Null
+    }
 }
-
-# --- Install service via NSSM ---
-& $NssmExe install $ServiceName $TealeExe
-& $NssmExe set $ServiceName AppParameters "--config `"$ConfigFile`""
-& $NssmExe set $ServiceName AppDirectory $InstallDir
-& $NssmExe set $ServiceName DisplayName "Teale Node"
-& $NssmExe set $ServiceName Description "TealeNet inference supply node"
-
-$stdoutLog = Join-Path $LogDir "teale-node-stdout.log"
-$stderrLog = Join-Path $LogDir "teale-node-stderr.log"
-& $NssmExe set $ServiceName AppStdout $stdoutLog
-& $NssmExe set $ServiceName AppStderr $stderrLog
-& $NssmExe set $ServiceName AppRotateFiles 1
-& $NssmExe set $ServiceName AppRotateBytes 10485760
-& $NssmExe set $ServiceName AppRestartDelay 5000
-& $NssmExe set $ServiceName Start SERVICE_AUTO_START
-& $NssmExe set $ServiceName AppEnvironmentExtra "APPDATA=$DataDir"
-
-# --- Start the service ---
-Start-Service -Name $ServiceName
-
-Write-Host "TealeNode service installed and started."

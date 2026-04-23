@@ -10,7 +10,8 @@ url = "wss://relay.teale.com/ws"
 [llama]
 # Path to llama-server binary
 binary = "/usr/local/bin/llama-server"
-# Path to GGUF model file on disk (passed to llama-server as --model)
+# Path to GGUF model file on disk (passed to llama-server as --model).
+# Leave empty to boot without a loaded model and manage models at runtime.
 model = "/models/qwen3-8b-q4_k_m.gguf"
 # Canonical model id advertised to the relay + OpenRouter gateway.
 # Must match an entry in `gateway/models.yaml` — otherwise the gateway's
@@ -25,6 +26,15 @@ context_size = 8192
 port = 11436
 # Extra arguments to pass to llama-server
 # extra_args = ["--flash-attn", "--threads", "8"]
+
+[control]
+# Local companion / tray control API
+port = 11437
+registry_path = "config/model-registry.json"
+# Optional human sign-in for the Windows companion demand view.
+supabase_url = ""
+supabase_anon_key = ""
+supabase_redirect_url = "teale://auth/callback"
 
 [node]
 display_name = "Linux GPU Server"
