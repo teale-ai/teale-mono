@@ -155,8 +155,12 @@ public final class ChatService {
 
             // Update conversation preview
             if let idx = conversations.firstIndex(where: { $0.id == conversation.id }) {
+                conversations[idx].updatedAt = stored.timestamp
                 conversations[idx].lastMessageAt = stored.timestamp
                 conversations[idx].lastMessagePreview = String(content.prefix(100))
+                if activeConversation?.id == conversation.id {
+                    activeConversation = conversations[idx]
+                }
                 saveConversations()
             }
         } catch {
@@ -339,6 +343,16 @@ public final class ChatService {
                     activeMessages.append(decrypted)
                 }
             }
+
+            if let idx = conversations.firstIndex(where: { $0.id == conversationID }) {
+                conversations[idx].updatedAt = stored.timestamp
+                conversations[idx].lastMessageAt = stored.timestamp
+                conversations[idx].lastMessagePreview = String(content.prefix(100))
+                if activeConversation?.id == conversationID {
+                    activeConversation = conversations[idx]
+                }
+                saveConversations()
+            }
         } catch {
             // AI message encryption failed
         }
@@ -379,6 +393,18 @@ public final class ChatService {
             // Wallet entries must replicate into the store even when the
             // conversation isn't currently open in the UI.
             walletStore.append(entry)
+        }
+
+        if let idx = conversations.firstIndex(where: { $0.id == message.conversationID }) {
+            conversations[idx].updatedAt = message.timestamp
+            conversations[idx].lastMessageAt = message.timestamp
+            if let decrypted = await decryptMessage(message, groupID: message.conversationID) {
+                conversations[idx].lastMessagePreview = String(decrypted.content.prefix(100))
+            }
+            if activeConversation?.id == message.conversationID {
+                activeConversation = conversations[idx]
+            }
+            saveConversations()
         }
     }
 

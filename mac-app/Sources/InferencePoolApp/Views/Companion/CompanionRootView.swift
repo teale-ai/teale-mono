@@ -122,7 +122,7 @@ private struct TealeFooter: View {
     var body: some View {
         HStack {
             Spacer()
-            Text("teale - distributed ai inference for the world")
+            Text("teale.com - distributed ai inference for the world")
                 .font(TealeDesign.monoTiny)
                 .foregroundStyle(TealeDesign.muted)
                 .tracking(0.6)

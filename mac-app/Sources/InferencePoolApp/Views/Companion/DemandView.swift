@@ -82,13 +82,6 @@ struct CompanionDemandView: View {
     // MARK: teale network (curl)
 
     private var gatewayBase: String { appState.gatewayFallbackURL }
-    private var networkBearerDisplay: String {
-        appState.gatewayAPIKey.isEmpty ? "Set a bearer token in Settings" : "•••" + String(appState.gatewayAPIKey.suffix(4))
-    }
-
-    private var selectedNetworkModel: String {
-        appState.engineStatus.currentModel?.openrouterId ?? "teale/auto"
-    }
 
     private var networkCurlSnippet: String {
         let token = appState.gatewayAPIKey.isEmpty ? "$GATEWAY_TOKEN" : appState.gatewayAPIKey
@@ -97,7 +90,7 @@ struct CompanionDemandView: View {
           -H "Authorization: Bearer \(token)" \\
           -H "Content-Type: application/json" \\
           -d '{
-            "model": "\(selectedNetworkModel)",
+            "model": "\(appState.companionSelectedGatewayModel)",
             "messages": [{"role":"user","content":"Hi"}]
           }'
         """
@@ -109,10 +102,10 @@ struct CompanionDemandView: View {
                 TealeStatRow(label: "Base URL", value: gatewayBase)
                 TealeStatRow(
                     label: "Bearer",
-                    value: networkBearerDisplay,
-                    note: "Requests deduct from Teale credits."
+                    value: appState.companionGatewayBearerLabel,
+                    note: "Requests deduct from Teale credits once a gateway bearer is configured."
                 )
-                TealeStatRow(label: "Selected", value: selectedNetworkModel)
+                TealeStatRow(label: "Selected", value: appState.companionSelectedGatewayModel)
             }
             TealeCodeBlock(text: networkCurlSnippet)
                 .padding(.top, 10)

@@ -769,6 +769,11 @@ public final class AppState {
         self.agentProfile = profile
         await agentManager.setup(profile: profile, creditBalance: realWallet.balance.value)
 
+        // Fleet auto-setup: first-launch, no model picked — auto-download the
+        // largest catalog model that fits this Mac's RAM so a fresh fleet node
+        // boots straight into "serving". No-op if a model is already present.
+        await FleetAutoSetup.runIfNeeded(self)
+
         // Wire auto model management — download in-demand models when enabled
         demandTracker.onAutoDownloadRequested = { [weak self] model in
             guard let self else { return }

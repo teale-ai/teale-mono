@@ -7,6 +7,14 @@ struct CompanionHomeView: View {
     let onNavigate: (CompanionTab) -> Void
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            overviewSection
+            networkSection
+            threadSection
+        }
+    }
+
+    private var overviewSection: some View {
         TealeSection(prompt: "overview") {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Teale turns this machine into a supply node and a demand client at the same time.")
@@ -51,6 +59,38 @@ struct CompanionHomeView: View {
                 .padding(.top, 4)
             }
         }
+    }
+
+    private var networkSection: some View {
+        TealeSection(prompt: "network") {
+            TealeStats {
+                TealeStatRow(label: "Total devices", value: appState.companionTotalDevicesLabel)
+                TealeStatRow(label: "Total RAM", value: appState.companionTotalRAMLabel)
+                TealeStatRow(label: "Total models", value: appState.companionTotalModelsLabel)
+                TealeStatRow(label: "Avg TTFT", value: appState.companionAverageTTFTLabel)
+                TealeStatRow(
+                    label: "Avg TPS",
+                    value: appState.companionAverageTPSLabel,
+                    note: "Estimated from the hardware that is currently online."
+                )
+                TealeStatRow(label: "Total credits earned", value: appState.companionTotalCreditsEarnedLabel)
+                TealeStatRow(label: "Total credits spent", value: appState.companionTotalCreditsSpentLabel)
+                TealeStatRow(
+                    label: "Total USDC distributed",
+                    value: appState.companionTotalUSDCDistributedLabel,
+                    note: "Gateway-wide settlement totals still are not surfaced on mac."
+                )
+            }
+
+            Text(appState.companionHomeNetworkNote)
+                .font(TealeDesign.monoSmall)
+                .foregroundStyle(TealeDesign.muted)
+                .padding(.top, 10)
+        }
+    }
+
+    private var threadSection: some View {
+        CompanionHomeChatSection()
     }
 
     private var currentModelLabel: String {

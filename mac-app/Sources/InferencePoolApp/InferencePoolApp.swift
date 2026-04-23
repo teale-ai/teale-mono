@@ -82,7 +82,7 @@ struct TealeApp: App {
 
     var body: some Scene {
         // Windows-parity 5-view companion window.
-        WindowGroup(id: "main") {
+        Window("Teale", id: "main") {
             CompanionRootView()
                 .environment(appState)
                 .frame(minWidth: 820, minHeight: 620)
@@ -110,11 +110,7 @@ struct TealeApp: App {
 
         // Menu bar — windows-parity supply controls + quick access.
         MenuBarExtra {
-            CompanionMenuBarView(openMain: {
-                NSApp.activate(ignoringOtherApps: true)
-                // Bring the main window forward if it exists, otherwise it re-opens.
-                NSApp.windows.first { $0.identifier?.rawValue.contains("main") == true }?.makeKeyAndOrderFront(nil)
-            })
+            CompanionMenuBarView()
             .environment(appState)
             .frame(width: 360, height: 320)
         } label: {
@@ -128,7 +124,7 @@ struct TealeApp: App {
 
 struct CompanionMenuBarView: View {
     @Environment(AppState.self) private var appState
-    let openMain: () -> Void
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ZStack {
@@ -142,7 +138,7 @@ struct CompanionMenuBarView: View {
                         .foregroundStyle(TealeDesign.text)
                     Spacer()
                     TealeActionButton(title: "Open Teale", primary: true) {
-                        openMain()
+                        openMainWindow()
                     }
                 }
 
@@ -178,6 +174,18 @@ struct CompanionMenuBarView: View {
             .padding(14)
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func openMainWindow() {
+        openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            NSApp.windows
+                .filter { $0.isVisible && $0.title == "Teale" }
+                .forEach { window in
+                    window.makeKeyAndOrderFront(nil)
+                }
+        }
     }
 }
 

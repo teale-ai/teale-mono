@@ -5,6 +5,7 @@ import SharedTypes
 
 struct CompanionAccountView: View {
     @Environment(AppState.self) private var appState
+    @State private var authNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,6 +18,7 @@ struct CompanionAccountView: View {
     private var authManager: AuthManager? { appState.authManager }
     private var authState: AuthState { authManager?.authState ?? .signedOut }
     private var isSignedIn: Bool { authState.isAuthenticated }
+    private var authIsConfigured: Bool { authManager != nil }
 
     // MARK: account
 
@@ -25,14 +27,14 @@ struct CompanionAccountView: View {
             TealeStats {
                 TealeStatRow(
                     label: "Status",
-                    value: isSignedIn ? "Signed in" : "Not signed in",
-                    note: userNote
+                    value: accountStatus,
+                    note: statusNote
                 )
             }
             if !isSignedIn {
                 HStack(spacing: 10) {
                     TealeActionButton(title: "Sign in", primary: true) {
-                        appState.showSignIn = true
+                        openSignIn()
                     }
                 }
                 .padding(.top, 6)
@@ -50,6 +52,12 @@ struct CompanionAccountView: View {
                 .font(TealeDesign.monoSmall)
                 .foregroundStyle(TealeDesign.muted)
                 .padding(.top, 8)
+            if let authNotice, !authNotice.isEmpty {
+                Text(authNotice)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.warn)
+                    .padding(.top, 6)
+            }
         }
     }
 
@@ -58,6 +66,32 @@ struct CompanionAccountView: View {
             return user.email ?? user.phone ?? user.id.uuidString
         }
         return "Not signed in"
+    }
+
+    private var accountStatus: String {
+        if isSignedIn { return "Signed in" }
+        return authIsConfigured ? "Not signed in" : "Auth unavailable"
+    }
+
+    private var statusNote: String {
+        if let authNotice, !authNotice.isEmpty {
+            return authNotice
+        }
+        if authIsConfigured {
+            return userNote
+        }
+        return "Add mac-app/Supabase.plist or SUPABASE_URL and SUPABASE_ANON_KEY, then rebuild the app bundle."
+    }
+
+    private func openSignIn() {
+        guard let authManager else {
+            authNotice = "This build has no Supabase config, so sign-in cannot open yet."
+            return
+        }
+
+        authNotice = nil
+        appState.showSignIn = true
+        LoginWindowController.shared.show(authManager: authManager, appState: appState)
     }
 
     // MARK: details

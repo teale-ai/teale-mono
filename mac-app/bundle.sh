@@ -79,6 +79,10 @@ if [ -f "Sources/InferencePoolApp/AppIcon.icns" ]; then
     cp Sources/InferencePoolApp/AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
     echo "  Included app icon"
 fi
+if [ -f "Supabase.plist" ]; then
+    cp "Supabase.plist" "${RESOURCES_DIR}/Supabase.plist"
+    echo "  Included app-level Supabase.plist"
+fi
 
 # Embed the Developer ID provisioning profile if present. Required by AMFI to
 # authorize restricted entitlements (e.g. com.apple.developer.networking.multicast)

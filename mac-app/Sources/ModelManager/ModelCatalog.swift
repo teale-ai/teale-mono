@@ -59,6 +59,19 @@ public struct ModelCatalog: Sendable {
 
         // Medium models — 16GB+ RAM
         ModelDescriptor(
+            id: "hermes-3-llama-3.1-8b-4bit",
+            name: "Hermes 3 8B",
+            huggingFaceRepo: "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+            parameterCount: "8B",
+            quantization: .q4,
+            estimatedSizeGB: 4.6,
+            requiredRAMGB: 10.0,
+            family: "Llama",
+            description: "Highest-demand Hermes option for OpenClaw-compatible traffic",
+            popularityRank: 1,
+            openrouterId: "nousresearch/hermes-3-llama-3.1-8b"
+        ),
+        ModelDescriptor(
             id: "llama-3.1-8b-instruct-4bit",
             name: "Llama 3.1 8B Instruct",
             huggingFaceRepo: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
@@ -68,7 +81,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 10.0,
             family: "Llama",
             description: "Strong general-purpose model",
-            popularityRank: 1,
+            popularityRank: 2,
             openrouterId: "meta-llama/llama-3.1-8b-instruct"
         ),
         ModelDescriptor(
@@ -81,7 +94,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 10.0,
             family: "Qwen",
             description: "Latest Qwen with thinking and non-thinking modes",
-            popularityRank: 2,
+            popularityRank: 3,
             openrouterId: "qwen/qwen3-8b"
         ),
         ModelDescriptor(
@@ -94,7 +107,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 20.0,
             family: "Mistral",
             description: "Mistral's efficient mid-size model",
-            popularityRank: 7,
+            popularityRank: 8,
             openrouterId: "mistralai/mistral-small-24b-instruct-2501"
         ),
         ModelDescriptor(
@@ -107,7 +120,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 14.0,
             family: "Phi",
             description: "Microsoft's strong reasoning model",
-            popularityRank: 6,
+            popularityRank: 7,
             openrouterId: "microsoft/phi-4"
         ),
 
@@ -122,7 +135,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 24.0,
             family: "Gemma",
             description: "Google's flagship Gemma 3 model, strong reasoning and coding",
-            popularityRank: 8,
+            popularityRank: 9,
             openrouterId: "google/gemma-3-27b-it"
         ),
         ModelDescriptor(
@@ -135,7 +148,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 28.0,
             family: "Qwen",
             description: "High-quality model for complex tasks",
-            popularityRank: 9,
+            popularityRank: 10,
             openrouterId: "qwen/qwen3-32b"
         ),
 
@@ -150,7 +163,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 72.0,
             family: "Llama",
             description: "Meta's MoE model — 17B active params, frontier quality",
-            popularityRank: 10,
+            popularityRank: 11,
             openrouterId: "meta-llama/llama-4-scout"
         ),
         ModelDescriptor(
@@ -163,7 +176,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 90.0,
             family: "Qwen",
             description: "Qwen 3.6 35B/3B-active MoE with vision, bf16. 96GB+ unified RAM.",
-            popularityRank: 11,
+            popularityRank: 12,
             openrouterId: "qwen/qwen3.6-35b-a3b"
         ),
 
@@ -178,7 +191,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 768.0,
             family: "DeepSeek",
             description: "DeepSeek V3.2 MoE (671B total, ~37B active) at 8-bit. Requires multi-Ultra exo cluster.",
-            popularityRank: 12,
+            popularityRank: 13,
             openrouterId: "deepseek/deepseek-v3.2"
         ),
         ModelDescriptor(
@@ -191,7 +204,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 480.0,
             family: "GLM",
             description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL. Fits a single 512 GB Mac Studio.",
-            popularityRank: 13,
+            popularityRank: 14,
             openrouterId: "zai/glm-5.1"
         ),
         // Kimi K2.6 — 1T MoE, natively int4, 256K context. MLX variant is
@@ -207,7 +220,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 640.0,
             family: "Kimi",
             description: "Moonshot Kimi K2.6 — 1T MoE (32B active), native int4, multimodal (MoonViT), 256K context. Requires 2× 512 GB Ultra exo cluster over TB5.",
-            popularityRank: 14,
+            popularityRank: 15,
             openrouterId: "moonshotai/kimi-k2.6"
         ),
     ]

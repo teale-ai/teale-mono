@@ -4,6 +4,9 @@ import AppCore
 import SharedTypes
 import HardwareProfile
 import ModelManager
+import CreditKit
+import ClusterKit
+import WANKit
 
 /// Windows-parity top-level navigation tabs.
 enum CompanionTab: String, CaseIterable, Hashable {
@@ -15,7 +18,7 @@ enum CompanionTab: String, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .home: return "teale.com"
+        case .home: return "teale"
         case .supply: return "supply"
         case .demand: return "demand"
         case .wallet: return "wallet"
@@ -106,10 +109,20 @@ extension AppState {
         return (name, fraction)
     }
 
+    /// Most-requested model this machine can run. Falls back to the static
+    /// catalog demand ranking when we do not have live demand observations yet.
+    @MainActor
+    func companionHighestDemandModel() -> ModelDescriptor? {
+        if let liveDemand = demandTracker.modelsByDemand.first?.model {
+            return liveDemand
+        }
+        return modelManager.catalog.topModels(for: hardware, limit: 1).first
+    }
+
     /// Largest catalog model whose RAM requirement fits the current hardware,
     /// preferring higher popularity (lower rank). Falls back to nil on empty.
     @MainActor
-    func companionRecommendedModel() -> ModelDescriptor? {
+    func companionLargestFitModel() -> ModelDescriptor? {
         let compat = modelManager.catalog.availableModels(for: hardware)
         // Sort by descending requiredRAMGB to pick the largest that fits, then
         // by popularityRank as tiebreaker so popular models win at the margin.
@@ -144,4 +157,157 @@ extension AppState {
     var companionRAMLabel: String {
         "\(Int(hardware.totalRAMGB)) GB · \(hardware.chipName)"
     }
+
+    @MainActor
+    var companionLocalBaseURL: String {
+        "http://127.0.0.1:\(serverPort)"
+    }
+
+    @MainActor
+    var companionNetworkMetrics: CompanionNetworkMetrics {
+        let lanPeers = clusterManager.topology.connectedPeers
+        let wanPeers = wanManager.state.connectedPeers
+
+        var uniqueModels = Set<String>()
+        if let localModel = engineStatus.currentModel {
+            uniqueModels.insert(localModel.openrouterId ?? localModel.huggingFaceRepo)
+        }
+        for peer in lanPeers {
+            peer.loadedModels.forEach { uniqueModels.insert($0) }
+        }
+        for peer in wanPeers {
+            peer.loadedModels.forEach { uniqueModels.insert($0) }
+        }
+
+        let tpsSamples = deviceTPSSamples(lanPeers: lanPeers, wanPeers: wanPeers)
+        let ttftSamples = wanPeers.compactMap(\.latencyMs)
+
+        return CompanionNetworkMetrics(
+            totalDevices: 1 + lanPeers.count + wanPeers.count,
+            totalRAMGB: hardware.totalRAMGB
+                + clusterManager.topology.totalRAMGB
+                + wanPeers.reduce(0) { $0 + $1.hardware.totalRAMGB },
+            totalModels: uniqueModels.count,
+            averageTTFTMs: ttftSamples.isEmpty
+                ? nil
+                : ttftSamples.reduce(0, +) / Double(ttftSamples.count),
+            averageTPS: tpsSamples.isEmpty
+                ? nil
+                : tpsSamples.reduce(0, +) / Double(tpsSamples.count)
+        )
+    }
+
+    @MainActor
+    var companionTotalDevicesLabel: String {
+        "\(companionNetworkMetrics.totalDevices)"
+    }
+
+    @MainActor
+    var companionTotalRAMLabel: String {
+        "\(Int(companionNetworkMetrics.totalRAMGB.rounded())) GB"
+    }
+
+    @MainActor
+    var companionTotalModelsLabel: String {
+        "\(companionNetworkMetrics.totalModels)"
+    }
+
+    @MainActor
+    var companionAverageTTFTLabel: String {
+        guard let ttft = companionNetworkMetrics.averageTTFTMs else {
+            return "Waiting for WAN latency"
+        }
+        return "\(Int(ttft.rounded())) ms"
+    }
+
+    @MainActor
+    var companionAverageTPSLabel: String {
+        guard let tps = companionNetworkMetrics.averageTPS else {
+            return "Waiting for serving nodes"
+        }
+        return String(format: "%.1f tok/s", tps)
+    }
+
+    @MainActor
+    var companionTotalCreditsEarnedLabel: String {
+        "\(companionCreditCountString(wallet.totalEarned)) credits"
+    }
+
+    @MainActor
+    var companionTotalCreditsSpentLabel: String {
+        "\(companionCreditCountString(wallet.totalSpent)) credits"
+    }
+
+    @MainActor
+    var companionTotalUSDCDistributedLabel: String {
+        "Not yet surfaced on mac"
+    }
+
+    @MainActor
+    var companionHomeNetworkNote: String {
+        "Home now matches the Windows sections: live peer counts plus threaded chat. TTFT and settlement totals still use the mac-side data that exists today."
+    }
+
+    @MainActor
+    var companionGatewayBearerLabel: String {
+        gatewayAPIKey.isEmpty ? "Not configured on this Mac" : "•••" + String(gatewayAPIKey.suffix(4))
+    }
+
+    @MainActor
+    var companionSelectedGatewayModel: String {
+        engineStatus.currentModel?.openrouterId
+            ?? companionHighestDemandModel()?.openrouterId
+            ?? "teale/auto"
+    }
+
+    @MainActor
+    var companionLANPeersLabel: String {
+        let count = clusterManager.topology.connectedPeers.count
+        let status = clusterEnabled ? "LAN on" : "LAN off"
+        return "\(count) peer(s) · \(status)"
+    }
+
+    @MainActor
+    var companionWANStatusLabel: String {
+        wanManager.state.statusSummary
+    }
+
+    @MainActor
+    private func deviceTPSSamples(
+        lanPeers: [PeerInfo],
+        wanPeers: [WANPeerSummary]
+    ) -> [Double] {
+        var samples: [Double] = []
+
+        if engineStatus.currentModel != nil {
+            samples.append(max(hardware.memoryBandwidthGBs * 0.5, 1))
+        }
+
+        for peer in lanPeers where !peer.loadedModels.isEmpty {
+            samples.append(max(peer.deviceInfo.hardware.memoryBandwidthGBs * 0.5, 1))
+        }
+
+        for peer in wanPeers where !peer.loadedModels.isEmpty {
+            samples.append(max(peer.hardware.memoryBandwidthGBs * 0.5, 1))
+        }
+
+        return samples
+    }
+
+    @MainActor
+    private func companionCreditCountString(_ amount: USDCAmount) -> String {
+        let credits = amount.value * 1_000_000
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: credits)) ?? String(Int(credits))
+    }
+}
+
+struct CompanionNetworkMetrics {
+    let totalDevices: Int
+    let totalRAMGB: Double
+    let totalModels: Int
+    let averageTTFTMs: Double?
+    let averageTPS: Double?
 }
