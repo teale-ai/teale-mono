@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
         catalog_models.len(),
         config.models_yaml
     );
+    let catalog_models = Arc::new(catalog_models);
 
     // Open ledger DB. If the path is unwritable, fall back to a tempfile so
     // we still boot (Fly machines without an attached volume).
@@ -104,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
         registry: registry.clone(),
         scheduler,
         relay,
-        catalog: Arc::new(catalog_models),
+        catalog: catalog_models.clone(),
         db: pool.clone(),
         group_tx,
         model_metrics: Arc::new(teale_gateway::model_metrics::ModelMetricsTracker::new()),
@@ -114,12 +115,47 @@ async fn main() -> anyhow::Result<()> {
     // Spawn the Teale Credit availability drip loop.
     if let Some(pool_for_drip) = pool.clone() {
         let registry_for_drip = registry.clone();
+        let catalog_for_drip = catalog_models.clone();
         ledger::spawn_drip_loop(pool_for_drip, move || {
             registry_for_drip
                 .snapshot_devices()
                 .into_iter()
                 .filter(|d| !d.is_quarantined() && d.capabilities.is_available)
-                .map(|d| d.node_id)
+                .filter_map(|d| {
+                    let priced_model = d
+                        .capabilities
+                        .loaded_models
+                        .iter()
+                        .filter_map(|loaded_model| {
+                            let model = catalog_for_drip
+                                .iter()
+                                .find(|catalog_model| catalog_model.matches(loaded_model));
+                            model.map(|catalog_model| {
+                                (
+                                    loaded_model.clone(),
+                                    ledger::availability_credits_per_tick(
+                                        catalog_model.prompt_price_usd(),
+                                        catalog_model.completion_price_usd(),
+                                    ),
+                                )
+                            })
+                        })
+                        .max_by_key(|(_, credits)| *credits);
+
+                    let (model_id, credits) = match priced_model {
+                        Some((model_id, credits)) => (Some(model_id), credits),
+                        None => {
+                            let fallback_model = d.capabilities.loaded_models.first()?.clone();
+                            (Some(fallback_model), 1)
+                        }
+                    };
+
+                    Some(ledger::DripRecipient {
+                        device_id: d.node_id,
+                        credits,
+                        note: model_id.map(|model_id| format!("drip tick // model={model_id}")),
+                    })
+                })
                 .collect()
         });
         tracing::info!(
@@ -136,6 +172,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/network", get(handlers::network::network))
+        .route("/v1/account/link", post(handlers::account::link_account))
+        .route("/v1/account/summary", get(handlers::account::summary))
+        .route("/v1/account/sweep", post(handlers::account::sweep_device))
+        .route(
+            "/v1/account/devices/remove",
+            post(handlers::account::remove_device),
+        )
         .route("/v1/wallet/balance", get(handlers::wallet::balance))
         .route(
             "/v1/wallet/transactions",

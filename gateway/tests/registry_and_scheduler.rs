@@ -293,7 +293,10 @@ fn scheduler_skips_battery_paused_laptop() {
     let picked = sched
         .pick(&els, "nousresearch/hermes-3-llama-3.1-8b", &[], &r, None)
         .expect("at least one AC-powered supplier eligible");
-    assert_eq!(picked.node_id, "laptop-b", "battery-paused node must be skipped");
+    assert_eq!(
+        picked.node_id, "laptop-b",
+        "battery-paused node must be skipped"
+    );
 }
 
 #[test]

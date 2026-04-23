@@ -78,6 +78,13 @@ Name: "{userstartup}\Teale Tray"; Filename: "{app}\bin\teale-tray.exe"; \
 ; Start-menu shortcut to open the local Teale companion window.
 Name: "{group}\Open Teale"; Filename: "{app}\bin\teale-tray.exe"; Parameters: "--open-window"
 
+[Registry]
+; Register the Teale deep-link protocol for browser-based OAuth callbacks.
+Root: HKCR; Subkey: "teale"; ValueType: string; ValueName: ""; ValueData: "URL:Teale Protocol"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "teale"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "teale\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\bin\teale-tray.exe,0"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "teale\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\teale-tray.exe"" ""%1"""; Flags: uninsdeletekey
+
 [Tasks]
 Name: "installtray"; Description: "Run Teale Tray at login (shows live status and earnings)"; \
     GroupDescription: "Optional:"; Flags: checkedonce

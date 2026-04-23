@@ -123,6 +123,49 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_share_keys_issuer
         ON share_keys(issuer_device_id, created_at DESC);
     "#,
+    // 003_account_wallets.sql — account-level balances backed by linked devices.
+    r#"
+    CREATE TABLE IF NOT EXISTS account_wallets (
+        account_user_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        phone TEXT,
+        email TEXT,
+        github_username TEXT,
+        balance_credits INTEGER NOT NULL DEFAULT 0,
+        usdc_cents INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS account_devices (
+        device_id TEXT PRIMARY KEY,
+        account_user_id TEXT NOT NULL,
+        device_name TEXT,
+        platform TEXT,
+        linked_at INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL,
+        FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+        FOREIGN KEY (account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_devices_account
+        ON account_devices(account_user_id, last_seen DESC);
+
+    CREATE TABLE IF NOT EXISTS account_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_user_id TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        device_id TEXT,
+        note TEXT,
+        FOREIGN KEY (account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_ledger_account_ts
+        ON account_ledger(account_user_id, timestamp DESC);
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

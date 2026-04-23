@@ -100,8 +100,11 @@ impl RegistryStore {
             if let Some(model_id) = model_id {
                 registry.ensure_catalog_entries();
                 registry.active_model_id = Some(model_id.clone());
-                registry.models.entry(model_id).or_default().downloaded_file_path =
-                    Some(path.to_string_lossy().to_string());
+                registry
+                    .models
+                    .entry(model_id)
+                    .or_default()
+                    .downloaded_file_path = Some(path.to_string_lossy().to_string());
                 discovered_active_model_id = registry.active_model_id.clone();
             }
         }
@@ -119,8 +122,11 @@ impl RegistryStore {
                     continue;
                 };
                 registry.ensure_catalog_entries();
-                registry.models.entry(model.id.to_string()).or_default().downloaded_file_path =
-                    Some(path.to_string_lossy().to_string());
+                registry
+                    .models
+                    .entry(model.id.to_string())
+                    .or_default()
+                    .downloaded_file_path = Some(path.to_string_lossy().to_string());
             }
         }
 
@@ -143,7 +149,10 @@ impl RegistryStore {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::RegistryStore;
 

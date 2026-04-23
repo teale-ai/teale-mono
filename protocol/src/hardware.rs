@@ -71,11 +71,7 @@ pub struct NodeCapabilities {
     /// user-laptop contributors who shouldn't see battery drain from Teale.
     /// `None` means "this node doesn't participate in battery gating" (Mac
     /// Studios, desktops, Swift Teale.app, etc.).
-    #[serde(
-        rename = "onACPower",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "onACPower", default, skip_serializing_if = "Option::is_none")]
     pub on_ac_power: Option<bool>,
 }
 

@@ -43,9 +43,8 @@ impl WakeLock {
         // Safety: SetThreadExecutionState is a read-only OS state toggle; no
         // buffers are written, no aliasing concerns.
         unsafe {
-            let _ = SetThreadExecutionState(
-                ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED,
-            );
+            let _ =
+                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
         }
         Self { _private: () }
     }

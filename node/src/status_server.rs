@@ -12,19 +12,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+use url::Url;
 
 use crate::cluster::NodeRuntimeState;
-use crate::config::LlamaConfig;
+use crate::config::{ControlConfig, LlamaConfig};
 use crate::hardware::HardwareCapability;
 use crate::model_registry::{PersistedRegistry, RegistryStore};
 use crate::swap::SwapManager;
 use crate::windows_model_catalog::{
     compatible_models, model_by_id, recommended_model, WindowsCatalogModel,
+    AVAILABILITY_TICK_SECONDS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,11 +110,120 @@ pub struct ModelSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct WalletSnapshot {
+    pub current_device_id: Option<String>,
+    pub estimated_session_credits: i64,
+    pub credits_today: i64,
+    pub completed_requests: u64,
+    pub availability_credits_per_tick: i64,
+    pub availability_tick_seconds: u64,
+    pub availability_rate_credits_per_minute: i64,
+    pub supplying_since: Option<u64>,
+    pub gateway_balance_credits: Option<i64>,
+    pub gateway_total_earned_credits: Option<i64>,
+    pub gateway_total_spent_credits: Option<i64>,
+    pub gateway_usdc_cents: Option<i64>,
+    pub gateway_synced_at: Option<u64>,
+    pub gateway_sync_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTransactionSnapshot {
+    pub id: i64,
+    pub device_id: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub amount: i64,
+    pub timestamp: i64,
+    #[serde(rename = "refRequestID")]
+    pub ref_request_id: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayWalletState {
+    pub device_id: String,
+    pub balance_credits: i64,
+    pub total_earned_credits: i64,
+    pub total_spent_credits: i64,
+    pub usdc_cents: i64,
+    pub synced_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthConfigSnapshot {
+    pub configured: bool,
+    pub supabase_url: Option<String>,
+    pub supabase_anon_key: Option<String>,
+    pub redirect_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DemandSnapshot {
+    pub local_base_url: String,
+    pub local_model_id: Option<String>,
+    pub network_base_url: String,
+    pub network_bearer_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkModelSnapshot {
+    pub id: String,
+    pub context_length: Option<u32>,
+    pub device_count: u32,
+    pub ttft_ms_p50: Option<u32>,
+    pub tps_p50: Option<f32>,
+    pub pricing_prompt: Option<String>,
+    pub pricing_completion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSnapshot {
+    pub account_user_id: String,
+    pub balance_credits: i64,
+    pub usdc_cents: i64,
+    pub display_name: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub github_username: Option<String>,
+    pub devices: Vec<AccountDeviceSnapshot>,
+    pub transactions: Vec<AccountLedgerSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountDeviceSnapshot {
+    pub device_id: String,
+    pub device_name: Option<String>,
+    pub platform: Option<String>,
+    pub linked_at: i64,
+    pub last_seen: i64,
+    pub wallet_balance_credits: i64,
+    pub wallet_usdc_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountLedgerSnapshot {
+    pub id: i64,
+    pub account_user_id: String,
+    pub asset: String,
+    pub amount: i64,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub timestamp: i64,
+    pub device_id: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub app_version: String,
     pub service_state: String,
     pub state_reason: Option<String>,
     pub device: DeviceSnapshot,
+    pub auth: AuthConfigSnapshot,
+    pub demand: DemandSnapshot,
+    pub wallet: WalletSnapshot,
+    pub wallet_transactions: Vec<WalletTransactionSnapshot>,
     pub loaded_model_id: Option<String>,
     pub models: Vec<ModelSnapshot>,
     pub active_transfer: Option<TransferSnapshot>,
@@ -132,6 +244,31 @@ struct ModelControlRequest {
     model: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AccountLinkRequest {
+    #[serde(rename = "accountUserID")]
+    account_user_id: String,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+    phone: Option<String>,
+    email: Option<String>,
+    #[serde(rename = "githubUsername")]
+    github_username: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountDeviceControlRequest {
+    #[serde(rename = "deviceID")]
+    device_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AccountSweepResponse {
+    swept_credits: i64,
+    swept_usdc_cents: i64,
+    account: AccountSnapshot,
+}
+
 #[derive(Debug, Clone)]
 struct InFlightTransfer {
     model_id: String,
@@ -139,6 +276,46 @@ struct InFlightTransfer {
     started_at: Instant,
     bytes_downloaded: u64,
     bytes_total: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayModelsResponse {
+    data: Vec<GatewayModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayModelEntry {
+    id: String,
+    context_length: Option<u32>,
+    pricing: Option<GatewayPricing>,
+    metrics: Option<GatewayModelMetrics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayPricing {
+    prompt: String,
+    completion: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayModelMetrics {
+    ttft_ms_p50: Option<u32>,
+    tps_p50: Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayNetworkResponse {
+    devices: Vec<GatewayNetworkDevice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayNetworkDevice {
+    #[serde(rename = "loadedModels")]
+    loaded_models: Vec<String>,
+    #[serde(rename = "isAvailable")]
+    is_available: bool,
+    #[serde(rename = "heartbeatStale")]
+    heartbeat_stale: bool,
 }
 
 impl InFlightTransfer {
@@ -169,6 +346,10 @@ struct RuntimeInner {
     download_progress: HashMap<String, f64>,
     active_transfer: Option<InFlightTransfer>,
     loading_model_id: Option<String>,
+    gateway_wallet: Option<GatewayWalletState>,
+    gateway_device_token: Option<String>,
+    wallet_transactions: Vec<WalletTransactionSnapshot>,
+    gateway_wallet_error: Option<String>,
     last_fatal_error: Option<String>,
     initializing: bool,
 }
@@ -185,6 +366,8 @@ pub struct StatusState {
     registry_store: RegistryStore,
     swap: Arc<SwapManager>,
     llama_template: Option<LlamaConfig>,
+    control: ControlConfig,
+    relay_url: String,
     node_state: Arc<NodeRuntimeState>,
     inner: Arc<Mutex<RuntimeInner>>,
 }
@@ -198,6 +381,8 @@ impl StatusState {
         registry: PersistedRegistry,
         swap: Arc<SwapManager>,
         llama_template: Option<LlamaConfig>,
+        control: ControlConfig,
+        relay_url: String,
         node_state: Arc<NodeRuntimeState>,
     ) -> Self {
         let initializing = registry.active_model_id.is_none();
@@ -211,6 +396,8 @@ impl StatusState {
             registry_store,
             swap,
             llama_template,
+            control,
+            relay_url,
             node_state,
             inner: Arc::new(Mutex::new(RuntimeInner {
                 registry,
@@ -250,12 +437,26 @@ impl StatusState {
                 gpu_backend: self.hardware.gpu_backend.clone(),
                 on_ac,
             },
+            auth: self.auth_snapshot(),
+            demand: self.demand_snapshot(&inner, current_model_id.clone()),
+            wallet: self.wallet_snapshot(&inner, service_state, current_model_id.as_deref()),
+            wallet_transactions: inner.wallet_transactions.clone(),
             loaded_model_id: current_model_id.clone(),
             models: compatible_models(self.hardware.total_ram_gb)
                 .into_iter()
-                .map(|model| self.model_snapshot(&inner, &model, current_model_id.as_deref(), recommended.as_deref()))
+                .map(|model| {
+                    self.model_snapshot(
+                        &inner,
+                        &model,
+                        current_model_id.as_deref(),
+                        recommended.as_deref(),
+                    )
+                })
                 .collect(),
-            active_transfer: inner.active_transfer.as_ref().map(InFlightTransfer::snapshot),
+            active_transfer: inner
+                .active_transfer
+                .as_ref()
+                .map(InFlightTransfer::snapshot),
         }
     }
 
@@ -266,12 +467,9 @@ impl StatusState {
         let state = self.resolve_state(&inner, current_model_id.as_deref(), on_ac);
         LegacyStatusDTO {
             state: state.legacy_state().to_string(),
-            supplying_since: match self.supplying_since.load(Ordering::SeqCst) {
-                0 => None,
-                secs => Some(secs.to_string()),
-            },
-            requests_today: self.requests_today.load(Ordering::SeqCst),
-            credits_today: self.credits_today.load(Ordering::SeqCst),
+            supplying_since: self.supplying_since_secs().map(|secs| secs.to_string()),
+            requests_today: self.live_requests_today(),
+            credits_today: self.live_credits_today(state, current_model_id.as_deref()),
             on_ac,
             paused_reason: state.legacy_paused_reason().map(str::to_string),
         }
@@ -296,7 +494,11 @@ impl StatusState {
                 }
                 return Ok(());
             }
-            let record = inner.registry.models.entry(model.id.to_string()).or_default();
+            let record = inner
+                .registry
+                .models
+                .entry(model.id.to_string())
+                .or_default();
             if record
                 .downloaded_file_path
                 .as_deref()
@@ -331,7 +533,11 @@ impl StatusState {
         let model = self.validate_catalog_model(model_id)?;
         let path = {
             let mut inner = self.inner.lock().await;
-            let record = inner.registry.models.entry(model.id.to_string()).or_default();
+            let record = inner
+                .registry
+                .models
+                .entry(model.id.to_string())
+                .or_default();
             let Some(path) = record.downloaded_file_path.clone() else {
                 anyhow::bail!("model is not downloaded");
             };
@@ -399,6 +605,23 @@ impl StatusState {
 
     pub async fn clear_last_error(&self) {
         self.inner.lock().await.last_fatal_error = None;
+    }
+
+    pub async fn set_gateway_wallet(
+        &self,
+        wallet: GatewayWalletState,
+        device_token: Option<String>,
+        transactions: Vec<WalletTransactionSnapshot>,
+    ) {
+        let mut inner = self.inner.lock().await;
+        inner.gateway_wallet = Some(wallet);
+        inner.gateway_device_token = device_token;
+        inner.wallet_transactions = transactions;
+        inner.gateway_wallet_error = None;
+    }
+
+    pub async fn set_gateway_wallet_error(&self, message: impl Into<String>) {
+        self.inner.lock().await.gateway_wallet_error = Some(message.into());
     }
 
     fn validate_catalog_model(&self, model_id: &str) -> anyhow::Result<WindowsCatalogModel> {
@@ -485,12 +708,304 @@ impl StatusState {
         }
     }
 
-    async fn download_model_task(self: Arc<Self>, model: WindowsCatalogModel) -> anyhow::Result<()> {
+    fn wallet_snapshot(
+        &self,
+        inner: &RuntimeInner,
+        service_state: ServiceState,
+        current_model_id: Option<&str>,
+    ) -> WalletSnapshot {
+        let (availability_credits_per_tick, availability_rate_credits_per_minute) =
+            current_model_id
+                .and_then(model_by_id)
+                .map(|model| {
+                    (
+                        model.availability_credits_per_tick(),
+                        model.availability_credits_per_minute(),
+                    )
+                })
+                .unwrap_or((0, 0));
+
+        WalletSnapshot {
+            current_device_id: inner
+                .gateway_wallet
+                .as_ref()
+                .map(|wallet| wallet.device_id.clone()),
+            estimated_session_credits: self
+                .estimated_availability_credits(service_state, current_model_id),
+            credits_today: self.live_credits_today(service_state, current_model_id),
+            completed_requests: self.live_requests_today(),
+            availability_credits_per_tick,
+            availability_tick_seconds: AVAILABILITY_TICK_SECONDS,
+            availability_rate_credits_per_minute,
+            supplying_since: self.supplying_since_secs(),
+            gateway_balance_credits: inner
+                .gateway_wallet
+                .as_ref()
+                .map(|wallet| wallet.balance_credits),
+            gateway_total_earned_credits: inner
+                .gateway_wallet
+                .as_ref()
+                .map(|wallet| wallet.total_earned_credits),
+            gateway_total_spent_credits: inner
+                .gateway_wallet
+                .as_ref()
+                .map(|wallet| wallet.total_spent_credits),
+            gateway_usdc_cents: inner
+                .gateway_wallet
+                .as_ref()
+                .map(|wallet| wallet.usdc_cents),
+            gateway_synced_at: inner.gateway_wallet.as_ref().map(|wallet| wallet.synced_at),
+            gateway_sync_error: inner.gateway_wallet_error.clone(),
+        }
+    }
+
+    fn auth_snapshot(&self) -> AuthConfigSnapshot {
+        let configured = !self.control.supabase_url.trim().is_empty()
+            && !self.control.supabase_anon_key.trim().is_empty();
+        AuthConfigSnapshot {
+            configured,
+            supabase_url: configured.then(|| self.control.supabase_url.clone()),
+            supabase_anon_key: configured.then(|| self.control.supabase_anon_key.clone()),
+            redirect_url: configured.then(|| self.control.supabase_redirect_url.clone()),
+        }
+    }
+
+    fn demand_snapshot(
+        &self,
+        inner: &RuntimeInner,
+        local_model_id: Option<String>,
+    ) -> DemandSnapshot {
+        let local_port = self
+            .llama_template
+            .as_ref()
+            .map(|cfg| cfg.port)
+            .unwrap_or(11436);
+        DemandSnapshot {
+            local_base_url: format!("http://127.0.0.1:{local_port}/v1"),
+            local_model_id,
+            network_base_url: relay_to_gateway_base_url(&self.relay_url),
+            network_bearer_token: inner.gateway_device_token.clone(),
+        }
+    }
+
+    async fn network_models_snapshot(&self) -> anyhow::Result<Vec<NetworkModelSnapshot>> {
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let models_url = format!("{gateway_base_url}/models");
+        let network_url = format!("{gateway_base_url}/network");
+
+        let client = gateway_client(Duration::from_secs(10))?;
+
+        let models = client
+            .get(&models_url)
+            .send()
+            .await
+            .with_context(|| format!("GET {models_url}"))?
+            .error_for_status()
+            .with_context(|| format!("gateway models request failed at {models_url}"))?
+            .json::<GatewayModelsResponse>()
+            .await
+            .context("decode gateway models response")?;
+
+        let device_token = {
+            let inner = self.inner.lock().await;
+            inner.gateway_device_token.clone()
+        };
+
+        let mut device_counts = HashMap::<String, u32>::new();
+        if let Some(token) = device_token {
+            if let Ok(response) = client.get(&network_url).bearer_auth(token).send().await {
+                if let Ok(response) = response.error_for_status() {
+                    if let Ok(network) = response.json::<GatewayNetworkResponse>().await {
+                        for device in network.devices {
+                            if !device.is_available || device.heartbeat_stale {
+                                continue;
+                            }
+                            for model_id in device.loaded_models {
+                                *device_counts.entry(model_id).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(models
+            .data
+            .into_iter()
+            .map(|model| NetworkModelSnapshot {
+                device_count: device_counts.get(&model.id).copied().unwrap_or(0),
+                ttft_ms_p50: model
+                    .metrics
+                    .as_ref()
+                    .and_then(|metrics| metrics.ttft_ms_p50),
+                tps_p50: model.metrics.as_ref().and_then(|metrics| metrics.tps_p50),
+                pricing_prompt: model.pricing.as_ref().map(|pricing| pricing.prompt.clone()),
+                pricing_completion: model
+                    .pricing
+                    .as_ref()
+                    .map(|pricing| pricing.completion.clone()),
+                id: model.id,
+                context_length: model.context_length,
+            })
+            .collect())
+    }
+
+    async fn link_account(&self, payload: AccountLinkRequest) -> anyhow::Result<AccountSnapshot> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/link");
+        let client = gateway_client(Duration::from_secs(15))?;
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({
+                "accountUserID": payload.account_user_id,
+                "deviceName": self.display_name,
+                "platform": "windows",
+                "displayName": payload.display_name,
+                "phone": payload.phone,
+                "email": payload.email,
+                "githubUsername": payload.github_username,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        response
+            .error_for_status()
+            .with_context(|| format!("account link failed at {url}"))?
+            .json::<AccountSnapshot>()
+            .await
+            .context("decode account link response")
+    }
+
+    async fn account_snapshot(&self) -> anyhow::Result<AccountSnapshot> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/summary");
+        let client = gateway_client(Duration::from_secs(10))?;
+        let response = client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("account not linked");
+        }
+        response
+            .error_for_status()
+            .with_context(|| format!("account summary failed at {url}"))?
+            .json::<AccountSnapshot>()
+            .await
+            .context("decode account summary response")
+    }
+
+    async fn sweep_account_device(&self, device_id: &str) -> anyhow::Result<AccountSweepResponse> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/sweep");
+        let client = gateway_client(Duration::from_secs(20))?;
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({ "deviceID": device_id }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        response
+            .error_for_status()
+            .with_context(|| format!("account sweep failed at {url}"))?
+            .json::<AccountSweepResponse>()
+            .await
+            .context("decode account sweep response")
+    }
+
+    async fn remove_account_device(&self, device_id: &str) -> anyhow::Result<AccountSnapshot> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/devices/remove");
+        let client = gateway_client(Duration::from_secs(10))?;
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({ "deviceID": device_id }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        response
+            .error_for_status()
+            .with_context(|| format!("remove device failed at {url}"))?
+            .json::<AccountSnapshot>()
+            .await
+            .context("decode remove device response")
+    }
+
+    async fn gateway_device_token(&self) -> anyhow::Result<String> {
+        let inner = self.inner.lock().await;
+        inner
+            .gateway_device_token
+            .clone()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("waiting for the gateway device token"))
+    }
+
+    fn supplying_since_secs(&self) -> Option<u64> {
+        match self.supplying_since.load(Ordering::SeqCst) {
+            0 => None,
+            secs => Some(secs),
+        }
+    }
+
+    fn live_requests_today(&self) -> u64 {
+        self.requests_today
+            .load(Ordering::SeqCst)
+            .max(self.node_state.completed_requests.load(Ordering::SeqCst))
+    }
+
+    fn live_credits_today(
+        &self,
+        service_state: ServiceState,
+        current_model_id: Option<&str>,
+    ) -> i64 {
+        self.credits_today
+            .load(Ordering::SeqCst)
+            .max(self.estimated_availability_credits(service_state, current_model_id))
+    }
+
+    fn estimated_availability_credits(
+        &self,
+        service_state: ServiceState,
+        current_model_id: Option<&str>,
+    ) -> i64 {
+        if service_state != ServiceState::Serving {
+            return 0;
+        }
+
+        let Some(model) = current_model_id.and_then(model_by_id) else {
+            return 0;
+        };
+
+        let Some(supplying_since) = self.supplying_since_secs() else {
+            return 0;
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(supplying_since);
+        let elapsed_ticks = now
+            .saturating_sub(supplying_since)
+            .div_euclid(AVAILABILITY_TICK_SECONDS);
+        elapsed_ticks as i64 * model.availability_credits_per_tick()
+    }
+
+    async fn download_model_task(
+        self: Arc<Self>,
+        model: WindowsCatalogModel,
+    ) -> anyhow::Result<()> {
         let final_path = self.model_dir.join(model.file_name);
         tokio::fs::create_dir_all(&self.model_dir).await?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(0))
-            .build()?;
+        let client = download_client()?;
 
         let mut errors = Vec::new();
         for url in model.download_urls {
@@ -524,7 +1039,7 @@ impl StatusState {
                     return Ok(());
                 }
                 Err(e) => {
-                    errors.push(format!("{url}: {e}"));
+                    errors.push(format!("{url}: {e:#}"));
                     let _ = tokio::fs::remove_file(&part_path).await;
                 }
             }
@@ -580,7 +1095,9 @@ impl StatusState {
                 _ => 0.0,
             };
             let mut inner = self.inner.lock().await;
-            inner.download_progress.insert(model.id.to_string(), progress);
+            inner
+                .download_progress
+                .insert(model.id.to_string(), progress);
             if let Some(transfer) = &mut inner.active_transfer {
                 transfer.bytes_downloaded = downloaded;
                 transfer.bytes_total = total;
@@ -589,6 +1106,51 @@ impl StatusState {
         file.flush().await?;
         Ok(())
     }
+}
+
+fn download_client() -> anyhow::Result<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .user_agent(format!("teale-node/{}", env!("CARGO_PKG_VERSION")));
+    #[cfg(windows)]
+    let builder = builder.use_native_tls();
+    #[cfg(not(windows))]
+    let builder = builder.use_rustls_tls();
+    Ok(builder.build()?)
+}
+
+fn gateway_client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .user_agent(format!("teale-node/{}", env!("CARGO_PKG_VERSION")));
+    #[cfg(windows)]
+    let builder = builder.use_native_tls();
+    #[cfg(not(windows))]
+    let builder = builder.use_rustls_tls();
+    Ok(builder.build()?)
+}
+
+fn relay_to_gateway_base_url(relay_url: &str) -> String {
+    let Ok(mut relay) = Url::parse(relay_url) else {
+        return "https://gateway.teale.com/v1".to_string();
+    };
+
+    let scheme = match relay.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        "http" => "http",
+        "https" => "https",
+        _ => "https",
+    };
+    let host = relay.host_str().unwrap_or("relay.teale.com");
+    let gateway_host = host.replacen("relay.", "gateway.", 1);
+    let _ = relay.set_scheme(scheme);
+    let _ = relay.set_host(Some(&gateway_host));
+    relay.set_path("/v1");
+    relay.set_query(None);
+    relay.set_fragment(None);
+    relay.to_string().trim_end_matches('/').to_string()
 }
 
 pub fn spawn(state: Arc<StatusState>, port: u16) {
@@ -628,7 +1190,10 @@ pub fn spawn(state: Arc<StatusState>, port: u16) {
     });
 }
 
-async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StatusState>) -> Result<(), Infallible> {
+async fn handle(
+    mut stream: tokio::net::TcpStream,
+    state: Arc<StatusState>,
+) -> Result<(), Infallible> {
     let mut buf = vec![0u8; 8192];
     let n = match stream.read(&mut buf).await {
         Ok(n) => n,
@@ -647,7 +1212,9 @@ async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StatusState>) -> R
 
     let response = match route(method, path, body, state).await {
         Ok(resp) => resp,
-        Err((status, message)) => HttpResponse::json(status, json!({ "error": message }).to_string()),
+        Err((status, message)) => {
+            HttpResponse::json(status, json!({ "error": message }).to_string())
+        }
     };
 
     let _ = stream.write_all(response.render().as_bytes()).await;
@@ -679,11 +1246,87 @@ async fn route(
         }
         ("POST", "/resume") | ("POST", "/v1/app/service/resume") => {
             state.resume_supply().await;
-            Ok(HttpResponse::json("200 OK", json!({ "ok": true }).to_string()))
+            Ok(HttpResponse::json(
+                "200 OK",
+                json!({ "ok": true }).to_string(),
+            ))
         }
         ("GET", "/v1/app") => {
             let body = serde_json::to_string(&state.snapshot().await)
                 .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("GET", "/v1/app/network/models") => {
+            let body =
+                serde_json::to_string(&state.network_models_snapshot().await.map_err(|e| {
+                    (
+                        "502 Bad Gateway",
+                        format!("could not load gateway models: {e:#}"),
+                    )
+                })?)
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("GET", "/v1/app/account") => {
+            let account = match state.account_snapshot().await {
+                Ok(account) => account,
+                Err(err) if err.to_string().contains("account not linked") => {
+                    return Err(("404 Not Found", "account not linked".to_string()))
+                }
+                Err(err) => return Err(("502 Bad Gateway", err.to_string())),
+            };
+            let body = serde_json::to_string(&account)
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/account/link") => {
+            let payload: AccountLinkRequest = serde_json::from_slice(body).map_err(|e| {
+                (
+                    "400 Bad Request",
+                    format!("invalid account link payload: {e}"),
+                )
+            })?;
+            let body = serde_json::to_string(
+                &state
+                    .link_account(payload)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/account/sweep") => {
+            let payload: AccountDeviceControlRequest =
+                serde_json::from_slice(body).map_err(|e| {
+                    (
+                        "400 Bad Request",
+                        format!("invalid account sweep payload: {e}"),
+                    )
+                })?;
+            let body = serde_json::to_string(
+                &state
+                    .sweep_account_device(&payload.device_id)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/account/devices/remove") => {
+            let payload: AccountDeviceControlRequest =
+                serde_json::from_slice(body).map_err(|e| {
+                    (
+                        "400 Bad Request",
+                        format!("invalid remove device payload: {e}"),
+                    )
+                })?;
+            let body = serde_json::to_string(
+                &state
+                    .remove_account_device(&payload.device_id)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
             Ok(HttpResponse::json("200 OK", body))
         }
         ("POST", "/v1/app/models/download") => {
@@ -774,7 +1417,7 @@ mod tests {
     use super::{route, ServiceState, StatusState};
     use crate::backend::Backend;
     use crate::cluster::NodeRuntimeState;
-    use crate::config::LlamaConfig;
+    use crate::config::{ControlConfig, LlamaConfig};
     use crate::hardware::HardwareCapability;
     use crate::model_registry::{PersistedRegistry, RegistryStore};
     use crate::swap::SwapManager;
@@ -827,6 +1470,8 @@ mod tests {
             PersistedRegistry::default(),
             swap,
             Some(dummy_llama()),
+            ControlConfig::default(),
+            "wss://relay.teale.com/ws".to_string(),
             node_state,
         );
         state.clear_starting().await;
@@ -858,10 +1503,14 @@ mod tests {
                 node_state.clone(),
             ),
             Some(dummy_llama()),
+            ControlConfig::default(),
+            "wss://relay.teale.com/ws".to_string(),
             node_state,
         ));
 
-        let response = route("OPTIONS", "/v1/app", b"", state).await.expect("preflight ok");
+        let response = route("OPTIONS", "/v1/app", b"", state)
+            .await
+            .expect("preflight ok");
         let rendered = response.render();
         assert!(rendered.contains("204 No Content"));
         assert!(rendered.contains("Access-Control-Allow-Origin: *"));

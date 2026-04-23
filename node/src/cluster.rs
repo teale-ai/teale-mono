@@ -169,7 +169,7 @@ pub async fn handle_relay_data(
 
         ClusterMessage::Heartbeat(_) => {
             let loaded = swap.loaded_models().await;
-        let ack = ClusterMessage::HeartbeatAck(state.heartbeat_payload(loaded));
+            let ack = ClusterMessage::HeartbeatAck(state.heartbeat_payload(loaded));
             send(relay, from, session, &ack);
         }
 

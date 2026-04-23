@@ -31,6 +31,9 @@ extra_args = ["--threads", "6"]
 [control]
 port = 11437
 registry_path = "C:/Teale/config/model-registry.json"
+supabase_url = ""
+supabase_anon_key = ""
+supabase_redirect_url = "teale://auth/callback"
 
 [node]
 display_name = "WIN-HOSTNAME"

@@ -13,6 +13,7 @@ path = "src/main.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+webbrowser = "1"
 
 # Sync HTTP client (smaller than reqwest for a tray process).
 ureq = { version = "2", default-features = false, features = ["json"] }

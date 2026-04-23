@@ -31,6 +31,10 @@ port = 11436
 # Local companion / tray control API
 port = 11437
 registry_path = "config/model-registry.json"
+# Optional human sign-in for the Windows companion demand view.
+supabase_url = ""
+supabase_anon_key = ""
+supabase_redirect_url = "teale://auth/callback"
 
 [node]
 display_name = "Linux GPU Server"

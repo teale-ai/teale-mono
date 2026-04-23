@@ -1,4 +1,4 @@
-# TealeNode post-install script — run by the Inno Setup installer after file
+# TealeNode post-install script - run by the Inno Setup installer after file
 # extraction. Generates config, installs and starts the Windows service, then
 # lets the Teale companion app drive runtime model download/load management.
 # Also applies power-configuration (powercfg) when the user opted into
@@ -11,10 +11,7 @@ param(
     [string]$AllowSupplyLidClosed = "1",
     # Optional installer-provided backup directory used when an older Teale
     # install is removed before upgrading. Models are restored from here.
-    [string]$PreservedModelsDir = "",
-    # Optional test-only override to make Teale behave like a lower-RAM
-    # machine for recommendation and compatibility gating.
-    [string]$AssumedRamGB = ""
+    [string]$PreservedModelsDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +29,7 @@ $LlamaExe   = Join-Path $BinDir "llama-server.exe"
 $TealeExe   = Join-Path $BinDir "teale-node.exe"
 $ConfigFile = Join-Path $ConfigDir "teale-node.toml"
 $TranscriptPath = Join-Path $LogDir "post-install.log"
+$TranscriptCapturePath = Join-Path $LogDir "post-install-transcript.log"
 $TranscriptStarted = $false
 
 function Write-InstallLog {
@@ -60,7 +58,7 @@ function Invoke-Checked {
 
     if ($exitCode -ne 0) {
         $renderedArgs = if ($Arguments) { $Arguments -join " " } else { "" }
-        throw "Command failed with exit code $exitCode: $FilePath $renderedArgs"
+        throw ("Command failed with exit code {0}: {1} {2}" -f $exitCode, $FilePath, $renderedArgs)
     }
 }
 
@@ -75,7 +73,7 @@ Write-InstallLog "post-install.ps1 starting"
 
 try {
     try {
-        Start-Transcript -Path $TranscriptPath -Append -ErrorAction Stop | Out-Null
+        Start-Transcript -Path $TranscriptCapturePath -Append -ErrorAction Stop | Out-Null
         $TranscriptStarted = $true
     } catch {
         Write-InstallLog "Start-Transcript failed: $($_.Exception.Message)"
@@ -97,7 +95,7 @@ try {
                "We are working on support for smaller devices and will let you know when it's ready. " + `
                "You can uninstall Teale from Settings > Apps for now."
         Add-Type -AssemblyName PresentationFramework
-        [System.Windows.MessageBox]::Show($msg, "Teale — Unsupported RAM", "OK", "Information") | Out-Null
+        [System.Windows.MessageBox]::Show($msg, "Teale - Unsupported RAM", "OK", "Information") | Out-Null
         Write-InstallLog "RAM check failed: $ramGB GB < 16 GB minimum. Exiting without installing service."
         return
     }
@@ -116,23 +114,9 @@ try {
     $logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
     $threads = [math]::Max(2, $logicalCores - 2)
     $appEnvironment = @("APPDATA=$DataDir")
-
-    if ($AssumedRamGB) {
-        [double]$parsedAssumedRam = 0
-        $parsedOk = [double]::TryParse(
-            $AssumedRamGB,
-            [System.Globalization.NumberStyles]::Float,
-            [System.Globalization.CultureInfo]::InvariantCulture,
-            [ref]$parsedAssumedRam
-        )
-
-        if ($parsedOk -and $parsedAssumedRam -gt 0) {
-            $appEnvironment += "TEALE_TOTAL_RAM_GB=$parsedAssumedRam"
-            Write-InstallLog "Using test RAM override for Teale: $parsedAssumedRam GB"
-        } else {
-            Write-InstallLog "Ignoring invalid -AssumedRamGB value '$AssumedRamGB'"
-        }
-    }
+    $supabaseUrl = if ($env:TEALE_SUPABASE_URL) { $env:TEALE_SUPABASE_URL } else { "" }
+    $supabaseAnonKey = if ($env:TEALE_SUPABASE_ANON_KEY) { $env:TEALE_SUPABASE_ANON_KEY } else { "" }
+    $supabaseRedirectUrl = if ($env:TEALE_SUPABASE_REDIRECT_URL) { $env:TEALE_SUPABASE_REDIRECT_URL } else { "teale://auth/callback" }
 
     $llamaPath = $LlamaExe.Replace('\', '/')
     $tomlContent = @"
@@ -153,6 +137,9 @@ extra_args = ["--threads", "$threads"]
 [control]
 port = 11437
 registry_path = "C:/Teale/config/model-registry.json"
+supabase_url = "$supabaseUrl"
+supabase_anon_key = "$supabaseAnonKey"
+supabase_redirect_url = "$supabaseRedirectUrl"
 
 [node]
 display_name = "$env:COMPUTERNAME"

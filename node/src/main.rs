@@ -10,6 +10,7 @@
 mod backend;
 mod cluster;
 mod config;
+mod gateway_wallet;
 mod hardware;
 mod identity;
 mod inference;
@@ -38,9 +39,9 @@ use crate::backend::Backend;
 use crate::cluster::NodeRuntimeState;
 use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
-use crate::model_registry::RegistryStore;
 use crate::identity::NodeIdentity;
 use crate::inference::{build_llama_command, build_mnn_command, InferenceProxy};
+use crate::model_registry::RegistryStore;
 use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
 use crate::swap::{ModelSlot, SwapManager};
@@ -77,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("teale-node v{}", env!("CARGO_PKG_VERSION"));
 
-    let identity = NodeIdentity::load_or_create()?;
+    let identity = Arc::new(NodeIdentity::load_or_create()?);
     info!("Node ID: {}", identity.node_id());
 
     let hw = detect_hardware(&config.node);
@@ -90,9 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let model_dir = infer_model_dir(&config);
     let registry = registry_store.load_or_init_with_legacy(
         config.llama.as_ref().map(|l| l.model.as_str()),
-        config.llama
-            .as_ref()
-            .and_then(|l| l.model_id.as_deref()),
+        config.llama.as_ref().and_then(|l| l.model_id.as_deref()),
         &model_dir,
     )?;
 
@@ -198,6 +197,8 @@ async fn main() -> anyhow::Result<()> {
         registry,
         swap_manager.clone(),
         config.llama.clone(),
+        config.control.clone(),
+        config.relay.url.clone(),
         state.clone(),
     ));
     if !loaded_models.is_empty() {
@@ -205,6 +206,16 @@ async fn main() -> anyhow::Result<()> {
     }
     tray_status.clear_starting().await;
     status_server::spawn(tray_status.clone(), config.control.port);
+    if let Err(err) = gateway_wallet::spawn(
+        tray_status.clone(),
+        identity.clone(),
+        config.relay.url.clone(),
+    ) {
+        warn!("wallet sync disabled: {err:#}");
+        tray_status
+            .set_gateway_wallet_error(format!("wallet sync disabled: {err:#}"))
+            .await;
+    }
 
     if let Some(ac_state) = ac_state.clone() {
         let state = state.clone();
@@ -217,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let device_info = build_device_info(&config, &identity, &capabilities);
+    let device_info = build_device_info(&config, identity.as_ref(), &capabilities);
 
     let display_name = args
         .name
@@ -235,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
 
         let session_result = run_relay_session(
             &config,
-            &identity,
+            identity.as_ref(),
             &display_name,
             &capabilities,
             &swap_manager,

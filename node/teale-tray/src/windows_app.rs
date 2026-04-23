@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -17,12 +19,14 @@ use wry::{
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const APP_CSS: &[u8] = include_bytes!("../assets/app.css");
 const APP_JS: &[u8] = include_bytes!("../assets/app.js");
+const AUTH_CALLBACK_PORT: u16 = 11438;
 
 #[derive(Debug, Clone)]
 enum UserEvent {
     Tray(TrayIconEvent),
     Menu(MenuEvent),
     Status(Option<AppSnapshot>),
+    AuthCallback(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -53,7 +57,16 @@ enum IconState {
 }
 
 pub fn run() -> anyhow::Result<()> {
-    let open_on_start = std::env::args().any(|arg| arg == "--open-window");
+    let args: Vec<String> = std::env::args().collect();
+    let initial_auth_callback = args.iter().find(|arg| arg.starts_with("teale://")).cloned();
+    if let Some(callback_url) = initial_auth_callback.as_deref() {
+        if forward_auth_callback(callback_url).is_ok() {
+            return Ok(());
+        }
+    }
+
+    let open_on_start =
+        args.iter().any(|arg| arg == "--open-window") || initial_auth_callback.is_some();
 
     let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
     let event_loop = event_loop_builder.build();
@@ -69,6 +82,8 @@ pub fn run() -> anyhow::Result<()> {
         let _ = menu_proxy.send_event(UserEvent::Menu(event));
     }));
 
+    start_auth_callback_listener(proxy.clone());
+
     let window = WindowBuilder::new()
         .with_title("Teale")
         .with_visible(open_on_start)
@@ -77,8 +92,17 @@ pub fn run() -> anyhow::Result<()> {
         .build(&event_loop)
         .context("build Teale companion window")?;
 
-    let _webview = WebViewBuilder::new(&window)
+    let webview = WebViewBuilder::new(&window)
         .with_custom_protocol("teale".into(), protocol_handler)
+        .with_ipc_handler(|payload| {
+            if let Ok(message) = serde_json::from_str::<NativeMessage>(payload.body()) {
+                if message.kind == "openExternal" {
+                    if let Some(url) = message.url {
+                        let _ = webbrowser::open(&url);
+                    }
+                }
+            }
+        })
         .with_url("teale://localhost")
         .build()
         .context("build Teale companion webview")?;
@@ -113,6 +137,10 @@ pub fn run() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_secs(5));
     });
 
+    if let Some(callback_url) = initial_auth_callback {
+        let _ = proxy.send_event(UserEvent::AuthCallback(callback_url));
+    }
+
     let mut current_icon = IconState::Inactive;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -131,6 +159,10 @@ pub fn run() -> anyhow::Result<()> {
                     current_icon = next_icon;
                 }
                 let _ = tray.set_tooltip(Some(tooltip));
+            }
+            Event::UserEvent(UserEvent::AuthCallback(callback_url)) => {
+                show_window(&window);
+                dispatch_auth_callback(&webview, &callback_url);
             }
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id == item_pause.id() {
@@ -160,10 +192,23 @@ pub fn run() -> anyhow::Result<()> {
     });
 }
 
+#[derive(Debug, Deserialize)]
+struct NativeMessage {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    url: Option<String>,
+}
+
 fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let path = match request.uri().path() {
-        "/" | "" => "index.html",
-        other => other.trim_start_matches('/'),
+    let host = request.uri().host().unwrap_or_default();
+    let raw_path = request.uri().path();
+    let path = if matches!(raw_path, "/" | "") || (host == "auth" && raw_path == "/callback") {
+        "index.html"
+    } else if raw_path == "/auth/callback" {
+        "index.html"
+    } else {
+        raw_path.trim_start_matches('/')
     };
 
     let (body, mime) = match path {
@@ -175,7 +220,7 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
 
     Response::builder()
         .header(CONTENT_TYPE, mime)
-        .status(if path == "index.html" || path == "app.css" || path == "app.js" {
+        .status(if matches!(path, "index.html" | "app.css" | "app.js") {
             200
         } else {
             404
@@ -188,6 +233,53 @@ fn show_window(window: &tao::window::Window) {
     window.set_visible(true);
     window.set_minimized(false);
     let _ = window.set_focus();
+}
+
+fn start_auth_callback_listener(proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
+    std::thread::spawn(move || {
+        let listener = match TcpListener::bind(("127.0.0.1", AUTH_CALLBACK_PORT)) {
+            Ok(listener) => listener,
+            Err(_) => return,
+        };
+
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+
+            let mut url = String::new();
+            if stream.read_to_string(&mut url).is_err() {
+                continue;
+            }
+            let callback_url = url.trim().to_string();
+            if callback_url.is_empty() {
+                continue;
+            }
+            if proxy
+                .send_event(UserEvent::AuthCallback(callback_url))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+}
+
+fn forward_auth_callback(callback_url: &str) -> anyhow::Result<()> {
+    let mut stream = TcpStream::connect(("127.0.0.1", AUTH_CALLBACK_PORT))
+        .context("connect to running Teale tray auth relay")?;
+    stream
+        .write_all(callback_url.as_bytes())
+        .context("forward auth callback to tray")?;
+    Ok(())
+}
+
+fn dispatch_auth_callback(webview: &wry::WebView, callback_url: &str) {
+    let Ok(payload) = serde_json::to_string(callback_url) else {
+        return;
+    };
+    let script = format!("window.__tealeHandleOAuthCallback({payload});");
+    let _ = webview.evaluate_script(&script);
 }
 
 fn fetch_snapshot() -> Option<AppSnapshot> {
@@ -271,12 +363,7 @@ fn head_icon(r: u8, g: u8, b: u8) -> Icon {
                 || (x - 14) * (x - 14) + (y - 8) * (y - 8) <= 10;
             let inside = (skull || jaw || neck) && !face_cut;
             if inside {
-                rgba.extend_from_slice(&[
-                    r,
-                    g,
-                    b,
-                    if brain_cut { 0x90 } else { 0xFF },
-                ]);
+                rgba.extend_from_slice(&[r, g, b, if brain_cut { 0x90 } else { 0xFF }]);
             } else {
                 rgba.extend_from_slice(&[0, 0, 0, 0]);
             }

@@ -35,12 +35,18 @@ pub const SHARE_KEY_MAX_BUDGET: i64 = 50_000_000; // $50
 pub const SHARE_KEY_MAX_ACTIVE_PER_ISSUER: i64 = 50;
 pub const SHARE_KEY_MAX_LABEL_LEN: usize = 64;
 
-// Drip: 0.003 cr/sec ⇒ with a 60s loop each online device gets 0.18 cr/tick.
-// We credit integer credits only, so accumulate per-tick; realistic number is
-// 1 credit/tick for devices online at that moment, which works out to
-// 60 cr/hr — generous enough to make the wallet feel alive during a demo.
-pub const DRIP_CREDITS_PER_TICK: i64 = 1;
-pub const DRIP_INTERVAL_SECS: u64 = 60;
+// Availability drip is priced off model cost. Hermes 3 / Llama 3.1 8B is the
+// calibration point: 1 credit every 10 seconds while the model is available.
+pub const DRIP_INTERVAL_SECS: u64 = 10;
+pub const HERMES_REFERENCE_PROMPT_PRICE_USD: f64 = 0.00000010;
+pub const HERMES_REFERENCE_COMPLETION_PRICE_USD: f64 = 0.00000020;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DripRecipient {
+    pub device_id: String,
+    pub credits: i64,
+    pub note: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -183,6 +189,72 @@ pub struct BalanceSnapshot {
     pub total_earned_credits: i64,
     pub total_spent_credits: i64,
     pub usdc_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountLinkMetadata {
+    pub device_name: Option<String>,
+    pub platform: Option<String>,
+    pub display_name: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub github_username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountDeviceSnapshot {
+    pub device_id: String,
+    pub device_name: Option<String>,
+    pub platform: Option<String>,
+    pub linked_at: i64,
+    pub last_seen: i64,
+    pub wallet_balance_credits: i64,
+    pub wallet_usdc_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountLedgerEntry {
+    pub id: i64,
+    pub account_user_id: String,
+    pub asset: String,
+    pub amount: i64,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub timestamp: i64,
+    pub device_id: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountWalletSnapshot {
+    pub account_user_id: String,
+    pub balance_credits: i64,
+    pub usdc_cents: i64,
+    pub display_name: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub github_username: Option<String>,
+    pub devices: Vec<AccountDeviceSnapshot>,
+    pub transactions: Vec<AccountLedgerEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSweepResult {
+    pub swept_credits: i64,
+    pub swept_usdc_cents: i64,
+    pub account: AccountWalletSnapshot,
+}
+
+pub fn availability_credits_per_tick(prompt_price_usd: f64, completion_price_usd: f64) -> i64 {
+    let combined_price = prompt_price_usd.max(0.0) + completion_price_usd.max(0.0);
+    let hermes_reference =
+        HERMES_REFERENCE_PROMPT_PRICE_USD + HERMES_REFERENCE_COMPLETION_PRICE_USD;
+
+    if combined_price <= 0.0 {
+        return 1;
+    }
+
+    ((combined_price / hermes_reference).round() as i64).max(1)
 }
 
 /// Credit cost in Teale credits for a completed chat turn, driven by the
@@ -379,6 +451,334 @@ pub fn list_transactions(pool: &DbPool, device_id: &str, limit: i64) -> Vec<Ledg
     .unwrap_or_default()
 }
 
+pub fn link_device_to_account(
+    pool: &DbPool,
+    device_id: &str,
+    account_user_id: &str,
+    metadata: &AccountLinkMetadata,
+) -> anyhow::Result<()> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+        params![device_id, now, now],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [device_id],
+    )?;
+    tx.execute(
+        "INSERT INTO account_wallets
+            (account_user_id, display_name, phone, email, github_username,
+             balance_credits, usdc_cents, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+         ON CONFLICT(account_user_id) DO UPDATE SET
+            display_name = COALESCE(excluded.display_name, account_wallets.display_name),
+            phone = COALESCE(excluded.phone, account_wallets.phone),
+            email = COALESCE(excluded.email, account_wallets.email),
+            github_username = COALESCE(excluded.github_username, account_wallets.github_username),
+            updated_at = excluded.updated_at",
+        params![
+            account_user_id,
+            metadata.display_name.as_deref(),
+            metadata.phone.as_deref(),
+            metadata.email.as_deref(),
+            metadata.github_username.as_deref(),
+            now,
+            now,
+        ],
+    )?;
+    tx.execute(
+        "UPDATE devices SET last_seen = ? WHERE device_id = ?",
+        params![now, device_id],
+    )?;
+    tx.execute(
+        "INSERT INTO account_devices
+            (device_id, account_user_id, device_name, platform, linked_at, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(device_id) DO UPDATE SET
+            account_user_id = excluded.account_user_id,
+            device_name = COALESCE(excluded.device_name, account_devices.device_name),
+            platform = COALESCE(excluded.platform, account_devices.platform),
+            linked_at = excluded.linked_at,
+            last_seen = excluded.last_seen",
+        params![
+            device_id,
+            account_user_id,
+            metadata.device_name.as_deref(),
+            metadata.platform.as_deref(),
+            now,
+            now,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn account_user_id_for_device(pool: &DbPool, device_id: &str) -> Option<String> {
+    let conn = pool.lock();
+    conn.query_row(
+        "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+        [device_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+pub fn account_summary_for_device(
+    pool: &DbPool,
+    device_id: &str,
+) -> anyhow::Result<AccountWalletSnapshot> {
+    let Some(account_user_id) = account_user_id_for_device(pool, device_id) else {
+        anyhow::bail!("device is not linked to an account");
+    };
+    account_summary(pool, &account_user_id)
+}
+
+pub fn account_summary(
+    pool: &DbPool,
+    account_user_id: &str,
+) -> anyhow::Result<AccountWalletSnapshot> {
+    let conn = pool.lock();
+    let (display_name, phone, email, github_username, balance_credits, usdc_cents): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    ) = conn.query_row(
+        "SELECT display_name, phone, email, github_username, balance_credits, usdc_cents
+         FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        },
+    )?;
+
+    let devices = {
+        let mut stmt = conn.prepare(
+            "SELECT ad.device_id, ad.device_name, ad.platform, ad.linked_at, ad.last_seen,
+                    COALESCE(b.balance, 0) AS wallet_balance_credits
+             FROM account_devices ad
+             LEFT JOIN balances b ON b.device_id = ad.device_id
+             WHERE ad.account_user_id = ?
+             ORDER BY ad.last_seen DESC, ad.device_id ASC",
+        )?;
+        let rows = stmt.query_map([account_user_id], |r| {
+            Ok(AccountDeviceSnapshot {
+                device_id: r.get(0)?,
+                device_name: r.get(1)?,
+                platform: r.get(2)?,
+                linked_at: r.get(3)?,
+                last_seen: r.get(4)?,
+                wallet_balance_credits: r.get(5)?,
+                wallet_usdc_cents: 0,
+            })
+        })?;
+        rows.filter_map(|row| row.ok()).collect()
+    };
+
+    let transactions = list_account_transactions_locked(&conn, account_user_id, 100)?;
+
+    Ok(AccountWalletSnapshot {
+        account_user_id: account_user_id.to_string(),
+        balance_credits,
+        usdc_cents,
+        display_name,
+        phone,
+        email,
+        github_username,
+        devices,
+        transactions,
+    })
+}
+
+pub fn sweep_device_to_account(
+    pool: &DbPool,
+    requester_device_id: &str,
+    target_device_id: &str,
+) -> anyhow::Result<AccountSweepResult> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let requester_account: Option<String> = tx
+        .query_row(
+            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+            [requester_device_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(account_user_id) = requester_account else {
+        anyhow::bail!("requesting device is not linked to an account");
+    };
+
+    let target_account: Option<String> = tx
+        .query_row(
+            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+            [target_device_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if target_account.as_deref() != Some(account_user_id.as_str()) {
+        anyhow::bail!("target device is not linked to this account");
+    }
+
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [target_device_id],
+    )?;
+    let (balance_credits, usdc_cents): (i64, i64) = tx.query_row(
+        "SELECT balance, 0 FROM balances WHERE device_id = ?",
+        [target_device_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    if balance_credits > 0 {
+        tx.execute(
+            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+             VALUES (?, 'ACCOUNT_SWEEP_OUT', ?, ?, ?)",
+            params![
+                target_device_id,
+                -balance_credits,
+                now,
+                format!("swept to account {account_user_id}")
+            ],
+        )?;
+        tx.execute(
+            "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
+             WHERE device_id = ?",
+            params![balance_credits, balance_credits, target_device_id],
+        )?;
+        tx.execute(
+            "UPDATE account_wallets
+             SET balance_credits = balance_credits + ?, updated_at = ?
+             WHERE account_user_id = ?",
+            params![balance_credits, now, account_user_id],
+        )?;
+        tx.execute(
+            "INSERT INTO account_ledger
+                (account_user_id, asset, amount, type, timestamp, device_id, note)
+             VALUES (?, 'credits', ?, 'SWEEP_IN', ?, ?, ?)",
+            params![
+                account_user_id,
+                balance_credits,
+                now,
+                target_device_id,
+                format!("swept from device {target_device_id}")
+            ],
+        )?;
+    }
+
+    if usdc_cents > 0 {
+        tx.execute(
+            "UPDATE account_wallets
+             SET usdc_cents = usdc_cents + ?, updated_at = ?
+             WHERE account_user_id = ?",
+            params![usdc_cents, now, account_user_id],
+        )?;
+        tx.execute(
+            "INSERT INTO account_ledger
+                (account_user_id, asset, amount, type, timestamp, device_id, note)
+             VALUES (?, 'usdc', ?, 'SWEEP_IN', ?, ?, ?)",
+            params![
+                account_user_id,
+                usdc_cents,
+                now,
+                target_device_id,
+                format!("swept from device {target_device_id}")
+            ],
+        )?;
+    }
+
+    tx.commit()?;
+    drop(conn);
+
+    Ok(AccountSweepResult {
+        swept_credits: balance_credits,
+        swept_usdc_cents: usdc_cents,
+        account: account_summary(pool, &account_user_id)?,
+    })
+}
+
+pub fn remove_device_from_account(
+    pool: &DbPool,
+    requester_device_id: &str,
+    target_device_id: &str,
+) -> anyhow::Result<AccountWalletSnapshot> {
+    if requester_device_id == target_device_id {
+        anyhow::bail!("current device cannot remove itself from this account");
+    }
+
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let requester_account: Option<String> = tx
+        .query_row(
+            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+            [requester_device_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(account_user_id) = requester_account else {
+        anyhow::bail!("requesting device is not linked to an account");
+    };
+
+    let target_account: Option<String> = tx
+        .query_row(
+            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+            [target_device_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if target_account.as_deref() != Some(account_user_id.as_str()) {
+        anyhow::bail!("target device is not linked to this account");
+    }
+
+    tx.execute(
+        "DELETE FROM account_devices WHERE device_id = ?",
+        [target_device_id],
+    )?;
+    tx.commit()?;
+    drop(conn);
+    account_summary(pool, &account_user_id)
+}
+
+fn list_account_transactions_locked(
+    conn: &rusqlite::Connection,
+    account_user_id: &str,
+    limit: i64,
+) -> anyhow::Result<Vec<AccountLedgerEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, account_user_id, asset, amount, type, timestamp, device_id, note
+         FROM account_ledger
+         WHERE account_user_id = ?
+         ORDER BY timestamp DESC, id DESC
+         LIMIT ?",
+    )?;
+    let rows = stmt.query_map(params![account_user_id, limit], |r| {
+        Ok(AccountLedgerEntry {
+            id: r.get(0)?,
+            account_user_id: r.get(1)?,
+            asset: r.get(2)?,
+            amount: r.get(3)?,
+            type_: r.get(4)?,
+            timestamp: r.get(5)?,
+            device_id: r.get(6)?,
+            note: r.get(7)?,
+        })
+    })?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
+}
+
 /// Called after a chat completion. Distributes:
 ///   - consumer SPENT (negative) — debited from the paying device (issuer for share-key spends)
 ///   - provider DIRECT_EARN (70% of effective cost)
@@ -558,8 +958,8 @@ pub fn settle_request(
 
 /// Mint a drip payout to every online device. Debits the mint_pool and records
 /// AVAILABILITY_DRIP entries.
-pub fn run_drip(pool: &DbPool, online_device_ids: &[String]) -> anyhow::Result<usize> {
-    if online_device_ids.is_empty() {
+pub fn run_drip(pool: &DbPool, recipients: &[DripRecipient]) -> anyhow::Result<usize> {
+    if recipients.is_empty() {
         return Ok(0);
     }
     let mut conn = pool.lock();
@@ -569,7 +969,10 @@ pub fn run_drip(pool: &DbPool, online_device_ids: &[String]) -> anyhow::Result<u
     let remaining: i64 = tx.query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
         r.get(0)
     })?;
-    let total_needed = DRIP_CREDITS_PER_TICK * online_device_ids.len() as i64;
+    let total_needed: i64 = recipients
+        .iter()
+        .map(|recipient| recipient.credits.max(0))
+        .sum();
     if remaining < total_needed {
         tracing::warn!(
             "mint_pool remaining ({}) < drip amount ({}), skipping",
@@ -584,39 +987,44 @@ pub fn run_drip(pool: &DbPool, online_device_ids: &[String]) -> anyhow::Result<u
         params![total_needed],
     )?;
 
-    for d in online_device_ids {
+    for recipient in recipients {
+        let note = recipient.note.as_deref().unwrap_or("drip tick");
         tx.execute(
             "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
-            [d.as_str()],
+            [recipient.device_id.as_str()],
         )?;
         tx.execute(
             "INSERT INTO ledger (device_id, type, amount, timestamp, note)
-             VALUES (?, 'AVAILABILITY_DRIP', ?, ?, 'drip tick')",
-            params![d.as_str(), DRIP_CREDITS_PER_TICK, now],
+             VALUES (?, 'AVAILABILITY_DRIP', ?, ?, ?)",
+            params![recipient.device_id.as_str(), recipient.credits, now, note],
         )?;
         tx.execute(
             "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
              WHERE device_id = ?",
-            params![DRIP_CREDITS_PER_TICK, DRIP_CREDITS_PER_TICK, d.as_str()],
+            params![
+                recipient.credits,
+                recipient.credits,
+                recipient.device_id.as_str()
+            ],
         )?;
     }
     tx.commit()?;
-    Ok(online_device_ids.len())
+    Ok(recipients.len())
 }
 
 /// Spawn the drip loop.
-pub fn spawn_drip_loop(pool: DbPool, snapshot: impl Fn() -> Vec<String> + Send + 'static) {
+pub fn spawn_drip_loop(pool: DbPool, snapshot: impl Fn() -> Vec<DripRecipient> + Send + 'static) {
     let pool = Arc::clone(&pool);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(DRIP_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            let online = snapshot();
-            if online.is_empty() {
+            let recipients = snapshot();
+            if recipients.is_empty() {
                 continue;
             }
-            match run_drip(&pool, &online) {
+            match run_drip(&pool, &recipients) {
                 Ok(n) => {
                     if n > 0 {
                         tracing::debug!("drip tick: credited {} online devices", n);
@@ -1007,9 +1415,10 @@ mod tests {
 
         let entries = list_transactions(&pool, "consumer", 10);
         assert!(
-            entries
-                .iter()
-                .any(|e| e.note.as_deref().is_some_and(|n| n.contains("shortfall=60"))),
+            entries.iter().any(|e| e
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("shortfall=60"))),
             "shortfall should be noted on the SPENT row"
         );
     }
@@ -1019,15 +1428,39 @@ mod tests {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "a").unwrap();
         upsert_device(&pool, "b").unwrap();
-        run_drip(&pool, &["a".into(), "b".into()]).unwrap();
-        assert_eq!(
-            get_balance(&pool, "a").balance_credits,
-            DRIP_CREDITS_PER_TICK
-        );
-        assert_eq!(
-            get_balance(&pool, "b").balance_credits,
-            DRIP_CREDITS_PER_TICK
-        );
+        run_drip(
+            &pool,
+            &[
+                DripRecipient {
+                    device_id: "a".into(),
+                    credits: 1,
+                    note: Some("drip tick // model=nousresearch/hermes-3-llama-3.1-8b".into()),
+                },
+                DripRecipient {
+                    device_id: "b".into(),
+                    credits: 4,
+                    note: Some(
+                        "drip tick // model=mistralai/mistral-small-3.2-24b-instruct".into(),
+                    ),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(get_balance(&pool, "a").balance_credits, 1);
+        assert_eq!(get_balance(&pool, "b").balance_credits, 4);
+
+        let entries = list_transactions(&pool, "b", 1);
+        assert!(entries[0]
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("mistralai/mistral-small-3.2-24b-instruct")));
+    }
+
+    #[test]
+    fn availability_tick_scales_from_hermes_pricing() {
+        assert_eq!(availability_credits_per_tick(0.00000010, 0.00000020), 1);
+        assert_eq!(availability_credits_per_tick(0.00000040, 0.00000080), 4);
+        assert_eq!(availability_credits_per_tick(0.00000080, 0.00000160), 8);
     }
 
     #[test]
@@ -1294,5 +1727,87 @@ mod tests {
         assert_eq!(preview.label.as_deref(), Some("demo"));
         assert_eq!(preview.budget_credits, 100);
         assert_eq!(preview.consumed_credits, 0);
+    }
+
+    #[test]
+    fn link_device_to_account_persists_summary() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                device_name: Some("X1 Carbon".into()),
+                platform: Some("windows".into()),
+                display_name: Some("Taylor".into()),
+                phone: Some("+15551234567".into()),
+                email: None,
+                github_username: Some("thou48".into()),
+            },
+        )
+        .unwrap();
+
+        let summary = account_summary_for_device(&pool, "device-a").unwrap();
+        assert_eq!(summary.account_user_id, "user-123");
+        assert_eq!(summary.display_name.as_deref(), Some("Taylor"));
+        assert_eq!(summary.devices.len(), 1);
+        assert_eq!(summary.devices[0].device_id, "device-a");
+        assert_eq!(summary.devices[0].device_name.as_deref(), Some("X1 Carbon"));
+    }
+
+    #[test]
+    fn sweep_moves_device_balance_into_account_wallet() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        record_bonus(&pool, "device-a", 1_250).unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                device_name: Some("X1 Carbon".into()),
+                platform: Some("windows".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let swept = sweep_device_to_account(&pool, "device-a", "device-a").unwrap();
+        assert_eq!(swept.swept_credits, 1_250);
+        assert_eq!(get_balance(&pool, "device-a").balance_credits, 0);
+        assert_eq!(swept.account.balance_credits, 1_250);
+        assert_eq!(swept.account.transactions.len(), 1);
+        assert_eq!(swept.account.transactions[0].type_, "SWEEP_IN");
+
+        let device_entries = list_transactions(&pool, "device-a", 10);
+        assert!(device_entries
+            .iter()
+            .any(|entry| entry.type_ == "ACCOUNT_SWEEP_OUT" && entry.amount == -1_250));
+    }
+
+    #[test]
+    fn remove_device_detaches_only_target_row() {
+        let pool = open_in_memory().unwrap();
+        for device_id in &["device-a", "device-b"] {
+            upsert_device(&pool, device_id).unwrap();
+            link_device_to_account(
+                &pool,
+                device_id,
+                "user-123",
+                &AccountLinkMetadata {
+                    device_name: Some(device_id.to_string()),
+                    platform: Some("windows".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let summary = remove_device_from_account(&pool, "device-a", "device-b").unwrap();
+        assert_eq!(summary.devices.len(), 1);
+        assert_eq!(summary.devices[0].device_id, "device-a");
+        assert!(account_summary_for_device(&pool, "device-b").is_err());
     }
 }

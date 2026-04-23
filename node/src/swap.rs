@@ -100,7 +100,7 @@ impl SwapManager {
             whitelist,
             state,
             drain_budget: Duration::from_secs(10),
-            health_budget: Duration::from_secs(20),
+            health_budget: Duration::from_secs(120),
         })
     }
 
@@ -194,7 +194,8 @@ impl SwapManager {
                 });
             }
         };
-        self.swap_to_path(request_id, model_id, target_path, None).await
+        self.swap_to_path(request_id, model_id, target_path, None)
+            .await
     }
 
     pub async fn unload_current(&self) {
