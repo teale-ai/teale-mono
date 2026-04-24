@@ -51,6 +51,8 @@ public struct RemoteAppSnapshot: Codable, Sendable {
     public var loadedModelRepo: String?
     public var engineStatus: String
     public var isServerRunning: Bool
+    public var auth: RemoteAuthConfigSnapshot?
+    public var demand: RemoteDemandSnapshot?
     public var settings: RemoteSettingsSnapshot
     public var models: [RemoteModelSnapshot]
 
@@ -60,6 +62,8 @@ public struct RemoteAppSnapshot: Codable, Sendable {
         loadedModelRepo: String?,
         engineStatus: String,
         isServerRunning: Bool,
+        auth: RemoteAuthConfigSnapshot? = nil,
+        demand: RemoteDemandSnapshot? = nil,
         settings: RemoteSettingsSnapshot,
         models: [RemoteModelSnapshot]
     ) {
@@ -68,8 +72,62 @@ public struct RemoteAppSnapshot: Codable, Sendable {
         self.loadedModelRepo = loadedModelRepo
         self.engineStatus = engineStatus
         self.isServerRunning = isServerRunning
+        self.auth = auth
+        self.demand = demand
         self.settings = settings
         self.models = models
+    }
+}
+
+public struct RemoteAuthConfigSnapshot: Codable, Sendable {
+    public var configured: Bool
+    public var supabaseURL: String?
+    public var supabaseAnonKey: String?
+    public var redirectURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case configured
+        case supabaseURL = "supabase_url"
+        case supabaseAnonKey = "supabase_anon_key"
+        case redirectURL = "redirect_url"
+    }
+
+    public init(
+        configured: Bool,
+        supabaseURL: String?,
+        supabaseAnonKey: String?,
+        redirectURL: String?
+    ) {
+        self.configured = configured
+        self.supabaseURL = supabaseURL
+        self.supabaseAnonKey = supabaseAnonKey
+        self.redirectURL = redirectURL
+    }
+}
+
+public struct RemoteDemandSnapshot: Codable, Sendable {
+    public var localBaseURL: String
+    public var localModelID: String?
+    public var networkBaseURL: String
+    public var networkBearerToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case localBaseURL = "local_base_url"
+        case localModelID = "local_model_id"
+        case networkBaseURL = "network_base_url"
+        case networkBearerToken = "network_bearer_token"
+    }
+
+    public init(
+        localBaseURL: String,
+        localModelID: String?,
+        networkBaseURL: String,
+        networkBearerToken: String?
+    ) {
+        self.localBaseURL = localBaseURL
+        self.localModelID = localModelID
+        self.networkBaseURL = networkBaseURL
+        self.networkBearerToken = networkBearerToken
     }
 }
 

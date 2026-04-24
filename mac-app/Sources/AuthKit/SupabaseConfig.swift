@@ -25,6 +25,12 @@ public struct SupabaseConfig: Sendable {
             return config
         }
 
+        for plistURL in plistSearchPaths() {
+            if let config = loadFromPlist(url: plistURL) {
+                return config
+            }
+        }
+
         if let urlString = normalizedValue(ProcessInfo.processInfo.environment["SUPABASE_URL"]),
            let url = URL(string: urlString),
            let key = normalizedValue(ProcessInfo.processInfo.environment["SUPABASE_ANON_KEY"]) {
@@ -77,6 +83,41 @@ public struct SupabaseConfig: Sendable {
 
         let redirectURL = redirectURL(configuredValue: dict["SUPABASE_REDIRECT_URL"])
         return SupabaseConfig(url: url, anonKey: key, redirectURL: redirectURL)
+    }
+
+    private static func loadFromPlist(url: URL) -> SupabaseConfig? {
+        guard let data = try? Data(contentsOf: url),
+              let dict = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: String],
+              let urlString = normalizedValue(dict["SUPABASE_URL"]),
+              let serviceURL = URL(string: urlString),
+              let key = normalizedValue(dict["SUPABASE_ANON_KEY"]) else {
+            return nil
+        }
+
+        let redirectURL = redirectURL(configuredValue: dict["SUPABASE_REDIRECT_URL"])
+        return SupabaseConfig(url: serviceURL, anonKey: key, redirectURL: redirectURL)
+    }
+
+    private static func plistSearchPaths() -> [URL] {
+        var candidates: [URL] = []
+
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL.appendingPathComponent("Supabase.plist"))
+        }
+
+        candidates.append(
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("Resources", isDirectory: true)
+                .appendingPathComponent("Supabase.plist")
+        )
+
+        candidates.append(
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+                .appendingPathComponent("Supabase.plist")
+        )
+
+        return Array(NSOrderedSet(array: candidates)) as? [URL] ?? candidates
     }
 
     private static func normalizedValue(_ value: String?) -> String? {

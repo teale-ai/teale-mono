@@ -21,16 +21,31 @@
         <button class="nav-link" data-view-button="account" type="button" data-i18n="nav.account">account</button>
         <div class="title-spacer"></div>
         <div class="header-tools">
-          <label class="language-picker">
-            <span data-i18n="language.label">language</span>
-            <select id="language-select">
-              <option value="en">English</option>
-              <option value="zh-Hans">简体中文</option>
-              <option value="pt-BR">Português (Brasil)</option>
-              <option value="es">Español</option>
-              <option value="fil-PH">Filipino (PH)</option>
-            </select>
-          </label>
+          <details id="settings-menu" class="settings-menu">
+            <summary id="settings-summary" class="icon-action" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10.325 4.317a1.724 1.724 0 0 1 3.35 0l.164.735a1 1 0 0 0 .95.77h.82a1.724 1.724 0 0 1 1.494 2.586l-.426.72a1 1 0 0 0 .153 1.215l.58.58a1.724 1.724 0 0 1 0 2.438l-.58.58a1 1 0 0 0-.153 1.215l.426.72a1.724 1.724 0 0 1-1.494 2.586h-.82a1 1 0 0 0-.95.77l-.164.735a1.724 1.724 0 0 1-3.35 0l-.164-.735a1 1 0 0 0-.95-.77h-.82a1.724 1.724 0 0 1-1.494-2.586l.426-.72a1 1 0 0 0-.153-1.215l-.58-.58a1.724 1.724 0 0 1 0-2.438l.58-.58a1 1 0 0 0 .153-1.215l-.426-.72A1.724 1.724 0 0 1 8.39 5.822h.82a1 1 0 0 0 .95-.77l.164-.735ZM12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"></path>
+              </svg>
+            </summary>
+            <div class="settings-popover">
+              <label class="settings-field">
+                <span data-i18n="language.label">language</span>
+                <select id="language-select">
+                  <option value="en">English</option>
+                  <option value="es">Español</option>
+                  <option value="pt-BR">Português (Brasil)</option>
+                  <option value="fil-PH">Filipino (Philippines)</option>
+                </select>
+              </label>
+              <label class="settings-field">
+                <span>display</span>
+                <select id="display-unit-select">
+                  <option value="credits">Credits</option>
+                  <option value="usd">USD</option>
+                </select>
+              </label>
+            </div>
+          </details>
           <button id="follow-x-button" class="icon-action" type="button" title="Follow @teale_ai on X" aria-label="Follow @teale_ai on X">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M18.901 2H21.98l-6.72 7.68L23.2 22h-6.217l-4.87-7.45L5.6 22H2.52l7.188-8.215L1.6 2h6.375l4.402 6.73L18.9 2Zm-1.09 18h1.706L7.05 3.895H5.22L17.81 20Z"></path>
@@ -85,9 +100,9 @@
               <dd id="home-network-ttft">Loading...</dd>
               <dt>Avg TPS</dt>
               <dd id="home-network-tps">Loading...</dd>
-              <dt>Total credits earned</dt>
+              <dt id="home-network-earned-label">Total credits earned</dt>
               <dd id="home-network-earned">Loading...</dd>
-              <dt>Total credits spent</dt>
+              <dt id="home-network-spent-label">Total credits spent</dt>
               <dd id="home-network-spent">Loading...</dd>
               <dt>Total USDC distributed</dt>
               <dd id="home-network-usdc">Loading...</dd>
@@ -293,7 +308,7 @@
               <dd id="wallet-status">Offline</dd>
               <dt>Model</dt>
               <dd id="wallet-model">No model loaded</dd>
-              <dt>Teale credits</dt>
+              <dt id="wallet-balance-label">Teale credits</dt>
               <dd>
                 <span id="wallet-balance">Syncing...</span>
                 <small id="wallet-note">Credits go up while supply is on.</small>
@@ -390,7 +405,7 @@
           <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="account.prompt.wallet">account wallet</span></p>
           <div class="card">
             <dl class="stats">
-              <dt>Teale credits</dt>
+              <dt id="account-wallet-balance-label">Teale credits</dt>
               <dd>
                 <span id="account-wallet-balance">-</span>
                 <small id="account-wallet-note">Sweep device balances here, then send from the account wallet.</small>

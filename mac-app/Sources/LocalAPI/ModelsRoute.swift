@@ -72,6 +72,16 @@ enum ModelsRoute {
             }
         }
 
+        for gatewayModelID in await gatewayModelIDs() where !seen.contains(gatewayModelID) {
+            models.append(ModelsListResponse.ModelObject(
+                id: gatewayModelID,
+                object: "model",
+                created: now,
+                ownedBy: "gateway"
+            ))
+            seen.insert(gatewayModelID)
+        }
+
         let response = ModelsListResponse(data: models)
         let data = try JSONEncoder().encode(response)
 
@@ -80,5 +90,64 @@ enum ModelsRoute {
             headers: [.contentType: "application/json"],
             body: .init(byteBuffer: .init(data: data))
         )
+    }
+
+    private struct GatewayModelsEnvelope: Decodable {
+        let data: [GatewayModelEntry]
+    }
+
+    private struct GatewayModelEntry: Decodable {
+        let id: String
+        let loadedDeviceCount: Int?
+    }
+
+    private static func gatewayModelIDs() async -> [String] {
+        let url = gatewayBaseURL().appending(path: "v1/models")
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 4
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 4
+        config.timeoutIntervalForResource = 4
+        let session = URLSession(configuration: config)
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                return []
+            }
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let envelope = try decoder.decode(GatewayModelsEnvelope.self, from: data)
+            return envelope.data
+                .filter { ($0.loadedDeviceCount ?? 0) > 0 && !$0.id.hasPrefix("teale/") }
+                .map(\.id)
+        } catch {
+            return []
+        }
+    }
+
+    private static func gatewayBaseURL() -> URL {
+        let fallback = URL(string: "https://gateway.teale.com")!
+        let raw = UserDefaults.standard.string(forKey: "teale.gateway_fallback_url") ?? fallback.absoluteString
+        guard var components = URLComponents(string: raw) else {
+            return fallback
+        }
+
+        if components.scheme == "wss" {
+            components.scheme = "https"
+        } else if components.scheme == "ws" {
+            components.scheme = "http"
+        }
+
+        if let host = components.host, host.hasPrefix("relay.") {
+            components.host = host.replacingOccurrences(of: "relay.", with: "gateway.", options: .anchored)
+        }
+
+        components.path = ""
+        components.query = nil
+        components.fragment = nil
+        return components.url ?? fallback
     }
 }

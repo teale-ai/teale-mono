@@ -41,6 +41,7 @@ public final class AppState {
     // it to the configured gateway. Leave `gatewayAPIKey` empty to disable.
     private static let gatewayFallbackURLKey = "teale.gateway_fallback_url"
     private static let gatewayAPIKeyKey = "teale.gateway_api_key"
+    private static let companionDisplayUnitKey = "teale.companion_display_unit"
 
     // Hardware
     public let hardware: HardwareCapability
@@ -189,6 +190,12 @@ public final class AppState {
         return hasPriorInstall
     }
     public let apiKeyStore = APIKeyStore()
+
+    public var companionDisplayUnit: CompanionDisplayUnit = CompanionDisplayUnit(
+        rawValue: UserDefaults.standard.string(forKey: AppState.companionDisplayUnitKey) ?? CompanionDisplayUnit.credits.rawValue
+    ) ?? .credits {
+        didSet { UserDefaults.standard.set(companionDisplayUnit.rawValue, forKey: AppState.companionDisplayUnitKey) }
+    }
 
     // Chat (ChatKit — unified 1:1 + group storage with E2E P2P crypto)
     public let chatService: ChatService

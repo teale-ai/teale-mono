@@ -7,6 +7,7 @@ import AppKit
 struct CompanionRootView: View {
     @Environment(AppState.self) private var appState
     @State private var activeTab: CompanionTab = .home
+    @State private var gatewayState = CompanionGatewayState()
 
     var body: some View {
         ZStack {
@@ -30,10 +31,18 @@ struct CompanionRootView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .environment(gatewayState)
         .task {
             await appState.startServer()
             await appState.initializeAsync()
+            await gatewayState.refresh(appState: appState, force: true)
             await appState.updateChecker.checkIfNeeded()
+        }
+        .task(id: appState.gatewayFallbackURL) {
+            while !Task.isCancelled {
+                await gatewayState.refresh(appState: appState)
+                try? await Task.sleep(for: .seconds(12))
+            }
         }
     }
 
@@ -71,7 +80,7 @@ private struct TealeNavBar: View {
                 Button {
                     activeTab = tab
                 } label: {
-                    Text(tab.label)
+                    Text(tab.label(in: appState))
                         .font(TealeDesign.mono)
                         .tracking(0.6)
                         .foregroundStyle(activeTab == tab ? TealeDesign.text : TealeDesign.muted)
@@ -80,7 +89,7 @@ private struct TealeNavBar: View {
                 .buttonStyle(.plain)
             }
             Spacer()
-            languagePicker
+            settingsMenu
             HeaderToolButton(title: "x.com") {
                 openURL(URL(string: "https://x.com/teale_ai")!)
             }
@@ -91,20 +100,35 @@ private struct TealeNavBar: View {
         }
     }
 
-    private var languagePicker: some View {
-        Picker(
-            appState.loc("settings.language"),
-            selection: Binding(
-                get: { appState.language },
-                set: { appState.language = $0 }
-            )
-        ) {
+    private var settingsMenu: some View {
+        Menu {
             ForEach(AppLanguage.allCases) { language in
-                Text(language.displayName).tag(language)
+                Button {
+                    appState.language = language
+                } label: {
+                    SettingsMenuItemLabel(
+                        title: language.displayName,
+                        isSelected: appState.language == language
+                    )
+                }
             }
+
+            Divider()
+
+            ForEach(CompanionDisplayUnit.allCases) { unit in
+                Button {
+                    appState.companionDisplayUnit = unit
+                } label: {
+                    SettingsMenuItemLabel(
+                        title: appState.companionMenuLabel(for: unit),
+                        isSelected: appState.companionDisplayUnit == unit
+                    )
+                }
+            }
+        } label: {
+            HeaderIconButton(systemImage: "gearshape")
         }
-        .labelsHidden()
-        .pickerStyle(.menu)
+        .menuStyle(.borderlessButton)
         .tint(TealeDesign.teale)
     }
 
@@ -123,6 +147,21 @@ private struct TealeNavBar: View {
 #else
         shareButtonLabel = "share"
 #endif
+    }
+}
+
+private struct SettingsMenuItemLabel: View {
+    let title: String
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+            if isSelected {
+                Spacer(minLength: 8)
+                Image(systemName: "checkmark")
+            }
+        }
     }
 }
 
@@ -145,6 +184,7 @@ private struct CursorBlink: View {
 }
 
 private struct TealeHeaderLine: View {
+    @Environment(AppState.self) private var appState
     let activeTab: CompanionTab
 
     var body: some View {
@@ -156,20 +196,31 @@ private struct TealeHeaderLine: View {
 
     private var headerText: String {
         switch activeTab {
-        case .home: return "distributed ai inference supply and demand"
-        case .supply: return "earn teale credits by supplying ai inference to users around the world"
-        case .demand: return "use local models for free or buy and spend credits for more powerful models"
-        case .wallet: return "device balances, send assets, and ledger history"
-        case .account: return "account details, balances, and linked devices"
+        case .home:
+            return appState.companionText("header.home", fallback: "distributed ai inference supply and demand")
+        case .supply:
+            return appState.companionDisplayUnit == .credits
+                ? appState.companionText("header.supply.credits", fallback: "earn teale credits by supplying ai inference to users around the world")
+                : appState.companionText("header.supply.usd", fallback: "earn usd-equivalent balance by supplying ai inference to users around the world")
+        case .demand:
+            return appState.companionDisplayUnit == .credits
+                ? appState.companionText("header.demand.credits", fallback: "use local models for free or buy and spend credits for more powerful models")
+                : appState.companionText("header.demand.usd", fallback: "use local models for free or buy and spend usd for more powerful models")
+        case .wallet:
+            return appState.companionText("header.wallet", fallback: "device balances, send assets, and ledger history")
+        case .account:
+            return appState.companionText("header.account", fallback: "account details, balances, and linked devices")
         }
     }
 }
 
 private struct TealeFooter: View {
+    @Environment(AppState.self) private var appState
+
     var body: some View {
         HStack {
             Spacer()
-            Text("teale.com - distributed ai inference for the world")
+            Text(appState.companionText("footer.tagline", fallback: "teale.com - distributed ai inference for the world"))
                 .font(TealeDesign.monoTiny)
                 .foregroundStyle(TealeDesign.muted)
                 .tracking(0.6)
@@ -195,5 +246,20 @@ private struct HeaderToolButton: View {
                 )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct HeaderIconButton: View {
+    let systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(TealeDesign.teale)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .overlay(
+                Rectangle().stroke(TealeDesign.tealeDim, lineWidth: 1)
+            )
     }
 }

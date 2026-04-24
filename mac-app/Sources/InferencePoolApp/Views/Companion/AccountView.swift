@@ -23,32 +23,34 @@ struct CompanionAccountView: View {
     // MARK: account
 
     private var accountSection: some View {
-        TealeSection(prompt: "account") {
+        TealeSection(prompt: appState.companionText("account.account", fallback: "account")) {
             TealeStats {
                 TealeStatRow(
-                    label: "Status",
+                    label: appState.companionText("account.status", fallback: "Status"),
                     value: accountStatus,
                     note: statusNote
                 )
             }
-            if !isSignedIn {
-                HStack(spacing: 10) {
-                    TealeActionButton(title: "Sign in", primary: true) {
-                        openSignIn()
-                    }
-                }
-                .padding(.top, 6)
-            } else {
-                HStack {
-                    TealeActionButton(title: "Sign out") {
-                        Task {
-                            await authManager?.signOut()
+            if authIsConfigured {
+                if !isSignedIn {
+                    HStack(spacing: 10) {
+                        TealeActionButton(title: appState.companionText("account.signIn", fallback: "Sign in"), primary: true) {
+                            openSignIn()
                         }
                     }
+                    .padding(.top, 6)
+                } else {
+                    HStack {
+                        TealeActionButton(title: appState.companionText("account.signOut", fallback: "Sign out")) {
+                            Task {
+                                await authManager?.signOut()
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
                 }
-                .padding(.top, 6)
             }
-            Text("Sign in to link this machine to a person. Device wallet earnings continue working without human sign-in.")
+            Text(appState.companionText("account.linkNote", fallback: "Sign in to link this machine to a person. Device wallet earnings continue working without human sign-in."))
                 .font(TealeDesign.monoSmall)
                 .foregroundStyle(TealeDesign.muted)
                 .padding(.top, 8)
@@ -65,12 +67,14 @@ struct CompanionAccountView: View {
         if let user = authManager?.currentUser {
             return user.email ?? user.phone ?? user.id.uuidString
         }
-        return "Not signed in"
+        return appState.companionText("account.notSignedIn", fallback: "Not signed in")
     }
 
     private var accountStatus: String {
-        if isSignedIn { return "Signed in" }
-        return authIsConfigured ? "Not signed in" : "Auth unavailable"
+        if isSignedIn { return appState.companionText("account.signedIn", fallback: "Signed in") }
+        return authIsConfigured
+            ? appState.companionText("account.notSignedIn", fallback: "Not signed in")
+            : appState.companionText("account.authUnavailable", fallback: "Auth unavailable")
     }
 
     private var statusNote: String {
@@ -80,12 +84,12 @@ struct CompanionAccountView: View {
         if authIsConfigured {
             return userNote
         }
-        return "Add mac-app/Supabase.plist or SUPABASE_URL and SUPABASE_ANON_KEY, then rebuild the app bundle."
+        return appState.companionText("account.authUnavailableDetail", fallback: "Sign-in is unavailable in this build.")
     }
 
     private func openSignIn() {
         guard let authManager else {
-            authNotice = "This build has no Supabase config, so sign-in cannot open yet."
+            authNotice = appState.companionText("account.authUnavailableDetail", fallback: "Sign-in is unavailable in this build.")
             return
         }
 
@@ -97,13 +101,13 @@ struct CompanionAccountView: View {
     // MARK: details
 
     private var detailsSection: some View {
-        TealeSection(prompt: "details") {
+        TealeSection(prompt: appState.companionText("account.details", fallback: "details")) {
             TealeStats {
-                TealeStatRow(label: "User ID", value: authManager?.currentUser?.id.uuidString ?? "-")
-                TealeStatRow(label: "Email", value: authManager?.currentUser?.email ?? "-")
-                TealeStatRow(label: "Phone", value: authManager?.currentUser?.phone ?? "-")
-                TealeStatRow(label: "Device", value: appState.companionDeviceName)
-                TealeStatRow(label: "Hardware", value: appState.companionRAMLabel)
+                TealeStatRow(label: appState.companionText("account.userID", fallback: "User ID"), value: authManager?.currentUser?.id.uuidString ?? "-")
+                TealeStatRow(label: appState.companionText("account.email", fallback: "Email"), value: authManager?.currentUser?.email ?? "-")
+                TealeStatRow(label: appState.companionText("account.phone", fallback: "Phone"), value: authManager?.currentUser?.phone ?? "-")
+                TealeStatRow(label: appState.companionText("account.device", fallback: "Device"), value: appState.companionDeviceName)
+                TealeStatRow(label: appState.companionText("account.hardware", fallback: "Hardware"), value: appState.companionRAMLabel)
             }
         }
     }
@@ -111,9 +115,9 @@ struct CompanionAccountView: View {
     // MARK: devices
 
     private var devicesSection: some View {
-        TealeSection(prompt: "devices") {
+        TealeSection(prompt: appState.companionText("account.devices", fallback: "devices")) {
             if !isSignedIn {
-                Text("Sign in to view devices on this account.")
+                Text(appState.companionText("account.viewDevicesSignedOut", fallback: "Sign in to view devices on this account."))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
             } else if let devices = authManager?.devices, !devices.isEmpty {
@@ -123,7 +127,7 @@ struct CompanionAccountView: View {
                     }
                 }
             } else {
-                Text("No linked devices found yet.")
+                Text(appState.companionText("account.noDevices", fallback: "No linked devices found yet."))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
             }

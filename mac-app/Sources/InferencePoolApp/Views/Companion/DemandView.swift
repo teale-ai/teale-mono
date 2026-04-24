@@ -6,6 +6,8 @@ import AppKit
 
 struct CompanionDemandView: View {
     @Environment(AppState.self) private var appState
+    @Environment(CompanionGatewayState.self) private var gatewayState
+    @State private var bearerCopied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,15 +45,15 @@ struct CompanionDemandView: View {
     }
 
     private var localSection: some View {
-        TealeSection(prompt: "local inference") {
+        TealeSection(prompt: appState.companionText("demand.local", fallback: "local inference")) {
             TealeStats {
-                TealeStatRow(label: "Base URL", value: localBaseURL)
-                TealeStatRow(label: "Model", value: localModelID)
+                TealeStatRow(label: appState.companionText("demand.baseURL", fallback: "Base URL"), value: localBaseURL)
+                TealeStatRow(label: appState.companionText("common.model", fallback: "Model"), value: localModelID)
             }
             TealeCodeBlock(text: localCurlSnippet)
                 .padding(.top, 10)
             HStack {
-                TealeActionButton(title: "Copy local curl") {
+                TealeActionButton(title: appState.companionText("demand.copyLocalCurl", fallback: "Copy local curl")) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(localCurlSnippet, forType: .string)
                 }
@@ -63,10 +65,10 @@ struct CompanionDemandView: View {
     // MARK: teale network models
 
     private var networkModelsSection: some View {
-        TealeSection(prompt: "teale network models") {
-            let rows = appState.modelManager.catalog.availableModels(for: appState.hardware)
+        TealeSection(prompt: appState.companionText("demand.networkModels", fallback: "teale network models")) {
+            let rows = gatewayState.networkModels
             if rows.isEmpty {
-                Text("Loading live gateway models...")
+                Text(appState.companionText("demand.noLiveModels", fallback: "No live network model data yet."))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
             } else {
@@ -81,40 +83,36 @@ struct CompanionDemandView: View {
 
     // MARK: teale network (curl)
 
-    private var gatewayBase: String { appState.gatewayFallbackURL }
+    private var gatewayBase: String { companionGatewayAPIBaseURL(for: appState.gatewayFallbackURL).absoluteString }
 
     private var networkCurlSnippet: String {
-        let token = appState.gatewayAPIKey.isEmpty ? "$GATEWAY_TOKEN" : appState.gatewayAPIKey
+        let token = gatewayState.bearerToken.isEmpty ? "$GATEWAY_TOKEN" : gatewayState.bearerToken
         return """
-        curl \(gatewayBase)/v1/chat/completions \\
+        curl \(gatewayBase)/chat/completions \\
           -H "Authorization: Bearer \(token)" \\
           -H "Content-Type: application/json" \\
           -d '{
-            "model": "\(appState.companionSelectedGatewayModel)",
+            "model": "\(gatewayState.selectedNetworkModelID)",
             "messages": [{"role":"user","content":"Hi"}]
           }'
         """
     }
 
     private var networkSection: some View {
-        TealeSection(prompt: "teale network") {
+        TealeSection(prompt: appState.companionText("demand.network", fallback: "teale network")) {
             TealeStats {
-                TealeStatRow(label: "Base URL", value: gatewayBase)
-                TealeStatRow(
-                    label: "Bearer",
-                    value: appState.companionGatewayBearerLabel,
-                    note: "Requests deduct from Teale credits once a gateway bearer is configured."
-                )
-                TealeStatRow(label: "Selected", value: appState.companionSelectedGatewayModel)
+                TealeStatRow(label: appState.companionText("demand.baseURL", fallback: "Base URL"), value: gatewayBase)
+                bearerRow
+                TealeStatRow(label: appState.companionText("demand.selected", fallback: "Selected"), value: gatewayState.selectedNetworkModelID)
             }
             TealeCodeBlock(text: networkCurlSnippet)
                 .padding(.top, 10)
             HStack(spacing: 10) {
-                TealeActionButton(title: "Copy bearer token") {
+                TealeActionButton(title: appState.companionText("demand.copyBearer", fallback: "Copy bearer token")) {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(appState.gatewayAPIKey, forType: .string)
+                    NSPasteboard.general.setString(gatewayState.bearerToken, forType: .string)
                 }
-                TealeActionButton(title: "Copy network curl") {
+                TealeActionButton(title: appState.companionText("demand.copyNetworkCurl", fallback: "Copy network curl")) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(networkCurlSnippet, forType: .string)
                 }
@@ -122,26 +120,92 @@ struct CompanionDemandView: View {
             .padding(.top, 6)
         }
     }
+
+    private var bearerRow: some View {
+        HStack(alignment: .top, spacing: 20) {
+            Text(appState.companionText("demand.bearer", fallback: "Bearer").uppercased())
+                .font(TealeDesign.monoSmall)
+                .tracking(0.9)
+                .foregroundStyle(TealeDesign.muted)
+                .frame(width: 150, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Button(action: copyBearer) {
+                    Text(maskedBearer)
+                        .font(TealeDesign.mono)
+                        .foregroundStyle(gatewayState.bearerToken.isEmpty ? TealeDesign.muted : TealeDesign.teale)
+                }
+                .buttonStyle(.plain)
+                .disabled(gatewayState.bearerToken.isEmpty)
+
+                Text(bearerNote)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var maskedBearer: String {
+        guard !gatewayState.bearerToken.isEmpty else { return "..." }
+        return "•••" + String(gatewayState.bearerToken.suffix(4))
+    }
+
+    private var bearerNote: String {
+        if gatewayState.bearerToken.isEmpty {
+            return appState.companionText(
+                "demand.waitingBearer",
+                fallback: "Waiting for the device bearer token from the gateway wallet sync."
+            )
+        }
+        if bearerCopied {
+            return appState.companionText("demand.bearerCopied", fallback: "Bearer token copied.")
+        }
+        return appState.companionText(
+            "demand.requestsSpend",
+            fallback: "Your requests spend {{unit}} using this device's bearer automatically.",
+            replacements: ["unit": appState.companionDisplaySpendUnitLabel]
+        )
+    }
+
+    private func copyBearer() {
+        guard !gatewayState.bearerToken.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(gatewayState.bearerToken, forType: .string)
+        bearerCopied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            bearerCopied = false
+        }
+    }
 }
 
 private struct NetworkModelRow: View {
-    let model: ModelDescriptor
+    @Environment(AppState.self) private var appState
+    let model: CompanionNetworkModelSummary
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.name)
+                Text(appState.companionShortModelLabel(model.id))
                     .font(TealeDesign.mono)
                     .foregroundStyle(TealeDesign.text)
-                Text(model.openrouterId ?? model.huggingFaceRepo)
+                Text(model.id)
                     .font(TealeDesign.monoTiny)
                     .foregroundStyle(TealeDesign.muted)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
-                Text("\(model.parameterCount) · \(model.family)")
+                Text("\(model.deviceCount) \(appState.companionText("demand.liveDevices", fallback: "live device(s)"))")
                     .font(TealeDesign.monoTiny)
                     .foregroundStyle(TealeDesign.muted)
+                if let pricing = appState.companionDisplayPricePerMillionLabel(
+                    promptUSDPerToken: model.promptUSDPerToken,
+                    completionUSDPerToken: model.completionUSDPerToken
+                ) {
+                    Text(pricing)
+                        .font(TealeDesign.monoTiny)
+                        .foregroundStyle(TealeDesign.teale)
+                }
             }
         }
         .padding(10)

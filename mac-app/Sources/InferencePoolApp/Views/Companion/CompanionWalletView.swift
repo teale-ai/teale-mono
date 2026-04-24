@@ -22,36 +22,36 @@ struct CompanionWalletView: View {
     }
 
     private var balancesSection: some View {
-        TealeSection(prompt: "balances") {
+        TealeSection(prompt: appState.companionText("wallet.balances", fallback: "balances")) {
             TealeStats {
                 TealeStatRow(
-                    label: "Teale credits",
-                    value: creditCountString(appState.wallet.balance),
-                    note: "Credits go up while supply is on."
+                    label: appState.companionDisplayUnitTitle,
+                    value: appState.companionDisplayAmountString(amount: appState.wallet.balance),
+                    note: appState.companionText("wallet.balanceNote", fallback: "Balance goes up while supply is on.")
                 )
                 TealeStatRow(
-                    label: "USDC",
+                    label: appState.companionText("wallet.usdc", fallback: "USDC"),
                     value: appState.wallet.balance.description
                 )
                 TealeStatRow(
-                    label: "Session",
+                    label: appState.companionText("wallet.session", fallback: "Session"),
                     value: "\(appState.totalTokensGenerated) tokens served",
-                    note: "Availability credits begin once a compatible model is loaded and serving."
+                    note: appState.companionText("wallet.sessionNote", fallback: "Availability earnings begin once a compatible model is loaded and serving.")
                 )
                 TealeStatRow(
-                    label: "Lifetime earned",
-                    value: appState.wallet.totalEarned.description
+                    label: appState.companionText("wallet.lifetimeEarned", fallback: "Lifetime earned"),
+                    value: appState.companionDisplayAmountString(amount: appState.wallet.totalEarned)
                 )
                 TealeStatRow(
-                    label: "Lifetime spent",
-                    value: appState.wallet.totalSpent.description
+                    label: appState.companionText("wallet.lifetimeSpent", fallback: "Lifetime spent"),
+                    value: appState.companionDisplayAmountString(amount: appState.wallet.totalSpent)
                 )
                 TealeStatRow(
-                    label: "Requests",
+                    label: appState.companionText("wallet.requests", fallback: "Requests"),
                     value: "\(appState.totalRequestsServed)"
                 )
                 TealeStatRow(
-                    label: "State",
+                    label: appState.companionText("common.state", fallback: "State"),
                     value: appState.companionState.displayText,
                     valueColor: appState.companionState.chipColor
                 )
@@ -60,18 +60,18 @@ struct CompanionWalletView: View {
     }
 
     private var sendSection: some View {
-        TealeSection(prompt: "send") {
+        TealeSection(prompt: appState.companionText("wallet.send", fallback: "send")) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
-                    CompanionFormField(title: "Recipient") {
-                        TextField("device id, phone, email, or github username", text: $recipient)
+                    CompanionFormField(title: appState.companionText("wallet.recipient", fallback: "Recipient")) {
+                        TextField(appState.companionText("wallet.recipientPlaceholder", fallback: "device id, phone, email, or github username"), text: $recipient)
                             .textFieldStyle(.plain)
                             .font(TealeDesign.mono)
                             .foregroundStyle(TealeDesign.text)
                     }
 
-                    CompanionFormField(title: "Amount") {
-                        TextField("0", text: $amount)
+                    CompanionFormField(title: appState.companionText("wallet.amount", fallback: "Amount")) {
+                        TextField(appState.companionDisplayAmountPlaceholder, text: $amount)
                             .textFieldStyle(.plain)
                             .font(TealeDesign.mono)
                             .foregroundStyle(TealeDesign.text)
@@ -79,8 +79,8 @@ struct CompanionWalletView: View {
                     .frame(width: 180)
                 }
 
-                CompanionFormField(title: "Memo") {
-                    TextField("optional note", text: $memo)
+                CompanionFormField(title: appState.companionText("wallet.memo", fallback: "Memo")) {
+                    TextField(appState.companionText("wallet.memoPlaceholder", fallback: "optional note"), text: $memo)
                         .textFieldStyle(.plain)
                         .font(TealeDesign.mono)
                         .foregroundStyle(TealeDesign.text)
@@ -88,7 +88,9 @@ struct CompanionWalletView: View {
 
                 HStack(spacing: 10) {
                     TealeActionButton(
-                        title: isSending ? "sending..." : "send",
+                        title: isSending
+                            ? appState.companionText("wallet.sending", fallback: "sending...")
+                            : appState.companionText("wallet.sendAction", fallback: "send"),
                         primary: true,
                         disabled: !canSend
                     ) {
@@ -96,7 +98,7 @@ struct CompanionWalletView: View {
                             await sendCredits()
                         }
                     }
-                    Text("Sends from this Mac's device wallet through the Teale gateway.")
+                    Text(appState.companionText("wallet.sendNote", fallback: "Sends from this Mac's device wallet through the Teale gateway."))
                         .font(TealeDesign.monoSmall)
                         .foregroundStyle(TealeDesign.muted)
                 }
@@ -111,12 +113,12 @@ struct CompanionWalletView: View {
     }
 
     private var ledgerSection: some View {
-        TealeSection(prompt: "ledger") {
+        TealeSection(prompt: appState.companionText("wallet.ledger", fallback: "ledger")) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Spacer()
                     TealeActionButton(
-                        title: "export csv",
+                        title: appState.companionText("wallet.exportCSV", fallback: "export csv"),
                         disabled: appState.wallet.recentTransactions.isEmpty
                     ) {
                         exportLedgerCSV()
@@ -130,7 +132,7 @@ struct CompanionWalletView: View {
                 }
 
                 if appState.wallet.recentTransactions.isEmpty {
-                    Text("No transactions yet. Supply a model to start earning.")
+                    Text(appState.companionText("wallet.noTransactions", fallback: "No transactions yet. Supply a model to start earning."))
                         .font(TealeDesign.monoSmall)
                         .foregroundStyle(TealeDesign.muted)
                 } else {
@@ -151,42 +153,30 @@ struct CompanionWalletView: View {
     }
 
     private var parsedAmountCredits: Int? {
-        let trimmed = amount.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.allSatisfy(\.isNumber), let value = Int(trimmed), value > 0 else {
-            return nil
-        }
-        return value
+        appState.companionParseDisplayAmountToCredits(amount)
     }
 
     private var currentCreditBalance: Int {
         max(0, Int((appState.wallet.balance.value * 1_000_000).rounded()))
     }
 
-    private func creditCountString(_ amount: USDCAmount) -> String {
-        // Per reference_credit_ledger memory: 1 credit = $0.000001 — display
-        // credits as a large integer so small earnings are visible at a glance.
-        let credits = amount.value * 1_000_000
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 0
-        return formatter.string(from: NSNumber(value: credits)) ?? String(Int(credits))
-    }
-
     @MainActor
     private func sendCredits() async {
         guard let amountCredits = parsedAmountCredits else {
-            sendStatus = "Enter a whole-number credit amount."
+            sendStatus = appState.companionDisplayUnit == .credits
+                ? appState.companionText("wallet.enterCredits", fallback: "Enter a whole-number credit amount.")
+                : appState.companionText("wallet.enterUSD", fallback: "Enter a USD amount greater than 0.")
             sendStatusIsError = true
             return
         }
         let trimmedRecipient = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRecipient.isEmpty else {
-            sendStatus = "Enter a recipient first."
+            sendStatus = appState.companionText("wallet.enterRecipient", fallback: "Enter a recipient first.")
             sendStatusIsError = true
             return
         }
         guard amountCredits <= currentCreditBalance else {
-            sendStatus = "That exceeds this device wallet balance."
+            sendStatus = appState.companionText("wallet.exceedsBalance", fallback: "That exceeds this device wallet balance.")
             sendStatusIsError = true
             return
         }
@@ -203,7 +193,7 @@ struct CompanionWalletView: View {
                 amount: amountCredits,
                 memo: memoText.isEmpty ? nil : memoText
             )
-            let client = GatewayAuthClient(baseURL: companionGatewayBaseURL())
+            let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
             let token = try await client.bearer()
             let _: GatewayTransferReceipt = try await client.postJSON(
                 path: "/v1/wallet/send",
@@ -212,8 +202,9 @@ struct CompanionWalletView: View {
             )
 
             let localDebit = USDCAmount(Double(amountCredits) / 1_000_000.0)
-            let description = request.memo.map { "Sent \(amountCredits) credits: \($0)" }
-                ?? "Sent \(amountCredits) credits"
+            let sentLabel = appState.companionDisplayAmountString(credits: amountCredits)
+            let description = request.memo.map { "Sent \(sentLabel): \($0)" }
+                ?? "Sent \(sentLabel)"
             await appState.wallet.recordAdjustmentDebit(
                 amount: localDebit,
                 description: description,
@@ -223,7 +214,7 @@ struct CompanionWalletView: View {
             recipient = ""
             amount = ""
             memo = ""
-            sendStatus = "Sent \(amountCredits) credits."
+            sendStatus = "\(appState.companionText("wallet.sentPrefix", fallback: "Sent")) \(appState.companionDisplayAmountString(credits: amountCredits))."
             sendStatusIsError = false
         } catch {
             sendStatus = error.localizedDescription
@@ -265,9 +256,9 @@ struct CompanionWalletView: View {
                 attributes: nil
             )
             try csv.write(to: destination, atomically: true, encoding: .utf8)
-            exportStatus = "Exported CSV to \(destination.path)"
+            exportStatus = "\(appState.companionText("wallet.exportedCSV", fallback: "Exported CSV to")) \(destination.path)"
         } catch {
-            exportStatus = "Could not export CSV: \(error.localizedDescription)"
+            exportStatus = "\(appState.companionText("wallet.exportFailed", fallback: "Could not export CSV:")) \(error.localizedDescription)"
         }
     }
 
@@ -321,31 +312,8 @@ private struct CompanionFormField<Content: View>: View {
     }
 }
 
-private func companionGatewayBaseURL() -> URL {
-    let fallback = URL(string: "https://gateway.teale.com")!
-    let defaults = UserDefaults.standard
-    let relayOverride = defaults.string(forKey: "teale.wanRelayURL")
-        ?? defaults.string(forKey: "teale.wan_relay_url")
-    guard
-        let relayOverride,
-        var components = URLComponents(string: relayOverride.replacingOccurrences(of: "wss://", with: "https://"))
-    else {
-        return fallback
-    }
-
-    if components.scheme == "ws" {
-        components.scheme = "http"
-    }
-    if let host = components.host, host.hasPrefix("relay.") {
-        components.host = host.replacingOccurrences(of: "relay.", with: "gateway.", options: .anchored)
-    }
-    components.path = ""
-    components.query = nil
-    components.fragment = nil
-    return components.url ?? fallback
-}
-
 private struct LedgerRow: View {
+    @Environment(AppState.self) private var appState
     let transaction: USDCTransaction
 
     var body: some View {
@@ -370,7 +338,7 @@ private struct LedgerRow: View {
     }
 
     private var signedAmountText: String {
-        let amount = transaction.amount.description
+        let amount = appState.companionDisplayAmountString(amount: transaction.amount)
         return isCredit ? "+\(amount)" : "-\(amount)"
     }
 

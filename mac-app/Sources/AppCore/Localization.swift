@@ -4,20 +4,18 @@ import Foundation
 
 public enum AppLanguage: String, CaseIterable, Codable, Identifiable {
     case english = "en"
-    case chineseSimplified = "zh-Hans"
-    case japanese = "ja"
     case spanish = "es"
-    case french = "fr"
+    case portugueseBrazil = "pt-BR"
+    case filipinoPhilippines = "fil-PH"
 
     public var id: String { rawValue }
 
     public var displayName: String {
         switch self {
         case .english: return "English"
-        case .chineseSimplified: return "中文（简体）"
-        case .japanese: return "日本語"
         case .spanish: return "Español"
-        case .french: return "Français"
+        case .portugueseBrazil: return "Português (Brasil)"
+        case .filipinoPhilippines: return "Filipino (Philippines)"
         }
     }
 }
@@ -31,11 +29,13 @@ enum L {
 
     private static let strings: [AppLanguage: [String: String]] = [
         .english: en,
-        .chineseSimplified: zhHans,
-        .japanese: ja,
         .spanish: es,
-        .french: fr,
+        .portugueseBrazil: ptBR,
+        .filipinoPhilippines: filPH,
     ]
+
+    private static let ptBR: [String: String] = en
+    private static let filPH: [String: String] = en
 
     // MARK: - English
 
