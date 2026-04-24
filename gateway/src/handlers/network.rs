@@ -224,11 +224,9 @@ pub async fn network_stats(State(state): State<AppState>) -> Json<Value> {
         }
     }
 
-    let avg_ttft_ms = if ttft_samples > 0 {
-        Some((ttft_weighted_sum / ttft_samples) as u32)
-    } else {
-        None
-    };
+    let avg_ttft_ms = ttft_weighted_sum
+        .checked_div(ttft_samples)
+        .map(|avg| avg as u32);
     let avg_tps = if tps_samples > 0 {
         Some((tps_weighted_sum / tps_samples as f64) as f32)
     } else {
