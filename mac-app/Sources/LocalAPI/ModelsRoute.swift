@@ -24,13 +24,17 @@ enum ModelsRoute {
         ))
 
         if let loaded = await engine.loadedModel {
-            models.append(ModelsListResponse.ModelObject(
-                id: loaded.huggingFaceRepo,
-                object: "model",
-                created: now,
-                ownedBy: "local"
-            ))
-            seen.insert(loaded.huggingFaceRepo)
+            for identifier in [loaded.huggingFaceRepo, loaded.openrouterId]
+                .compactMap({ $0 })
+                .filter({ !seen.contains($0) }) {
+                models.append(ModelsListResponse.ModelObject(
+                    id: identifier,
+                    object: "model",
+                    created: now,
+                    ownedBy: "local"
+                ))
+                seen.insert(identifier)
+            }
         }
 
         // Include models from connected WAN and cluster peers

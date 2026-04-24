@@ -139,10 +139,10 @@ public actor WANDiscoveryService {
         try await relayClient.register(capabilities: capabilities)
 
         // Re-register automatically after relay reconnects
-        let caps = capabilities
         let relay = relayClient
         await relayClient.setOnReconnect { [weak self] in
             FileHandle.standardError.write(Data("[WAN] Re-registering with relay after reconnect...\n".utf8))
+            let caps = await self?.localCapabilities ?? capabilities
             try? await relay.register(capabilities: caps)
             await self?.setForceRediscovery(true)
             try? await relay.discover()

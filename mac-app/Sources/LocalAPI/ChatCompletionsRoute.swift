@@ -149,26 +149,7 @@ enum ChatCompletionsRoute {
     /// openrouterId fields — same set of aliases the heartbeat advertises.
     private static func canServeLocally(modelID: String, engine: InferenceEngineManager) async -> Bool {
         guard let loaded = await engine.loadedModel else { return false }
-        return modelMatches(descriptor: loaded, requested: modelID)
-    }
-
-    private static func modelMatches(descriptor: ModelDescriptor, requested: String) -> Bool {
-        let query = normalizeModelID(requested)
-        guard !query.isEmpty else { return false }
-        let candidates = [descriptor.id, descriptor.huggingFaceRepo, descriptor.openrouterId ?? ""]
-            .filter { !$0.isEmpty }
-            .map { normalizeModelID($0) }
-        let queryTail = query.split(separator: "/").last.map(String.init) ?? query
-        for candidate in candidates {
-            if candidate == query { return true }
-            let candidateTail = candidate.split(separator: "/").last.map(String.init) ?? candidate
-            if candidateTail == queryTail { return true }
-        }
-        return false
-    }
-
-    private static func normalizeModelID(_ s: String) -> String {
-        s.lowercased().replacingOccurrences(of: "_", with: "-")
+        return loaded.matchesIdentifier(modelID)
     }
 
     /// Forward the original request body to the configured gateway. For

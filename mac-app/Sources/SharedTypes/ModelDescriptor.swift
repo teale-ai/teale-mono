@@ -72,6 +72,56 @@ public struct ModelDescriptor: Codable, Sendable, Identifiable, Hashable {
     public var advertisedId: String? {
         openrouterId
     }
+
+    /// All stable identifiers that may be used to reference this model.
+    public var identifiers: [String] {
+        [id, huggingFaceRepo, openrouterId, name]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Returns true when `requested` matches any known identifier for this model.
+    public func matchesIdentifier(_ requested: String) -> Bool {
+        identifiers.contains { ModelIdentifierMatcher.matches($0, requested) }
+    }
+}
+
+public enum ModelIdentifierMatcher {
+    public static func matches(_ lhs: String, _ rhs: String) -> Bool {
+        !canonicalForms(for: lhs).isDisjoint(with: canonicalForms(for: rhs))
+    }
+
+    public static func canonicalForms(for value: String) -> Set<String> {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let lowercased = trimmed.lowercased()
+        let lastComponent = lowercased.split(separator: "/").last.map(String.init) ?? lowercased
+        let slugified = slugify(lowercased)
+        let slugifiedTail = slugify(lastComponent)
+
+        return Set([
+            lowercased,
+            lastComponent,
+            slugified,
+            slugifiedTail,
+        ].filter { !$0.isEmpty })
+    }
+
+    private static func slugify(_ value: String) -> String {
+        let mapped = value.map { character -> Character in
+            switch character {
+            case "a"..."z", "0"..."9":
+                return character
+            default:
+                return "-"
+            }
+        }
+
+        return String(mapped)
+            .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
 }
 
 /// Resolve a canonical OpenRouter slug from a GGUF filename. Lives in

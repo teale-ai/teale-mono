@@ -84,7 +84,7 @@ public actor WANProvider: InferenceProvider {
         // If the requested model matches the local model, prefer local
         if let requestedModel = requestedModel,
            let localModel = localModel,
-           localModel.huggingFaceRepo == requestedModel {
+           localModel.matchesIdentifier(requestedModel) {
             let stream = localProvider.generate(request: request)
             for try await chunk in stream {
                 continuation.yield(chunk)
