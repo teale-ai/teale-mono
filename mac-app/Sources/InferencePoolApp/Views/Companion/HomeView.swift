@@ -42,21 +42,6 @@ struct CompanionHomeView: View {
                     )
                 }
 
-                HStack(spacing: 10) {
-                    TealeActionButton(title: "Open supply", primary: true) {
-                        onNavigate(.supply)
-                    }
-                    TealeActionButton(title: "Open demand") {
-                        onNavigate(.demand)
-                    }
-                    TealeActionButton(title: "Open wallet") {
-                        onNavigate(.wallet)
-                    }
-                    TealeActionButton(title: "Open account") {
-                        onNavigate(.account)
-                    }
-                }
-                .padding(.top, 4)
             }
         }
     }
