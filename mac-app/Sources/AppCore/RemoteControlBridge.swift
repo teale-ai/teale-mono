@@ -4,6 +4,7 @@ import LocalAPI
 import LlamaCppKit
 import TealeNetKit
 import AgentKit
+import AuthKit
 
 @MainActor
 final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
@@ -38,6 +39,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             loadedModelRepo: loadedModel?.huggingFaceRepo,
             engineStatus: String(describing: appState.engineStatus),
             isServerRunning: appState.isServerRunning,
+            auth: authSnapshot(),
+            demand: demandSnapshot(loadedModel: loadedModel),
             settings: RemoteSettingsSnapshot(
                 clusterEnabled: appState.clusterEnabled,
                 wanEnabled: appState.wanEnabled,
@@ -60,6 +63,47 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             ),
             models: models
         )
+    }
+
+    private func authSnapshot() -> RemoteAuthConfigSnapshot {
+        let config = SupabaseConfig.default
+        return RemoteAuthConfigSnapshot(
+            configured: config != nil,
+            supabaseURL: config?.url.absoluteString,
+            supabaseAnonKey: config?.anonKey,
+            redirectURL: config?.redirectURL?.absoluteString
+        )
+    }
+
+    private func demandSnapshot(loadedModel: ModelDescriptor?) -> RemoteDemandSnapshot {
+        RemoteDemandSnapshot(
+            localBaseURL: "http://127.0.0.1:\(appState.serverPort)/v1",
+            localModelID: loadedModel?.openrouterId ?? loadedModel?.huggingFaceRepo,
+            networkBaseURL: gatewayBaseURL().absoluteString,
+            networkBearerToken: appState.gatewayAPIKey.isEmpty ? nil : appState.gatewayAPIKey
+        )
+    }
+
+    private func gatewayBaseURL() -> URL {
+        let fallback = URL(string: "https://gateway.teale.com/v1")!
+        guard var components = URLComponents(string: appState.gatewayFallbackURL) else {
+            return fallback
+        }
+
+        if components.scheme == "wss" {
+            components.scheme = "https"
+        } else if components.scheme == "ws" {
+            components.scheme = "http"
+        }
+
+        if let host = components.host, host.hasPrefix("relay.") {
+            components.host = host.replacingOccurrences(of: "relay.", with: "gateway.", options: .anchored)
+        }
+
+        components.path = "/v1"
+        components.query = nil
+        components.fragment = nil
+        return components.url ?? fallback
     }
 
     func remoteLoadModel(_ request: RemoteModelControlRequest) async throws -> RemoteAppSnapshot {

@@ -89,17 +89,41 @@ footer,
   font-weight: 700;
 }
 
-.language-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.settings-menu {
+  position: relative;
+}
+
+.settings-menu summary {
+  list-style: none;
+}
+
+.settings-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 190px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: linear-gradient(180deg, rgba(9, 28, 31, 0.98), rgba(5, 16, 18, 0.98));
+  border: 1px solid var(--teale-dim);
+  z-index: 10;
+}
+
+.settings-field {
+  display: grid;
+  gap: 6px;
   color: var(--muted);
   font-size: 12px;
   letter-spacing: 0.04em;
   text-transform: lowercase;
 }
 
-.language-picker select {
+.settings-field select {
   appearance: none;
   -webkit-appearance: none;
   background-color: var(--card-strong);
@@ -119,12 +143,12 @@ footer,
   padding: 4px 28px 4px 8px;
 }
 
-.language-picker select option {
+.settings-field select option {
   background: var(--card-strong);
   color: var(--text);
 }
 
-.language-picker select:focus {
+.settings-field select:focus {
   outline: 1px solid var(--teale);
   outline-offset: 1px;
 }

@@ -19,7 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.23.2156"
+#define AppVer "2026.04.24.1746"
 
 [Setup]
 AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
@@ -63,6 +63,7 @@ Source: "*.dll"; DestDir: "{app}\bin"; Flags: ignoreversion skipifsourcedoesntex
 Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "check-update.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "supabase-config.json"; DestDir: "{app}\config"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 Name: "{app}\models"

@@ -2,7 +2,9 @@ const API_BASE = "http://127.0.0.1:11437";
 
 const els = {
   headerLine: document.getElementById("header-line"),
+  settingsMenu: document.getElementById("settings-menu"),
   languageSelect: document.getElementById("language-select"),
+  displayUnitSelect: document.getElementById("display-unit-select"),
   followXButton: document.getElementById("follow-x-button"),
   shareStoryButton: document.getElementById("share-story-button"),
   viewButtons: Array.from(document.querySelectorAll("[data-view-button]")),
@@ -17,7 +19,9 @@ const els = {
   homeNetworkModels: document.getElementById("home-network-models"),
   homeNetworkTtft: document.getElementById("home-network-ttft"),
   homeNetworkTps: document.getElementById("home-network-tps"),
+  homeNetworkEarnedLabel: document.getElementById("home-network-earned-label"),
   homeNetworkEarned: document.getElementById("home-network-earned"),
+  homeNetworkSpentLabel: document.getElementById("home-network-spent-label"),
   homeNetworkSpent: document.getElementById("home-network-spent"),
   homeNetworkUsdc: document.getElementById("home-network-usdc"),
 
@@ -70,6 +74,7 @@ const els = {
   walletDeviceId: document.getElementById("wallet-device-id"),
   walletStatus: document.getElementById("wallet-status"),
   walletModel: document.getElementById("wallet-model"),
+  walletBalanceLabel: document.getElementById("wallet-balance-label"),
   walletBalance: document.getElementById("wallet-balance"),
   walletUsdc: document.getElementById("wallet-usdc"),
   walletSince: document.getElementById("wallet-since"),
@@ -99,6 +104,7 @@ const els = {
   accountEmail: document.getElementById("account-email"),
   accountGithub: document.getElementById("account-github"),
   accountPhone: document.getElementById("account-phone"),
+  accountWalletBalanceLabel: document.getElementById("account-wallet-balance-label"),
   accountWalletBalance: document.getElementById("account-wallet-balance"),
   accountWalletUsdc: document.getElementById("account-wallet-usdc"),
   accountWalletNote: document.getElementById("account-wallet-note"),
@@ -114,10 +120,12 @@ const els = {
 };
 
 const LANGUAGE_STORAGE_KEY = "teale.language";
+const DISPLAY_UNIT_STORAGE_KEY = "teale.displayUnit";
 const CHAT_STORAGE_KEY = "teale.chat.v1";
 const OAUTH_CALLBACK_STORAGE_KEY = "__teale_pending_oauth_callback";
 const OAUTH_PROVIDER_STORAGE_KEY = "__teale_pending_oauth_provider";
 const SHARE_STORY_TEXT = "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.";
+const SUPPORTED_LANGUAGES = new Set(["en", "es", "pt-BR", "fil-PH"]);
 const translations = {
   en: {
     "nav.home": "teale",
@@ -726,9 +734,6 @@ for (const locale of Object.keys(translations)) {
 
 function normalizeLanguage(candidate) {
   const value = String(candidate || "").toLowerCase();
-  if (value.startsWith("zh")) {
-    return "zh-Hans";
-  }
   if (value.startsWith("pt")) {
     return "pt-BR";
   }
@@ -744,14 +749,27 @@ function normalizeLanguage(candidate) {
 function loadInitialLanguage() {
   try {
     const saved = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
-    if (saved && translations[saved]) {
+    if (saved && SUPPORTED_LANGUAGES.has(saved) && translations[saved]) {
       return saved;
     }
   } catch (_error) {}
   return normalizeLanguage(window.navigator.language);
 }
 
+function normalizeDisplayUnit(value) {
+  return value === "usd" ? "usd" : "credits";
+}
+
+function loadInitialDisplayUnit() {
+  try {
+    return normalizeDisplayUnit(window.localStorage.getItem(DISPLAY_UNIT_STORAGE_KEY));
+  } catch (_error) {
+    return "credits";
+  }
+}
+
 let currentLanguage = loadInitialLanguage();
+let displayUnit = loadInitialDisplayUnit();
 
 function t(key, params = {}) {
   const table = translations[currentLanguage] || translations.en;
@@ -766,6 +784,14 @@ function t(key, params = {}) {
 }
 
 function viewDescription(view) {
+  if (displayUnit === "usd") {
+    if (view === "supply") {
+      return "earn usd-equivalent balance by supplying ai inference to users around the world";
+    }
+    if (view === "demand") {
+      return "use local models for free or buy and spend usd for more powerful models";
+    }
+  }
   return t(`view.${view}.description`);
 }
 
@@ -810,6 +836,30 @@ function apiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
+function updateDisplayUnitLabels() {
+  if (els.displayUnitSelect) {
+    els.displayUnitSelect.value = displayUnit;
+  }
+  if (els.homeNetworkEarnedLabel) {
+    els.homeNetworkEarnedLabel.textContent = displayUnit === "usd" ? "Total USD earned" : "Total credits earned";
+  }
+  if (els.homeNetworkSpentLabel) {
+    els.homeNetworkSpentLabel.textContent = displayUnit === "usd" ? "Total USD spent" : "Total credits spent";
+  }
+  if (els.walletBalanceLabel) {
+    els.walletBalanceLabel.textContent = displayUnit === "usd" ? "USD" : "Teale credits";
+  }
+  if (els.accountWalletBalanceLabel) {
+    els.accountWalletBalanceLabel.textContent = displayUnit === "usd" ? "USD" : "Teale credits";
+  }
+  if (els.sendAmount) {
+    els.sendAmount.placeholder = displayUnit === "usd" ? "0.00" : "0";
+  }
+  if (els.accountSendAmount) {
+    els.accountSendAmount.placeholder = displayUnit === "usd" ? "0.00" : "0";
+  }
+}
+
 function applyTranslations() {
   for (const element of document.querySelectorAll("[data-i18n]")) {
     element.textContent = t(element.dataset.i18n);
@@ -820,14 +870,18 @@ function applyTranslations() {
   if (els.languageSelect) {
     els.languageSelect.value = currentLanguage;
   }
+  updateDisplayUnitLabels();
 }
 
 function setLanguage(language) {
-  currentLanguage = translations[language] ? language : "en";
+  currentLanguage = SUPPORTED_LANGUAGES.has(language) && translations[language] ? language : "en";
   try {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, currentLanguage);
   } catch (_error) {}
   applyTranslations();
+  if (els.settingsMenu) {
+    els.settingsMenu.open = false;
+  }
   setActiveView(activeView);
   if (lastSnapshot) {
     render(lastSnapshot);
@@ -836,6 +890,28 @@ function setLanguage(language) {
     renderAuthState();
     renderAccountWallet();
     renderAccountDevices();
+  }
+}
+
+function setDisplayUnit(nextValue) {
+  displayUnit = normalizeDisplayUnit(nextValue);
+  try {
+    window.localStorage.setItem(DISPLAY_UNIT_STORAGE_KEY, displayUnit);
+  } catch (_error) {}
+  updateDisplayUnitLabels();
+  els.headerLine.textContent = viewDescription(activeView) || viewDescription("home");
+  if (els.settingsMenu) {
+    els.settingsMenu.open = false;
+  }
+  if (lastSnapshot) {
+    render(lastSnapshot);
+  } else {
+    renderHomeNetworkStats();
+    renderAuthState();
+    renderAccountWallet();
+    renderAccountDevices();
+    updateSendControls();
+    renderChat(lastSnapshot);
   }
 }
 
@@ -924,6 +1000,56 @@ function clearPersistedSupabaseSession() {
     try {
       window.localStorage.removeItem(key);
     } catch (_error) {}
+  }
+}
+
+function loadPersistedSupabaseSession() {
+  const projectRef = currentSupabaseProjectRef();
+  if (!projectRef) {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(`sb-${projectRef}-auth-token`);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed?.access_token || !parsed?.refresh_token) {
+      return null;
+    }
+    return parsed;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function restorePersistedSupabaseSession() {
+  if (!supabaseClient) {
+    return null;
+  }
+  const storedSession = loadPersistedSupabaseSession();
+  if (!storedSession?.access_token || !storedSession?.refresh_token) {
+    return null;
+  }
+
+  try {
+    authTrace("restoring persisted supabase session from local storage");
+    const { data, error } = await withTimeout(
+      supabaseClient.auth.setSession({
+        access_token: storedSession.access_token,
+        refresh_token: storedSession.refresh_token,
+      }),
+      15000,
+      "restore stored session"
+    );
+    if (error) {
+      throw error;
+    }
+    authTrace(`restore stored session success user=${data.session?.user?.id || "none"}`);
+    return data.session || null;
+  } catch (error) {
+    authTrace(`restore stored session failed ${error.message}`);
+    return null;
   }
 }
 
@@ -1145,6 +1271,43 @@ function formatUsdc(cents) {
   return (cents / 100).toFixed(2);
 }
 
+function creditsToUsd(credits) {
+  const numeric = Number(credits);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric / 1_000_000;
+}
+
+function formatUsdValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "-";
+  }
+  if (numeric >= 1) {
+    return `$${numeric.toFixed(2)}`;
+  }
+  return `$${numeric.toFixed(4)}`;
+}
+
+function formatDisplayCredits(value, includeUnit = false) {
+  if (displayUnit === "usd") {
+    const usd = creditsToUsd(value);
+    const formatted = formatUsdValue(usd);
+    return includeUnit ? `${formatted} USD` : formatted;
+  }
+  const formatted = formatCredits(value);
+  return includeUnit ? `${formatted} credits` : formatted;
+}
+
+function formatDisplayCreditsCompact(value) {
+  if (displayUnit === "usd") {
+    const usd = creditsToUsd(value);
+    return formatPricePerMillionUsd((usd ?? 0) / 1_000_000);
+  }
+  return formatCompactCredits(value);
+}
+
 function formatTimestamp(secs) {
   if (typeof secs !== "number") {
     return "-";
@@ -1222,7 +1385,7 @@ function maskToken(token) {
   return `${token.slice(0, 10)}...${token.slice(-6)}`;
 }
 
-function formatPricePerMillion(value) {
+function formatPricePerMillionUsd(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return "-";
@@ -1235,6 +1398,17 @@ function formatPricePerMillion(value) {
     return `$${perMillion.toFixed(3)}`;
   }
   return `$${perMillion.toFixed(4)}`;
+}
+
+function formatPricePerMillionDisplay(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "-";
+  }
+  if (displayUnit === "usd") {
+    return formatPricePerMillionUsd(value);
+  }
+  return formatCredits(Math.round(creditsPerMillionFromUsdToken(value) || 0));
 }
 
 function formatContext(value) {
@@ -1365,28 +1539,34 @@ function availabilityRateLabel(wallet) {
   const tickCredits = wallet?.availability_credits_per_tick ?? 0;
   const tickSeconds = wallet?.availability_tick_seconds ?? 10;
   if (tickCredits > 0) {
+    const amount = displayUnit === "usd"
+      ? formatUsdValue(creditsToUsd(tickCredits))
+      : formatCredits(tickCredits);
     if (tickSeconds === 1) {
-      return `+${tickCredits} / sec`;
+      return `+${amount} / sec`;
     }
-    return `+${tickCredits} / ${tickSeconds} sec`;
+    return `+${amount} / ${tickSeconds} sec`;
   }
   const perMinute = wallet?.availability_rate_credits_per_minute ?? 0;
   if (perMinute > 0) {
-    return `+${perMinute} / min`;
+    const amount = displayUnit === "usd"
+      ? formatUsdValue(creditsToUsd(perMinute))
+      : formatCredits(perMinute);
+    return `+${amount} / min`;
   }
   return t("wallet.rate.waiting", {
-    fallback: "Availability credits begin once a compatible model is loaded and serving.",
+    fallback: "Availability earnings begin once a compatible model is loaded and serving.",
   });
 }
 
 function walletStatusNote(wallet) {
   if (wallet?.gateway_sync_error) {
     return t("wallet.note.retrying", {
-      fallback: "Credits are showing locally. Gateway sync is retrying in the background.",
+      fallback: "Balance is showing locally. Gateway sync is retrying in the background.",
     });
   }
   return t("wallet.note.live", {
-    fallback: "Credits increase while supply is live. Network inference spends from this same balance.",
+    fallback: "Balance increases while supply is live. Network inference spends from this same balance.",
   });
 }
 
@@ -1414,19 +1594,39 @@ function accountWalletBalance() {
   };
 }
 
-function parseCreditAmount(rawValue) {
+function parseDisplayAmountToCredits(rawValue) {
   const trimmed = rawValue.trim();
   if (!trimmed) {
     return null;
   }
+
+  if (displayUnit === "usd") {
+    const normalized = trimmed.replaceAll(",", "");
+    if (!/^\d+(\.\d+)?$/.test(normalized)) {
+      return Number.NaN;
+    }
+    const usd = Number.parseFloat(normalized);
+    const credits = Math.round(usd * 1_000_000);
+    if (!Number.isSafeInteger(credits) || credits <= 0) {
+      return Number.NaN;
+    }
+    return credits;
+  }
+
   if (!/^\d+$/.test(trimmed)) {
     return Number.NaN;
   }
-  const amount = Number.parseInt(trimmed, 10);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
+  const credits = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(credits) || credits <= 0) {
     return Number.NaN;
   }
-  return amount;
+  return credits;
+}
+
+function invalidAmountMessage() {
+  return displayUnit === "usd"
+    ? "Enter a USD amount greater than 0."
+    : "Enter a whole-number credit amount.";
 }
 
 function setBusyButton(button, label) {
@@ -1476,7 +1676,15 @@ function reconcilePendingAction(snapshot) {
 }
 
 function currentNetworkModel() {
-  return networkModels.find((model) => model.id === selectedNetworkModelId) || networkModels[0] || null;
+  const visible = visibleNetworkModels();
+  return visible.find((model) => model.id === selectedNetworkModelId) || visible[0] || null;
+}
+
+function visibleNetworkModels() {
+  return networkModels.filter((model) => {
+    const id = String(model?.id || "");
+    return Boolean(id) && !id.startsWith("teale/");
+  });
 }
 
 function createId() {
@@ -1727,8 +1935,7 @@ function currentChatModelOptions(snapshot = lastSnapshot) {
     });
   }
 
-  const paid = networkModels
-    .filter((model) => Number(model.devices) > 0)
+  const paid = visibleNetworkModels()
     .slice()
     .sort((left, right) => {
       const deviceDelta = Number(right.devices || 0) - Number(left.devices || 0);
@@ -1744,13 +1951,17 @@ function currentChatModelOptions(snapshot = lastSnapshot) {
     });
 
   for (const model of paid) {
-    const inputCredits = formatCompactCredits(creditsPerMillionFromUsdToken(model.prompt));
-    const outputCredits = formatCompactCredits(creditsPerMillionFromUsdToken(model.completion));
+    const inputCredits = displayUnit === "usd"
+      ? formatPricePerMillionUsd(model.prompt)
+      : formatCompactCredits(creditsPerMillionFromUsdToken(model.prompt));
+    const outputCredits = displayUnit === "usd"
+      ? formatPricePerMillionUsd(model.completion)
+      : formatCompactCredits(creditsPerMillionFromUsdToken(model.completion));
     options.push({
       provider: "network",
       modelId: model.id,
       label: `${inputCredits}i/${outputCredits}o/1M - ${shortModelLabel(model.id)}`,
-      note: t("chat.model.networkNote"),
+      note: `Network models spend ${displayUnit === "usd" ? "USD" : "Teale credits"}.`,
     });
   }
 
@@ -2287,8 +2498,8 @@ function renderHomeNetworkStats() {
   els.homeNetworkModels.textContent = formatCredits(networkStats.total_models ?? 0);
   els.homeNetworkTtft.textContent = formatMs(networkStats.avg_ttft_ms);
   els.homeNetworkTps.textContent = formatTps(networkStats.avg_tps);
-  els.homeNetworkEarned.textContent = `${formatCredits(networkStats.total_credits_earned ?? 0)} credits`;
-  els.homeNetworkSpent.textContent = `${formatCredits(networkStats.total_credits_spent ?? 0)} credits`;
+  els.homeNetworkEarned.textContent = formatDisplayCredits(networkStats.total_credits_earned ?? 0, true);
+  els.homeNetworkSpent.textContent = formatDisplayCredits(networkStats.total_credits_spent ?? 0, true);
   els.homeNetworkUsdc.textContent = `${formatUsdc(networkStats.total_usdc_distributed_cents ?? 0)} USDC`;
 }
 
@@ -2511,7 +2722,7 @@ function setDisconnected(error) {
   els.walletBalance.textContent = t("common.waitingLocalService");
   els.walletUsdc.textContent = "0.00";
   els.walletSince.textContent = "Not serving yet";
-  els.walletRate.textContent = "Availability credits begin once a compatible model is loaded and serving.";
+  els.walletRate.textContent = "Availability earnings begin once a compatible model is loaded and serving.";
   els.walletNote.textContent = "The companion will sync the device wallet once Teale responds locally.";
   renderEmptyLedger("No ledger entries yet.");
   els.accountWalletBalance.textContent = t("common.waitingLocalService");
@@ -2741,12 +2952,13 @@ function sortModels(rows) {
 
 function renderNetworkModels() {
   els.networkModelTableBody.innerHTML = "";
-  if (!networkModels.length) {
+  const visibleModels = visibleNetworkModels();
+  if (!visibleModels.length) {
     els.networkModelEmpty.textContent = "No live gateway model data yet.";
     return;
   }
 
-  const sorted = sortModels(networkModels);
+  const sorted = sortModels(visibleModels);
   if (!sorted.some((model) => model.id === selectedNetworkModelId)) {
     selectedNetworkModelId = sorted[0].id;
   }
@@ -2770,8 +2982,8 @@ function renderNetworkModels() {
       String(model.devices),
       formatMs(model.ttft),
       formatTps(model.tps),
-      formatPricePerMillion(model.prompt),
-      formatPricePerMillion(model.completion),
+      formatPricePerMillionDisplay(model.prompt),
+      formatPricePerMillionDisplay(model.completion),
     ];
 
     for (const value of cells) {
@@ -2814,7 +3026,7 @@ function renderLedger(entries) {
 
     const amount = document.createElement("div");
     amount.className = entry.amount < 0 ? "amount-negative" : "amount-positive";
-    amount.textContent = `${entry.amount < 0 ? "" : "+"}${formatCredits(entry.amount)}`;
+    amount.textContent = `${entry.amount < 0 ? "-" : "+"}${formatDisplayCredits(Math.abs(entry.amount), true)}`;
 
     row.append(info, amount);
     els.ledgerList.appendChild(row);
@@ -2823,14 +3035,14 @@ function renderLedger(entries) {
 
 function renderAccountWallet() {
   if (accountSummary) {
-    els.accountWalletBalance.textContent = formatCredits(accountSummary.balance_credits ?? 0);
+    els.accountWalletBalance.textContent = formatDisplayCredits(accountSummary.balance_credits ?? 0, false);
     els.accountWalletUsdc.textContent = formatUsdc(accountSummary.usdc_cents ?? 0);
     els.accountWalletNote.textContent = t("account.wallet.note.summary");
     return;
   }
 
   if (authUser || authSession?.user?.id) {
-    els.accountWalletBalance.textContent = formatCredits(0);
+    els.accountWalletBalance.textContent = formatDisplayCredits(0, false);
     els.accountWalletUsdc.textContent = "0.00";
     els.accountWalletNote.textContent = t("account.wallet.note.pending", {
       fallback: "Account wallet starts at 0 until device balances are swept here.",
@@ -2850,7 +3062,7 @@ function defaultDeviceSendNote() {
   if (els.sendAsset.value !== "credits") {
     return "USDC transfers are not available yet. Send Teale credits for now.";
   }
-  return "Send from this device wallet to a device ID, phone, email, or GitHub username.";
+  return `Send from this device wallet to a device ID, phone, email, or GitHub username. Display is in ${displayUnit === "usd" ? "USD" : "credits"}.`;
 }
 
 function defaultAccountSendNote() {
@@ -2865,12 +3077,12 @@ function defaultAccountSendNote() {
   if (els.accountSendAsset.value !== "credits") {
     return "USDC transfers are not available yet. Send Teale credits for now.";
   }
-  return "Send from the account wallet to a device ID, phone, email, or GitHub username.";
+  return `Send from the account wallet to a device ID, phone, email, or GitHub username. Display is in ${displayUnit === "usd" ? "USD" : "credits"}.`;
 }
 
 function updateSendControls() {
   const deviceWallet = deviceWalletBalance();
-  const deviceAmount = parseCreditAmount(els.sendAmount.value || "");
+  const deviceAmount = parseDisplayAmountToCredits(els.sendAmount.value || "");
   const deviceRecipient = els.sendRecipient.value.trim();
   const deviceCredits = deviceWallet.credits;
   const deviceCreditsSupported = els.sendAsset.value === "credits";
@@ -2891,7 +3103,7 @@ function updateSendControls() {
   els.sendNote.textContent = walletSendStatus || defaultDeviceSendNote();
 
   const accountWallet = accountWalletBalance();
-  const accountAmount = parseCreditAmount(els.accountSendAmount.value || "");
+  const accountAmount = parseDisplayAmountToCredits(els.accountSendAmount.value || "");
   const accountRecipient = els.accountSendRecipient.value.trim();
   const accountCredits = accountWallet.credits;
   const accountCreditsSupported = els.accountSendAsset.value === "credits";
@@ -3084,7 +3296,7 @@ function renderAccountDevices() {
 
     const walletCell = document.createElement("td");
     walletCell.textContent = typeof device.walletBalance === "number"
-      ? `${formatCredits(device.walletBalance)} credits`
+      ? formatDisplayCredits(device.walletBalance, true)
       : "-";
 
     const actionCell = document.createElement("td");
@@ -3283,9 +3495,17 @@ async function ensureAuthClient(authConfig) {
   });
 
   const { data } = await supabaseClient.auth.getSession();
-  authSession = data.session;
-  authUser = data.session?.user || null;
+  let session = data.session;
+  if (!session) {
+    session = await restorePersistedSupabaseSession();
+  }
+  authSession = session;
+  authUser = session?.user || null;
   await consumePendingOAuthCallback();
+  if (!authSession) {
+    authSession = await restorePersistedSupabaseSession();
+    authUser = authSession?.user || null;
+  }
   await ensureSupabaseIdentity();
   await refreshAccountState();
   await ensureGatewayAccountLink();
@@ -3296,24 +3516,28 @@ async function ensureAuthClient(authConfig) {
 }
 
 async function refreshAccountState() {
+  const summaryPromise = getJsonMaybeMissing("/v1/app/account").catch((error) => {
+    console.warn("account summary fetch failed", error);
+    return null;
+  });
+
   if (!supabaseClient || !authUser) {
     authIdentities = [];
-    accountDevices = [];
-    accountSummary = null;
     supabaseAccountDevices = [];
+    accountSummary = await summaryPromise;
+    accountDevices = accountSummary?.devices || [];
+    authTrace(`account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=0 auth=none`);
     return;
   }
 
   const [sessionState, summary, directSupabaseDevices] = await Promise.all([
     refreshAuthoritativeAuthState("refreshAccountState"),
-    getJsonMaybeMissing("/v1/app/account").catch((error) => {
-      console.warn("account summary fetch failed", error);
-      return null;
-    }),
+    summaryPromise,
     supabaseClient
       .from("devices")
       .select("id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active")
       .eq("user_id", authUser.id)
+      .eq("is_active", true)
       .order("last_seen", { ascending: false })
       .then(({ data, error }) => {
         if (error) {
@@ -3796,7 +4020,7 @@ function renderHome(snapshot) {
   els.homeStatus.textContent = labelForState(snapshot?.service_state);
   els.homeModel.textContent = snapshot?.loaded_model_id || "No model loaded";
   els.homeBalance.textContent = walletView.credits != null
-    ? `${formatCredits(walletView.credits)} credits`
+    ? formatDisplayCredits(walletView.credits, true)
     : "Syncing...";
   els.homeAccount.textContent = userLabel(authUser);
   renderHomeNetworkStats();
@@ -3830,9 +4054,9 @@ function renderSupply(snapshot) {
   }
 
   els.supplyEarningRate.textContent = availabilityRateLabel(wallet);
-  els.supplySessionCredits.textContent = formatCredits(wallet.estimated_session_credits ?? 0);
+  els.supplySessionCredits.textContent = formatDisplayCredits(wallet.estimated_session_credits ?? 0, true);
   els.supplyWalletBalance.textContent = deviceWalletBalance().credits != null
-    ? `${formatCredits(deviceWalletBalance().credits)} credits`
+    ? formatDisplayCredits(deviceWalletBalance().credits, true)
     : "Syncing...";
 
   const recommended = snapshot.models.find((model) => model.recommended) || snapshot.models[0];
@@ -3856,7 +4080,7 @@ function renderDemand(snapshot) {
     : "Copy bearer token";
   els.networkToken.disabled = !demand.network_bearer_token;
   els.networkTokenNote.textContent = demand.network_bearer_token
-      ? "Use this bearer against gateway.teale.com. Requests spend from Teale credits."
+      ? `Use this bearer against gateway.teale.com. Requests spend from ${displayUnit === "usd" ? "USD" : "Teale credits"}.`
       : "Waiting for the device bearer token from the gateway wallet sync.";
   els.networkSelectedModel.textContent = selected ? selected.id : t("demand.selected.waiting", { fallback: "Waiting for gateway models..." });
   els.networkCurl.textContent = buildNetworkCurl(demand, selected);
@@ -3872,7 +4096,7 @@ function renderWallet(snapshot) {
   els.walletStatus.textContent = labelForState(snapshot.service_state);
   els.walletModel.textContent = snapshot.loaded_model_id || t("common.noModelLoaded");
   els.walletBalance.textContent = walletView.credits != null
-    ? formatCredits(walletView.credits)
+    ? formatDisplayCredits(walletView.credits, false)
     : wallet.gateway_sync_error
       ? "Retrying sync"
       : "Syncing...";
@@ -4156,9 +4380,9 @@ for (const input of [
 }
 
 els.sendSubmit.addEventListener("click", async () => {
-  const amount = parseCreditAmount(els.sendAmount.value || "");
+  const amount = parseDisplayAmountToCredits(els.sendAmount.value || "");
   if (!Number.isInteger(amount)) {
-    walletSendStatus = "Enter a whole-number credit amount.";
+    walletSendStatus = invalidAmountMessage();
     updateSendControls();
     return;
   }
@@ -4172,7 +4396,7 @@ els.sendSubmit.addEventListener("click", async () => {
       amount,
       memo: els.sendMemo.value.trim() || null,
     });
-    walletSendStatus = `Sent ${formatCredits(amount)} credits.`;
+    walletSendStatus = `Sent ${formatDisplayCredits(amount, true)}.`;
     els.sendAmount.value = "";
     els.sendMemo.value = "";
     await refreshAccountState();
@@ -4187,9 +4411,9 @@ els.sendSubmit.addEventListener("click", async () => {
 });
 
 els.accountSendSubmit.addEventListener("click", async () => {
-  const amount = parseCreditAmount(els.accountSendAmount.value || "");
+  const amount = parseDisplayAmountToCredits(els.accountSendAmount.value || "");
   if (!Number.isInteger(amount)) {
-    accountSendStatus = "Enter a whole-number credit amount.";
+    accountSendStatus = invalidAmountMessage();
     updateSendControls();
     return;
   }
@@ -4203,7 +4427,7 @@ els.accountSendSubmit.addEventListener("click", async () => {
       amount,
       memo: els.accountSendMemo.value.trim() || null,
     });
-    accountSendStatus = `Sent ${formatCredits(amount)} credits from the account wallet.`;
+    accountSendStatus = `Sent ${formatDisplayCredits(amount, true)} from the account wallet.`;
     els.accountSendAmount.value = "";
     els.accountSendMemo.value = "";
     await refresh();
@@ -4223,6 +4447,13 @@ for (const button of els.viewButtons) {
 
 els.languageSelect.addEventListener("change", (event) => {
   setLanguage(event.target.value);
+  if (els.settingsMenu) {
+    els.settingsMenu.open = false;
+  }
+});
+
+els.displayUnitSelect.addEventListener("change", (event) => {
+  setDisplayUnit(event.target.value);
 });
 
 for (const button of els.networkModelSortButtons) {
@@ -4240,6 +4471,11 @@ for (const button of els.networkModelSortButtons) {
 }
 
 document.addEventListener("visibilitychange", startPolling);
+document.addEventListener("click", (event) => {
+  if (els.settingsMenu?.open && !els.settingsMenu.contains(event.target)) {
+    els.settingsMenu.open = false;
+  }
+});
 window.__tealeHandleOAuthCallback = async (url) => {
   pendingOAuthCallbackUrl = url;
   try {

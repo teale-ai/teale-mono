@@ -407,6 +407,7 @@ struct GatewayModelEntry {
     context_length: Option<u32>,
     pricing: Option<GatewayPricing>,
     metrics: Option<GatewayModelMetrics>,
+    loaded_device_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -951,7 +952,10 @@ impl StatusState {
             .data
             .into_iter()
             .map(|model| NetworkModelSnapshot {
-                device_count: device_counts.get(&model.id).copied().unwrap_or(0),
+                device_count: std::cmp::max(
+                    model.loaded_device_count.unwrap_or(0),
+                    device_counts.get(&model.id).copied().unwrap_or(0),
+                ),
                 ttft_ms_p50: model
                     .metrics
                     .as_ref()

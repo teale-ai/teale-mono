@@ -3,9 +3,11 @@ import AppCore
 import SharedTypes
 import ChatKit
 import ModelManager
+import GatewayKit
 
 struct CompanionHomeChatSection: View {
     @Environment(AppState.self) private var appState
+    @Environment(CompanionGatewayState.self) private var gatewayState
 
     @State private var inputText = ""
     @State private var isSending = false
@@ -53,28 +55,30 @@ struct CompanionHomeChatSection: View {
                 options.append(
                     CompanionHomeModelOption(
                         id: identifier,
-                        label: "FREE - \(local.name)",
-                        note: "Local is free on this Mac."
+                        label: "FREE - \(appState.companionShortModelLabel(identifier))",
+                        note: appState.companionText("chat.localFree", fallback: "Local is free on this Mac.")
                     )
                 )
             }
         }
 
-        for model in ModelCatalog.allModels.sorted(by: { lhs, rhs in
-            if lhs.popularityRank != rhs.popularityRank {
-                return lhs.popularityRank < rhs.popularityRank
-            }
-            return lhs.requiredRAMGB < rhs.requiredRAMGB
-        }) {
-            let identifier = model.openrouterId ?? model.huggingFaceRepo
-            guard seen.insert(identifier).inserted else { continue }
+        for model in gatewayState.networkModels {
+            guard seen.insert(model.id).inserted else { continue }
+            let pricingLabel = appState.companionDisplayPricePerMillionLabel(
+                promptUSDPerToken: model.promptUSDPerToken,
+                completionUSDPerToken: model.completionUSDPerToken
+            )
             options.append(
                 CompanionHomeModelOption(
-                    id: identifier,
-                    label: model.name,
-                    note: appState.gatewayAPIKey.isEmpty
-                        ? "Connected peers can serve this now. Add a gateway bearer for wider network fallback."
-                        : "Network models spend Teale credits when local supply cannot serve them."
+                    id: model.id,
+                    label: [pricingLabel, appState.companionShortModelLabel(model.id)]
+                        .compactMap { $0 }
+                        .joined(separator: " - "),
+                    note: appState.companionText(
+                        "chat.networkSpend",
+                        fallback: "Network models spend {{unit}}. Device bearer is used automatically.",
+                        replacements: ["unit": appState.companionDisplaySpendUnitLabel]
+                    )
                 )
             )
         }
@@ -83,7 +87,7 @@ struct CompanionHomeChatSection: View {
     }
 
     var body: some View {
-        TealeSection(prompt: "thread") {
+        TealeSection(prompt: appState.companionText("home.thread", fallback: "thread")) {
             VStack(alignment: .leading, spacing: 12) {
                 threadStrip
                 modelPicker
@@ -96,6 +100,11 @@ struct CompanionHomeChatSection: View {
             await ensureThreadReady()
         }
         .onChange(of: threads.map(\.id)) { _, _ in
+            Task {
+                await ensureThreadReady()
+            }
+        }
+        .onChange(of: modelOptions.map(\.id)) { _, _ in
             Task {
                 await ensureThreadReady()
             }
@@ -123,7 +132,7 @@ struct CompanionHomeChatSection: View {
                     )
                 }
 
-                TealeActionButton(title: "new thread", primary: false, disabled: isSending) {
+                TealeActionButton(title: appState.companionText("chat.newThread", fallback: "new thread"), primary: false, disabled: isSending) {
                     Task {
                         await createThread()
                     }
@@ -136,13 +145,13 @@ struct CompanionHomeChatSection: View {
     private var modelPicker: some View {
         if let activeThread {
             VStack(alignment: .leading, spacing: 6) {
-                Text("MODEL")
+                Text(appState.companionText("chat.model", fallback: "MODEL"))
                     .font(TealeDesign.monoSmall)
                     .tracking(0.9)
                     .foregroundStyle(TealeDesign.muted)
 
                 Picker(
-                    "Model",
+                    appState.companionText("chat.model", fallback: "MODEL"),
                     selection: Binding(
                         get: { selectedModelID(for: activeThread) },
                         set: { next in
@@ -165,7 +174,7 @@ struct CompanionHomeChatSection: View {
                     .foregroundStyle(TealeDesign.muted)
             }
         } else {
-            Text("Creating your first thread...")
+            Text(appState.companionText("chat.creatingThread", fallback: "Creating your first thread..."))
                 .font(TealeDesign.monoSmall)
                 .foregroundStyle(TealeDesign.muted)
         }
@@ -188,7 +197,7 @@ struct CompanionHomeChatSection: View {
                     if visibleMessages.isEmpty,
                        streamingText.isEmpty,
                        interruptedDrafts[activeThread?.id ?? UUID()] == nil {
-                        Text("Open a thread and ask Teale anything.")
+                        Text(appState.companionText("chat.empty", fallback: "Open a thread and ask Teale anything."))
                             .font(TealeDesign.monoSmall)
                             .foregroundStyle(TealeDesign.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -206,8 +215,10 @@ struct CompanionHomeChatSection: View {
                            (!streamingText.isEmpty || isSending) {
                             CompanionHomeChatBubble(
                                 fromUser: false,
-                                content: streamingText.isEmpty ? "Thinking..." : streamingText,
-                                note: streamingText.isEmpty ? nil : "streaming"
+                                content: streamingText.isEmpty
+                                    ? appState.companionText("chat.thinking", fallback: "Thinking...")
+                                    : streamingText,
+                                note: streamingText.isEmpty ? nil : appState.companionText("chat.streaming", fallback: "streaming")
                             )
                             .id("streaming")
                         }
@@ -219,7 +230,7 @@ struct CompanionHomeChatSection: View {
                             CompanionHomeChatBubble(
                                 fromUser: false,
                                 content: interrupted,
-                                note: "interrupted"
+                                note: appState.companionText("chat.interrupted", fallback: "interrupted")
                             )
                             .id("interrupted-\(activeThread.id.uuidString)")
                         }
@@ -242,7 +253,7 @@ struct CompanionHomeChatSection: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("MESSAGE")
+            Text(appState.companionText("chat.message", fallback: "MESSAGE"))
                 .font(TealeDesign.monoSmall)
                 .tracking(0.9)
                 .foregroundStyle(TealeDesign.muted)
@@ -258,11 +269,11 @@ struct CompanionHomeChatSection: View {
                 .disabled(isSending)
 
             HStack(spacing: 10) {
-                Text("Threaded chat is local-first. Pick a model above to steer the route.")
+                Text(appState.companionText("chat.hint", fallback: "Threaded chat is local-first. Pick a model above to steer the route."))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
                 Spacer(minLength: 8)
-                TealeActionButton(title: "send", primary: true, disabled: sendDisabled) {
+                TealeActionButton(title: appState.companionText("chat.send", fallback: "send"), primary: true, disabled: sendDisabled) {
                     sendCurrentMessage()
                 }
             }
@@ -304,7 +315,7 @@ struct CompanionHomeChatSection: View {
     private func createThread() async {
         let created = await chatService.createDM(
             with: UUID(),
-            title: "New Thread",
+            title: appState.companionText("chat.newThreadTitle", fallback: "New Thread"),
             agentConfig: AgentConfig(
                 model: modelOptions.first?.id,
                 autoRespond: false,
@@ -368,7 +379,7 @@ struct CompanionHomeChatSection: View {
     private func modelNote(for thread: Conversation) -> String {
         let chosen = selectedModelID(for: thread)
         return modelOptions.first(where: { $0.id == chosen })?.note
-            ?? "Local is free on this Mac. Network models spend Teale credits."
+            ?? appState.companionText("chat.localFree", fallback: "Local is free on this Mac.")
     }
 
     private func currentThread(_ id: UUID) -> Conversation? {
@@ -416,7 +427,11 @@ struct CompanionHomeChatSection: View {
             if !reply.isEmpty {
                 await chatService.insertAIMessage(reply, conversationID: thread.id)
             }
-            statusMessage = "Responded via \(shortModelLabel(modelID))."
+            statusMessage = appState.companionText(
+                "chat.respondedVia",
+                fallback: "Responded via {{model}}.",
+                replacements: ["model": appState.companionShortModelLabel(modelID)]
+            )
             statusIsError = false
         } catch {
             if !streamingText.isEmpty {
@@ -446,14 +461,9 @@ struct CompanionHomeChatSection: View {
         let compact = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")
-        guard !compact.isEmpty else { return "New Thread" }
+        guard !compact.isEmpty else { return appState.companionText("chat.newThreadTitle", fallback: "New Thread") }
         if compact.count <= 32 { return compact }
         return String(compact.prefix(32)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
-    }
-
-    private func shortModelLabel(_ identifier: String) -> String {
-        let last = identifier.split(separator: "/").last.map(String.init) ?? identifier
-        return last.replacingOccurrences(of: "-", with: " ")
     }
 
     private func scrollTranscript(proxy: ScrollViewProxy) {
@@ -471,10 +481,14 @@ struct CompanionHomeChatSection: View {
             throw CompanionHomeChatError.invalidResponse
         }
 
+        let localAPIKey = await localAPIKeyForChat()
+        await ensureGatewayBearerForChat()
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(localAPIKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(
             ChatCompletionRequest(
                 model: modelID,
@@ -526,6 +540,22 @@ struct CompanionHomeChatSection: View {
         }
 
         return assistantReply.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func localAPIKeyForChat() async -> String {
+        if let existing = await appState.apiKeyStore.allKeys().first(where: \.isActive)?.key {
+            return existing
+        }
+        return await appState.apiKeyStore.generateKey(name: "Companion Home Chat").key
+    }
+
+    private func ensureGatewayBearerForChat() async {
+        guard appState.gatewayAPIKey.isEmpty else { return }
+        let auth = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        guard let bearer = try? await auth.bearer(), !bearer.isEmpty else { return }
+        await MainActor.run {
+            appState.gatewayAPIKey = bearer
+        }
     }
 }
 

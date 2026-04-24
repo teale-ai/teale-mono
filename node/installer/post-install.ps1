@@ -62,6 +62,38 @@ function Invoke-Checked {
     }
 }
 
+function Get-BundledSupabaseConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigDir
+    )
+
+    $configPath = Join-Path $ConfigDir "supabase-config.json"
+    if (-not (Test-Path $configPath)) {
+        return @{
+            url = ""
+            anonKey = ""
+            redirectUrl = ""
+        }
+    }
+
+    try {
+        $raw = Get-Content -Path $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return @{
+            url = if ($raw.supabase_url) { [string]$raw.supabase_url } else { "" }
+            anonKey = if ($raw.supabase_anon_key) { [string]$raw.supabase_anon_key } else { "" }
+            redirectUrl = if ($raw.supabase_redirect_url) { [string]$raw.supabase_redirect_url } else { "" }
+        }
+    } catch {
+        Write-InstallLog "Could not parse bundled supabase-config.json: $($_.Exception.Message)"
+        return @{
+            url = ""
+            anonKey = ""
+            redirectUrl = ""
+        }
+    }
+}
+
 function Test-TealePrefersVulkan {
     param(
         [string]$CpuName
@@ -153,9 +185,10 @@ try {
     $logicalCores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
     $threads = [math]::Max(2, $logicalCores - 2)
     $appEnvironment = @("APPDATA=$DataDir")
-    $supabaseUrl = if ($env:TEALE_SUPABASE_URL) { $env:TEALE_SUPABASE_URL } else { "" }
-    $supabaseAnonKey = if ($env:TEALE_SUPABASE_ANON_KEY) { $env:TEALE_SUPABASE_ANON_KEY } else { "" }
-    $supabaseRedirectUrl = if ($env:TEALE_SUPABASE_REDIRECT_URL) { $env:TEALE_SUPABASE_REDIRECT_URL } else { "teale://auth/callback" }
+    $bundledSupabase = Get-BundledSupabaseConfig -ConfigDir $ConfigDir
+    $supabaseUrl = if ($env:TEALE_SUPABASE_URL) { $env:TEALE_SUPABASE_URL } elseif ($bundledSupabase.url) { $bundledSupabase.url } else { "" }
+    $supabaseAnonKey = if ($env:TEALE_SUPABASE_ANON_KEY) { $env:TEALE_SUPABASE_ANON_KEY } elseif ($bundledSupabase.anonKey) { $bundledSupabase.anonKey } else { "" }
+    $supabaseRedirectUrl = if ($env:TEALE_SUPABASE_REDIRECT_URL) { $env:TEALE_SUPABASE_REDIRECT_URL } elseif ($bundledSupabase.redirectUrl) { $bundledSupabase.redirectUrl } else { "teale://auth/callback" }
 
     $llamaPath = $LlamaExe.Replace('\', '/')
     $tomlContent = @"
