@@ -237,6 +237,7 @@ let package = Package(
                 "AgentKit",
                 "AuthKit",
                 "ChatKit",
+                "GatewayKit",
             ],
             path: "Sources/InferencePoolApp",
             exclude: ["Info.plist", "InferencePool.entitlements"]

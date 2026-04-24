@@ -71,7 +71,6 @@ public actor ClusterProvider: InferenceProvider {
         continuation: AsyncThrowingStream<ChatCompletionChunk, Error>.Continuation
     ) async throws {
         let localModel = await localProvider.loadedModel
-        let localModelID = localModel?.huggingFaceRepo
 
         guard clusterManager.isEnabled else {
             // Standalone mode — delegate to local
@@ -97,7 +96,7 @@ public actor ClusterProvider: InferenceProvider {
         let decision = router.route(
             request: request,
             clusterManager: clusterManager,
-            localModelLoaded: localModelID
+            localModel: localModel
         )
 
         switch decision {

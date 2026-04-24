@@ -74,7 +74,12 @@ public actor LocalHTTPServer {
 
         // Chat completions endpoint
         router.post("/v1/chat/completions") { request, _ -> Response in
-            return try await ChatCompletionsRoute.handle(request: request, engine: engine, onCompleted: requestCompleted)
+            return try await ChatCompletionsRoute.handle(
+                request: request,
+                engine: engine,
+                peerModelProvider: peerModels,
+                onCompleted: requestCompleted
+            )
         }
 
         // Remote control endpoints

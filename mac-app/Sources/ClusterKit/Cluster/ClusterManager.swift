@@ -300,6 +300,7 @@ public final class ClusterManager: @unchecked Sendable {
                 setPeer(peerInfo, forID: peerInfo.id)
                 startListening(to: peerInfo)
                 updateState()
+                await sendHeartbeatNow()
             } else {
                 Self.logger.info("Closing duplicate \(String(describing: origin), privacy: .public) connection for peer \(peerInfo.id.uuidString, privacy: .public)")
                 await peerInfo.connection.cancel()
@@ -311,6 +312,7 @@ public final class ClusterManager: @unchecked Sendable {
         setPeer(peerInfo, forID: peerInfo.id)
         startListening(to: peerInfo)
         updateState()
+        await sendHeartbeatNow()
     }
 
     private func connectionNotice(for error: Error) -> String {

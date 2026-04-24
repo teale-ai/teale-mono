@@ -112,4 +112,26 @@ final class SharedTypesTests: XCTestCase {
         XCTAssertEqual(decoded.data.count, 1)
         XCTAssertEqual(decoded.data[0].id, "model-1")
     }
+
+    func testHardwareCapabilityDecodesUnknownRelayValuesLeniently() throws {
+        let json = """
+        {
+          "chipFamily": "gatewayVirtual",
+          "chipName": "gateway.teale.com",
+          "totalRAMGB": 0,
+          "gpuCoreCount": 0,
+          "memoryBandwidthGBs": 0,
+          "tier": 0,
+          "gpuBackend": "cpu",
+          "platform": "gateway"
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(HardwareCapability.self, from: json)
+
+        XCTAssertEqual(decoded.chipFamily, .unknown)
+        XCTAssertEqual(decoded.tier, .tier4)
+        XCTAssertEqual(decoded.gpuBackend, .cpu)
+        XCTAssertNil(decoded.platform)
+    }
 }

@@ -68,6 +68,7 @@ public actor PeerResolver {
                     status: .connected,
                     connectionQuality: quality,
                     lastHeartbeat: Date(),
+                    loadedModels: ackPayload.loadedModels,
                     ownerUserID: ackPayload.ownerUserID
                 )
 
@@ -119,6 +120,7 @@ public actor PeerResolver {
                     status: .connected,
                     connectionQuality: quality,
                     lastHeartbeat: Date(),
+                    loadedModels: helloPayload.loadedModels,
                     ownerUserID: helloPayload.ownerUserID
                 )
 

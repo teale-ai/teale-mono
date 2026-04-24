@@ -4,8 +4,8 @@ name: Windows installer (Teale.exe)
 #   - cargo builds teale-node.exe + teale-tray.exe (x86_64-pc-windows-msvc)
 #   - downloads llama-server with Vulkan backend from llama.cpp's releases
 #   - stages all artifacts next to the .iss script and compiles with ISCC
-#   - uploads Teale.exe as a workflow artifact (manual upload to Drive for
-#     the pilot; will add signtool step once the EV cert arrives)
+#   - uploads Teale.exe + checksums as workflow artifacts
+#   - publishes the installer to the GitHub release for tag builds
 #
 # Triggered on:
 #   - push of a tag matching `teale-v*` (canonical release path)
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   LLAMA_RELEASE: b8840  # keep in sync with node/installer/post-install.ps1
@@ -160,6 +160,13 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & $iscc "node\installer\teale-node-setup.iss"
 
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-FileHash "node\installer\output\Teale.exe" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  Teale.exe" } |
+            Set-Content "node\installer\output\checksums.txt"
+
       # TODO: signtool step once the Authenticode / EV cert is in repo secrets.
       # - name: Sign Teale.exe
       #   shell: pwsh
@@ -176,6 +183,26 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Teale-${{ github.ref_name }}-unsigned
-          path: node/installer/output/Teale.exe
+          path: |
+            node/installer/output/Teale.exe
+            node/installer/output/checksums.txt
           if-no-files-found: error
           retention-days: 90
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag `
+              --title "Teale $tag (Windows)" `
+              --notes "Windows installer build for Teale."
+          }
+          gh release upload $tag `
+            "node\installer\output\Teale.exe" `
+            "node\installer\output\checksums.txt" `
+            --clobber

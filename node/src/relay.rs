@@ -131,12 +131,27 @@ impl RelayClient {
         display_name: &str,
         capabilities: &NodeCapabilities,
     ) -> anyhow::Result<()> {
-        let signature = identity.sign_node_id();
+        self.register_signed(
+            &identity.node_id(),
+            &identity.public_key_hex(),
+            display_name,
+            capabilities,
+            &identity.sign_node_id(),
+        )
+    }
 
+    pub fn register_signed(
+        &self,
+        node_id: &str,
+        public_key: &str,
+        display_name: &str,
+        capabilities: &NodeCapabilities,
+        signature: &str,
+    ) -> anyhow::Result<()> {
         let payload = serde_json::json!({
             "register": {
-                "nodeID": identity.node_id(),
-                "publicKey": identity.public_key_hex(),
+                "nodeID": node_id,
+                "publicKey": public_key,
                 "displayName": display_name,
                 "capabilities": capabilities,
                 "signature": signature

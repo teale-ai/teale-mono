@@ -1,5 +1,8 @@
 import SwiftUI
 import AppCore
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct CompanionRootView: View {
     @Environment(AppState.self) private var appState
@@ -52,7 +55,10 @@ struct CompanionRootView: View {
 }
 
 private struct TealeNavBar: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.openURL) private var openURL
     @Binding var activeTab: CompanionTab
+    @State private var shareButtonLabel = "share"
 
     var body: some View {
         HStack(spacing: 10) {
@@ -74,8 +80,49 @@ private struct TealeNavBar: View {
                 .buttonStyle(.plain)
             }
             Spacer()
+            languagePicker
+            HeaderToolButton(title: "x.com") {
+                openURL(URL(string: "https://x.com/teale_ai")!)
+            }
+            HeaderToolButton(title: shareButtonLabel) {
+                copyShareText()
+            }
             CursorBlink()
         }
+    }
+
+    private var languagePicker: some View {
+        Picker(
+            appState.loc("settings.language"),
+            selection: Binding(
+                get: { appState.language },
+                set: { appState.language = $0 }
+            )
+        ) {
+            ForEach(AppLanguage.allCases) { language in
+                Text(language.displayName).tag(language)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .tint(TealeDesign.teale)
+    }
+
+    private func copyShareText() {
+#if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+            "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.",
+            forType: .string
+        )
+        shareButtonLabel = "copied"
+        Task {
+            try? await Task.sleep(for: .milliseconds(900))
+            shareButtonLabel = "share"
+        }
+#else
+        shareButtonLabel = "share"
+#endif
     }
 }
 
@@ -128,5 +175,25 @@ private struct TealeFooter: View {
                 .tracking(0.6)
             Spacer()
         }
+    }
+}
+
+private struct HeaderToolButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title.lowercased())
+                .font(TealeDesign.monoSmall)
+                .tracking(0.6)
+                .foregroundStyle(TealeDesign.teale)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .overlay(
+                    Rectangle().stroke(TealeDesign.tealeDim, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
     }
 }

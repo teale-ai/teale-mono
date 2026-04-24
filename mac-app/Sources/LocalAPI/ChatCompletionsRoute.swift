@@ -7,7 +7,12 @@ import InferenceEngine
 // MARK: - Chat Completions Route
 
 enum ChatCompletionsRoute {
-    static func handle(request: Request, engine: InferenceEngineManager, onCompleted: RequestCompletedHandler? = nil) async throws -> Response {
+    static func handle(
+        request: Request,
+        engine: InferenceEngineManager,
+        peerModelProvider: PeerModelProvider? = nil,
+        onCompleted: RequestCompletedHandler? = nil
+    ) async throws -> Response {
         let body = try await request.body.collect(upTo: 1_048_576)
         var chatRequest = try JSONDecoder().decode(ChatCompletionRequest.self, from: body)
 
@@ -28,6 +33,7 @@ enum ChatCompletionsRoute {
         if let requestedModel = chatRequest.model,
            !requestedModel.isEmpty,
            await !canServeLocally(modelID: requestedModel, engine: engine),
+           await !canServeViaPeers(modelID: requestedModel, peerModelProvider: peerModelProvider),
            let fallback = gatewayFallbackConfig() {
             return try await proxyToGateway(
                 body: body,
@@ -149,7 +155,15 @@ enum ChatCompletionsRoute {
     /// openrouterId fields — same set of aliases the heartbeat advertises.
     private static func canServeLocally(modelID: String, engine: InferenceEngineManager) async -> Bool {
         guard let loaded = await engine.loadedModel else { return false }
-        return loaded.matchesIdentifier(modelID)
+        return ModelsRoute.advertisedModelIDs(for: loaded).contains { advertised in
+            ModelsRoute.modelIDMatches(advertised, requested: modelID)
+        }
+    }
+
+    private static func canServeViaPeers(modelID: String, peerModelProvider: PeerModelProvider?) async -> Bool {
+        guard let peerModelProvider else { return false }
+        let peerModels = await peerModelProvider()
+        return peerModels.contains { ModelsRoute.modelIDMatches($0.id, requested: modelID) }
     }
 
     /// Forward the original request body to the configured gateway. For

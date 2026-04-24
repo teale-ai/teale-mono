@@ -44,6 +44,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
                 wanRelayURL: appState.wanRelayURL,
                 wanBusy: appState.isWANBusy,
                 wanLastError: appState.wanLastError,
+                wanRelayStatus: appState.wanManager.state.relayStatus.rawValue,
+                wanDiscoveredPeerCount: appState.wanManager.state.discoveredPeerCount,
                 maxStorageGB: appState.maxStorageGB,
                 orgCapacityReservation: appState.clusterManager.orgCapacityReservation,
                 clusterPasscodeSet: appState.clusterManager.passcode?.isEmpty == false,
@@ -213,19 +215,11 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         case .ready(let loaded) where loaded.id == descriptor.id:
             return
         case .error(let message):
-            throw NSError(
-                domain: "Teale.RemoteControl",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: message]
-            )
+            throw RemoteControlError.invalidSetting(message)
         default:
             let loadedID = await appState.engine.loadedModel?.id
             if loadedID == descriptor.id { return }
-            throw NSError(
-                domain: "Teale.RemoteControl",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Model '\(descriptor.id)' did not finish loading"]
-            )
+            throw RemoteControlError.invalidSetting("Model '\(descriptor.id)' did not finish loading")
         }
     }
 
@@ -417,6 +411,15 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             )
         }
 
+        let wanDiscoveredPeers = appState.wanManager.state.discoveredPeers.map { peer in
+            RemotePeerSnapshot(
+                nodeID: peer.id,
+                displayName: peer.displayName,
+                loadedModels: peer.capabilities.loadedModels,
+                source: "wan_discovered"
+            )
+        }
+
         let clusterPeers = await appState.clusterManager.topology.connectedPeers.map { peer in
             RemotePeerSnapshot(
                 nodeID: peer.id.uuidString,
@@ -426,7 +429,11 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             )
         }
 
-        return RemotePeersSnapshot(wanPeers: wanPeers, clusterPeers: clusterPeers)
+        return RemotePeersSnapshot(
+            wanPeers: wanPeers,
+            wanDiscoveredPeers: wanDiscoveredPeers,
+            clusterPeers: clusterPeers
+        )
     }
 
     // MARK: - Agent
