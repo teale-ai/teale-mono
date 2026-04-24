@@ -143,6 +143,38 @@ public actor WANProvider: InferenceProvider {
             }
         }
 
+        // If the right model is discoverable over WAN but not yet connected,
+        // opportunistically establish that connection on demand and retry once.
+        if let requestedModel {
+            let discoveredPeers = await wanManager.discoveredPeers()
+                .filter { $0.hasModel(requestedModel) && $0.wgPublicKey != nil && $0.capabilities.isAvailable }
+                .sorted { lhs, rhs in
+                    lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+                }
+
+            for discoveredPeer in discoveredPeers {
+                do {
+                    try await wanManager.connectToPeer(nodeID: discoveredPeer.nodeID)
+
+                    if let connectedPeer = wanManager.connectedPeerForInference(
+                        preferredModel: requestedModel,
+                        groupID: request.groupID
+                    ) {
+                        var proxiedRequest = request
+                        proxiedRequest.model = proxiedRequest.model ?? connectedPeer.peerInfo.capabilities.loadedModels.first
+                        try await generateRemote(
+                            request: proxiedRequest,
+                            connection: connectedPeer.connection,
+                            continuation: continuation
+                        )
+                        return
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+
         // If no local model is loaded, try any available WAN peer (with failover)
         if localModel == nil {
             for connection in wanManager.allAvailableConnections() {
@@ -164,7 +196,23 @@ public actor WANProvider: InferenceProvider {
             throw WANError.noWANPeerAvailable
         }
 
-        // Fall back to local provider
+        // Fall back to local provider only for implicit routing or when the
+        // local model actually matches the explicit request.
+        if let requestedModel = requestedModel {
+            let localCandidates = [localModel?.id, localModel?.huggingFaceRepo, localModel?.openrouterId]
+                .compactMap { $0?.lowercased().replacingOccurrences(of: "_", with: "-") }
+            let normalizedRequested = requestedModel.lowercased().replacingOccurrences(of: "_", with: "-")
+            let requestedTail = normalizedRequested.split(separator: "/").last.map(String.init) ?? normalizedRequested
+            let matchesLocal = localCandidates.contains { candidate in
+                if candidate == normalizedRequested { return true }
+                let candidateTail = candidate.split(separator: "/").last.map(String.init) ?? candidate
+                return candidateTail == requestedTail
+            }
+            guard matchesLocal else {
+                throw WANError.noWANPeerAvailable
+            }
+        }
+
         let stream = localProvider.generate(request: request)
         for try await chunk in stream {
             continuation.yield(chunk)

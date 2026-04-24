@@ -81,10 +81,12 @@ mv /tmp/Teale.app.new /Applications/Teale.app
 # Clear quarantine so ad-hoc signed apps run without right-click-open
 xattr -dr com.apple.quarantine /Applications/Teale.app 2>/dev/null || true
 
-# Boot the app so it starts serving immediately. --hide keeps it out of the
-# user's way; --background is fine even when no user is logged in.
-open -a /Applications/Teale.app --args --fleet-supply --hide
-echo "deployed $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+# Boot the binary directly. This is more reliable than `open -a` over SSH and
+# still starts the same app bundle in fleet-supply mode.
+nohup /Applications/Teale.app/Contents/MacOS/Teale --fleet-supply \
+  >/tmp/teale-fleet.log 2>&1 </dev/null &
+sleep 2
+echo "deployed $(date -u '+%Y-%m-%dT%H:%M:%SZ') pid=$!"
 REMOTE
     echo "  [$host] install FAILED"
     FAIL+=("$host")

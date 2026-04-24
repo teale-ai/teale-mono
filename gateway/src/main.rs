@@ -184,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/account/link", post(handlers::account::link_account))
         .route("/v1/account/summary", get(handlers::account::summary))
         .route("/v1/account/sweep", post(handlers::account::sweep_device))
+        .route("/v1/account/send", post(handlers::account::send))
         .route(
             "/v1/account/devices/remove",
             post(handlers::account::remove_device),
@@ -193,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/wallet/transactions",
             get(handlers::wallet::transactions),
         )
+        .route("/v1/wallet/send", post(handlers::wallet::send))
         .route("/v1/groups", post(handlers::groups::create_group))
         .route("/v1/groups/mine", get(handlers::groups::list_mine))
         .route("/v1/groups/:id/members", post(handlers::groups::add_member))

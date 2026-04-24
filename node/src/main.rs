@@ -466,17 +466,14 @@ async fn run_relay_session(
                     && !state.shutting_down.load(Ordering::Relaxed);
                 snapshot.effective_context = swap.current_context_size().await;
                 snapshot.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
-                let payload = serde_json::json!({
-                    "register": {
-                        "nodeID": identity_hex,
-                        "publicKey": pubkey,
-                        "displayName": display_name,
-                        "capabilities": snapshot,
-                        "signature": signature
-                    }
-                });
-                if let Err(e) = relay.send_cluster_message(&identity_hex, "", &payload) {
-                    tracing::warn!("heartbeat re-register send failed: {}", e);
+                if let Err(e) = relay.register_signed(
+                    &identity_hex,
+                    &pubkey,
+                    &display_name,
+                    &snapshot,
+                    &signature,
+                ) {
+                    tracing::warn!("heartbeat re-register failed: {}", e);
                     break;
                 }
                 tracing::trace!(

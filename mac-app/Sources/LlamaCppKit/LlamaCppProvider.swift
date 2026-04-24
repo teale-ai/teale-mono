@@ -295,6 +295,13 @@ public actor LlamaCppProvider: InferenceProvider {
         urlRequest.timeoutInterval = 600
 
         var proxiedRequest = request
+        if let requestedModel = proxiedRequest.model,
+           requestMatchesLoadedModel(requestedModel, descriptor: descriptor) {
+            // llama-server is serving exactly one GGUF at a time. Normalize
+            // canonical slugs and other aliases back to the loaded file path
+            // so explicit remote-model routing works for GGUF suppliers too.
+            proxiedRequest.model = descriptor.huggingFaceRepo
+        }
         proxiedRequest.stream = true
         urlRequest.httpBody = try JSONEncoder().encode(proxiedRequest)
 
@@ -387,6 +394,35 @@ public actor LlamaCppProvider: InferenceProvider {
     /// Check if the server process is currently running.
     public var isServerRunning: Bool {
         serverProcess?.isRunning ?? false
+    }
+
+    private func requestMatchesLoadedModel(_ requestedModel: String, descriptor: ModelDescriptor) -> Bool {
+        let normalizedRequested = normalizeModelID(requestedModel)
+        let candidates = [
+            descriptor.id,
+            descriptor.huggingFaceRepo,
+            descriptor.openrouterId ?? "",
+        ]
+        .filter { !$0.isEmpty }
+        .map(normalizeModelID)
+
+        guard !normalizedRequested.isEmpty else { return false }
+        if candidates.contains(normalizedRequested) {
+            return true
+        }
+
+        let requestedTail = normalizedRequested.split(separator: "/").last.map(String.init) ?? normalizedRequested
+        return candidates.contains { candidate in
+            let candidateTail = candidate.split(separator: "/").last.map(String.init) ?? candidate
+            return candidateTail == requestedTail
+        }
+    }
+
+    private func normalizeModelID(_ modelID: String) -> String {
+        modelID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
     }
 }
 

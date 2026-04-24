@@ -79,6 +79,8 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
     public var wanRelayURL: String
     public var wanBusy: Bool
     public var wanLastError: String?
+    public var wanRelayStatus: String?
+    public var wanDiscoveredPeerCount: Int?
     public var maxStorageGB: Double
     public var orgCapacityReservation: Double
     public var clusterPasscodeSet: Bool
@@ -97,6 +99,8 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
         wanRelayURL: String,
         wanBusy: Bool = false,
         wanLastError: String? = nil,
+        wanRelayStatus: String? = nil,
+        wanDiscoveredPeerCount: Int? = nil,
         maxStorageGB: Double,
         orgCapacityReservation: Double,
         clusterPasscodeSet: Bool,
@@ -114,6 +118,8 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
         self.wanRelayURL = wanRelayURL
         self.wanBusy = wanBusy
         self.wanLastError = wanLastError
+        self.wanRelayStatus = wanRelayStatus
+        self.wanDiscoveredPeerCount = wanDiscoveredPeerCount
         self.maxStorageGB = maxStorageGB
         self.orgCapacityReservation = orgCapacityReservation
         self.clusterPasscodeSet = clusterPasscodeSet
@@ -284,10 +290,16 @@ public struct RemoteSolanaSnapshot: Codable, Sendable {
 
 public struct RemotePeersSnapshot: Codable, Sendable {
     public var wanPeers: [RemotePeerSnapshot]
+    public var wanDiscoveredPeers: [RemotePeerSnapshot]
     public var clusterPeers: [RemotePeerSnapshot]
 
-    public init(wanPeers: [RemotePeerSnapshot] = [], clusterPeers: [RemotePeerSnapshot] = []) {
+    public init(
+        wanPeers: [RemotePeerSnapshot] = [],
+        wanDiscoveredPeers: [RemotePeerSnapshot] = [],
+        clusterPeers: [RemotePeerSnapshot] = []
+    ) {
         self.wanPeers = wanPeers
+        self.wanDiscoveredPeers = wanDiscoveredPeers
         self.clusterPeers = clusterPeers
     }
 }

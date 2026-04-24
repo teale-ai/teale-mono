@@ -154,6 +154,45 @@ public struct HardwareCapability: Codable, Sendable {
         self.gpuVRAMGB = gpuVRAMGB
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case chipFamily
+        case chipName
+        case totalRAMGB
+        case gpuCoreCount
+        case memoryBandwidthGBs
+        case tier
+        case gpuBackend
+        case platform
+        case gpuVRAMGB
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        chipFamily = try container.decode(ChipFamily.self, forKey: .chipFamily)
+        chipName = try container.decode(String.self, forKey: .chipName)
+        totalRAMGB = try container.decode(Double.self, forKey: .totalRAMGB)
+        gpuCoreCount = try container.decode(Int.self, forKey: .gpuCoreCount)
+        memoryBandwidthGBs = try container.decode(Double.self, forKey: .memoryBandwidthGBs)
+
+        let rawTier = try container.decodeIfPresent(Int.self, forKey: .tier)
+        tier = rawTier.flatMap(DeviceTier.init(rawValue:)) ?? .tier4
+
+        if let rawBackend = try container.decodeIfPresent(String.self, forKey: .gpuBackend) {
+            gpuBackend = GPUBackend(rawValue: rawBackend)
+        } else {
+            gpuBackend = nil
+        }
+
+        if let rawPlatform = try container.decodeIfPresent(String.self, forKey: .platform) {
+            platform = Platform(rawValue: rawPlatform)
+        } else {
+            platform = nil
+        }
+
+        gpuVRAMGB = try container.decodeIfPresent(Double.self, forKey: .gpuVRAMGB)
+    }
+
     /// Estimated available RAM for model loading (total minus ~4GB for OS)
     public var availableRAMForModelsGB: Double {
         max(totalRAMGB - 4.0, 1.0)

@@ -794,6 +794,10 @@ let networkStatsFetchedAt = 0;
 let selectedNetworkModelId = null;
 let demandSort = { key: "devices", dir: "desc" };
 let pendingModelAction = null;
+let walletSendInFlight = false;
+let accountSendInFlight = false;
+let walletSendStatus = "";
+let accountSendStatus = "";
 let chatState = loadChatState();
 let chatRuntime = {
   inFlight: null,
@@ -1390,23 +1394,39 @@ function visibleWalletTransactions(entries) {
   return (entries || []).filter((entry) => (entry?.type || entry?.type_ || "").toUpperCase() !== "AVAILABILITY_DRIP");
 }
 
-function activeWalletBalance() {
-  if (accountSummary) {
-    return {
-      credits: accountSummary.balance_credits ?? null,
-      usdcCents: accountSummary.usdc_cents ?? 0,
-      note: t("account.wallet.note.live", {
-        fallback: "Account balance includes swept device balances. Local demand still uses this device bearer.",
-      }),
-      transactions: visibleWalletTransactions(accountSummary.transactions),
-    };
-  }
+function deviceWalletBalance() {
   return {
     credits: lastSnapshot?.wallet?.gateway_balance_credits ?? null,
     usdcCents: lastSnapshot?.wallet?.gateway_usdc_cents ?? 0,
     note: walletStatusNote(lastSnapshot?.wallet),
     transactions: visibleWalletTransactions(lastSnapshot?.wallet_transactions),
   };
+}
+
+function accountWalletBalance() {
+  return {
+    credits: accountSummary?.balance_credits ?? null,
+    usdcCents: accountSummary?.usdc_cents ?? 0,
+    note: t("account.wallet.note.live", {
+      fallback: "Account balance includes swept device balances and receives transfers sent to your linked account identifiers.",
+    }),
+    transactions: visibleWalletTransactions(accountSummary?.transactions),
+  };
+}
+
+function parseCreditAmount(rawValue) {
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return Number.NaN;
+  }
+  const amount = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return Number.NaN;
+  }
+  return amount;
 }
 
 function setBusyButton(button, label) {
@@ -2823,6 +2843,75 @@ function renderAccountWallet() {
   els.accountWalletNote.textContent = t("account.wallet.note.signedOut");
 }
 
+function defaultDeviceSendNote() {
+  if (!lastSnapshot?.wallet?.current_device_id) {
+    return "Waiting for the gateway device wallet.";
+  }
+  if (els.sendAsset.value !== "credits") {
+    return "USDC transfers are not available yet. Send Teale credits for now.";
+  }
+  return "Send from this device wallet to a device ID, phone, email, or GitHub username.";
+}
+
+function defaultAccountSendNote() {
+  if (!authUser && !accountSummary) {
+    return t("account.wallet.note.signedOut");
+  }
+  if (!accountSummary) {
+    return t("account.wallet.note.pending", {
+      fallback: "Account wallet starts at 0 until this device is linked locally.",
+    });
+  }
+  if (els.accountSendAsset.value !== "credits") {
+    return "USDC transfers are not available yet. Send Teale credits for now.";
+  }
+  return "Send from the account wallet to a device ID, phone, email, or GitHub username.";
+}
+
+function updateSendControls() {
+  const deviceWallet = deviceWalletBalance();
+  const deviceAmount = parseCreditAmount(els.sendAmount.value || "");
+  const deviceRecipient = els.sendRecipient.value.trim();
+  const deviceCredits = deviceWallet.credits;
+  const deviceCreditsSupported = els.sendAsset.value === "credits";
+  const deviceCanSend = Boolean(lastSnapshot?.wallet?.current_device_id)
+    && deviceCreditsSupported
+    && deviceRecipient
+    && Number.isInteger(deviceAmount)
+    && typeof deviceCredits === "number"
+    && deviceAmount > 0
+    && deviceAmount <= deviceCredits;
+
+  if (walletSendInFlight) {
+    setBusyButton(els.sendSubmit, t("chat.action.send", { fallback: "Send" }));
+  } else {
+    els.sendSubmit.textContent = t("chat.action.send", { fallback: "Send" });
+  }
+  els.sendSubmit.disabled = walletSendInFlight || !deviceCanSend;
+  els.sendNote.textContent = walletSendStatus || defaultDeviceSendNote();
+
+  const accountWallet = accountWalletBalance();
+  const accountAmount = parseCreditAmount(els.accountSendAmount.value || "");
+  const accountRecipient = els.accountSendRecipient.value.trim();
+  const accountCredits = accountWallet.credits;
+  const accountCreditsSupported = els.accountSendAsset.value === "credits";
+  const accountCanSend = Boolean(accountSummary?.account_user_id)
+    && accountCreditsSupported
+    && accountRecipient
+    && Number.isInteger(accountAmount)
+    && typeof accountCredits === "number"
+    && accountAmount > 0
+    && accountAmount <= accountCredits;
+
+  if (accountSendInFlight) {
+    setBusyButton(els.accountSendSubmit, t("chat.action.send", { fallback: "Send" }));
+  } else {
+    els.accountSendSubmit.textContent = t("chat.action.send", { fallback: "Send" });
+  }
+  els.accountSendSubmit.disabled = accountSendInFlight || !accountCanSend;
+  els.accountSendNote.textContent = accountSendStatus || defaultAccountSendNote();
+}
+
 function buildAccountDeviceRows() {
   const rows = new Map();
   const currentDeviceId = lastSnapshot?.wallet?.current_device_id || null;
@@ -3703,7 +3792,7 @@ async function refreshNetworkStats(force = false) {
 }
 
 function renderHome(snapshot) {
-  const walletView = activeWalletBalance();
+  const walletView = deviceWalletBalance();
   els.homeStatus.textContent = labelForState(snapshot?.service_state);
   els.homeModel.textContent = snapshot?.loaded_model_id || "No model loaded";
   els.homeBalance.textContent = walletView.credits != null
@@ -3742,8 +3831,8 @@ function renderSupply(snapshot) {
 
   els.supplyEarningRate.textContent = availabilityRateLabel(wallet);
   els.supplySessionCredits.textContent = formatCredits(wallet.estimated_session_credits ?? 0);
-  els.supplyWalletBalance.textContent = activeWalletBalance().credits != null
-    ? `${formatCredits(activeWalletBalance().credits)} credits`
+  els.supplyWalletBalance.textContent = deviceWalletBalance().credits != null
+    ? `${formatCredits(deviceWalletBalance().credits)} credits`
     : "Syncing...";
 
   const recommended = snapshot.models.find((model) => model.recommended) || snapshot.models[0];
@@ -3775,7 +3864,7 @@ function renderDemand(snapshot) {
 }
 
 function renderWallet(snapshot) {
-  const walletView = activeWalletBalance();
+  const walletView = deviceWalletBalance();
   const wallet = snapshot.wallet || {};
   els.walletDeviceName.textContent = snapshot.device?.display_name || "-";
   els.walletDeviceId.textContent = truncateDeviceId(wallet.current_device_id || "-");
@@ -3802,6 +3891,7 @@ function render(snapshot) {
   renderChat(snapshot);
   renderWallet(snapshot);
   renderAccountWallet();
+  updateSendControls();
   renderAuthState();
   renderAccountDevices();
 }
@@ -4040,15 +4130,91 @@ els.walletDeviceId.addEventListener("click", async () => {
 });
 
 els.ledgerExport.addEventListener("click", () => {
-  exportLedgerCsv(activeWalletBalance().transactions || []);
+  exportLedgerCsv(deviceWalletBalance().transactions || []);
 });
 
-els.sendSubmit.addEventListener("click", () => {
-  alert("Transfers are not wired in this Windows companion yet.");
+for (const input of [
+  els.sendAsset,
+  els.sendRecipient,
+  els.sendAmount,
+  els.sendMemo,
+  els.accountSendAsset,
+  els.accountSendRecipient,
+  els.accountSendAmount,
+  els.accountSendMemo,
+]) {
+  input.addEventListener("input", () => {
+    walletSendStatus = "";
+    accountSendStatus = "";
+    updateSendControls();
+  });
+  input.addEventListener("change", () => {
+    walletSendStatus = "";
+    accountSendStatus = "";
+    updateSendControls();
+  });
+}
+
+els.sendSubmit.addEventListener("click", async () => {
+  const amount = parseCreditAmount(els.sendAmount.value || "");
+  if (!Number.isInteger(amount)) {
+    walletSendStatus = "Enter a whole-number credit amount.";
+    updateSendControls();
+    return;
+  }
+  walletSendInFlight = true;
+  walletSendStatus = "";
+  updateSendControls();
+  try {
+    lastSnapshot = await post("/v1/app/wallet/send", {
+      asset: els.sendAsset.value,
+      recipient: els.sendRecipient.value.trim(),
+      amount,
+      memo: els.sendMemo.value.trim() || null,
+    });
+    walletSendStatus = `Sent ${formatCredits(amount)} credits.`;
+    els.sendAmount.value = "";
+    els.sendMemo.value = "";
+    await refreshAccountState();
+    render(lastSnapshot);
+  } catch (error) {
+    walletSendStatus = error.message;
+    updateSendControls();
+  } finally {
+    walletSendInFlight = false;
+    updateSendControls();
+  }
 });
 
-els.accountSendSubmit.addEventListener("click", () => {
-  alert("Account wallet transfers are not wired in this Windows companion yet.");
+els.accountSendSubmit.addEventListener("click", async () => {
+  const amount = parseCreditAmount(els.accountSendAmount.value || "");
+  if (!Number.isInteger(amount)) {
+    accountSendStatus = "Enter a whole-number credit amount.";
+    updateSendControls();
+    return;
+  }
+  accountSendInFlight = true;
+  accountSendStatus = "";
+  updateSendControls();
+  try {
+    accountSummary = await post("/v1/app/account/send", {
+      asset: els.accountSendAsset.value,
+      recipient: els.accountSendRecipient.value.trim(),
+      amount,
+      memo: els.accountSendMemo.value.trim() || null,
+    });
+    accountSendStatus = `Sent ${formatCredits(amount)} credits from the account wallet.`;
+    els.accountSendAmount.value = "";
+    els.accountSendMemo.value = "";
+    await refresh();
+    render(lastSnapshot);
+  } catch (error) {
+    accountSendStatus = error.message;
+    updateSendControls();
+  } finally {
+    accountSendInFlight = false;
+    updateSendControls();
+  }
 });
 
 for (const button of els.viewButtons) {

@@ -347,6 +347,59 @@ pub struct AccountSweepResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferRecipientSummary {
+    pub kind: String,
+    pub id: String,
+    pub display_name: Option<String>,
+    pub device_id: Option<String>,
+    pub account_user_id: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub github_username: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferReceipt {
+    pub asset: String,
+    pub amount: i64,
+    pub memo: Option<String>,
+    pub sender_kind: String,
+    pub sender_id: String,
+    pub sender_balance_credits: i64,
+    pub recipient: TransferRecipientSummary,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TransferError {
+    #[error("asset must be 'credits'")]
+    UnsupportedAsset,
+    #[error("amount must be greater than zero")]
+    InvalidAmount,
+    #[error("recipient is required")]
+    MissingRecipient,
+    #[error("recipient account not found")]
+    RecipientAccountNotFound,
+    #[error("recipient device not found")]
+    RecipientDeviceNotFound,
+    #[error("recipient matched multiple accounts")]
+    AmbiguousRecipient,
+    #[error("cannot transfer to the same wallet")]
+    SameWallet,
+    #[error("requesting device is not linked to an account")]
+    AccountNotLinked,
+    #[error("insufficient credits: balance {balance}, need {required}")]
+    InsufficientBalance { balance: i64, required: i64 },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl From<rusqlite::Error> for TransferError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkLedgerTotals {
     pub total_credits_earned: i64,
     pub total_credits_spent: i64,
@@ -1141,6 +1194,269 @@ pub fn network_ledger_totals(pool: &DbPool) -> anyhow::Result<NetworkLedgerTotal
     })
 }
 
+#[derive(Debug, Clone)]
+enum ResolvedTransferTarget {
+    Device {
+        device_id: String,
+    },
+    Account {
+        account_user_id: String,
+        display_name: Option<String>,
+        phone: Option<String>,
+        email: Option<String>,
+        github_username: Option<String>,
+    },
+}
+
+impl ResolvedTransferTarget {
+    fn summary(&self) -> TransferRecipientSummary {
+        match self {
+            Self::Device { device_id } => TransferRecipientSummary {
+                kind: "device".to_string(),
+                id: device_id.clone(),
+                display_name: None,
+                device_id: Some(device_id.clone()),
+                account_user_id: None,
+                phone: None,
+                email: None,
+                github_username: None,
+            },
+            Self::Account {
+                account_user_id,
+                display_name,
+                phone,
+                email,
+                github_username,
+            } => TransferRecipientSummary {
+                kind: "account".to_string(),
+                id: account_user_id.clone(),
+                display_name: display_name.clone(),
+                device_id: None,
+                account_user_id: Some(account_user_id.clone()),
+                phone: phone.clone(),
+                email: email.clone(),
+                github_username: github_username.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum TransferLookup {
+    Device(String),
+    Account(String),
+    Email(String),
+    PhoneDigits(String),
+    Github(String),
+}
+
+fn looks_like_device_id(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn normalize_email(value: &str) -> Option<String> {
+    let trimmed = value.trim().to_lowercase();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn normalize_github_username(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_start_matches('@').to_lowercase();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn normalize_phone_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('+') {
+        Some(format!("+{digits}"))
+    } else {
+        Some(digits)
+    }
+}
+
+fn normalize_phone_digits(value: &str) -> Option<String> {
+    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+    (!digits.is_empty()).then_some(digits)
+}
+
+fn parse_transfer_lookup(raw: &str) -> Result<TransferLookup, TransferError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(TransferError::MissingRecipient);
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("device:") {
+        return Ok(TransferLookup::Device(rest.trim().to_string()));
+    }
+    if let Some(rest) = trimmed.strip_prefix("account:") {
+        return Ok(TransferLookup::Account(rest.trim().to_string()));
+    }
+    if let Some(rest) = trimmed.strip_prefix("email:") {
+        let email = normalize_email(rest).ok_or(TransferError::MissingRecipient)?;
+        return Ok(TransferLookup::Email(email));
+    }
+    if let Some(rest) = trimmed.strip_prefix("phone:") {
+        let digits = normalize_phone_digits(rest).ok_or(TransferError::MissingRecipient)?;
+        return Ok(TransferLookup::PhoneDigits(digits));
+    }
+    if let Some(rest) = trimmed.strip_prefix("github:") {
+        let github = normalize_github_username(rest).ok_or(TransferError::MissingRecipient)?;
+        return Ok(TransferLookup::Github(github));
+    }
+
+    if looks_like_device_id(trimmed) {
+        return Ok(TransferLookup::Device(trimmed.to_string()));
+    }
+    if trimmed.contains('@') {
+        let email = normalize_email(trimmed).ok_or(TransferError::MissingRecipient)?;
+        return Ok(TransferLookup::Email(email));
+    }
+    if let Some(digits) = normalize_phone_digits(trimmed) {
+        if trimmed.starts_with('+')
+            || trimmed
+                .chars()
+                .any(|c| matches!(c, '(' | ')' | ' ' | '-' | '.'))
+        {
+            return Ok(TransferLookup::PhoneDigits(digits));
+        }
+    }
+
+    let github = normalize_github_username(trimmed).ok_or(TransferError::MissingRecipient)?;
+    Ok(TransferLookup::Github(github))
+}
+
+fn load_account_target_from_query<P: rusqlite::Params>(
+    tx: &rusqlite::Transaction<'_>,
+    sql: &str,
+    params: P,
+) -> Result<ResolvedTransferTarget, TransferError> {
+    let mut stmt = tx.prepare(sql)?;
+    let rows = stmt.query_map(params, |r| {
+        Ok(ResolvedTransferTarget::Account {
+            account_user_id: r.get(0)?,
+            display_name: r.get(1)?,
+            phone: r.get(2)?,
+            email: r.get(3)?,
+            github_username: r.get(4)?,
+        })
+    })?;
+    let results: Vec<ResolvedTransferTarget> = rows.filter_map(|row| row.ok()).take(2).collect();
+    match results.len() {
+        0 => Err(TransferError::RecipientAccountNotFound),
+        1 => Ok(results.into_iter().next().expect("one result")),
+        _ => Err(TransferError::AmbiguousRecipient),
+    }
+}
+
+fn resolve_transfer_target_tx(
+    tx: &rusqlite::Transaction<'_>,
+    raw_recipient: &str,
+) -> Result<ResolvedTransferTarget, TransferError> {
+    let trimmed = raw_recipient.trim();
+    if !trimmed.is_empty()
+        && !trimmed.contains('@')
+        && !trimmed.starts_with('+')
+        && !trimmed.contains(':')
+    {
+        if let Ok(device_id) = tx.query_row(
+            "SELECT device_id FROM devices WHERE device_id = ?",
+            [trimmed],
+            |r| r.get::<_, String>(0),
+        ) {
+            return Ok(ResolvedTransferTarget::Device { device_id });
+        }
+    }
+
+    match parse_transfer_lookup(raw_recipient)? {
+        TransferLookup::Device(device_id) => tx
+            .query_row(
+                "SELECT device_id FROM devices WHERE device_id = ?",
+                [device_id.clone()],
+                |r| r.get::<_, String>(0),
+            )
+            .map(|device_id| ResolvedTransferTarget::Device { device_id })
+            .map_err(|_| TransferError::RecipientDeviceNotFound),
+        TransferLookup::Account(account_user_id) => tx
+            .query_row(
+                "SELECT account_user_id, display_name, phone, email, github_username
+                 FROM account_wallets
+                 WHERE account_user_id = ?",
+                [account_user_id],
+                |r| {
+                    Ok(ResolvedTransferTarget::Account {
+                        account_user_id: r.get(0)?,
+                        display_name: r.get(1)?,
+                        phone: r.get(2)?,
+                        email: r.get(3)?,
+                        github_username: r.get(4)?,
+                    })
+                },
+            )
+            .map_err(|_| TransferError::RecipientAccountNotFound),
+        TransferLookup::Email(email) => load_account_target_from_query(
+            tx,
+            "SELECT account_user_id, display_name, phone, email, github_username
+             FROM account_wallets
+             WHERE LOWER(email) = ?",
+            [email],
+        ),
+        TransferLookup::PhoneDigits(phone_digits) => load_account_target_from_query(
+            tx,
+            "SELECT account_user_id, display_name, phone, email, github_username
+             FROM account_wallets
+             WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(phone, ''), '+', ''), ' ', ''), '-', ''), '(', ''), ')', ''), '.', '') = ?",
+            [phone_digits],
+        ),
+        TransferLookup::Github(username) => load_account_target_from_query(
+            tx,
+            "SELECT account_user_id, display_name, phone, email, github_username
+             FROM account_wallets
+             WHERE LOWER(github_username) = ?",
+            [username],
+        ),
+    }
+}
+
+fn format_sender_note(recipient: &ResolvedTransferTarget, memo: Option<&str>) -> String {
+    let target = match recipient {
+        ResolvedTransferTarget::Device { device_id } => format!("device {device_id}"),
+        ResolvedTransferTarget::Account {
+            account_user_id,
+            phone,
+            email,
+            github_username,
+            ..
+        } => phone
+            .clone()
+            .or_else(|| email.clone())
+            .or_else(|| github_username.clone())
+            .unwrap_or_else(|| format!("account {account_user_id}")),
+    };
+    match memo.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }) {
+        Some(memo) => format!("transfer to {target}: {memo}"),
+        None => format!("transfer to {target}"),
+    }
+}
+
+fn format_recipient_note(sender_label: &str, memo: Option<&str>) -> String {
+    match memo.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }) {
+        Some(memo) => format!("transfer from {sender_label}: {memo}"),
+        None => format!("transfer from {sender_label}"),
+    }
+}
+
 pub fn link_device_to_account(
     pool: &DbPool,
     device_id: &str,
@@ -1150,6 +1466,12 @@ pub fn link_device_to_account(
     let mut conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
+    let normalized_phone = metadata.phone.as_deref().and_then(normalize_phone_value);
+    let normalized_email = metadata.email.as_deref().and_then(normalize_email);
+    let normalized_github = metadata
+        .github_username
+        .as_deref()
+        .and_then(normalize_github_username);
     tx.execute(
         "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
         params![device_id, now, now],
@@ -1172,9 +1494,9 @@ pub fn link_device_to_account(
         params![
             account_user_id,
             metadata.display_name.as_deref(),
-            metadata.phone.as_deref(),
-            metadata.email.as_deref(),
-            metadata.github_username.as_deref(),
+            normalized_phone.as_deref(),
+            normalized_email.as_deref(),
+            normalized_github.as_deref(),
             now,
             now,
         ],
@@ -1204,6 +1526,252 @@ pub fn link_device_to_account(
     )?;
     tx.commit()?;
     Ok(())
+}
+
+pub fn transfer_from_device_wallet(
+    pool: &DbPool,
+    sender_device_id: &str,
+    raw_recipient: &str,
+    amount_credits: i64,
+    memo: Option<&str>,
+) -> Result<TransferReceipt, TransferError> {
+    if amount_credits <= 0 {
+        return Err(TransferError::InvalidAmount);
+    }
+
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [sender_device_id],
+    )?;
+    let sender_balance: i64 = tx
+        .query_row(
+            "SELECT balance FROM balances WHERE device_id = ?",
+            [sender_device_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if sender_balance < amount_credits {
+        return Err(TransferError::InsufficientBalance {
+            balance: sender_balance,
+            required: amount_credits,
+        });
+    }
+
+    let recipient = resolve_transfer_target_tx(&tx, raw_recipient)?;
+    if matches!(
+        &recipient,
+        ResolvedTransferTarget::Device { device_id } if device_id == sender_device_id
+    ) {
+        return Err(TransferError::SameWallet);
+    }
+
+    tx.execute(
+        "UPDATE balances SET balance = balance - ? WHERE device_id = ?",
+        params![amount_credits, sender_device_id],
+    )?;
+    tx.execute(
+        "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+         VALUES (?, 'TRANSFER_OUT', ?, ?, ?)",
+        params![
+            sender_device_id,
+            -amount_credits,
+            now,
+            format_sender_note(&recipient, memo),
+        ],
+    )?;
+
+    match &recipient {
+        ResolvedTransferTarget::Device { device_id } => {
+            tx.execute(
+                "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+                [device_id],
+            )?;
+            tx.execute(
+                "UPDATE balances SET balance = balance + ? WHERE device_id = ?",
+                params![amount_credits, device_id],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+                 VALUES (?, 'TRANSFER_IN', ?, ?, ?)",
+                params![
+                    device_id,
+                    amount_credits,
+                    now,
+                    format_recipient_note(sender_device_id, memo),
+                ],
+            )?;
+        }
+        ResolvedTransferTarget::Account {
+            account_user_id, ..
+        } => {
+            tx.execute(
+                "UPDATE account_wallets
+                 SET balance_credits = balance_credits + ?, updated_at = ?
+                 WHERE account_user_id = ?",
+                params![amount_credits, now, account_user_id],
+            )?;
+            tx.execute(
+                "INSERT INTO account_ledger
+                    (account_user_id, asset, amount, type, timestamp, device_id, note)
+                 VALUES (?, 'credits', ?, 'TRANSFER_IN', ?, ?, ?)",
+                params![
+                    account_user_id,
+                    amount_credits,
+                    now,
+                    sender_device_id,
+                    format_recipient_note(sender_device_id, memo),
+                ],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+
+    Ok(TransferReceipt {
+        asset: "credits".to_string(),
+        amount: amount_credits,
+        memo: memo.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        }),
+        sender_kind: "device".to_string(),
+        sender_id: sender_device_id.to_string(),
+        sender_balance_credits: sender_balance - amount_credits,
+        recipient: recipient.summary(),
+    })
+}
+
+pub fn transfer_from_account_wallet(
+    pool: &DbPool,
+    requester_device_id: &str,
+    raw_recipient: &str,
+    amount_credits: i64,
+    memo: Option<&str>,
+) -> Result<TransferReceipt, TransferError> {
+    if amount_credits <= 0 {
+        return Err(TransferError::InvalidAmount);
+    }
+
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let account_user_id: String = tx
+        .query_row(
+            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+            [requester_device_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| TransferError::AccountNotLinked)?;
+    let sender_balance: i64 = tx
+        .query_row(
+            "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
+            [account_user_id.clone()],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if sender_balance < amount_credits {
+        return Err(TransferError::InsufficientBalance {
+            balance: sender_balance,
+            required: amount_credits,
+        });
+    }
+
+    let recipient = resolve_transfer_target_tx(&tx, raw_recipient)?;
+    if matches!(
+        &recipient,
+        ResolvedTransferTarget::Account {
+            account_user_id: recipient_account_id,
+            ..
+        } if recipient_account_id == &account_user_id
+    ) {
+        return Err(TransferError::SameWallet);
+    }
+
+    tx.execute(
+        "UPDATE account_wallets
+         SET balance_credits = balance_credits - ?, updated_at = ?
+         WHERE account_user_id = ?",
+        params![amount_credits, now, account_user_id],
+    )?;
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note)
+         VALUES (?, 'credits', ?, 'TRANSFER_OUT', ?, ?, ?)",
+        params![
+            account_user_id,
+            -amount_credits,
+            now,
+            requester_device_id,
+            format_sender_note(&recipient, memo),
+        ],
+    )?;
+
+    let sender_label = format!("account {account_user_id}");
+    match &recipient {
+        ResolvedTransferTarget::Device { device_id } => {
+            tx.execute(
+                "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+                [device_id],
+            )?;
+            tx.execute(
+                "UPDATE balances SET balance = balance + ? WHERE device_id = ?",
+                params![amount_credits, device_id],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+                 VALUES (?, 'TRANSFER_IN', ?, ?, ?)",
+                params![
+                    device_id,
+                    amount_credits,
+                    now,
+                    format_recipient_note(&sender_label, memo),
+                ],
+            )?;
+        }
+        ResolvedTransferTarget::Account {
+            account_user_id: recipient_account_id,
+            ..
+        } => {
+            tx.execute(
+                "UPDATE account_wallets
+                 SET balance_credits = balance_credits + ?, updated_at = ?
+                 WHERE account_user_id = ?",
+                params![amount_credits, now, recipient_account_id],
+            )?;
+            tx.execute(
+                "INSERT INTO account_ledger
+                    (account_user_id, asset, amount, type, timestamp, device_id, note)
+                 VALUES (?, 'credits', ?, 'TRANSFER_IN', ?, ?, ?)",
+                params![
+                    recipient_account_id,
+                    amount_credits,
+                    now,
+                    requester_device_id,
+                    format_recipient_note(&sender_label, memo),
+                ],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+
+    Ok(TransferReceipt {
+        asset: "credits".to_string(),
+        amount: amount_credits,
+        memo: memo.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then_some(trimmed.to_string())
+        }),
+        sender_kind: "account".to_string(),
+        sender_id: account_user_id,
+        sender_balance_credits: sender_balance - amount_credits,
+        recipient: recipient.summary(),
+    })
 }
 
 pub fn account_user_id_for_device(pool: &DbPool, device_id: &str) -> Option<String> {
@@ -3124,6 +3692,109 @@ mod tests {
         assert!(device_entries
             .iter()
             .any(|entry| entry.type_ == "ACCOUNT_SWEEP_OUT" && entry.amount == -1_250));
+    }
+
+    #[test]
+    fn transfer_from_device_wallet_to_device_updates_only_balances() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        upsert_device(&pool, "device-b").unwrap();
+        record_bonus(&pool, "device-a", 500).unwrap();
+
+        let receipt =
+            transfer_from_device_wallet(&pool, "device-a", "device-b", 125, Some("team lunch"))
+                .unwrap();
+        assert_eq!(receipt.sender_kind, "device");
+        assert_eq!(receipt.sender_balance_credits, 375);
+        assert_eq!(receipt.recipient.kind, "device");
+        assert_eq!(get_balance(&pool, "device-a").balance_credits, 375);
+        assert_eq!(get_balance(&pool, "device-b").balance_credits, 125);
+        assert_eq!(get_balance(&pool, "device-a").total_spent_credits, 0);
+        assert_eq!(get_balance(&pool, "device-b").total_earned_credits, 0);
+
+        let sender_entries = list_transactions(&pool, "device-a", 10);
+        assert!(sender_entries
+            .iter()
+            .any(|entry| entry.type_ == "TRANSFER_OUT" && entry.amount == -125));
+        let recipient_entries = list_transactions(&pool, "device-b", 10);
+        assert!(recipient_entries
+            .iter()
+            .any(|entry| entry.type_ == "TRANSFER_IN" && entry.amount == 125));
+    }
+
+    #[test]
+    fn transfer_from_device_wallet_to_account_identifier_credits_account_wallet() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "sender").unwrap();
+        upsert_device(&pool, "recipient-device").unwrap();
+        record_bonus(&pool, "sender", 400).unwrap();
+        link_device_to_account(
+            &pool,
+            "recipient-device",
+            "user-123",
+            &AccountLinkMetadata {
+                phone: Some("+1 (555) 123-4567".into()),
+                email: Some("Taylor@example.com".into()),
+                github_username: Some("@TaylorHou".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let receipt =
+            transfer_from_device_wallet(&pool, "sender", "taylor@example.com", 90, None).unwrap();
+        assert_eq!(receipt.recipient.kind, "account");
+        assert_eq!(
+            receipt.recipient.account_user_id.as_deref(),
+            Some("user-123")
+        );
+        assert_eq!(get_balance(&pool, "sender").balance_credits, 310);
+
+        let summary = account_summary(&pool, "user-123").unwrap();
+        assert_eq!(summary.balance_credits, 90);
+        assert!(summary
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "TRANSFER_IN" && entry.amount == 90));
+    }
+
+    #[test]
+    fn transfer_from_account_wallet_to_device_debits_account_balance() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "sender-device").unwrap();
+        upsert_device(&pool, "recipient-device").unwrap();
+        record_bonus(&pool, "sender-device", 300).unwrap();
+        link_device_to_account(
+            &pool,
+            "sender-device",
+            "sender-account",
+            &AccountLinkMetadata {
+                email: Some("sender@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sweep_device_to_account(&pool, "sender-device", "sender-device").unwrap();
+
+        let receipt = transfer_from_account_wallet(
+            &pool,
+            "sender-device",
+            "recipient-device",
+            120,
+            Some("bonus"),
+        )
+        .unwrap();
+        assert_eq!(receipt.sender_kind, "account");
+        assert_eq!(receipt.sender_id, "sender-account");
+        assert_eq!(receipt.sender_balance_credits, 180);
+        assert_eq!(get_balance(&pool, "recipient-device").balance_credits, 120);
+
+        let account = account_summary(&pool, "sender-account").unwrap();
+        assert_eq!(account.balance_credits, 180);
+        assert!(account
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "TRANSFER_OUT" && entry.amount == -120));
     }
 
     #[test]

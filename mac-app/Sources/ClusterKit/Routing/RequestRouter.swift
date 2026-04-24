@@ -13,12 +13,12 @@ public struct RequestRouter: Sendable {
     public func route(
         request: ChatCompletionRequest,
         clusterManager: ClusterManager,
-        localModelLoaded: String?
+        localModel: ModelDescriptor?
     ) -> RouteDecision {
         route(
             request: request,
             clusterManager: clusterManager,
-            localModelLoaded: localModelLoaded,
+            localModel: localModel,
             requestOrganizationID: request.groupID,
             isExternalRequest: false
         )
@@ -28,11 +28,13 @@ public struct RequestRouter: Sendable {
     public func route(
         request: ChatCompletionRequest,
         clusterManager: ClusterManager,
-        localModelLoaded: String?,
+        localModel: ModelDescriptor?,
         requestOrganizationID: String?,
         isExternalRequest: Bool
     ) -> RouteDecision {
-        let modelID = request.model ?? localModelLoaded ?? ""
+        let requestedModel = request.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveLocalModelID = localModel.flatMap { $0.openrouterId ?? $0.huggingFaceRepo }
+        let modelID = requestedModel?.isEmpty == false ? requestedModel! : (effectiveLocalModelID ?? "")
 
         // For external (non-org) requests, check capacity reservation
         if isExternalRequest {
@@ -55,12 +57,22 @@ public struct RequestRouter: Sendable {
             return .remote(peerID: bestPeer.id, peer: bestPeer)
         }
 
-        // Second: if local model is loaded, use local
-        if localModelLoaded != nil {
-            return .local
+        // Second: use local only when it can actually satisfy the request.
+        if let localModel {
+            if let requestedModel {
+                if modelIdentifiersMatch(localModel, requested: requestedModel) {
+                    return .local
+                }
+            } else {
+                return .local
+            }
         }
 
-        // Third: check if any remote peer has any model loaded (prefer least loaded)
+        // Third: for implicit routing only, fall back to any peer with a loaded model.
+        guard requestedModel == nil || requestedModel?.isEmpty == true else {
+            return .noModelAvailable
+        }
+
         let anyAvailablePeer = clusterManager.topology.connectedPeers
             .filter { !$0.isGenerating && $0.throttleLevel > 0 && !$0.loadedModels.isEmpty }
             .sorted { lhs, rhs in
@@ -77,6 +89,25 @@ public struct RequestRouter: Sendable {
 
         // No model available anywhere
         return .noModelAvailable
+    }
+
+    private func modelIdentifiersMatch(_ descriptor: ModelDescriptor, requested: String) -> Bool {
+        let query = normalizeModelID(requested)
+        guard !query.isEmpty else { return false }
+        let candidates = [descriptor.id, descriptor.huggingFaceRepo, descriptor.openrouterId ?? ""]
+            .filter { !$0.isEmpty }
+            .map(normalizeModelID)
+        let queryTail = query.split(separator: "/").last.map(String.init) ?? query
+        for candidate in candidates {
+            if candidate == query { return true }
+            let candidateTail = candidate.split(separator: "/").last.map(String.init) ?? candidate
+            if candidateTail == queryTail { return true }
+        }
+        return false
+    }
+
+    private func normalizeModelID(_ value: String) -> String {
+        value.lowercased().replacingOccurrences(of: "_", with: "-")
     }
 }
 

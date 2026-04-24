@@ -39,6 +39,14 @@ pub struct RemoveDeviceReq {
     device_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SendReq {
+    asset: String,
+    recipient: String,
+    amount: i64,
+    memo: Option<String>,
+}
+
 fn device_from_header(state: &AppState, headers: &HeaderMap) -> Result<String, GatewayError> {
     let header = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -139,4 +147,47 @@ pub async fn remove_device(
         ledger::remove_device_from_account(pool, &requester_device_id, req.device_id.trim())
             .map_err(GatewayError::Other)?;
     Ok(Json(summary))
+}
+
+pub async fn send(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SendReq>,
+) -> Result<Json<ledger::TransferReceipt>, GatewayError> {
+    let requester_device_id = device_from_header(&state, &headers)?;
+    if !req.asset.eq_ignore_ascii_case("credits") {
+        return Err(GatewayError::BadRequest(
+            ledger::TransferError::UnsupportedAsset.to_string(),
+        ));
+    }
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
+    let receipt = ledger::transfer_from_account_wallet(
+        pool,
+        &requester_device_id,
+        &req.recipient,
+        req.amount,
+        req.memo.as_deref(),
+    )
+    .map_err(map_transfer_error)?;
+    Ok(Json(receipt))
+}
+
+fn map_transfer_error(err: ledger::TransferError) -> GatewayError {
+    match err {
+        ledger::TransferError::UnsupportedAsset
+        | ledger::TransferError::InvalidAmount
+        | ledger::TransferError::MissingRecipient => GatewayError::BadRequest(err.to_string()),
+        ledger::TransferError::RecipientAccountNotFound
+        | ledger::TransferError::RecipientDeviceNotFound => GatewayError::NotFound(err.to_string()),
+        ledger::TransferError::AmbiguousRecipient
+        | ledger::TransferError::SameWallet
+        | ledger::TransferError::AccountNotLinked => GatewayError::Conflict(err.to_string()),
+        ledger::TransferError::InsufficientBalance { balance, required } => {
+            GatewayError::InsufficientCredits { balance, required }
+        }
+        ledger::TransferError::Other(err) => GatewayError::Other(err),
+    }
 }

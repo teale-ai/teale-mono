@@ -136,19 +136,13 @@ public actor Compiler: InferenceProvider {
     /// When a model is explicitly set, validate it's available.
     private func validateAndRoute(_ request: ChatCompletionRequest) async throws -> ChatCompletionRequest {
         if let requestedModel = request.model {
-            // User explicitly chose a model — verify it's actually available
-            if !availableModels.isEmpty {
-                let found = availableModels.contains { $0.model == requestedModel }
-                let localMatch = await fallbackProvider.loadedModel?.matchesIdentifier(requestedModel) ?? false
-                if !found && !localMatch {
-                    let available = Set(availableModels.map(\.model)).sorted()
-                    throw CompilationError.modelNotAvailable(
-                        requested: requestedModel,
-                        available: available
-                    )
-                }
-            }
-            // Model found (or no model list yet) — pass through
+            // The live provider chain is the source of truth for explicit model
+            // routing. CompilerKit's cached `availableModels` can lag behind
+            // `/v1/models` during peer churn, which caused valid remote models
+            // to be rejected before LAN/WAN providers could route them.
+            // Pass explicit model requests through and let the provider surface
+            // a current error if the model is truly unreachable.
+            _ = requestedModel
             return request
         }
 

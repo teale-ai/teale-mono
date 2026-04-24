@@ -314,6 +314,29 @@ struct AccountSweepResponse {
     account: AccountSnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WalletSendRequest {
+    asset: String,
+    recipient: String,
+    amount: i64,
+    memo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GatewayWalletBalanceResponse {
+    #[serde(rename = "deviceID")]
+    device_id: String,
+    balance_credits: i64,
+    total_earned_credits: i64,
+    total_spent_credits: i64,
+    usdc_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GatewayWalletTransactionsResponse {
+    transactions: Vec<WalletTransactionSnapshot>,
+}
+
 #[derive(Debug)]
 struct ParsedHttpRequest {
     method: String,
@@ -1132,6 +1155,96 @@ impl StatusState {
             .context("decode remove device response")
     }
 
+    async fn refresh_gateway_wallet_snapshot(&self) -> anyhow::Result<()> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let client = gateway_client(Duration::from_secs(20))?;
+
+        let balance_url = format!("{gateway_base_url}/wallet/balance");
+        let balance = client
+            .get(&balance_url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("GET {balance_url}"))?
+            .error_for_status()
+            .with_context(|| format!("wallet balance request failed at {balance_url}"))?
+            .json::<GatewayWalletBalanceResponse>()
+            .await
+            .context("decode wallet balance response")?;
+
+        let tx_url = format!("{gateway_base_url}/wallet/transactions?limit=25");
+        let transactions = client
+            .get(&tx_url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .with_context(|| format!("GET {tx_url}"))?
+            .error_for_status()
+            .with_context(|| format!("wallet transactions request failed at {tx_url}"))?
+            .json::<GatewayWalletTransactionsResponse>()
+            .await
+            .context("decode wallet transactions response")?;
+
+        self.set_gateway_wallet(
+            GatewayWalletState {
+                device_id: balance.device_id,
+                balance_credits: balance.balance_credits,
+                total_earned_credits: balance.total_earned_credits,
+                total_spent_credits: balance.total_spent_credits,
+                usdc_cents: balance.usdc_cents,
+                synced_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            },
+            Some(token),
+            transactions.transactions,
+        )
+        .await;
+
+        Ok(())
+    }
+
+    async fn send_device_wallet(&self, payload: WalletSendRequest) -> anyhow::Result<AppSnapshot> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/wallet/send");
+        let client = gateway_client(Duration::from_secs(20))?;
+        client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?
+            .error_for_status()
+            .with_context(|| format!("wallet send failed at {url}"))?;
+        self.refresh_gateway_wallet_snapshot().await?;
+        Ok(self.snapshot().await)
+    }
+
+    async fn send_account_wallet(
+        &self,
+        payload: WalletSendRequest,
+    ) -> anyhow::Result<AccountSnapshot> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/send");
+        let client = gateway_client(Duration::from_secs(20))?;
+        client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?
+            .error_for_status()
+            .with_context(|| format!("account send failed at {url}"))?;
+        self.refresh_gateway_wallet_snapshot().await?;
+        self.account_snapshot().await
+    }
+
     async fn gateway_device_token(&self) -> anyhow::Result<String> {
         let inner = self.inner.lock().await;
         inner
@@ -1810,6 +1923,22 @@ async fn route(
             .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
             Ok(HttpResponse::json("200 OK", body))
         }
+        ("POST", "/v1/app/account/send") => {
+            let payload: WalletSendRequest = serde_json::from_slice(body).map_err(|e| {
+                (
+                    "400 Bad Request",
+                    format!("invalid account send payload: {e}"),
+                )
+            })?;
+            let body = serde_json::to_string(
+                &state
+                    .send_account_wallet(payload)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
         ("POST", "/v1/app/account/devices/remove") => {
             let payload: AccountDeviceControlRequest =
                 serde_json::from_slice(body).map_err(|e| {
@@ -1856,6 +1985,22 @@ async fn route(
                 .map_err(|e| ("409 Conflict", e.to_string()))?;
             let body = serde_json::to_string(&state.snapshot().await)
                 .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/wallet/send") => {
+            let payload: WalletSendRequest = serde_json::from_slice(body).map_err(|e| {
+                (
+                    "400 Bad Request",
+                    format!("invalid wallet send payload: {e}"),
+                )
+            })?;
+            let body = serde_json::to_string(
+                &state
+                    .send_device_wallet(payload)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
             Ok(HttpResponse::json("200 OK", body))
         }
         _ => Err(("404 Not Found", "not found".to_string())),

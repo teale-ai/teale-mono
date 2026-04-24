@@ -10,6 +10,31 @@ enum ModelsRoute {
     /// Clients can send `"model": "teale-auto"` or omit `model` entirely.
     static let autoModelID = "teale-auto"
 
+    static func advertisedModelIDs(for descriptor: ModelDescriptor) -> [String] {
+        [descriptor.openrouterId, descriptor.huggingFaceRepo, descriptor.id]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    static func advertisedModelID(for descriptor: ModelDescriptor) -> String {
+        advertisedModelIDs(for: descriptor).first ?? descriptor.huggingFaceRepo
+    }
+
+    static func modelIDMatches(_ availableModelID: String, requested: String) -> Bool {
+        let normalizedAvailable = normalizeModelID(availableModelID)
+        let normalizedRequested = normalizeModelID(requested)
+        guard !normalizedAvailable.isEmpty, !normalizedRequested.isEmpty else { return false }
+        if normalizedAvailable == normalizedRequested { return true }
+
+        let availableTail = normalizedAvailable.split(separator: "/").last.map(String.init) ?? normalizedAvailable
+        let requestedTail = normalizedRequested.split(separator: "/").last.map(String.init) ?? normalizedRequested
+        return availableTail == requestedTail
+    }
+
+    private static func normalizeModelID(_ value: String) -> String {
+        value.lowercased().replacingOccurrences(of: "_", with: "-")
+    }
+
     static func handle(engine: InferenceEngineManager, peerModelProvider: PeerModelProvider?) async throws -> Response {
         var models: [ModelsListResponse.ModelObject] = []
         var seen: Set<String> = []
@@ -24,17 +49,13 @@ enum ModelsRoute {
         ))
 
         if let loaded = await engine.loadedModel {
-            for identifier in [loaded.huggingFaceRepo, loaded.openrouterId]
-                .compactMap({ $0 })
-                .filter({ !seen.contains($0) }) {
-                models.append(ModelsListResponse.ModelObject(
-                    id: identifier,
-                    object: "model",
-                    created: now,
-                    ownedBy: "local"
-                ))
-                seen.insert(identifier)
-            }
+            models.append(ModelsListResponse.ModelObject(
+                id: advertisedModelID(for: loaded),
+                object: "model",
+                created: now,
+                ownedBy: "local"
+            ))
+            seen.insert(advertisedModelID(for: loaded))
         }
 
         // Include models from connected WAN and cluster peers
