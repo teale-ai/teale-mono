@@ -137,6 +137,19 @@ models:
     description: "Multimodal Qwen model for vision, reasoning, and tool use."
     aliases: [qwen3.6-35b-a3b, qwen3-6-35b-a3b, qwen3.6-35b]
 
+  - id: qwen/qwen3.6-27b
+    display_name: Qwen 3.6 27B Dense (Coding)
+    owned_by: qwen
+    context_length: 262144
+    max_output_tokens: 32768
+    params_b: 27
+    pricing_prompt: "0.00000025"
+    pricing_completion: "0.00000050"
+    quantization: "8bit"
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Dense 27B Qwen 3.6 tuned for agentic coding and repo-level reasoning."
+    aliases: [qwen3.6-27b, qwen3-6-27b]
+
   - id: deepseek/deepseek-v3.2
     display_name: DeepSeek V3.2 (MoE)
     owned_by: deepseek

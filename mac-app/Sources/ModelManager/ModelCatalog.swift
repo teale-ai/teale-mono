@@ -167,6 +167,19 @@ public struct ModelCatalog: Sendable {
             openrouterId: "meta-llama/llama-4-scout"
         ),
         ModelDescriptor(
+            id: "qwen3.6-27b-8bit",
+            name: "Qwen 3.6 27B (Dense, Coding)",
+            huggingFaceRepo: "unsloth/Qwen3.6-27B-MLX-8bit",
+            parameterCount: "27B",
+            quantization: .q8,
+            estimatedSizeGB: 34.7,
+            requiredRAMGB: 42.0,
+            family: "Qwen",
+            description: "Qwen 3.6 27B dense — flagship-level coding & agentic perf, 256K ctx. 8-bit MLX.",
+            popularityRank: 6,
+            openrouterId: "qwen/qwen3.6-27b"
+        ),
+        ModelDescriptor(
             id: "qwen3.6-35b-a3b-bf16",
             name: "Qwen 3.6 35B A3B (MoE, VLM)",
             huggingFaceRepo: "mlx-community/Qwen3.6-35B-A3B-bf16",
