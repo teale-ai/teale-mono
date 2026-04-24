@@ -1,91 +1,65 @@
 # Wallet and Payments
 
-Teale has a built-in wallet for earning, spending, and transferring USDC credits. All settlements happen on the Solana blockchain.
+The released apps expose Teale's wallet features through the desktop UI.
 
 ---
 
-## Prerequisites
+## Device wallet
 
-- Teale installed and running
+Both macOS and Windows show a device wallet with:
 
-## Check your balance
+- device ID
+- credits balance
+- USDC reference balance
+- earning rate
+- ledger history
+- CSV export
 
-```bash
-teale wallet balance
-```
+This is the wallet that earns while your device is available and serving.
 
-This shows your current USDC balance, pending earnings, and wallet address.
+## Credits vs USD
 
-## Welcome bonus
+The settings gear lets you switch the display between Credits and USD.
 
-On first use, Teale credits your wallet with **$0.01 USDC** --- enough to send a few hundred inference requests and try the network without any setup.
+- **Credits** is the native network balance.
+- **USD** is a display conversion for the same balance and pricing.
 
-## View transactions
+Changing the toggle does not move funds or switch settlement rails. It only changes how the app labels and formats amounts.
 
-See your transaction history:
+## Sending credits
 
-```bash
-teale wallet transactions
-```
+The currently released apps support sending **Teale credits** from the app.
 
-Limit the number of results:
+Supported recipient styles:
 
-```bash
-teale wallet transactions --limit 10
-```
+- device ID
+- phone number
+- email
+- GitHub username
 
-### Transaction types
+Routing behavior:
 
-| Type           | Description                                              |
-|----------------|----------------------------------------------------------|
-| `earned`       | Credits received for serving inference requests           |
-| `spent`        | Credits paid to providers for requests you sent           |
-| `bonus`        | Welcome bonus or promotional credits                      |
-| `adjustment`   | Network corrections (e.g., failed delivery refunds)       |
-| `transfer`     | Peer-to-peer credit transfers                             |
-| `sdkEarning`   | Credits earned via TealeSDK-integrated third-party apps   |
+- sending to a device ID lands in that device wallet
+- sending to an account identifier lands in that account wallet
 
-## Send credits to a peer
+USDC transfers are not part of the current released app flow.
 
-Transfer credits directly to another Teale node:
+## Account wallet
 
-```bash
-teale wallet send 0.001 <peerID> --memo "thanks"
-```
+The Windows release exposes an additional account-wallet section in **Account** for linked human accounts.
 
-The `--memo` flag is optional and attaches a note to the transaction.
+That view can:
 
-## Solana settlement
+- show account-level balance
+- send credits from the account wallet
+- sweep linked device balances into the account wallet
+- remove devices from the linked-device list
 
-Teale settles credits on the Solana blockchain using USDC (SPL token). Check your on-chain status:
+## Ledger export
 
-```bash
-teale wallet solana
-```
+Use the **Export CSV** action in the wallet ledger when you need a portable record of:
 
-This shows your Solana wallet address, on-chain USDC balance, and recent settlement transactions.
-
-### How settlement works
-
-1. Credits accumulate in Teale's off-chain ledger as you earn and spend.
-2. Periodically, Teale settles net balances on-chain in a single Solana transaction.
-3. Settlement is automatic --- you do not need to trigger it manually.
-4. On-chain settlement uses compressed transactions to minimize fees.
-
-## Pricing reference
-
-For providers, the cost of a request determines your earnings:
-
-```
-cost = (tokens / 1000) * (params * 0.1) * quantMultiplier / 10000
-```
-
-Providers receive 95% of this cost. See [Credit Economy](../concepts/credit-economy.md) for full pricing details.
-
----
-
-## Next steps
-
-- [Earn Credits](earn-credits.md) --- start earning by sharing compute
-- [Credit Economy](../concepts/credit-economy.md) --- how pricing and settlement work
-- [Solana Settlement](../concepts/solana-settlement.md) --- on-chain settlement details
+- credits earned
+- credits spent
+- timestamps
+- request or model metadata when available

@@ -1,60 +1,49 @@
 # Quickstart: Chat
 
-Start chatting with a local AI model in under a minute. No accounts, no API keys, no cloud.
+Use the released Teale app UI to chat with either a local loaded model or a live Teale Network model.
 
 ---
 
-## Using the desktop app
+## 1. Load a local model
 
-1. **Install Teale.** Download from [teale.com/download](https://teale.com/download) or run `brew install --cask teale`. See [Install on Mac](install-mac.md) for details.
+Open **Supply** first if this is a fresh install.
 
-2. **Click the Teale icon in your menu bar.** It appears near the clock after launching the app.
+- Use the recommended model action for the fastest setup.
+- Or choose a different model from the catalog and wait for download plus load to finish.
+- The active local model appears in both **Supply** and **Demand**.
 
-3. **Wait for the model to download.** Teale automatically selects and downloads a model based on your available RAM. For a Mac with 16 GB, this is typically Llama 3.1 8B (4-bit quantized, about 4.5 GB). You only download once.
+## 2. Open the Home chat thread
 
-4. **Type a message and start chatting.** Inference runs entirely on your Mac. Nothing is sent to the cloud.
+The **teale** tab includes:
 
-## Using the CLI
+- device overview
+- network stats
+- a thread-based chat surface
+- a model picker with transparent pricing for network models
 
-Start the inference server and send a message:
+## 3. Pick a model
 
-```bash
-teale up
-teale chat "What is the meaning of life?"
-```
+- The local loaded model is free to use on your device.
+- Live Teale Network models spend from your device wallet.
+- The picker only shows models that are currently loaded and ready to serve. Downloaded but unloaded models do not appear as available chat targets.
 
-For an interactive conversation:
+## 4. Send a message
 
-```bash
-teale chat
-```
+Type into the thread composer and send.
 
-This opens a REPL where you can type messages back and forth. Press `Ctrl+C` to exit.
+- Local requests stay on the device.
+- Network requests use the device bearer automatically inside the app.
+- You do not need to sign in to chat.
 
-### Switch models
+## Settings you can change while chatting
 
-List available models and pull a different one:
-
-```bash
-teale models list
-teale models pull qwen-2.5-7b-instruct-4bit
-teale chat --model qwen-2.5-7b-instruct-4bit "Explain quantum computing"
-```
-
-## What happens under the hood
-
-When you send a message, Teale:
-
-1. Loads the model into your Mac's unified memory (first message may take a few seconds).
-2. Runs inference on Apple Silicon using Metal acceleration.
-3. Streams tokens back as they are generated.
-
-All processing stays on your machine. No data leaves your device unless you explicitly connect to the Teale network.
-
----
+- **Language**: English, Spanish, Portuguese (Brazil), Filipino (Philippines)
+- **Display units**: Credits or USD
+- **Share controls**: `x.com` and share-copy actions in the top-right header
 
 ## Next steps
 
-- [Quickstart: API](quickstart-api.md) --- integrate Teale into your applications
-- [Quickstart: Earn](quickstart-earn.md) --- share your compute and earn USDC
-- [Install the CLI](install-cli.md) --- full CLI reference and configuration
+- [Quickstart: API](quickstart-api.md)
+- [Quickstart: Earn](quickstart-earn.md)
+- [Manage models](../guides/manage-models.md)
+- [Wallet and payments](../guides/wallet-and-payments.md)

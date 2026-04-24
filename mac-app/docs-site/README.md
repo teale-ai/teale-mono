@@ -44,17 +44,11 @@ Requires Node 18-22. Node 25 has a webpack compatibility issue — pin `webpack@
 
 ```
 docs-site/
-  docs/                     # Markdown content (82 pages)
+  docs/                     # Markdown content for the released apps
     index.md                # Landing page (teale.com/docs/)
-    getting-started/        # Install + quickstart guides
-    concepts/               # Architecture deep dives
-    guides/                 # Step-by-step how-tos
-    cli/                    # CLI command reference
-    api/                    # HTTP API reference
-    protocol/               # Wire protocol specification
-    sdk/                    # TealeSDK integration
-    reference/              # Tables, glossary, error codes
-    self-hosting/           # Relay deployment
+    getting-started/        # Install + quickstart for macOS and Windows
+    guides/                 # App behavior, models, wallet, account
+    api/                    # Released local/app HTTP surfaces
     faq.md                  # FAQ
   docusaurus.config.js      # Site config (baseUrl: /docs/)
   sidebars.js               # Navigation sidebar

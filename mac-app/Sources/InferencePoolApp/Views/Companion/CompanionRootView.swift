@@ -88,15 +88,15 @@ private struct TealeNavBar: View {
                 }
                 .buttonStyle(.plain)
             }
+            CursorBlink()
             Spacer()
-            settingsMenu
             HeaderToolButton(title: "x.com") {
                 openURL(URL(string: "https://x.com/teale_ai")!)
             }
             HeaderToolButton(title: shareButtonLabel) {
                 copyShareText()
             }
-            CursorBlink()
+            settingsMenu
         }
     }
 

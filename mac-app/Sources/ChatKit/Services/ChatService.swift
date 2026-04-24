@@ -376,9 +376,11 @@ public final class ChatService {
             timestamp: message.timestamp
         )
 
+        let liveDecrypted = await decryptLiveMessage(message, groupID: message.conversationID)
+
         // Decrypt and display if this conversation is open
         if activeConversation?.id == message.conversationID {
-            if let decrypted = await decryptMessage(message, groupID: message.conversationID) {
+            if let decrypted = liveDecrypted {
                 activeMessages.append(decrypted)
                 if decrypted.messageType == .walletEntry,
                    let data = decrypted.content.data(using: .utf8),
@@ -387,7 +389,7 @@ public final class ChatService {
                 }
             }
         } else if message.messageType == .walletEntry,
-                  let decrypted = await decryptMessage(message, groupID: message.conversationID),
+                  let decrypted = liveDecrypted,
                   let data = decrypted.content.data(using: .utf8),
                   let entry = try? JSONDecoder().decode(WalletLedgerEntry.self, from: data) {
             // Wallet entries must replicate into the store even when the
@@ -398,7 +400,7 @@ public final class ChatService {
         if let idx = conversations.firstIndex(where: { $0.id == message.conversationID }) {
             conversations[idx].updatedAt = message.timestamp
             conversations[idx].lastMessageAt = message.timestamp
-            if let decrypted = await decryptMessage(message, groupID: message.conversationID) {
+            if let decrypted = liveDecrypted {
                 conversations[idx].lastMessagePreview = String(decrypted.content.prefix(100))
             }
             if activeConversation?.id == message.conversationID {
@@ -482,14 +484,29 @@ public final class ChatService {
     private func decryptMessages(_ messages: [StoredMessage], groupID: UUID) async -> [DecryptedMessage] {
         var result: [DecryptedMessage] = []
         for stored in messages {
-            if let decrypted = await decryptMessage(stored, groupID: groupID) {
+            if let decrypted = await decryptHistoricalMessage(stored, groupID: groupID) {
                 result.append(decrypted)
             }
         }
         return result
     }
 
-    private func decryptMessage(_ stored: StoredMessage, groupID: UUID) async -> DecryptedMessage? {
+    private func decryptHistoricalMessage(_ stored: StoredMessage, groupID: UUID) async -> DecryptedMessage? {
+        guard let key = await keyManager.senderKey(for: groupID, keyID: stored.payload.keyID) else {
+            let msg = stored.toMessage()
+            return DecryptedMessage(message: msg, content: "[unable to decrypt — missing key]")
+        }
+
+        do {
+            let content = try GroupCrypto.decryptArchived(stored.payload, using: key)
+            return DecryptedMessage(message: stored.toMessage(), content: content)
+        } catch {
+            let msg = stored.toMessage()
+            return DecryptedMessage(message: msg, content: "[decryption failed]")
+        }
+    }
+
+    private func decryptLiveMessage(_ stored: StoredMessage, groupID: UUID) async -> DecryptedMessage? {
         guard var key = await keyManager.senderKey(for: groupID, keyID: stored.payload.keyID) else {
             let msg = stored.toMessage()
             return DecryptedMessage(message: msg, content: "[unable to decrypt — missing key]")

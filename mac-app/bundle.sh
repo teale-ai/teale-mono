@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build and bundle InferencePoolApp as a macOS .app.
 # Uses xcodebuild to properly compile Metal shaders required by MLX.
-set -e
+set -euo pipefail
 
 DERIVED_DATA=".build/xcode"
 APP_NAME="Teale"

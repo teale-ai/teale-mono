@@ -112,7 +112,7 @@ struct TealeApp: App {
         MenuBarExtra {
             CompanionMenuBarView()
             .environment(appState)
-            .frame(width: 360, height: 320)
+            .frame(width: 360, height: 344)
         } label: {
             Label("Teale", systemImage: "brain.head.profile")
         }
@@ -133,9 +133,14 @@ struct CompanionMenuBarView: View {
                 HStack {
                     Image(systemName: "brain.head.profile")
                         .foregroundStyle(TealeDesign.teale)
-                    Text("Teale")
-                        .font(TealeDesign.mono)
-                        .foregroundStyle(TealeDesign.text)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Teale")
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.text)
+                        Text(BuildVersion.display)
+                            .font(TealeDesign.monoTiny)
+                            .foregroundStyle(TealeDesign.muted)
+                    }
                     Spacer()
                     TealeActionButton(title: "Open Teale", primary: true) {
                         openMainWindow()
@@ -159,6 +164,10 @@ struct CompanionMenuBarView: View {
                     TealeStatRow(
                         label: "Wallet",
                         value: appState.wallet.balance.description
+                    )
+                    TealeStatRow(
+                        label: "Version",
+                        value: BuildVersion.display
                     )
                 }
 

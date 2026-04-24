@@ -1,106 +1,73 @@
 # Frequently Asked Questions
 
-Common questions about Teale.
+Common questions about the released macOS and Windows apps.
 
-## Models and Hardware
+## What do these docs cover?
 
-### What models can I run?
+Only the currently released Teale desktop apps on macOS and Windows, plus the API surfaces they expose locally.
 
-It depends on your device's RAM. Teale reserves 4 GB for the OS, and the rest is available for models:
+Older docs about protocol internals, PTNs, SDKs, self-hosting, and broader platform support were intentionally removed from this docs site.
 
-| RAM | Recommended Models |
-|-----|-------------------|
-| 8 GB | Llama 3.2 1B, Llama 3.2 3B |
-| 16 GB | Llama 3.1 8B, Qwen 3 8B, Phi 4 14B |
-| 32 GB | Mistral Small 24B, Gemma 3 27B, Qwen 3 32B |
-| 64 GB+ | Llama 4 Scout 109B (MoE), or multiple large models simultaneously |
+## Does Teale work without sign-in?
 
-See [Supported Models](reference/supported-models.md) for the full catalog.
+Yes. Local inference always works with a loaded local model. The internet is only needed for Teale Network demand, wallet sync, linked-device account features, and remote model access.
 
-### Does it work without internet?
+## Can I use OpenAI-compatible tools with it?
 
-Yes. Local inference always works -- Teale runs models directly on your device with no network required. The internet is only needed for WAN features: discovering remote peers, earning USDC, and accessing models on other devices.
-
-### Can I use this with ChatGPT-compatible tools?
-
-Yes. Teale exposes an OpenAI-compatible API at `localhost:11435`. Any tool that works with the OpenAI API can point to Teale instead:
+Yes. The released apps expose OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints.
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:11435/v1",
-    api_key="your-teale-api-key"
+    base_url="http://127.0.0.1:11435/v1",
+    api_key="not-needed"
 )
 ```
 
-This works with LangChain, LlamaIndex, Continue.dev, Cursor, and other OpenAI-compatible tools. See [Use with OpenAI SDK](guides/use-with-openai-sdk.md) for details.
+See [Quickstart: API](getting-started/quickstart-api.md).
 
-## App and CLI
+## Why does the model list change over time?
 
-### What is the difference between the app and CLI?
+The released apps only show models that are available right now:
 
-Full feature parity. The macOS app has a GUI (menu bar extra) for managing models, peers, and settings visually. The CLI (`teale`) is for headless servers, automation, and terminal workflows. Both use the same local HTTP API under the hood.
+- your loaded local model
+- live Teale Network models that are currently loaded somewhere else
 
-### How do I run on Linux?
+Downloaded but unloaded models do not appear as chat targets.
 
-Use `teale-node`, the Rust cross-platform binary. It provides the same inference capabilities using llama.cpp with GGUF models instead of MLX.
+## What is the difference between Credits and USD in the UI?
 
-```bash
-curl -fsSL https://teale.com/install.sh | sh
-teale up
-```
+The toggle is a display preference.
 
-## Networking
+- **Credits** is the native Teale balance.
+- **USD** is a formatted conversion of the same balance and pricing.
 
-### Is the relay server a single point of failure?
+## Can I send USDC from the app?
 
-No. The relay is optional. LAN discovery works without it (via Bonjour/mDNS). WAN connections work peer-to-peer when NAT allows direct connections. The relay is only needed for WAN discovery and for fallback data transport when both peers are behind symmetric NAT.
+No. The released apps currently support sending **Teale credits**. USDC is shown in the UI as a reference balance.
 
-If the relay goes down, existing peer connections continue working. Only new peer discovery over WAN is affected.
+## What recipients can I send credits to?
 
-### What is a PTN?
+You can send to:
 
-A Private TealeNet (PTN) is an invite-only subnet with certificate-based membership. PTNs allow teams or organizations to create a private inference network with:
+- device IDs
+- phone numbers
+- email addresses
+- GitHub usernames
 
-- **Controlled access** -- only invited members can join
-- **Fixed pricing** -- no auction, predictable costs
-- **Priority scheduling** -- PTN traffic gets 70% weight in WFQ scheduling
-- **Certificate-based trust** -- Ed25519 CA signs membership certificates
+Device IDs route to device wallets. Account identifiers route to account wallets.
 
-See [Private TealeNet](concepts/private-tealenet.md) for details.
+## What languages are supported in the released apps?
 
-## Earnings and Pricing
+- English
+- Spanish
+- Portuguese (Brazil)
+- Filipino (Philippines)
 
-### How much can I earn?
+## Why did macOS block the app the first time?
 
-Earnings depend on your hardware, loaded models, uptime, and network demand. Providers earn 95% of the inference cost. Factors:
+The current mac release is Developer ID signed but not notarized. Use:
 
-- **Larger models earn more per token** (8B earns 8x more than 1B per token)
-- **More uptime = more requests served**
-- **Better hardware attracts more traffic** (tier 1 and tier 2 nodes are preferred)
-- **PTN membership provides steady demand**
-
-Use `teale wallet` or the app's wallet view to track your earnings in real time.
-
-### How does pricing work?
-
-Token-based pricing with an electricity cost floor:
-
-1. **Base price** = `(tokens / 1K) * (parameterCountB * 0.1) * quantMultiplier / 10,000`
-2. **Electricity floor** = actual power cost + 20% margin
-3. **Effective price** = max(base price, electricity floor)
-
-Providers always earn at least enough to cover their electricity. See [Credit Economy](concepts/credit-economy.md) and [Pricing Tables](reference/pricing-tables.md) for details.
-
-## Privacy and Security
-
-### Is my data private?
-
-Yes. Teale stores nothing centrally. All inference happens on-device or is routed peer-to-peer. When encryption is enabled (both peers support Noise protocol), communication is end-to-end encrypted with `Noise_IK_25519_ChaChaPoly_BLAKE2s`. The relay server sees only encrypted blobs -- it cannot read message contents.
-
-There are no user accounts, no central databases, and no telemetry. Your prompts never leave your device unless you explicitly send them to a remote peer, and even then they are encrypted in transit.
-
-### How does identity work?
-
-Each node has an Ed25519 keypair. The public key is your node ID -- a 64-character hex string. There are no usernames, emails, or accounts. Identity is cryptographic and self-sovereign. See [Ed25519 Identity](protocol/ed25519-identity.md) for details.
+- right-click `Teale.app` > **Open**
+- or **System Settings > Privacy & Security > Open Anyway**

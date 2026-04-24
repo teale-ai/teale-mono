@@ -1,131 +1,40 @@
 # API Reference
 
-Teale exposes a local HTTP API for controlling the node, running inference, and managing network resources. The API is OpenAI-compatible for chat completions and model listing, making it a drop-in replacement for applications that already target the OpenAI API.
+This reference only documents the HTTP surfaces that ship in the currently released macOS and Windows apps.
 
-## Base URL
+## Base URLs
 
-```
-http://localhost:11435
-```
-
-The port is configurable via the `--port` flag when starting the node.
+| Surface | Base URL | Notes |
+|---|---|---|
+| macOS local API | `http://127.0.0.1:11435` | OpenAI-compatible local server plus app endpoints |
+| Windows local model API | see `demand.local_base_url` | Usually `http://127.0.0.1:11436/v1` |
+| Windows companion API | `http://127.0.0.1:11437` | Companion state, network metadata, wallet, and account endpoints |
+| Teale Network gateway | `https://gateway.teale.com` | Use the bearer token copied from Demand |
 
 ## Authentication
 
-Authentication is **optional by default**. When `allow_network_access` is enabled in settings, an API key is required for all requests except `GET /health`.
+- Local macOS requests may require a bearer token if local network exposure is enabled for the app.
+- Teale Network gateway requests require the device bearer shown in **Demand**.
+- In-app network chat already uses the bearer automatically.
 
-Pass the API key via the `Authorization` header:
+## OpenAI-compatible endpoints
 
-```
-Authorization: Bearer <your-api-key>
-```
+These are the main endpoints most external clients need:
 
-Generate API keys using the `POST /v1/app/apikeys` endpoint or the `teale apikeys generate` CLI command.
+- [GET /health](health.md)
+- [GET /v1/models](models.md)
+- [POST /v1/chat/completions](chat-completions.md)
 
-## Response Format
+`teale-auto` is supported on the macOS app and lets Teale pick the best currently available route.
 
-All responses are JSON. Successful responses return the relevant resource object directly. Errors return a standard error envelope:
+## App endpoints in the released apps
 
-```json
-{
-  "error": {
-    "message": "Model not found: invalid-model-id",
-    "type": "not_found"
-  }
-}
-```
+- [App state and network metadata](app-snapshot.md)
+- [Model download/load/unload](app-models.md)
+- [Wallet and account endpoints](app-wallet.md)
 
-## OpenAI Compatibility
+## Platform notes
 
-The following endpoints are fully OpenAI-compatible:
-
-| Endpoint | Description |
-|---|---|
-| `POST /v1/chat/completions` | Chat completions (streaming and non-streaming) |
-| `GET /v1/models` | List available models |
-
-This means you can point any OpenAI SDK client at your Teale node by setting the base URL:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:11435/v1",
-    api_key="your-api-key"  # or "not-needed" if auth is disabled
-)
-```
-
-## Endpoint Overview
-
-### OpenAI-Compatible
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/v1/chat/completions` | Chat completions |
-| `GET` | `/v1/models` | List available models |
-
-### Health
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-
-### App State
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/app` | Full app state snapshot |
-| `PATCH` | `/v1/app/settings` | Update settings |
-
-### Models
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/v1/app/models/load` | Load model into GPU |
-| `POST` | `/v1/app/models/download` | Download a model |
-| `POST` | `/v1/app/models/unload` | Unload current model |
-
-### Peers
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/app/peers` | List connected peers |
-
-### Private TealeNet (PTN)
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/app/ptn` | List PTN memberships |
-| `POST` | `/v1/app/ptn/create` | Create a PTN |
-| `POST` | `/v1/app/ptn/invite` | Generate invite code |
-| `POST` | `/v1/app/ptn/issue-cert` | Issue membership certificate |
-| `POST` | `/v1/app/ptn/join-with-cert` | Join PTN with certificate |
-| `POST` | `/v1/app/ptn/leave` | Leave a PTN |
-| `POST` | `/v1/app/ptn/promote-admin` | Promote member to admin |
-| `POST` | `/v1/app/ptn/import-ca-key` | Import CA signing key |
-| `POST` | `/v1/app/ptn/recover` | Recover PTN membership |
-
-### Wallet
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/app/wallet` | Wallet balance |
-| `GET` | `/v1/app/wallet/transactions` | Transaction history |
-| `POST` | `/v1/app/wallet/send` | Send credits to a peer |
-| `GET` | `/v1/app/wallet/solana` | Solana wallet status |
-
-### Agent
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/app/agent/profile` | Agent profile |
-| `GET` | `/v1/app/agent/directory` | Agent directory |
-| `GET` | `/v1/app/agent/conversations` | Agent conversations |
-
-### API Keys
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/app/apikeys` | List API keys |
-| `POST` | `/v1/app/apikeys` | Generate a new API key |
-| `POST` | `/v1/app/apikeys/revoke` | Revoke an API key |
+- The macOS app exposes `/v1/app` from the same local port as chat and models.
+- The Windows release exposes `/v1/app` from the companion server on `127.0.0.1:11437`.
+- The Windows **Demand** tab also gives you a copyable local curl and network curl so you do not have to assemble URLs manually.

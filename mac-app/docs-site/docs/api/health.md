@@ -1,33 +1,22 @@
-# Health Check
+# GET /health
 
-```
-GET /health
-```
+Use this endpoint to confirm that the local model server is alive.
 
-Returns the health status of the node. This endpoint never requires authentication.
+## Where it exists
 
-## Authentication
+- macOS app local server: `http://127.0.0.1:11435/health`
+- Windows local model server: use the host behind `demand.local_base_url` and request `/health`
 
-None required.
-
-## Request
-
-No request body. No query parameters.
-
-## Response
-
-```json
-{
-  "status": "ok"
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `status` | string | `ok` when the node is running and accepting requests |
+The Windows companion API on `127.0.0.1:11437` does not use this route for its own state snapshot. Use `GET /v1/app` there instead.
 
 ## Example
 
 ```bash
-curl http://localhost:11435/health
+curl http://127.0.0.1:11435/health
+```
+
+## Response
+
+```json
+{"status":"ok"}
 ```

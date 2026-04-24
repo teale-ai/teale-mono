@@ -324,6 +324,10 @@ let package = Package(
             dependencies: ["AgentKit"]
         ),
         .testTarget(
+            name: "ChatKitTests",
+            dependencies: ["ChatKit"]
+        ),
+        .testTarget(
             name: "TealeSDKTests",
             dependencies: ["TealeSDK"]
         ),

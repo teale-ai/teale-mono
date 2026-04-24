@@ -258,10 +258,19 @@ struct CompanionHomeChatSection: View {
                 .tracking(0.9)
                 .foregroundStyle(TealeDesign.muted)
 
-            TextEditor(text: $inputText)
+            TextField(
+                "",
+                text: $inputText,
+                prompt: Text(appState.companionText("chat.messagePlaceholder", fallback: "Type a message")),
+                axis: .vertical
+            )
+                .textFieldStyle(.plain)
+                .submitLabel(.send)
+                .onSubmit {
+                    sendCurrentMessage()
+                }
                 .font(TealeDesign.mono)
                 .foregroundStyle(TealeDesign.text)
-                .scrollContentBackground(.hidden)
                 .frame(minHeight: 84, maxHeight: 120)
                 .padding(10)
                 .background(Color(red: 0x02/255, green: 0x08/255, blue: 0x09/255))

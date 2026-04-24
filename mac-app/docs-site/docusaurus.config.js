@@ -3,14 +3,18 @@
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'Teale Docs',
-  tagline: 'Decentralized AI inference network',
+  tagline: 'Released macOS and Windows app documentation',
   favicon: 'img/favicon.ico',
 
   url: 'https://teale.com',
   baseUrl: '/docs/',
 
   onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
 
   i18n: {
     defaultLocale: 'en',
@@ -45,8 +49,13 @@ const config = {
         title: 'teale',
         items: [
           {
-            to: '/getting-started/quickstart-chat',
-            label: 'Quickstart',
+            to: '/getting-started/install-mac',
+            label: 'Install',
+            position: 'left',
+          },
+          {
+            to: '/guides/app-overview',
+            label: 'App',
             position: 'left',
           },
           {
@@ -55,18 +64,8 @@ const config = {
             position: 'left',
           },
           {
-            to: '/cli/',
-            label: 'CLI',
-            position: 'left',
-          },
-          {
-            to: '/guides/',
-            label: 'Guides',
-            position: 'left',
-          },
-          {
-            to: '/protocol/',
-            label: 'Protocol',
+            to: '/faq',
+            label: 'FAQ',
             position: 'left',
           },
           {
@@ -82,9 +81,10 @@ const config = {
           {
             title: 'Docs',
             items: [
-              { label: 'Getting Started', to: '/getting-started/' },
+              { label: 'Install on Mac', to: '/getting-started/install-mac' },
+              { label: 'Install on Windows', to: '/getting-started/install-windows' },
+              { label: 'App Overview', to: '/guides/app-overview' },
               { label: 'API Reference', to: '/api/' },
-              { label: 'CLI Reference', to: '/cli/' },
             ],
           },
           {

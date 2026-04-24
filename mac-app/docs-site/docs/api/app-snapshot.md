@@ -1,67 +1,80 @@
-# App Snapshot
+# App State and Network Metadata
 
-```
-GET /v1/app
-```
+The released apps expose app state under `GET /v1/app`, but the response shape differs by platform.
 
-Returns a full snapshot of the application state, including the currently loaded model, hardware information, connected peers, credit balance, and settings.
+## macOS
 
-## Authentication
-
-Optional. Required when `allow_network_access` is enabled.
-
-```
-Authorization: Bearer <your-api-key>
-```
-
-## Request
-
-No request body. No query parameters.
-
-## Response
-
-```json
-{
-  "node": {
-    "id": "node-abc123",
-    "name": "My MacBook Pro"
-  },
-  "hardware": {
-    "chip": "Apple M2 Pro",
-    "memory_gb": 32,
-    "gpu_cores": 19
-  },
-  "model": {
-    "id": "llama-3.1-8b-q4",
-    "status": "loaded",
-    "context_length": 8192
-  },
-  "peers": {
-    "lan": 3,
-    "wan": 7
-  },
-  "wallet": {
-    "balance": 1.234
-  },
-  "settings": {
-    "cluster_enabled": true,
-    "wan_enabled": false,
-    "allow_network_access": false,
-    "keep_awake": true,
-    "auto_manage_models": true,
-    "inference_backend": "mlx",
-    "language": "en"
-  }
-}
-```
-
-## Example
+Request:
 
 ```bash
-curl http://localhost:11435/v1/app
+curl http://127.0.0.1:11435/v1/app
 ```
 
+The macOS snapshot includes:
+
+- `appVersion`
+- `loadedModelID`
+- `engineStatus`
+- `isServerRunning`
+- `auth`
+- `demand`
+- `settings`
+- `models`
+
+The `demand` block is useful for external clients because it exposes:
+
+- `local_base_url`
+- `local_model_id`
+- `network_base_url`
+- `network_bearer_token`
+
+## Windows
+
+Request:
+
 ```bash
-curl http://localhost:11435/v1/app \
-  -H "Authorization: Bearer your-api-key"
+curl http://127.0.0.1:11437/v1/app
 ```
+
+The Windows snapshot includes:
+
+- `app_version`
+- `service_state`
+- `state_reason`
+- `device`
+- `auth`
+- `demand`
+- `wallet`
+- `wallet_transactions`
+- `loaded_model_id`
+- `models`
+- `active_transfer`
+
+## Windows network metadata
+
+The Windows companion API also exposes the data used by the Demand and Home tabs:
+
+### GET /v1/app/network/models
+
+Returns the live Teale Network model table with:
+
+- model ID
+- context length
+- live device count
+- TTFT
+- TPS
+- prompt pricing
+- completion pricing
+
+### GET /v1/app/network/stats
+
+Returns high-level network totals such as:
+
+- total devices
+- total RAM
+- total models
+- average TTFT
+- average TPS
+- total credits earned
+- total credits spent
+- total USDC distributed
