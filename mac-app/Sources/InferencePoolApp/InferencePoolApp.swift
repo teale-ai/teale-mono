@@ -231,8 +231,8 @@ final class LoginWindowController {
         observationTask?.cancel()
         observationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                let canUse = authManager.authState.canUseApp
-                if canUse {
+                let isAuthenticated = authManager.authState.isAuthenticated
+                if isAuthenticated {
                     self?.close()
                     break
                 }
