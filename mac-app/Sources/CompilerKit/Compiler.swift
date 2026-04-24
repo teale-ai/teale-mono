@@ -108,7 +108,7 @@ public actor Compiler: InferenceProvider {
     }
 
     public func generateFull(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
-        let routedRequest = try validateAndRoute(request)
+        let routedRequest = try await validateAndRoute(request)
 
         let shouldCompile = analyzer.shouldCompile(
             request: routedRequest,
@@ -134,12 +134,13 @@ public actor Compiler: InferenceProvider {
 
     /// When the user doesn't specify a model, pick the best one for passthrough.
     /// When a model is explicitly set, validate it's available.
-    private func validateAndRoute(_ request: ChatCompletionRequest) throws -> ChatCompletionRequest {
+    private func validateAndRoute(_ request: ChatCompletionRequest) async throws -> ChatCompletionRequest {
         if let requestedModel = request.model {
             // User explicitly chose a model — verify it's actually available
             if !availableModels.isEmpty {
                 let found = availableModels.contains { $0.model == requestedModel }
-                if !found {
+                let localMatch = await fallbackProvider.loadedModel?.matchesIdentifier(requestedModel) ?? false
+                if !found && !localMatch {
                     let available = Set(availableModels.map(\.model)).sorted()
                     throw CompilationError.modelNotAvailable(
                         requested: requestedModel,
@@ -278,7 +279,7 @@ public actor Compiler: InferenceProvider {
         request: ChatCompletionRequest,
         continuation: AsyncThrowingStream<ChatCompletionChunk, Error>.Continuation
     ) async throws {
-        let routedRequest = try validateAndRoute(request)
+        let routedRequest = try await validateAndRoute(request)
 
         let shouldCompile = analyzer.shouldCompile(
             request: routedRequest,

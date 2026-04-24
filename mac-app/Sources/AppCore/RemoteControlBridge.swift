@@ -176,7 +176,9 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     }
 
     private func resolveModel(_ value: String) throws -> ModelDescriptor {
-        if let model = appState.modelManager.compatibleModels.first(where: { $0.id == value || $0.huggingFaceRepo == value }) {
+        if let model = appState.modelManager.compatibleModels.first(where: {
+            $0.matchesIdentifier(value)
+        }) {
             return model
         }
         throw RemoteControlError.modelNotFound(value)
@@ -205,35 +207,25 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     }
 
     private func loadModel(_ descriptor: ModelDescriptor) async throws {
-        if case .ready = appState.engineStatus {
-            await appState.engine.unloadModel()
-        }
+        await appState.loadModel(descriptor)
 
-        appState.selectedModel = descriptor
-        appState.engineStatus = .loadingModel(descriptor)
-        appState.loadingPhase = "Preparing…"
-        appState.loadingProgress = 0
-
-        do {
-            try await appState.engine.loadModel(descriptor) { [weak appState] progress in
-                Task { @MainActor in
-                    appState?.loadingPhase = progress.phase.rawValue
-                    appState?.loadingProgress = progress.fractionCompleted
-                }
-            }
-
-            appState.loadingPhase = ""
-            appState.loadingProgress = nil
-            appState.engineStatus = .ready(descriptor)
-            if appState.wanEnabled {
-                await appState.wanManager.updateLocalLoadedModels(descriptor.advertisedId.map { [$0] } ?? [])
-            }
-            await appState.refreshDownloadedModels()
-        } catch {
-            appState.loadingPhase = ""
-            appState.loadingProgress = nil
-            appState.engineStatus = .error(error.localizedDescription)
-            throw error
+        switch appState.engineStatus {
+        case .ready(let loaded) where loaded.id == descriptor.id:
+            return
+        case .error(let message):
+            throw NSError(
+                domain: "Teale.RemoteControl",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        default:
+            let loadedID = await appState.engine.loadedModel?.id
+            if loadedID == descriptor.id { return }
+            throw NSError(
+                domain: "Teale.RemoteControl",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Model '\(descriptor.id)' did not finish loading"]
+            )
         }
     }
 

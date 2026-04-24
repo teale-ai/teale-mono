@@ -83,6 +83,17 @@ public actor ClusterProvider: InferenceProvider {
             return
         }
 
+        if let requestedModel = request.model,
+           let localModel = localModel,
+           localModel.matchesIdentifier(requestedModel) {
+            let stream = localProvider.generate(request: request)
+            for try await chunk in stream {
+                continuation.yield(chunk)
+            }
+            continuation.finish()
+            return
+        }
+
         let decision = router.route(
             request: request,
             clusterManager: clusterManager,
