@@ -692,8 +692,6 @@ const translations = {
 };
 
 const chatTranslationDefaults = {
-  "nav.chat": "chat",
-  "view.chat.description": "single-thread chat with local and network models",
   "chat.prompt.thread": "thread",
   "chat.prompt.message": "message",
   "chat.model.label": "Model",
