@@ -1800,7 +1800,9 @@ pub fn reconcile_availability_sessions(
         .sum();
     if total_needed > 0 {
         let remaining: i64 =
-            tx.query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| r.get(0))?;
+            tx.query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
+                r.get(0)
+            })?;
         if remaining < total_needed {
             tracing::warn!(
                 "mint_pool remaining ({}) < drip amount ({}), skipping",
