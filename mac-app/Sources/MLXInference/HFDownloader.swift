@@ -1,7 +1,7 @@
 import Foundation
 import MLXLMCommon
 import Hub
-import Tokenizers
+@preconcurrency import Tokenizers
 
 // MARK: - Shared HubApi with App Support cache (avoids ~/Documents TCC prompt)
 
@@ -48,8 +48,24 @@ public struct HFTokenizerLoader: MLXLMCommon.TokenizerLoader, Sendable {
     public init() {}
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+        Self.sanitizeTokenizerConfig(in: directory)
         let tokenizer = try await AutoTokenizer.from(modelFolder: directory, hubApi: tealeHubApi)
         return TokenizerAdapter(tokenizer)
+    }
+
+    // Qwen 3.6 and later tag their tokenizer_config with `"tokenizer_class": "TokenizersBackend"`,
+    // meaning "trust the self-describing tokenizer.json." swift-transformers 0.1.24 looks up
+    // tokenizer_class in a static whitelist and throws on unknown names, so we rewrite the
+    // class to Qwen2Tokenizer — a BPE tokenizer that handles the tokenizer.json correctly.
+    private static func sanitizeTokenizerConfig(in directory: URL) {
+        let configURL = directory.appendingPathComponent("tokenizer_config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              (json["tokenizer_class"] as? String) == "TokenizersBackend"
+        else { return }
+        json["tokenizer_class"] = "Qwen2Tokenizer"
+        guard let patched = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]) else { return }
+        try? patched.write(to: configURL)
     }
 }
 
