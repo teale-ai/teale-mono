@@ -52,28 +52,13 @@ jobs:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
         run: ./bundle.sh
 
-      - name: Notarize and staple .app
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      - name: Verify signed .app
         run: |
-          ditto -c -k --keepParent .build/Teale.app .build/Teale-unstapled.zip
-          xcrun notarytool submit .build/Teale-unstapled.zip \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --wait
-          xcrun stapler staple .build/Teale.app
-          spctl -a -vvv --type execute .build/Teale.app
-          rm .build/Teale-unstapled.zip
+          codesign --verify --deep --strict --verbose=2 .build/Teale.app
 
-      - name: Build, sign, notarize, staple DMG
+      - name: Build and sign DMG
         env:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           STAGING=.build/dmg-staging
           rm -rf "$STAGING" .build/Teale.dmg
@@ -82,13 +67,7 @@ jobs:
           ln -s /Applications "$STAGING/Applications"
           hdiutil create -volname "Teale" -srcfolder "$STAGING" -ov -format UDZO .build/Teale.dmg
           codesign --force --sign "$SIGNING_IDENTITY" --timestamp .build/Teale.dmg
-          xcrun notarytool submit .build/Teale.dmg \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --wait
-          xcrun stapler staple .build/Teale.dmg
-          spctl -a -vvv --type install .build/Teale.dmg
+          codesign --verify --verbose=2 .build/Teale.dmg
           rm -rf "$STAGING"
 
       - name: Build CLI binary
@@ -116,6 +95,10 @@ jobs:
           ## Install
 
           **Recommended:** download **Teale.dmg** below, double-click to open, drag Teale to Applications, then launch from Launchpad.
+
+          This build is Developer ID signed but not notarized. On first install, macOS may warn that it cannot verify the app. If that happens:
+          1. Control-click or right-click `Teale.app` and choose **Open**
+          2. If needed, go to **System Settings > Privacy & Security** and click **Open Anyway**
 
           **Or one command:**
           ```
