@@ -22,6 +22,7 @@ struct TealeApp: App {
         Self.patchAppMenuTitle("Teale")
 
         let state = AppState()
+        state.updateChecker.startAutomaticChecks()
         _appState = State(initialValue: state)
     }
 

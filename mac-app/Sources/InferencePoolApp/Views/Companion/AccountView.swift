@@ -5,11 +5,13 @@ import SharedTypes
 
 struct CompanionAccountView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openURL) private var openURL
     @State private var authNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             accountSection
+            updateSection
             detailsSection
             devicesSection
         }
@@ -112,6 +114,90 @@ struct CompanionAccountView: View {
         }
     }
 
+    // MARK: updates
+
+    private var updateSection: some View {
+        TealeSection(prompt: appState.companionText("account.updates", fallback: "updates")) {
+            TealeStats {
+                TealeStatRow(
+                    label: appState.companionText("account.currentVersion", fallback: "Current version"),
+                    value: checker.currentVersionLabel
+                )
+                TealeStatRow(
+                    label: appState.companionText("account.updateStatus", fallback: "Update status"),
+                    value: checker.statusSummary,
+                    note: appState.companionText(
+                        "account.updateSchedule",
+                        fallback: "Teale checks GitHub releases every 4 hours while the mac app is running."
+                    )
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                TealeToggleRow(
+                    title: appState.companionText(
+                        "account.autoDownloadUpdates",
+                        fallback: "download updates automatically"
+                    ),
+                    detail: appState.companionText(
+                        "account.autoDownloadUpdatesDetail",
+                        fallback: "New macOS builds download in the background as soon as Teale sees them."
+                    ),
+                    isOn: Binding(
+                        get: { checker.autoDownloadEnabled },
+                        set: { checker.autoDownloadEnabled = $0 }
+                    )
+                )
+
+                TealeToggleRow(
+                    title: appState.companionText(
+                        "account.autoInstallUpdates",
+                        fallback: "install after download"
+                    ),
+                    detail: appState.companionText(
+                        "account.autoInstallUpdatesDetail",
+                        fallback: "After download finishes, replace Teale.app and relaunch automatically."
+                    ),
+                    isOn: Binding(
+                        get: { checker.autoInstallEnabled },
+                        set: { checker.autoInstallEnabled = $0 }
+                    )
+                )
+            }
+            .padding(.top, 10)
+
+            HStack(spacing: 10) {
+                TealeActionButton(
+                    title: checker.checking ? "checking..." : appState.companionText("account.checkUpdates", fallback: "check now"),
+                    primary: true,
+                    disabled: checker.checking || checker.installing
+                ) {
+                    Task {
+                        await checker.check()
+                    }
+                }
+
+                if checker.updateAvailable || checker.downloadedUpdateReady {
+                    TealeActionButton(
+                        title: installButtonTitle,
+                        disabled: checker.installing || checker.downloading
+                    ) {
+                        Task {
+                            _ = await checker.installUpdate()
+                        }
+                    }
+                }
+
+                if let releaseURL = checker.releaseURL {
+                    TealeActionButton(title: appState.companionText("account.viewRelease", fallback: "view release")) {
+                        openURL(releaseURL)
+                    }
+                }
+            }
+            .padding(.top, 10)
+        }
+    }
+
     // MARK: devices
 
     private var devicesSection: some View {
@@ -132,6 +218,21 @@ struct CompanionAccountView: View {
                     .foregroundStyle(TealeDesign.muted)
             }
         }
+    }
+
+    private var checker: UpdateChecker { appState.updateChecker }
+
+    private var installButtonTitle: String {
+        if checker.installing {
+            return appState.companionText("account.installingUpdate", fallback: "installing...")
+        }
+        if checker.downloading {
+            return appState.companionText("account.downloadingUpdate", fallback: "downloading...")
+        }
+        if checker.downloadedUpdateReady {
+            return appState.companionText("account.installDownloadedUpdate", fallback: "install downloaded update")
+        }
+        return appState.companionText("account.installUpdate", fallback: "download + install")
     }
 }
 

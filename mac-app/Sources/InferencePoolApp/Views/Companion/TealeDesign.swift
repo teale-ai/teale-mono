@@ -154,6 +154,26 @@ struct TealeActionButton: View {
     }
 }
 
+struct TealeToggleRow: View {
+    let title: String
+    let detail: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title.lowercased())
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+                Text(detail)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+        }
+        .tint(TealeDesign.teale)
+    }
+}
+
 struct TealeCodeBlock: View {
     let text: String
 
