@@ -149,28 +149,56 @@ jobs:
           TEALE_SUPABASE_ANON_KEY: ${{ secrets.TEALE_SUPABASE_ANON_KEY }}
           TEALE_SUPABASE_REDIRECT_URL: ${{ secrets.TEALE_SUPABASE_REDIRECT_URL }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_URL)) {
-            throw "Missing Actions secret TEALE_SUPABASE_URL"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_ANON_KEY)) {
-            throw "Missing Actions secret TEALE_SUPABASE_ANON_KEY"
+          [xml]$supabasePlist = Get-Content "mac-app\Sources\AuthKit\Resources\Supabase.plist"
+          $plistValues = @{}
+          $plistNodes = @(
+            $supabasePlist.plist.dict.ChildNodes |
+              Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element }
+          )
+
+          for ($i = 0; $i -lt $plistNodes.Count - 1; $i++) {
+            if ($plistNodes[$i].Name -ne "key") {
+              continue
+            }
+            $plistValues[$plistNodes[$i].InnerText] = $plistNodes[$i + 1].InnerText
           }
 
-          $redirectUrl = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_REDIRECT_URL)) {
-            "teale://auth/callback"
+          $supabaseUrl = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_URL)) {
+            [string]$plistValues["SUPABASE_URL"]
           } else {
+            $env:TEALE_SUPABASE_URL
+          }
+
+          $supabaseAnonKey = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_ANON_KEY)) {
+            [string]$plistValues["SUPABASE_ANON_KEY"]
+          } else {
+            $env:TEALE_SUPABASE_ANON_KEY
+          }
+
+          $redirectUrl = if (-not [string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_REDIRECT_URL)) {
             $env:TEALE_SUPABASE_REDIRECT_URL
+          } elseif (-not [string]::IsNullOrWhiteSpace([string]$plistValues["SUPABASE_REDIRECT_URL"])) {
+            [string]$plistValues["SUPABASE_REDIRECT_URL"]
+          } else {
+            "teale://auth/callback"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($supabaseUrl)) {
+            throw "Missing Supabase URL in Actions secrets and mac-app/Sources/AuthKit/Resources/Supabase.plist"
+          }
+          if ([string]::IsNullOrWhiteSpace($supabaseAnonKey)) {
+            throw "Missing Supabase anon key in Actions secrets and mac-app/Sources/AuthKit/Resources/Supabase.plist"
           }
 
           $config = @{
-            supabase_url = $env:TEALE_SUPABASE_URL
-            supabase_anon_key = $env:TEALE_SUPABASE_ANON_KEY
+            supabase_url = $supabaseUrl
+            supabase_anon_key = $supabaseAnonKey
             supabase_redirect_url = $redirectUrl
           }
 
-          $config | ConvertTo-Json | Set-Content "node\installer\supabase-config.json" -Encoding UTF8
+          $config | ConvertTo-Json -Compress | Set-Content "node\installer\supabase-config.json" -Encoding UTF8
 
-          $supabaseHost = ([Uri]$env:TEALE_SUPABASE_URL).Host
+          $supabaseHost = ([Uri]$supabaseUrl).Host
           Write-Host "Supabase auth config staged for host $supabaseHost"
 
       - name: Install Inno Setup
