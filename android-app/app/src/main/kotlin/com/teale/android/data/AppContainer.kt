@@ -11,6 +11,7 @@ import com.teale.android.data.identity.KeyStorage
 import com.teale.android.data.identity.WanIdentity
 import com.teale.android.data.inference.GatewayClient
 import com.teale.android.data.settings.SettingsStore
+import com.teale.android.data.tasks.TaskRepository
 import com.teale.android.data.wallet.WalletRepository
 
 /**
@@ -44,6 +45,7 @@ class AppContainer(private val app: Context) {
 
     val chatDatabase: ChatDatabase = ChatDatabase.create(app)
     val chatRepository: ChatRepository = ChatRepository(chatDatabase.chatDao())
+    val taskRepository: TaskRepository = TaskRepository(app, chatDatabase.taskDao())
 
     val groupRepository: GroupRepository = GroupRepository(
         baseUrl = BuildConfig.GATEWAY_BASE_URL,

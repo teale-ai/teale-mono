@@ -117,6 +117,7 @@ class GroupsViewModel : ViewModel() {
                     gateway.streamChat(model, history).collect { ev ->
                         when (ev) {
                             is ChatEvent.Delta -> buffer.append(ev.text)
+                            is ChatEvent.Usage -> {}
                             is ChatEvent.Final -> {}
                             is ChatEvent.Error -> _error.value = ev.message
                         }
