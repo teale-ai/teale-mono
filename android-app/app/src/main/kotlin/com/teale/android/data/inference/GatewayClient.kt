@@ -7,11 +7,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -24,13 +26,51 @@ import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withContext
 
 /** One streaming event from the gateway. */
 sealed class ChatEvent {
     data class Delta(val text: String) : ChatEvent()
-    data class Final(val tokensOut: Int) : ChatEvent()
+    data class Usage(
+        val promptTokens: Int?,
+        val completionTokens: Int?,
+    ) : ChatEvent()
+    data object Final : ChatEvent()
     data class Error(val message: String) : ChatEvent()
 }
+
+@Serializable
+data class ModelPricing(
+    val prompt: String? = null,
+    val completion: String? = null,
+)
+
+@Serializable
+data class NetworkModel(
+    val id: String,
+    @SerialName("owned_by") val ownedBy: String? = null,
+    val description: String? = null,
+    val pricing: ModelPricing? = null,
+    @SerialName("loaded_device_count") val loadedDeviceCount: Int? = null,
+)
+
+@Serializable
+data class ModelsResponse(
+    val data: List<NetworkModel> = emptyList(),
+    @SerialName("connected_device_count") val connectedDeviceCount: Int? = null,
+)
+
+@Serializable
+data class NetworkStatsSnapshot(
+    @SerialName("totalDevices") val totalDevices: Int,
+    @SerialName("totalRamGB") val totalRamGB: Double,
+    @SerialName("totalModels") val totalModels: Int,
+    @SerialName("avgTtftMs") val avgTtftMs: Int? = null,
+    @SerialName("avgTps") val avgTps: Float? = null,
+    @SerialName("totalCreditsEarned") val totalCreditsEarned: Long,
+    @SerialName("totalCreditsSpent") val totalCreditsSpent: Long,
+    @SerialName("totalUsdcDistributedCents") val totalUsdcDistributedCents: Long,
+)
 
 class GatewayClient(
     private val baseUrl: String,
@@ -68,7 +108,6 @@ class GatewayClient(
             .post(body.toRequestBody("application/json".toMediaType()))
             .build()
 
-        var tokensOut = 0
         val listener = object : EventSourceListener() {
             override fun onEvent(
                 eventSource: EventSource,
@@ -77,12 +116,15 @@ class GatewayClient(
                 data: String
             ) {
                 if (data == "[DONE]") {
-                    trySend(ChatEvent.Final(tokensOut))
+                    trySend(ChatEvent.Final)
                     close()
                     return
                 }
                 val root = runCatching { json.parseToJsonElement(data) }.getOrNull() ?: return
                 val obj = runCatching { root.jsonObject }.getOrNull() ?: return
+                parseUsage(obj)?.let { usage ->
+                    trySend(ChatEvent.Usage(usage.promptTokens, usage.completionTokens))
+                }
                 val choice = (obj["choices"] as? JsonArray)?.firstOrNull() as? JsonObject ?: return
                 val delta = choice["delta"] as? JsonObject ?: return
                 val content = delta["content"]
@@ -90,7 +132,6 @@ class GatewayClient(
                     val t = runCatching { content.jsonPrimitive.content }
                         .getOrElse { content.toString().trim('"') }
                     if (t.isNotEmpty()) {
-                        tokensOut++
                         trySend(ChatEvent.Delta(t))
                     }
                 }
@@ -116,6 +157,43 @@ class GatewayClient(
         awaitClose { source.cancel() }
     }.flowOn(Dispatchers.IO)
 
+    suspend fun listModels(): List<NetworkModel> = withContext(Dispatchers.IO) {
+        val token = tokenClient.bearer()
+        val req = Request.Builder()
+            .url("$baseUrl/v1/models")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "application/json")
+            .build()
+        http.newCall(req).execute().use { response ->
+            if (response.code == 401) {
+                tokenClient.invalidate()
+            }
+            if (!response.isSuccessful) {
+                return@withContext emptyList()
+            }
+            val body = response.body?.string().orEmpty()
+            json.decodeFromString(ModelsResponse.serializer(), body).data
+        }
+    }
+
+    suspend fun fetchNetworkStats(): NetworkStatsSnapshot? = withContext(Dispatchers.IO) {
+        val token = tokenClient.bearer()
+        val req = Request.Builder()
+            .url("$baseUrl/v1/network/stats")
+            .addHeader("Authorization", "Bearer $token")
+            .build()
+        http.newCall(req).execute().use { response ->
+            if (response.code == 401) {
+                tokenClient.invalidate()
+            }
+            if (!response.isSuccessful) {
+                return@withContext null
+            }
+            val body = response.body?.string().orEmpty()
+            json.decodeFromString(NetworkStatsSnapshot.serializer(), body)
+        }
+    }
+
     private fun buildRequestJson(
         model: String,
         messages: List<ChatMessage>,
@@ -136,8 +214,25 @@ class GatewayClient(
                 put("stream", true)
                 put("temperature", temperature)
                 put("messages", messagesArr)
+                put(
+                    "stream_options",
+                    buildJsonObject {
+                        put("include_usage", true)
+                    }
+                )
             }
         )
+    }
+
+    private fun parseUsage(obj: JsonObject): ChatEvent.Usage? {
+        val usage = obj["usage"] as? JsonObject ?: return null
+        val promptTokens = usage["prompt_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        val completionTokens =
+            usage["completion_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        if (promptTokens == null && completionTokens == null) {
+            return null
+        }
+        return ChatEvent.Usage(promptTokens, completionTokens)
     }
 }
 

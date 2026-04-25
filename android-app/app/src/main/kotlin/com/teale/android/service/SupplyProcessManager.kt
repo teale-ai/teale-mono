@@ -1,6 +1,8 @@
 package com.teale.android.service
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import java.io.File
 import java.io.IOException
@@ -8,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Supervises the two native subprocesses that make this phone a supply node:
- *   - `libllamaserver.so` — llama.cpp HTTP server listening on 127.0.0.1:8080
+ *   - `libllamaserver.so` — llama.cpp HTTP server listening on 127.0.0.1:11436
  *   - `libtealenode.so`   — teale-node, connects to wss://relay.teale.com/ws
  *
  * Binaries are picked up from `applicationInfo.nativeLibraryDir` (APK-bundled)
@@ -17,90 +19,168 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class SupplyProcessManager(private val context: Context) {
 
+    data class StartConfig(
+        val accelerationMode: SupplyAccelerationMode,
+        val advertisedModelId: String = DEFAULT_MODEL_ID,
+    )
+
+    sealed interface StartResult {
+        data class Running(
+            val profile: SupplyRuntimeProfile,
+            val fellBackToCpu: Boolean,
+        ) : StartResult
+
+        data class MissingArtifacts(val detail: String) : StartResult
+        data class Failed(val detail: String) : StartResult
+    }
+
     private val running = AtomicBoolean(false)
     private var llamaProcess: Process? = null
     private var nodeProcess: Process? = null
     private var nodeOutThread: Thread? = null
     private var llamaOutThread: Thread? = null
+    private var activeProfile: SupplyRuntimeProfile? = null
 
-    fun start() {
-        if (!running.compareAndSet(false, true)) {
-            Log.i(TAG, "already running")
-            return
+    @Synchronized
+    fun ensureStarted(config: StartConfig): StartResult {
+        val desiredProfile = desiredRuntimeProfile(
+            mode = config.accelerationMode,
+            deviceSupportsAcceleration = deviceSupportsAcceleration(context),
+        )
+
+        if (running.get() && activeProfile == desiredProfile && processesAlive()) {
+            Log.i(TAG, "already running with profile=$desiredProfile")
+            return StartResult.Running(profile = desiredProfile, fellBackToCpu = false)
         }
-        try {
-            val (llamaBin, nodeBin, model) = resolveBinariesAndModel()
-            if (llamaBin == null || nodeBin == null) {
-                Log.w(TAG, "missing binary — push via adb: llama=$llamaBin node=$nodeBin")
-                running.set(false)
-                return
+
+        stopInternal()
+
+        val (llamaBin, nodeBin, model) = resolveBinariesAndModel()
+        if (llamaBin == null || nodeBin == null || model == null) {
+            val detail = buildString {
+                append("missing artifacts:")
+                if (llamaBin == null) append(" llama-server")
+                if (nodeBin == null) append(" teale-node")
+                if (model == null) append(" gguf-model")
             }
-            val workDir = File(context.filesDir, "supply").apply { mkdirs() }
+            Log.w(TAG, detail)
+            return StartResult.MissingArtifacts(detail)
+        }
 
-            if (model == null) {
-                Log.w(TAG, "no model GGUF found; node will register without a loaded model")
+        return runCatching {
+            launchProfile(desiredProfile, llamaBin, nodeBin, model, config)
+            StartResult.Running(profile = desiredProfile, fellBackToCpu = false)
+        }.getOrElse { error ->
+            Log.w(TAG, "launch failed for profile=$desiredProfile: ${error.message}")
+            stopInternal()
+            if (desiredProfile == SupplyRuntimeProfile.AcceleratedBeta) {
+                runCatching {
+                    launchProfile(
+                        profile = SupplyRuntimeProfile.ConservativeCpu,
+                        llamaBin = llamaBin,
+                        nodeBin = nodeBin,
+                        model = model,
+                        config = config,
+                    )
+                    StartResult.Running(
+                        profile = SupplyRuntimeProfile.ConservativeCpu,
+                        fellBackToCpu = true,
+                    )
+                }.getOrElse { fallbackError ->
+                    stopInternal()
+                    StartResult.Failed(
+                        "accelerated launch failed (${error.message}); cpu fallback failed (${fallbackError.message})"
+                    )
+                }
+            } else {
+                StartResult.Failed(error.message ?: "unknown supply launch failure")
             }
-
-            val llamaPort = 11436
-
-            // 1) Start llama-server (only if we have a model to serve)
-            if (model != null) {
-                val pb = ProcessBuilder(
-                    llamaBin.absolutePath,
-                    "-m", model.absolutePath,
-                    "--host", "127.0.0.1",
-                    "--port", llamaPort.toString(),
-                    "-c", "4096",
-                    "-ngl", "0",
-                    "-t", "4",
-                ).directory(workDir).redirectErrorStream(true)
-                // Ensure the dynamic linker can find libllama.so, libggml*.so
-                // bundled alongside the binary in the APK's native-lib dir.
-                pb.environment()["LD_LIBRARY_PATH"] =
-                    context.applicationInfo.nativeLibraryDir +
-                        ":" + (pb.environment()["LD_LIBRARY_PATH"] ?: "")
-                Log.i(TAG, "exec llama-server: ${pb.command().joinToString(" ")}")
-                llamaProcess = pb.start()
-                llamaOutThread = pipeOutput("llama-server", llamaProcess!!)
-                Thread.sleep(2000) // give it a beat to open the socket
-            }
-
-            // 2) Render teale-node config, then start node
-            val configFile = NodeConfigWriter.writeConfig(
-                context,
-                workDir,
-                hasLlamaServer = (model != null),
-                llamaPort = llamaPort,
-            )
-            val nodeCmd = mutableListOf(
-                nodeBin.absolutePath,
-                "--config", configFile.absolutePath,
-            )
-            // We manage llama-server ourselves above — tell teale-node to
-            // connect to the existing backend instead of spawning its own.
-            if (model != null) nodeCmd += "--no-backend"
-            val pb2 = ProcessBuilder(nodeCmd)
-                .directory(workDir)
-                .redirectErrorStream(true)
-            pb2.environment()["LD_LIBRARY_PATH"] =
-                context.applicationInfo.nativeLibraryDir +
-                    ":" + (pb2.environment()["LD_LIBRARY_PATH"] ?: "")
-            Log.i(TAG, "exec teale-node: ${pb2.command().joinToString(" ")}")
-            nodeProcess = pb2.start()
-            nodeOutThread = pipeOutput("teale-node", nodeProcess!!)
-
-            Log.i(TAG, "SupplyService up")
-        } catch (t: Throwable) {
-            Log.e(TAG, "start failed", t)
-            stop()
         }
     }
 
+    @Synchronized
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
+        stopInternal()
+    }
+
+    private fun launchProfile(
+        profile: SupplyRuntimeProfile,
+        llamaBin: File,
+        nodeBin: File,
+        model: File,
+        config: StartConfig,
+    ) {
+        val workDir = File(context.filesDir, "supply").apply { mkdirs() }
+        val llamaPort = 11436
+
+        val llamaBuilder = ProcessBuilder(
+            llamaBin.absolutePath,
+            "-m", model.absolutePath,
+            "--host", "127.0.0.1",
+            "--port", llamaPort.toString(),
+            "-c", "4096",
+            "-ngl", profile.gpuLayers.toString(),
+            "-t", "4",
+        ).directory(workDir).redirectErrorStream(true)
+        llamaBuilder.environment()["LD_LIBRARY_PATH"] =
+            context.applicationInfo.nativeLibraryDir +
+                ":" + (llamaBuilder.environment()["LD_LIBRARY_PATH"] ?: "")
+        Log.i(TAG, "exec llama-server (${profile.name}): ${llamaBuilder.command().joinToString(" ")}")
+        llamaProcess = llamaBuilder.start()
+        llamaOutThread = pipeOutput("llama-server", llamaProcess!!)
+        Thread.sleep(2000)
+        requireAlive(llamaProcess, "llama-server")
+
+        val configFile = NodeConfigWriter.writeConfig(
+            workDir = workDir,
+            hasLlamaServer = true,
+            llamaPort = llamaPort,
+            advertisedModelId = config.advertisedModelId,
+            nodeGpuBackend = profile.nodeGpuBackend,
+            maxConcurrentRequests = 1,
+        )
+        val nodeBuilder = ProcessBuilder(
+            nodeBin.absolutePath,
+            "--config", configFile.absolutePath,
+            "--no-backend",
+        ).directory(workDir).redirectErrorStream(true)
+        nodeBuilder.environment()["LD_LIBRARY_PATH"] =
+            context.applicationInfo.nativeLibraryDir +
+                ":" + (nodeBuilder.environment()["LD_LIBRARY_PATH"] ?: "")
+        Log.i(TAG, "exec teale-node (${profile.name}): ${nodeBuilder.command().joinToString(" ")}")
+        nodeProcess = nodeBuilder.start()
+        nodeOutThread = pipeOutput("teale-node", nodeProcess!!)
+        Thread.sleep(1500)
+        requireAlive(nodeProcess, "teale-node")
+
+        activeProfile = profile
+        running.set(true)
+        Log.i(TAG, "SupplyService up with profile=$profile")
+    }
+
+    private fun requireAlive(process: Process?, name: String) {
+        if (process == null || !process.isAlive) {
+            val exitCode = runCatching { process?.exitValue() }.getOrNull()
+            throw IllegalStateException("$name exited during warmup (exit=$exitCode)")
+        }
+    }
+
+    private fun processesAlive(): Boolean =
+        llamaProcess?.isAlive == true && nodeProcess?.isAlive == true
+
+    private fun stopInternal() {
+        val hadProcesses =
+            running.getAndSet(false) || llamaProcess != null || nodeProcess != null || activeProfile != null
         runCatching { nodeProcess?.destroy() }
         runCatching { llamaProcess?.destroy() }
-        Log.i(TAG, "SupplyService down")
+        nodeProcess = null
+        llamaProcess = null
+        nodeOutThread = null
+        llamaOutThread = null
+        activeProfile = null
+        if (hadProcesses) {
+            Log.i(TAG, "SupplyService down")
+        }
     }
 
     private fun resolveBinariesAndModel(): Triple<File?, File?, File?> {
@@ -147,7 +227,9 @@ class SupplyProcessManager(private val context: Context) {
                         Log.i(tag, line)
                     }
                 }
-            } catch (_: IOException) { /* process exited */ }
+            } catch (_: IOException) {
+                // Process exited.
+            }
         }
         t.isDaemon = true
         t.start()
@@ -156,5 +238,16 @@ class SupplyProcessManager(private val context: Context) {
 
     companion object {
         private const val TAG = "SupplyPM"
+        private const val DEFAULT_MODEL_ID = "google/gemma-3-1b-it"
+
+        fun deviceSupportsAcceleration(context: Context): Boolean {
+            val pm = context.packageManager
+            val hardware = Build.HARDWARE.lowercase()
+            val product = Build.PRODUCT.lowercase()
+            return pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL) ||
+                hardware.contains("tensor") ||
+                hardware.contains("qcom") ||
+                product.contains("pixel")
+        }
     }
 }

@@ -3,7 +3,9 @@
 Kotlin + Jetpack Compose client for the Teale WAN. Ships chat, a
 Teale-credit wallet, multiplayer groups with `@teale` AI presence, and a
 supply mode that runs `llama.cpp` + `teale-node` on the device to serve
-inference and earn credits.
+inference and earn credits. Android supply is intentionally `beta`,
+charging-first, and tuned for small-model overflow capacity rather than
+always-on backbone throughput.
 
 For end-users / testers, see [`SIDELOAD.md`](SIDELOAD.md).
 
@@ -23,6 +25,10 @@ NDK 26 for supply-mode cross-compilation.
 # One-shot: rebuild teale-node for aarch64-linux-android, strip, stage
 # into jniLibs, push the Gemma 3 1B GGUF, reinstall, launch
 ./scripts/deploy-pixel.sh
+
+# Record a 30-minute docked supply run (battery, thermal, local health,
+# and Android logs) while supply is already enabled on the phone
+./scripts/benchmark-pixel-supply.sh 30
 ```
 
 ## Layout
@@ -59,8 +65,11 @@ android-app/
 - **Settings** — username alias (PATCHed to the gateway), preferred
   model, supply toggle, in-app Language picker (5 locales).
 - **Supply mode** — foreground service spawns `libllamaserver.so`
-  (llama.cpp Android release b8840) + `libtealenode.so`. Unified ed25519
-  identity means earnings land in the same wallet the app reads from.
+  (llama.cpp Android release b8840) + `libtealenode.so`. On capable
+  phones it attempts an accelerated Vulkan profile first, falls back to
+  CPU if startup fails, and pauses automatically when the phone is
+  unplugged or thermally constrained. Unified ed25519 identity means
+  earnings land in the same wallet the app reads from.
 - **Calendar skill** — permission-gated; triggers on `@calendar` +
   localized equivalents of "this week / next week / tomorrow" and
   injects next-7-day events as system-prompt context.
@@ -103,3 +112,7 @@ Read `~/.claude/projects/-Users-thou48-conductor-repos-teale-mono-v1/memory/refe
 if you're hitting weirdness with scoped storage, native-binary exec,
 APK-signature mismatches, or Doze blocking UI automation — each bullet
 cost hours during PR #8 bring-up.
+
+For realistic supply testing, treat Android phones as docked/charging
+nodes. Unplugged screen-off supply is much less reliable because Android
+can gate network and background execution aggressively.

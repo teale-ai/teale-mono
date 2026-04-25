@@ -24,18 +24,27 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.teale.android.R
 import com.teale.android.TealeApplication
 import com.teale.android.data.settings.SettingsStore
+import com.teale.android.service.SupplyAccelerationMode
+import com.teale.android.service.SupplyService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 class SettingsViewModel : ViewModel() {
     private val container = TealeApplication.instance.container
     private val store: SettingsStore = container.settingsStore
 
     private val _snapshot = MutableStateFlow(
-        SettingsStore.Snapshot("", "", false, SettingsStore.DEFAULT_MODEL)
+        SettingsStore.Snapshot(
+            username = "",
+            phone = "",
+            supplyEnabled = false,
+            preferredModel = SettingsStore.DEFAULT_MODEL,
+            supplyChargingOnly = SettingsStore.DEFAULT_SUPPLY_CHARGING_ONLY,
+            supplyAccelerationMode = SettingsStore.DEFAULT_SUPPLY_ACCELERATION,
+        )
     )
     val snapshot: StateFlow<SettingsStore.Snapshot> = _snapshot.asStateFlow()
 
@@ -54,14 +63,25 @@ class SettingsViewModel : ViewModel() {
     fun setPhone(v: String) = viewModelScope.launch { store.setPhone(v) }
     fun setSupplyEnabled(v: Boolean) = viewModelScope.launch {
         store.setSupplyEnabled(v)
-        // Actually start/stop the service — handled by SupplyService.toggle
-        com.teale.android.service.SupplyService.toggle(
-            TealeApplication.instance, v
-        )
+        SupplyService.toggle(TealeApplication.instance, v)
     }
     fun setPreferredModel(v: String) = viewModelScope.launch { store.setPreferredModel(v) }
+    fun setSupplyChargingOnly(v: Boolean) = viewModelScope.launch {
+        store.setSupplyChargingOnly(v)
+        refreshSupplyIfActive()
+    }
+    fun setSupplyAccelerationMode(v: String) = viewModelScope.launch {
+        store.setSupplyAccelerationMode(v)
+        refreshSupplyIfActive()
+    }
 
     suspend fun settings() = store.snapshot.first()
+
+    private suspend fun refreshSupplyIfActive() {
+        if (store.snapshot.first().supplyEnabled) {
+            SupplyService.refresh(TealeApplication.instance)
+        }
+    }
 }
 
 @Composable
@@ -147,6 +167,51 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             )
         }
 
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                stringResource(R.string.settings_supply_beta_title),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                stringResource(R.string.settings_supply_beta_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.settings_supply_charging_only_title),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        stringResource(R.string.settings_supply_charging_only_body),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = snapshot.supplyChargingOnly,
+                    onCheckedChange = viewModel::setSupplyChargingOnly,
+                )
+            }
+
+            SupplyAccelerationPicker(
+                value = snapshot.supplyAccelerationMode,
+                onChange = viewModel::setSupplyAccelerationMode,
+            )
+        }
+
         // Invite
         val inviteBody = stringResource(
             R.string.invite_sms_body,
@@ -183,6 +248,11 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
 // restarts the activity with the new locale.
 
 private data class Language(val tag: String, val nameRes: Int)
+private data class SupplyAccelerationOption(
+    val value: String,
+    val labelRes: Int,
+    val bodyRes: Int,
+)
 
 private val SUPPORTED_LANGUAGES = listOf(
     Language("en", R.string.lang_en),
@@ -190,6 +260,19 @@ private val SUPPORTED_LANGUAGES = listOf(
     Language("zh-CN", R.string.lang_zh_cn),
     Language("fil", R.string.lang_fil),
     Language("es", R.string.lang_es),
+)
+
+private val SUPPLY_ACCELERATION_OPTIONS = listOf(
+    SupplyAccelerationOption(
+        value = SupplyAccelerationMode.Auto.storageValue,
+        labelRes = R.string.settings_supply_acceleration_auto,
+        bodyRes = R.string.settings_supply_acceleration_auto_body,
+    ),
+    SupplyAccelerationOption(
+        value = SupplyAccelerationMode.CpuOnly.storageValue,
+        labelRes = R.string.settings_supply_acceleration_cpu,
+        bodyRes = R.string.settings_supply_acceleration_cpu_body,
+    ),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -232,6 +315,46 @@ private fun LanguagePicker() {
                         AppCompatDelegate.setApplicationLocales(
                             LocaleListCompat.forLanguageTags(lang.tag)
                         )
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SupplyAccelerationPicker(
+    value: String,
+    onChange: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val current = SUPPLY_ACCELERATION_OPTIONS.firstOrNull { it.value == value }
+        ?: SUPPLY_ACCELERATION_OPTIONS.first()
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+    ) {
+        OutlinedTextField(
+            readOnly = true,
+            value = stringResource(current.labelRes),
+            onValueChange = { },
+            label = { Text(stringResource(R.string.settings_supply_acceleration_title)) },
+            supportingText = { Text(stringResource(current.bodyRes)) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            SUPPLY_ACCELERATION_OPTIONS.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(option.labelRes)) },
+                    onClick = {
+                        onChange(option.value)
                         expanded = false
                     },
                 )
