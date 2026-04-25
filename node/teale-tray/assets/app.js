@@ -1199,6 +1199,68 @@ async function saveUpdaterSettings() {
   }
 }
 
+async function handleUpdateBannerAction(action) {
+  if (!lastSnapshot) {
+    return;
+  }
+
+  if (action === "download") {
+    const updater = currentUpdater();
+    const latestTag = updateState.latestTag || updater?.latest_tag || "";
+    const readyToInstall = Boolean(
+      latestTag &&
+      updater?.downloaded_tag === latestTag &&
+      updater?.downloaded_installer_path
+    );
+    try {
+      await triggerNativeUpdater(readyToInstall ? "installDownloaded" : "download");
+    } catch (error) {
+      alert(error.message);
+    }
+    return;
+  }
+
+  if (action === "release") {
+    const updater = currentUpdater();
+    openExternalUrl(updateState.releaseUrl || updater?.latest_release_url || updateState.assetUrl);
+    return;
+  }
+
+  if (action === "dismiss") {
+    persistDismissedUpdateTag(updateState.latestTag || currentUpdater()?.latest_tag || "");
+    updateState.updateAvailable = false;
+    if (els.updateBanner) {
+      els.updateBanner.hidden = true;
+    }
+    renderUpdateBanner(lastSnapshot);
+  }
+}
+
+function bindImmediateButtonAction(element, action) {
+  if (!element) {
+    return;
+  }
+
+  const activate = async (event) => {
+    event.preventDefault();
+    await handleUpdateBannerAction(action);
+  };
+
+  element.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    void activate(event);
+  });
+
+  element.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    void activate(event);
+  });
+}
+
 function updateDisplayUnitLabels() {
   if (els.displayUnitSelect) {
     els.displayUnitSelect.value = displayUnit;
@@ -4812,31 +4874,9 @@ els.shareStoryButton.addEventListener("click", async () => {
   await copyText(SHARE_STORY_TEXT, "Share text");
 });
 
-els.updateBannerDownload.addEventListener("click", async () => {
-  const updater = currentUpdater();
-  const latestTag = updateState.latestTag || updater?.latest_tag || "";
-  const readyToInstall = Boolean(
-    latestTag &&
-    updater?.downloaded_tag === latestTag &&
-    updater?.downloaded_installer_path
-  );
-  try {
-    await triggerNativeUpdater(readyToInstall ? "installDownloaded" : "download");
-  } catch (error) {
-    alert(error.message);
-  }
-});
-
-els.updateBannerRelease.addEventListener("click", () => {
-  const updater = currentUpdater();
-  openExternalUrl(updateState.releaseUrl || updater?.latest_release_url || updateState.assetUrl);
-});
-
-els.updateBannerDismiss.addEventListener("click", () => {
-  persistDismissedUpdateTag(updateState.latestTag || currentUpdater()?.latest_tag || "");
-  updateState.updateAvailable = false;
-  renderUpdateBanner(lastSnapshot);
-});
+bindImmediateButtonAction(els.updateBannerDownload, "download");
+bindImmediateButtonAction(els.updateBannerRelease, "release");
+bindImmediateButtonAction(els.updateBannerDismiss, "dismiss");
 
 els.localCurlCopy.addEventListener("click", async () => {
   await copyText(els.localCurl.textContent, "Local curl");
