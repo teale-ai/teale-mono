@@ -10,6 +10,9 @@ const els = {
   settingsMenu: document.getElementById("settings-menu"),
   languageSelect: document.getElementById("language-select"),
   displayUnitSelect: document.getElementById("display-unit-select"),
+  updaterAutoDownload: document.getElementById("updater-auto-download"),
+  updaterAutoInstall: document.getElementById("updater-auto-install"),
+  updaterSettingsNote: document.getElementById("updater-settings-note"),
   followXButton: document.getElementById("follow-x-button"),
   shareStoryButton: document.getElementById("share-story-button"),
   viewButtons: Array.from(document.querySelectorAll("[data-view-button]")),
@@ -810,6 +813,9 @@ let intervalHandle = null;
 let lastSnapshot = null;
 const updateState = {
   checking: false,
+  commandInFlight: false,
+  lastCommandStartedAt: 0,
+  settingsInFlight: false,
   currentVersion: "",
   latestTag: "",
   releaseUrl: "",
@@ -930,24 +936,151 @@ function selectLatestRelease(releases, { tagPrefix, assetName }) {
   return bestRelease;
 }
 
-function renderUpdateBanner() {
+function currentUpdater(snapshot = lastSnapshot) {
+  return snapshot?.updater || null;
+}
+
+function updaterStatusSummary(updater) {
+  const latestVersion = versionLabel(updater?.latest_tag, WINDOWS_RELEASE_PREFIX);
+  switch (updater?.status) {
+    case "available":
+      return latestVersion
+        ? `Teale ${latestVersion} is available for this PC.`
+        : "A newer Teale build is available for this PC.";
+    case "downloading":
+      return latestVersion
+        ? `Downloading Teale ${latestVersion} in the background.`
+        : "Downloading the latest Teale build in the background.";
+    case "downloaded":
+      return latestVersion
+        ? `Teale ${latestVersion} is downloaded and ready to install.`
+        : "The latest Teale build is downloaded and ready to install.";
+    case "installing":
+      return latestVersion
+        ? `Installing Teale ${latestVersion} in the background.`
+        : "Installing the downloaded Teale update in the background.";
+    case "up_to_date":
+      return updater?.auto_download
+        ? "Background updater is on. This PC is current."
+        : "This PC is current.";
+    case "error":
+      return updater?.last_error || "The Windows updater hit an error.";
+    default:
+      return updater?.auto_download
+        ? "Background updater is on. Teale will download new builds automatically."
+        : "Background updater is off. Teale will only download updates when asked.";
+  }
+}
+
+function renderUpdaterSettings(snapshot = lastSnapshot) {
+  const updater = currentUpdater(snapshot);
+  if (els.updaterAutoDownload) {
+    els.updaterAutoDownload.checked = Boolean(updater?.auto_download);
+    els.updaterAutoDownload.disabled = updateState.settingsInFlight;
+  }
+  if (els.updaterAutoInstall) {
+    els.updaterAutoInstall.checked = Boolean(updater?.auto_install_after_download);
+    els.updaterAutoInstall.disabled =
+      updateState.settingsInFlight || !Boolean(updater?.auto_download);
+  }
+  if (els.updaterSettingsNote) {
+    els.updaterSettingsNote.textContent = updaterStatusSummary(updater);
+  }
+}
+
+function renderUpdateBanner(snapshot = lastSnapshot) {
   if (!els.updateBanner) {
     return;
   }
 
-  const showBanner = Boolean(
-    updateState.updateAvailable && (updateState.assetUrl || updateState.releaseUrl)
+  const updater = currentUpdater(snapshot);
+  const latestTag = updateState.latestTag || updater?.latest_tag || "";
+  const latestReleaseUrl = updateState.releaseUrl || updater?.latest_release_url || "";
+  const latestVersion = versionLabel(latestTag, WINDOWS_RELEASE_PREFIX) || latestTag;
+  const currentVersionRaw = String(snapshot?.app_version || updateState.currentVersion || "").trim();
+  const currentVersion = versionLabel(currentVersionRaw, WINDOWS_RELEASE_PREFIX) || currentVersionRaw;
+  const remoteVersion = normalizeReleaseVersion(latestTag, WINDOWS_RELEASE_PREFIX);
+  const localVersion = normalizeReleaseVersion(currentVersionRaw, WINDOWS_RELEASE_PREFIX);
+  const readyToInstall = Boolean(
+    latestTag &&
+    updater?.downloaded_tag === latestTag &&
+    updater?.downloaded_installer_path
   );
+  const downloading = Boolean(updater?.status === "downloading" && updater?.latest_tag === latestTag);
+  const dismissed = latestTag && latestTag === updateState.dismissedTag;
+  updateState.updateAvailable = Boolean(
+    remoteVersion != null &&
+    localVersion != null &&
+    remoteVersion > localVersion &&
+    (!dismissed || readyToInstall || downloading)
+  );
+
+  const showBanner = updateState.updateAvailable;
   els.updateBanner.hidden = !showBanner;
   if (!showBanner) {
     return;
   }
 
-  const latestVersion = versionLabel(updateState.latestTag, WINDOWS_RELEASE_PREFIX) || updateState.latestTag;
-  const currentVersion = versionLabel(updateState.currentVersion, WINDOWS_RELEASE_PREFIX) || updateState.currentVersion;
-  els.updateBannerMessage.textContent = `Teale ${latestVersion} is ready for Windows. You're on ${currentVersion}. Download the new installer to update this PC.`;
-  els.updateBannerDownload.disabled = !updateState.assetUrl;
-  els.updateBannerRelease.disabled = !updateState.releaseUrl;
+  if (readyToInstall) {
+    els.updateBannerMessage.textContent = `Teale ${latestVersion} is downloaded in the background and ready to install on this PC. You're on ${currentVersion}. Teale may close briefly while the update is applied.`;
+    els.updateBannerDownload.textContent = updateState.commandInFlight ? "installing..." : "install downloaded update";
+    els.updateBannerDownload.disabled = updateState.commandInFlight;
+  } else if (downloading) {
+    els.updateBannerMessage.textContent = `Teale ${latestVersion} is downloading in the background for this PC. You're on ${currentVersion}.`;
+    els.updateBannerDownload.textContent = "download in progress";
+    els.updateBannerDownload.disabled = true;
+  } else {
+    const backgroundNote = updater?.auto_download
+      ? "Background downloads are enabled on this PC."
+      : "Download the new installer to update this PC.";
+    els.updateBannerMessage.textContent = `Teale ${latestVersion} is ready for Windows. You're on ${currentVersion}. ${backgroundNote}`;
+    els.updateBannerDownload.textContent = updateState.commandInFlight ? "starting..." : "download update";
+    els.updateBannerDownload.disabled = updateState.commandInFlight;
+  }
+
+  els.updateBannerRelease.disabled = !latestReleaseUrl;
+}
+
+function hasRemoteWindowsUpdate(snapshot = lastSnapshot) {
+  const latestTag = updateState.latestTag || snapshot?.updater?.latest_tag || "";
+  const currentVersionRaw = String(snapshot?.app_version || updateState.currentVersion || "").trim();
+  const remoteVersion = normalizeReleaseVersion(latestTag, WINDOWS_RELEASE_PREFIX);
+  const localVersion = normalizeReleaseVersion(currentVersionRaw, WINDOWS_RELEASE_PREFIX);
+  return Boolean(remoteVersion != null && localVersion != null && remoteVersion > localVersion);
+}
+
+function canStartUpdaterAction() {
+  return !updateState.commandInFlight && Date.now() - updateState.lastCommandStartedAt > 60000;
+}
+
+async function maybeStartConfiguredUpdater(snapshot = lastSnapshot) {
+  const updater = currentUpdater(snapshot);
+  const latestTag = updateState.latestTag || updater?.latest_tag || "";
+  const alreadyDownloaded = Boolean(
+    latestTag &&
+    updater?.downloaded_tag === latestTag &&
+    updater?.downloaded_installer_path
+  );
+
+  if (
+    updater?.auto_install_after_download &&
+    alreadyDownloaded &&
+    updater?.status !== "installing" &&
+    canStartUpdaterAction()
+  ) {
+    await triggerNativeUpdater("installDownloaded");
+    return;
+  }
+
+  if (
+    updater?.auto_download &&
+    hasRemoteWindowsUpdate(snapshot) &&
+    updater?.downloaded_tag !== latestTag &&
+    updater?.status !== "downloading" &&
+    canStartUpdaterAction()
+  ) {
+    await triggerNativeUpdater("check");
+  }
 }
 
 async function maybeRefreshWindowsUpdate(snapshot, force = false) {
@@ -1003,20 +1136,66 @@ async function maybeRefreshWindowsUpdate(snapshot, force = false) {
     const asset = release.assets.find((item) => item?.name === WINDOWS_RELEASE_ASSET_NAME);
     const remoteVersion = normalizeReleaseVersion(release.tag_name, WINDOWS_RELEASE_PREFIX);
     const localVersion = normalizeReleaseVersion(currentVersion, WINDOWS_RELEASE_PREFIX);
+    const remoteIsNewer = Boolean(
+      remoteVersion != null && localVersion != null && remoteVersion > localVersion
+    );
     updateState.latestTag = String(release.tag_name || "");
     updateState.releaseUrl = String(release.html_url || "");
     updateState.assetUrl = String(asset?.browser_download_url || "");
-    updateState.updateAvailable = Boolean(
-      remoteVersion != null &&
-      localVersion != null &&
-      remoteVersion > localVersion &&
-      updateState.latestTag !== updateState.dismissedTag
-    );
+    updateState.updateAvailable = remoteIsNewer && updateState.latestTag !== updateState.dismissedTag;
+
+    if (
+      remoteIsNewer &&
+      snapshot?.updater?.auto_download &&
+      snapshot?.updater?.downloaded_tag !== updateState.latestTag &&
+      snapshot?.updater?.status !== "downloading" &&
+      canStartUpdaterAction()
+    ) {
+      try {
+        await triggerNativeUpdater("check");
+      } catch (_error) {}
+    }
   } catch (_error) {
-    renderUpdateBanner();
+    renderUpdateBanner(snapshot);
   } finally {
     updateState.checking = false;
-    renderUpdateBanner();
+    renderUpdateBanner(snapshot);
+  }
+}
+
+async function triggerNativeUpdater(action) {
+  updateState.commandInFlight = true;
+  updateState.lastCommandStartedAt = Date.now();
+  renderUpdateBanner(lastSnapshot);
+  renderUpdaterSettings(lastSnapshot);
+  await post("/v1/app/updater/run", { action });
+  window.setTimeout(() => {
+    refresh()
+      .catch((error) => setDisconnected(error))
+      .finally(() => {
+        updateState.commandInFlight = false;
+        renderUpdateBanner(lastSnapshot);
+        renderUpdaterSettings(lastSnapshot);
+      });
+  }, 2200);
+}
+
+async function saveUpdaterSettings() {
+  updateState.settingsInFlight = true;
+  renderUpdaterSettings(lastSnapshot);
+  try {
+    lastSnapshot = await post("/v1/app/updater/settings", {
+      auto_download: Boolean(els.updaterAutoDownload?.checked),
+      auto_install_after_download: Boolean(els.updaterAutoInstall?.checked),
+    });
+    render(lastSnapshot);
+    await maybeStartConfiguredUpdater(lastSnapshot);
+  } catch (error) {
+    alert(error.message);
+    renderUpdaterSettings(lastSnapshot);
+  } finally {
+    updateState.settingsInFlight = false;
+    renderUpdaterSettings(lastSnapshot);
   }
 }
 
@@ -3056,7 +3235,8 @@ function setDisconnected(error) {
   els.walletDeviceId.textContent = "-";
   els.walletDeviceId.title = "Copy device ID";
   els.walletStatus.textContent = "Offline";
-  renderUpdateBanner();
+  renderUpdateBanner(lastSnapshot);
+  renderUpdaterSettings(lastSnapshot);
   els.walletModel.textContent = t("common.noModelLoaded");
   els.walletBalance.textContent = t("common.waitingLocalService");
   els.walletUsdc.textContent = "0.00";
@@ -4448,7 +4628,8 @@ function renderWallet(snapshot) {
 
 function render(snapshot) {
   lastSnapshot = snapshot;
-  renderUpdateBanner();
+  renderUpdateBanner(snapshot);
+  renderUpdaterSettings(snapshot);
   renderHome(snapshot);
   renderSupply(snapshot);
   renderDemand(snapshot);
@@ -4631,18 +4812,30 @@ els.shareStoryButton.addEventListener("click", async () => {
   await copyText(SHARE_STORY_TEXT, "Share text");
 });
 
-els.updateBannerDownload.addEventListener("click", () => {
-  openExternalUrl(updateState.assetUrl || updateState.releaseUrl);
+els.updateBannerDownload.addEventListener("click", async () => {
+  const updater = currentUpdater();
+  const latestTag = updateState.latestTag || updater?.latest_tag || "";
+  const readyToInstall = Boolean(
+    latestTag &&
+    updater?.downloaded_tag === latestTag &&
+    updater?.downloaded_installer_path
+  );
+  try {
+    await triggerNativeUpdater(readyToInstall ? "installDownloaded" : "download");
+  } catch (error) {
+    alert(error.message);
+  }
 });
 
 els.updateBannerRelease.addEventListener("click", () => {
-  openExternalUrl(updateState.releaseUrl || updateState.assetUrl);
+  const updater = currentUpdater();
+  openExternalUrl(updateState.releaseUrl || updater?.latest_release_url || updateState.assetUrl);
 });
 
 els.updateBannerDismiss.addEventListener("click", () => {
-  persistDismissedUpdateTag(updateState.latestTag);
+  persistDismissedUpdateTag(updateState.latestTag || currentUpdater()?.latest_tag || "");
   updateState.updateAvailable = false;
-  renderUpdateBanner();
+  renderUpdateBanner(lastSnapshot);
 });
 
 els.localCurlCopy.addEventListener("click", async () => {
@@ -4806,6 +4999,20 @@ els.languageSelect.addEventListener("change", (event) => {
 
 els.displayUnitSelect.addEventListener("change", (event) => {
   setDisplayUnit(event.target.value);
+});
+
+els.updaterAutoDownload.addEventListener("change", async (event) => {
+  if (!event.target.checked && els.updaterAutoInstall.checked) {
+    els.updaterAutoInstall.checked = false;
+  }
+  await saveUpdaterSettings();
+});
+
+els.updaterAutoInstall.addEventListener("change", async (event) => {
+  if (event.target.checked) {
+    els.updaterAutoDownload.checked = true;
+  }
+  await saveUpdaterSettings();
 });
 
 for (const button of els.networkModelSortButtons) {

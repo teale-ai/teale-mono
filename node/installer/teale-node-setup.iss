@@ -108,11 +108,18 @@ Filename: "powershell.exe"; \
 
 ; Register on-logon update-check scheduled task.
 Filename: "schtasks.exe"; \
-    Parameters: "/Create /TN ""TealeUpdateCheck"" /TR ""powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File '{app}\check-update.ps1'"" /SC ONLOGON /RL HIGHEST /F"; \
+    Parameters: "/Create /TN ""TealeUpdateCheck"" /TR ""powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File '{app}\check-update.ps1' -Quiet"" /SC ONLOGON /RU SYSTEM /RL HIGHEST /F"; \
+    Flags: runhidden waituntilterminated
+
+; Register a periodic background updater that can download/install silently
+; according to the user's saved updater settings.
+Filename: "schtasks.exe"; \
+    Parameters: "/Create /TN ""TealeBackgroundUpdate"" /TR ""powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File '{app}\check-update.ps1' -Quiet"" /SC HOURLY /MO 6 /RU SYSTEM /RL HIGHEST /F"; \
     Flags: runhidden waituntilterminated
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""TealeUpdateCheck"" /F"; Flags: runhidden waituntilterminated
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""TealeBackgroundUpdate"" /F"; Flags: runhidden waituntilterminated
 Filename: "powershell.exe"; \
     Parameters: "-ExecutionPolicy Bypass -File ""{app}\uninstall.ps1"""; \
     Flags: runhidden waituntilterminated

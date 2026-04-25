@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -252,6 +253,7 @@ pub struct AppSnapshot {
     pub loaded_model_id: Option<String>,
     pub models: Vec<ModelSnapshot>,
     pub active_transfer: Option<TransferSnapshot>,
+    pub updater: UpdaterSnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -267,6 +269,71 @@ pub(crate) struct LegacyStatusDTO {
 #[derive(Debug, Deserialize)]
 struct ModelControlRequest {
     model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdaterSnapshot {
+    pub auto_download: bool,
+    pub auto_install_after_download: bool,
+    pub latest_tag: Option<String>,
+    pub latest_release_url: Option<String>,
+    pub downloaded_tag: Option<String>,
+    pub downloaded_installer_path: Option<String>,
+    pub status: String,
+    pub last_error: Option<String>,
+    pub last_checked_at: Option<u64>,
+    pub last_downloaded_at: Option<u64>,
+    pub last_installed_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct UpdaterSettingsRecord {
+    #[serde(default)]
+    auto_download: bool,
+    #[serde(default)]
+    auto_install_after_download: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdaterStateRecord {
+    #[serde(default)]
+    latest_tag: Option<String>,
+    #[serde(default)]
+    latest_release_url: Option<String>,
+    #[serde(default)]
+    downloaded_tag: Option<String>,
+    #[serde(default)]
+    downloaded_installer_path: Option<String>,
+    #[serde(default = "default_updater_status")]
+    status: String,
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    last_checked_at: Option<u64>,
+    #[serde(default)]
+    last_downloaded_at: Option<u64>,
+    #[serde(default)]
+    last_installed_at: Option<u64>,
+}
+
+impl Default for UpdaterStateRecord {
+    fn default() -> Self {
+        Self {
+            latest_tag: None,
+            latest_release_url: None,
+            downloaded_tag: None,
+            downloaded_installer_path: None,
+            status: default_updater_status(),
+            last_error: None,
+            last_checked_at: None,
+            last_downloaded_at: None,
+            last_installed_at: None,
+        }
+    }
+}
+
+fn default_updater_status() -> String {
+    "idle".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,6 +352,19 @@ struct AccountLinkRequest {
 struct AccountDeviceControlRequest {
     #[serde(rename = "deviceID")]
     device_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdaterSettingsRequest {
+    #[serde(default)]
+    auto_download: bool,
+    #[serde(default)]
+    auto_install_after_download: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdaterRunRequest {
+    action: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -480,6 +560,7 @@ pub struct StatusState {
     pub credits_today: Arc<std::sync::atomic::AtomicI64>,
     pub supplying_since: Arc<AtomicU64>,
     app_version: String,
+    install_root: PathBuf,
     display_name: String,
     hardware: HardwareCapability,
     model_dir: PathBuf,
@@ -511,6 +592,7 @@ impl StatusState {
             credits_today: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             supplying_since: Arc::new(AtomicU64::new(0)),
             app_version: installed_app_version(),
+            install_root: resolved_install_root(),
             display_name,
             hardware,
             model_dir,
@@ -578,7 +660,128 @@ impl StatusState {
                 .active_transfer
                 .as_ref()
                 .map(InFlightTransfer::snapshot),
+            updater: self.updater_snapshot(),
         }
+    }
+
+    async fn update_updater_settings(
+        &self,
+        payload: UpdaterSettingsRequest,
+    ) -> anyhow::Result<AppSnapshot> {
+        let auto_download = payload.auto_download || payload.auto_install_after_download;
+        let settings = UpdaterSettingsRecord {
+            auto_download,
+            auto_install_after_download: auto_download && payload.auto_install_after_download,
+        };
+        self.write_json_file(&self.updater_settings_path(), &settings)?;
+        Ok(self.snapshot().await)
+    }
+
+    fn run_updater(&self, action: &str) -> anyhow::Result<()> {
+        let script_path = self.install_root.join("check-update.ps1");
+        if !script_path.exists() {
+            anyhow::bail!("updater script not found at {}", script_path.display());
+        }
+
+        let mut command = Command::new("powershell.exe");
+        command
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-File")
+            .arg(&script_path);
+
+        match action {
+            "check" => {
+                command.arg("-Quiet");
+            }
+            "download" => {
+                command.arg("-Quiet");
+                command.arg("-ForceDownload");
+            }
+            "installDownloaded" => {
+                command.arg("-Quiet");
+                command.arg("-InstallDownloaded");
+            }
+            _ => anyhow::bail!("unsupported updater action: {action}"),
+        }
+
+        command
+            .spawn()
+            .with_context(|| format!("launch updater script {}", script_path.display()))?;
+        Ok(())
+    }
+
+    fn updater_snapshot(&self) -> UpdaterSnapshot {
+        let settings = self.read_updater_settings();
+        let mut state = self.read_updater_state();
+
+        if let Some(path) = state.downloaded_installer_path.as_deref() {
+            if !Path::new(path).exists() {
+                state.downloaded_tag = None;
+                state.downloaded_installer_path = None;
+                if state.status == "downloaded" {
+                    state.status = "available".to_string();
+                }
+            }
+        }
+
+        UpdaterSnapshot {
+            auto_download: settings.auto_download,
+            auto_install_after_download: settings.auto_install_after_download,
+            latest_tag: state.latest_tag,
+            latest_release_url: state.latest_release_url,
+            downloaded_tag: state.downloaded_tag,
+            downloaded_installer_path: state.downloaded_installer_path,
+            status: state.status,
+            last_error: state.last_error,
+            last_checked_at: state.last_checked_at,
+            last_downloaded_at: state.last_downloaded_at,
+            last_installed_at: state.last_installed_at,
+        }
+    }
+
+    fn read_updater_settings(&self) -> UpdaterSettingsRecord {
+        self.read_json_file(&self.updater_settings_path())
+            .unwrap_or_default()
+    }
+
+    fn read_updater_state(&self) -> UpdaterStateRecord {
+        self.read_json_file(&self.updater_state_path())
+            .unwrap_or_default()
+    }
+
+    fn updater_settings_path(&self) -> PathBuf {
+        self.install_root
+            .join("config")
+            .join("updater-settings.json")
+    }
+
+    fn updater_state_path(&self) -> PathBuf {
+        self.install_root.join("config").join("updater-state.json")
+    }
+
+    fn read_json_file<T>(&self, path: &Path) -> Option<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let raw = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    fn write_json_file<T>(&self, path: &Path, value: &T) -> anyhow::Result<()>
+    where
+        T: Serialize,
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create updater config dir {}", parent.display()))?;
+        }
+        let payload = serde_json::to_vec_pretty(value).context("serialize updater json")?;
+        std::fs::write(path, payload)
+            .with_context(|| format!("write updater file {}", path.display()))?;
+        Ok(())
     }
 
     pub(crate) async fn legacy_status(&self) -> LegacyStatusDTO {
@@ -1427,10 +1630,18 @@ fn installed_app_version() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
-fn version_file_for_current_install() -> Option<PathBuf> {
+fn resolved_install_root() -> PathBuf {
+    current_install_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\Teale")))
+}
+
+fn current_install_root() -> Option<PathBuf> {
     let current_exe = std::env::current_exe().ok()?;
-    let install_root = current_exe.parent()?.parent()?;
-    Some(install_root.join("version.txt"))
+    Some(current_exe.parent()?.parent()?.to_path_buf())
+}
+
+fn version_file_for_current_install() -> Option<PathBuf> {
+    Some(current_install_root()?.join("version.txt"))
 }
 
 fn download_client() -> anyhow::Result<reqwest::Client> {
@@ -1875,6 +2086,37 @@ async fn route(
             let body = serde_json::to_string(&state.snapshot().await)
                 .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
             Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/updater/settings") => {
+            let payload: UpdaterSettingsRequest = serde_json::from_slice(body).map_err(|e| {
+                (
+                    "400 Bad Request",
+                    format!("invalid updater settings payload: {e}"),
+                )
+            })?;
+            let body = serde_json::to_string(
+                &state
+                    .update_updater_settings(payload)
+                    .await
+                    .map_err(|e| ("500 Internal Server Error", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/updater/run") => {
+            let payload: UpdaterRunRequest = serde_json::from_slice(body).map_err(|e| {
+                (
+                    "400 Bad Request",
+                    format!("invalid updater run payload: {e}"),
+                )
+            })?;
+            state
+                .run_updater(payload.action.trim())
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json(
+                "200 OK",
+                json!({ "started": true }).to_string(),
+            ))
         }
         ("GET", "/v1/app/network/models") => {
             let body =
