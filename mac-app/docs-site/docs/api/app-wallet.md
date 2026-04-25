@@ -1,171 +1,71 @@
-# Wallet
+# Wallet and Account Endpoints
 
-Endpoints for managing the node's credit wallet, viewing transactions, and interacting with the Solana bridge.
+The released apps expose device-wallet operations directly, and the Windows companion also exposes account-level wallet and linked-device operations.
 
----
+## Device wallet
 
-## Get Balance
+### GET /v1/app/wallet
 
-```
-GET /v1/app/wallet
-```
+macOS returns the current device wallet snapshot, including balance and totals.
 
-Returns the current wallet balance and summary statistics.
+### GET /v1/app/wallet/transactions
 
-### Authentication
+macOS returns recent wallet transactions. The request supports a `limit` query parameter.
 
-Optional. Required when `allow_network_access` is enabled.
+### POST /v1/app/wallet/send
 
-### Response
-
-```json
-{
-  "currentBalance": 5.432,
-  "totalEarned": 12.100,
-  "totalSpent": 6.668,
-  "transactionCount": 247
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `currentBalance` | number | Current credit balance |
-| `totalEarned` | number | Total credits earned from providing inference |
-| `totalSpent` | number | Total credits spent on inference requests |
-| `transactionCount` | integer | Total number of transactions |
-
-### Example
+Both released apps support sending Teale credits from the device wallet.
 
 ```bash
-curl http://localhost:11435/v1/app/wallet
-```
-
----
-
-## List Transactions
-
-```
-GET /v1/app/wallet/transactions
-```
-
-Returns a list of recent wallet transactions.
-
-### Authentication
-
-Optional. Required when `allow_network_access` is enabled.
-
-### Query Parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `limit` | integer | 20 | Maximum number of transactions to return |
-
-### Response
-
-```json
-{
-  "transactions": [
-    {
-      "id": "tx-abc123",
-      "type": "earn",
-      "amount": 0.003,
-      "peerID": "node-def456",
-      "memo": "inference: llama-3.1-8b-q4",
-      "timestamp": "2026-04-14T10:30:00Z"
-    },
-    {
-      "id": "tx-abc124",
-      "type": "spend",
-      "amount": 0.001,
-      "peerID": "node-ghi789",
-      "memo": "inference: qwen3-4b-q4",
-      "timestamp": "2026-04-14T10:25:00Z"
-    }
-  ]
-}
-```
-
-### Example
-
-```bash
-curl "http://localhost:11435/v1/app/wallet/transactions?limit=10"
-```
-
----
-
-## Send Credits
-
-```
-POST /v1/app/wallet/send
-```
-
-Send credits to another peer.
-
-### Authentication
-
-Optional. Required when `allow_network_access` is enabled.
-
-### Request Body
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `amount` | number | Yes | Amount of credits to send |
-| `peerID` | string | Yes | ID of the recipient peer |
-| `memo` | string | No | Optional memo for the transaction |
-
-```json
-{
-  "amount": 0.001,
-  "peerID": "node-def456",
-  "memo": "Thanks for the compute!"
-}
-```
-
-### Response
-
-```json
-{
-  "transactionID": "tx-xyz789",
-  "amount": 0.001,
-  "peerID": "node-def456",
-  "newBalance": 5.431
-}
-```
-
-### Example
-
-```bash
-curl -X POST http://localhost:11435/v1/app/wallet/send \
+curl http://127.0.0.1:11435/v1/app/wallet/send \
   -H "Content-Type: application/json" \
-  -d '{"amount": 0.001, "peerID": "node-def456", "memo": "Thanks for the compute!"}'
+  -d '{
+    "asset": "credits",
+    "recipient": "tailor512g1s-mac-studio.local",
+    "amount": 1000000,
+    "memo": "test send"
+  }'
 ```
 
----
+The released send flow is for **Teale credits**. USDC transfers are not part of the current app flow.
 
-## Solana Wallet Status
+## Routing rules
 
-```
-GET /v1/app/wallet/solana
-```
+- device IDs route to the destination device wallet
+- phone, email, and GitHub username route to the destination account wallet
 
-Returns the status of the Solana wallet bridge, including the on-chain address and balance.
+## Windows account endpoints
 
-### Authentication
+The Windows companion API also exposes account state under `127.0.0.1:11437`.
 
-Optional. Required when `allow_network_access` is enabled.
+### GET /v1/app/account
 
-### Response
+Returns:
 
-```json
-{
-  "address": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
-  "balance": 0.5,
-  "status": "connected"
-}
-```
+- account user ID
+- account balance
+- USDC reference balance
+- display name
+- phone, email, GitHub username
+- linked devices
+- account ledger entries
 
-### Example
+### POST /v1/app/account/link
 
-```bash
-curl http://localhost:11435/v1/app/wallet/solana
-```
+Links the local device to a human account record.
+
+### POST /v1/app/account/send
+
+Sends credits from the account wallet.
+
+### POST /v1/app/account/sweep
+
+Sweeps a linked device balance into the account wallet.
+
+### POST /v1/app/account/devices/remove
+
+Removes a device from the linked-device list.
+
+## Windows auth session lookup
+
+`POST /v1/app/auth/session` is part of the released Windows auth flow and is used to hydrate the local companion session from an access token.

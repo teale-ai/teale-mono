@@ -9,6 +9,7 @@ DerivedData/
 *.dSYM
 .claude/
 Supabase.plist
+!Sources/AuthKit/Resources/Supabase.plist
 default.profraw
 node_modules/
 

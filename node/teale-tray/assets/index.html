@@ -19,12 +19,23 @@
         <button class="nav-link" data-view-button="wallet" type="button" data-i18n="nav.wallet">wallet</button>
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="account" type="button" data-i18n="nav.account">account</button>
+        <span class="cursor" aria-hidden="true"></span>
         <div class="title-spacer"></div>
         <div class="header-tools">
+          <button id="follow-x-button" class="icon-action" type="button" title="Follow @teale_ai on X" aria-label="Follow @teale_ai on X">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18.901 2H21.98l-6.72 7.68L23.2 22h-6.217l-4.87-7.45L5.6 22H2.52l7.188-8.215L1.6 2h6.375l4.402 6.73L18.9 2Zm-1.09 18h1.706L7.05 3.895H5.22L17.81 20Z"></path>
+            </svg>
+          </button>
+          <button id="share-story-button" class="icon-action" type="button" title="Copy share text" aria-label="Copy share text">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 14.75a.75.75 0 0 1-.75-.75V5.81L8.53 8.53a.75.75 0 1 1-1.06-1.06l4-4a.75.75 0 0 1 1.06 0l4 4a.75.75 0 1 1-1.06 1.06l-2.72-2.72V14a.75.75 0 0 1-.75.75ZM4.75 12.5a.75.75 0 0 1 .75.75v5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-5a.75.75 0 0 1 1.5 0v5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.25v-5a.75.75 0 0 1 .75-.75Z"></path>
+            </svg>
+          </button>
           <details id="settings-menu" class="settings-menu">
             <summary id="settings-summary" class="icon-action" title="Settings" aria-label="Settings">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M10.325 4.317a1.724 1.724 0 0 1 3.35 0l.164.735a1 1 0 0 0 .95.77h.82a1.724 1.724 0 0 1 1.494 2.586l-.426.72a1 1 0 0 0 .153 1.215l.58.58a1.724 1.724 0 0 1 0 2.438l-.58.58a1 1 0 0 0-.153 1.215l.426.72a1.724 1.724 0 0 1-1.494 2.586h-.82a1 1 0 0 0-.95.77l-.164.735a1.724 1.724 0 0 1-3.35 0l-.164-.735a1 1 0 0 0-.95-.77h-.82a1.724 1.724 0 0 1-1.494-2.586l.426-.72a1 1 0 0 0-.153-1.215l-.58-.58a1.724 1.724 0 0 1 0-2.438l.58-.58a1 1 0 0 0 .153-1.215l-.426-.72A1.724 1.724 0 0 1 8.39 5.822h.82a1 1 0 0 0 .95-.77l.164-.735ZM12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"></path>
+                <path d="M12 8.75A3.25 3.25 0 1 0 12 15.25A3.25 3.25 0 1 0 12 8.75M12 2.75C12.41 2.75 12.77 3.03 12.86 3.43L13.14 4.7C13.21 5.01 13.5 5.23 13.82 5.23H15.01C15.33 5.23 15.62 5.41 15.77 5.69L16.37 6.76C16.53 7.04 16.49 7.39 16.29 7.63L15.5 8.57C15.3 8.8 15.28 9.13 15.45 9.39L16.08 10.38C16.25 10.65 16.56 10.8 16.88 10.76L18.12 10.61C18.53 10.56 18.91 10.8 19.04 11.19C19.18 11.59 19.04 12.03 18.68 12.28L17.63 13.03C17.36 13.22 17.24 13.56 17.33 13.87L17.67 15.08C17.78 15.48 17.63 15.91 17.29 16.16C16.95 16.41 16.49 16.42 16.14 16.19L15.1 15.53C14.83 15.36 14.49 15.37 14.23 15.55L13.2 16.25C12.86 16.48 12.4 16.48 12.06 16.25L11.03 15.55C10.77 15.37 10.43 15.36 10.16 15.53L9.12 16.19C8.77 16.42 8.31 16.41 7.97 16.16C7.63 15.91 7.48 15.48 7.59 15.08L7.93 13.87C8.02 13.56 7.9 13.22 7.63 13.03L6.58 12.28C6.22 12.03 6.08 11.59 6.22 11.19C6.35 10.8 6.73 10.56 7.14 10.61L8.38 10.76C8.7 10.8 9.01 10.65 9.18 10.38L9.81 9.39C9.98 9.13 9.96 8.8 9.76 8.57L8.97 7.63C8.77 7.39 8.73 7.04 8.89 6.76L9.49 5.69C9.64 5.41 9.93 5.23 10.25 5.23H11.44C11.76 5.23 12.05 5.01 12.12 4.7L12.4 3.43C12.49 3.03 12.85 2.75 13.26 2.75Z"></path>
               </svg>
             </summary>
             <div class="settings-popover">
@@ -46,18 +57,7 @@
               </label>
             </div>
           </details>
-          <button id="follow-x-button" class="icon-action" type="button" title="Follow @teale_ai on X" aria-label="Follow @teale_ai on X">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M18.901 2H21.98l-6.72 7.68L23.2 22h-6.217l-4.87-7.45L5.6 22H2.52l7.188-8.215L1.6 2h6.375l4.402 6.73L18.9 2Zm-1.09 18h1.706L7.05 3.895H5.22L17.81 20Z"></path>
-            </svg>
-          </button>
-          <button id="share-story-button" class="icon-action" type="button" title="Copy share text" aria-label="Copy share text">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 14.75a.75.75 0 0 1-.75-.75V5.81L8.53 8.53a.75.75 0 1 1-1.06-1.06l4-4a.75.75 0 0 1 1.06 0l4 4a.75.75 0 1 1-1.06 1.06l-2.72-2.72V14a.75.75 0 0 1-.75.75ZM4.75 12.5a.75.75 0 0 1 .75.75v5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-5a.75.75 0 0 1 1.5 0v5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.25v-5a.75.75 0 0 1 .75-.75Z"></path>
-            </svg>
-          </button>
         </div>
-        <span class="cursor" aria-hidden="true"></span>
       </header>
 
       <p id="header-line" class="header-line">

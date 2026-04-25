@@ -42,6 +42,41 @@ public enum MessageMetadata: Codable, Sendable, Equatable {
         public var tokensCompletion: Int?
         public var inferenceNodeID: String?
         public var cost: Double?
+        public var quotedPromptCostCredits: Int64?
+        public var billedPromptCostCredits: Int64?
+        public var quotedCompletionCostCredits: Int64?
+        public var billedCompletionCostCredits: Int64?
+        public var billedLocally: Bool?
+        public var tokensPromptEstimated: Bool?
+        public var tokensCompletionEstimated: Bool?
+
+        public init(
+            model: String,
+            tokensPrompt: Int? = nil,
+            tokensCompletion: Int? = nil,
+            inferenceNodeID: String? = nil,
+            cost: Double? = nil,
+            quotedPromptCostCredits: Int64? = nil,
+            billedPromptCostCredits: Int64? = nil,
+            quotedCompletionCostCredits: Int64? = nil,
+            billedCompletionCostCredits: Int64? = nil,
+            billedLocally: Bool? = nil,
+            tokensPromptEstimated: Bool? = nil,
+            tokensCompletionEstimated: Bool? = nil
+        ) {
+            self.model = model
+            self.tokensPrompt = tokensPrompt
+            self.tokensCompletion = tokensCompletion
+            self.inferenceNodeID = inferenceNodeID
+            self.cost = cost
+            self.quotedPromptCostCredits = quotedPromptCostCredits
+            self.billedPromptCostCredits = billedPromptCostCredits
+            self.quotedCompletionCostCredits = quotedCompletionCostCredits
+            self.billedCompletionCostCredits = billedCompletionCostCredits
+            self.billedLocally = billedLocally
+            self.tokensPromptEstimated = tokensPromptEstimated
+            self.tokensCompletionEstimated = tokensCompletionEstimated
+        }
     }
 
     public struct ToolCallMeta: Codable, Sendable, Equatable {
@@ -117,6 +152,7 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
     /// The sender key ID used to encrypt this message.
     public var encryptionKeyID: String
     public var messageType: MessageType
+    public var metadata: MessageMetadata?
     public var replyToID: UUID?
     public var createdAt: Date
     public var editedAt: Date?
@@ -130,6 +166,7 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
         encryptedContent: String,
         encryptionKeyID: String,
         messageType: MessageType = .text,
+        metadata: MessageMetadata? = nil,
         replyToID: UUID? = nil,
         createdAt: Date = Date(),
         editedAt: Date? = nil
@@ -140,6 +177,7 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
         self.encryptedContent = encryptedContent
         self.encryptionKeyID = encryptionKeyID
         self.messageType = messageType
+        self.metadata = metadata
         self.replyToID = replyToID
         self.createdAt = createdAt
         self.editedAt = editedAt
@@ -152,6 +190,7 @@ public struct Message: Codable, Sendable, Identifiable, Equatable {
         case encryptedContent = "encrypted_content"
         case encryptionKeyID = "encryption_key_id"
         case messageType = "message_type"
+        case metadata
         case replyToID = "reply_to_id"
         case createdAt = "created_at"
         case editedAt = "edited_at"
@@ -169,6 +208,7 @@ public struct DecryptedMessage: Identifiable, Equatable {
     public var conversationID: UUID { message.conversationID }
     public var senderID: UUID? { message.senderID }
     public var messageType: MessageType { message.messageType }
+    public var metadata: MessageMetadata? { message.metadata }
     public var replyToID: UUID? { message.replyToID }
     public var createdAt: Date { message.createdAt }
     public var isFromAgent: Bool { message.isFromAgent }

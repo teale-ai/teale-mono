@@ -26,6 +26,11 @@ public enum GroupCrypto {
             throw GroupCryptoError.missingSenderKey
         }
 
+        if key.baseChainKey == nil {
+            key.baseChainKey = chainKey
+            key.baseMessageIndex = key.messageIndex
+        }
+
         // Derive message key from chain key
         let messageKey = deriveKey(from: chainKey, label: "msg")
         // Advance chain key (forward secrecy — old chain key is gone)
@@ -64,12 +69,13 @@ public enum GroupCrypto {
             throw GroupCryptoError.missingSenderKey
         }
 
-        // Verify signature first (reject spoofed messages before any decryption)
-        let signingData = payload.ciphertext + withUnsafeBytes(of: payload.messageIndex.littleEndian) { Data($0) }
-        let edPubKey = try Curve25519.Signing.PublicKey(rawRepresentation: verifyKey)
-        guard edPubKey.isValidSignature(payload.signature, for: signingData) else {
-            throw GroupCryptoError.signatureInvalid
+        if key.baseChainKey == nil {
+            key.baseChainKey = chainKey
+            key.baseMessageIndex = key.messageIndex
         }
+
+        // Verify signature first (reject spoofed messages before any decryption)
+        try verifySignature(payload, verifyKey: verifyKey)
 
         // Advance chain key to match message index (skip if receiver is behind)
         var currentChain = chainKey
@@ -86,6 +92,60 @@ public enum GroupCrypto {
         let messageKey = deriveKey(from: currentChain, label: "msg")
         let nextChainKey = deriveKey(from: currentChain, label: "chain")
 
+        let text = try plaintext(for: payload, messageKey: messageKey)
+
+        // Advance receiver's ratchet state
+        key.chainKey = nextChainKey
+        key.messageIndex = payload.messageIndex + 1
+
+        return text
+    }
+
+    /// Decrypt a stored historical message without mutating the sender key's
+    /// current ratchet state. Used when replaying local thread history.
+    public static func decryptArchived(_ payload: EncryptedPayload, using key: SenderKey) throws -> String {
+        guard let verifyKey = key.verifyKey else {
+            throw GroupCryptoError.missingSenderKey
+        }
+
+        try verifySignature(payload, verifyKey: verifyKey)
+
+        guard let archiveChainKey = key.baseChainKey ?? key.chainKey else {
+            throw GroupCryptoError.missingSenderKey
+        }
+        let archiveIndex = key.baseMessageIndex ?? key.messageIndex
+        guard payload.messageIndex >= archiveIndex else {
+            throw GroupCryptoError.replayDetected
+        }
+
+        var currentChain = archiveChainKey
+        var currentIndex = archiveIndex
+        while currentIndex < payload.messageIndex {
+            currentChain = deriveKey(from: currentChain, label: "chain")
+            currentIndex += 1
+        }
+
+        return try plaintext(for: payload, messageKey: deriveKey(from: currentChain, label: "msg"))
+    }
+
+    // MARK: - Key Derivation
+
+    /// HMAC-SHA256 based key derivation (same pattern as Signal's chain ratchet).
+    private static func deriveKey(from chainKey: Data, label: String) -> Data {
+        let key = SymmetricKey(data: chainKey)
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(label.utf8), using: key)
+        return Data(mac)
+    }
+
+    private static func verifySignature(_ payload: EncryptedPayload, verifyKey: Data) throws {
+        let signingData = payload.ciphertext + withUnsafeBytes(of: payload.messageIndex.littleEndian) { Data($0) }
+        let edPubKey = try Curve25519.Signing.PublicKey(rawRepresentation: verifyKey)
+        guard edPubKey.isValidSignature(payload.signature, for: signingData) else {
+            throw GroupCryptoError.signatureInvalid
+        }
+    }
+
+    private static func plaintext(for payload: EncryptedPayload, messageKey: Data) throws -> String {
         // Parse ciphertext: [12-byte nonce][ciphertext][16-byte tag]
         guard payload.ciphertext.count >= 28 else { // 12 + 0 + 16 minimum
             throw GroupCryptoError.decryptionFailed
@@ -99,23 +159,10 @@ public enum GroupCrypto {
         let sealedBox = try ChaChaPoly.SealedBox(nonce: nonce, ciphertext: ct, tag: tag)
         let decrypted = try ChaChaPoly.open(sealedBox, using: SymmetricKey(data: messageKey))
 
-        // Advance receiver's ratchet state
-        key.chainKey = nextChainKey
-        key.messageIndex = payload.messageIndex + 1
-
         guard let text = String(data: decrypted, encoding: .utf8) else {
             throw GroupCryptoError.decryptionFailed
         }
         return text
-    }
-
-    // MARK: - Key Derivation
-
-    /// HMAC-SHA256 based key derivation (same pattern as Signal's chain ratchet).
-    private static func deriveKey(from chainKey: Data, label: String) -> Data {
-        let key = SymmetricKey(data: chainKey)
-        let mac = HMAC<SHA256>.authenticationCode(for: Data(label.utf8), using: key)
-        return Data(mac)
     }
 }
 
@@ -128,6 +175,10 @@ public struct SenderKey: Codable, Sendable, Identifiable {
     public let keyID: String
     /// Chain key for the hash ratchet (32 bytes). Advances on every encrypt/decrypt.
     public var chainKey: Data?
+    /// Earliest chain key retained for historical local replay.
+    public var baseChainKey: Data?
+    /// Ratchet position for `baseChainKey`.
+    public var baseMessageIndex: UInt32?
     /// Ed25519 signing private key (32 bytes). Only present for own keys.
     public let signingKeyPrivate: Data?
     /// Ed25519 verification public key (32 bytes). Present for all keys.
@@ -148,6 +199,8 @@ public struct SenderKey: Codable, Sendable, Identifiable {
         return SenderKey(
             keyID: UUID().uuidString,
             chainKey: chainKey.withUnsafeBytes { Data($0) },
+            baseChainKey: chainKey.withUnsafeBytes { Data($0) },
+            baseMessageIndex: 0,
             signingKeyPrivate: signingKey.rawRepresentation,
             verifyKey: signingKey.publicKey.rawRepresentation,
             memberID: memberID,
@@ -167,6 +220,8 @@ public struct SenderKey: Codable, Sendable, Identifiable {
         SenderKey(
             keyID: keyID,
             chainKey: chainKey,
+            baseChainKey: chainKey,
+            baseMessageIndex: 0,
             signingKeyPrivate: nil,
             verifyKey: verifyKey,
             memberID: memberID,
@@ -181,6 +236,8 @@ public struct SenderKey: Codable, Sendable, Identifiable {
         SenderKey(
             keyID: keyID,
             chainKey: chainKey,
+            baseChainKey: baseChainKey,
+            baseMessageIndex: baseMessageIndex,
             signingKeyPrivate: nil,
             verifyKey: verifyKey,
             memberID: memberID,

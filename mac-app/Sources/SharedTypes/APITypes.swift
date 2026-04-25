@@ -9,6 +9,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public var topP: Double?
     public var maxTokens: Int?
     public var stream: Bool?
+    public var streamOptions: [String: Bool]?
     public var stop: [String]?
     public var presencePenalty: Double?
     public var frequencyPenalty: Double?
@@ -18,6 +19,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature, stream, stop
+        case streamOptions = "stream_options"
         case topP = "top_p"
         case maxTokens = "max_tokens"
         case presencePenalty = "presence_penalty"
@@ -39,6 +41,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.topP = topP
         self.maxTokens = maxTokens
         self.stream = stream
+        self.streamOptions = nil
     }
 }
 
@@ -115,6 +118,7 @@ public struct ChatCompletionChunk: Codable, Sendable {
     public var created: Int
     public var model: String
     public var choices: [StreamChoice]
+    public var usage: ChatCompletionResponse.Usage?
 
     public struct StreamChoice: Codable, Sendable {
         public var index: Int
@@ -143,12 +147,13 @@ public struct ChatCompletionChunk: Codable, Sendable {
         }
     }
 
-    public init(id: String, model: String, choices: [StreamChoice]) {
+    public init(id: String, model: String, choices: [StreamChoice], usage: ChatCompletionResponse.Usage? = nil) {
         self.id = id
         self.object = "chat.completion.chunk"
         self.created = Int(Date().timeIntervalSince1970)
         self.model = model
         self.choices = choices
+        self.usage = usage
     }
 }
 

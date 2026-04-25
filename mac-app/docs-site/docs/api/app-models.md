@@ -1,121 +1,47 @@
-# Model Management
+# App Model Controls
 
-Endpoints for loading, downloading, and unloading models on the node.
+The released macOS and Windows apps both expose model-control endpoints under `/v1/app/models`.
 
----
+## POST /v1/app/models/download
 
-## Load Model
-
-```
-POST /v1/app/models/load
-```
-
-Load a downloaded model into GPU memory for inference.
-
-### Authentication
-
-Optional. Required when `allow_network_access` is enabled.
-
-### Request Body
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `modelID` | string | Yes | ID of the model to load |
-
-```json
-{
-  "modelID": "llama-3.1-8b-q4"
-}
-```
-
-### Response
-
-```json
-{
-  "status": "loaded",
-  "modelID": "llama-3.1-8b-q4"
-}
-```
-
-### Example
+Starts a model download from the app catalog.
 
 ```bash
-curl -X POST http://localhost:11435/v1/app/models/load \
+curl http://127.0.0.1:11435/v1/app/models/download \
   -H "Content-Type: application/json" \
-  -d '{"modelID": "llama-3.1-8b-q4"}'
+  -d '{"model":"hermes-3-llama-3.1-8b-4bit"}'
 ```
 
----
+## POST /v1/app/models/load
 
-## Download Model
-
-```
-POST /v1/app/models/download
-```
-
-Download a model to local storage. The model must be downloaded before it can be loaded.
-
-### Authentication
-
-Optional. Required when `allow_network_access` is enabled.
-
-### Request Body
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `modelID` | string | Yes | ID of the model to download |
-
-```json
-{
-  "modelID": "llama-3.1-8b-q4"
-}
-```
-
-### Response
-
-```json
-{
-  "status": "downloading",
-  "modelID": "llama-3.1-8b-q4"
-}
-```
-
-### Example
+Loads a downloaded model into memory so it becomes usable for local inference and supply.
 
 ```bash
-curl -X POST http://localhost:11435/v1/app/models/download \
+curl http://127.0.0.1:11435/v1/app/models/load \
   -H "Content-Type: application/json" \
-  -d '{"modelID": "llama-3.1-8b-q4"}'
+  -d '{"model":"hermes-3-llama-3.1-8b-4bit"}'
 ```
 
----
+## POST /v1/app/models/unload
 
-## Unload Model
-
-```
-POST /v1/app/models/unload
-```
-
-Unload the currently loaded model from GPU memory.
-
-### Authentication
-
-Optional. Required when `allow_network_access` is enabled.
-
-### Request Body
-
-None required.
-
-### Response
-
-```json
-{
-  "status": "unloaded"
-}
-```
-
-### Example
+Unloads the current local model.
 
 ```bash
-curl -X POST http://localhost:11435/v1/app/models/unload
+curl -X POST http://127.0.0.1:11435/v1/app/models/unload
 ```
+
+## Response shape
+
+Both platforms return the updated app snapshot after these operations.
+
+## Important distinction
+
+These endpoints manage the local machine's downloaded and loaded models.
+
+They are different from the live Teale Network model list shown in:
+
+- the Home chat model picker
+- `GET /v1/app/network/models` on Windows
+- `GET /v1/models` on macOS
+
+Those views only represent models that are currently available to serve requests.

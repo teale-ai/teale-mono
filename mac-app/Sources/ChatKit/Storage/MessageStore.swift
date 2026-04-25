@@ -100,6 +100,7 @@ public struct StoredMessage: Codable, Sendable, Identifiable {
     public let senderID: UUID?
     public let payload: EncryptedPayload
     public let messageType: MessageType
+    public let metadata: MessageMetadata?
     public let timestamp: Date
 
     public init(
@@ -109,6 +110,7 @@ public struct StoredMessage: Codable, Sendable, Identifiable {
         senderID: UUID?,
         payload: EncryptedPayload,
         messageType: MessageType,
+        metadata: MessageMetadata? = nil,
         timestamp: Date = Date()
     ) {
         self.id = id
@@ -117,6 +119,7 @@ public struct StoredMessage: Codable, Sendable, Identifiable {
         self.senderID = senderID
         self.payload = payload
         self.messageType = messageType
+        self.metadata = metadata
         self.timestamp = timestamp
     }
 }

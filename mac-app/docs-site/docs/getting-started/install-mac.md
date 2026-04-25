@@ -1,6 +1,6 @@
 # Install on Mac
 
-Install the Teale desktop app on macOS. Includes the menu bar app, built-in chat, and the full CLI.
+Install the released Teale macOS app and start local or network inference from the desktop UI.
 
 ---
 
@@ -8,53 +8,46 @@ Install the Teale desktop app on macOS. Includes the menu bar app, built-in chat
 
 - **macOS 14+** (Sonoma or later)
 - **Apple Silicon** (M1, M2, M3, M4, or later)
-- **8 GB RAM** minimum (16 GB+ recommended for larger models)
+- **8 GB RAM** minimum
+- **16 GB+ RAM** recommended if you plan to keep larger models loaded
 
 ## Install
 
-### Option A: Download the DMG
+1. Download the latest macOS build from the [GitHub releases page](https://github.com/teale-ai/teale-mono/releases/latest).
+2. Open `Teale.dmg` or `Teale.zip`.
+3. Move `Teale.app` into `/Applications`.
+4. Launch `Teale.app`.
 
-1. Grab the latest **Teale.dmg** from the [GitHub releases page](https://github.com/teale-ai/teale-mono/releases/latest).
-2. Open the DMG and drag Teale to your Applications folder.
-3. Launch Teale from Applications. The app is notarized by Apple, so Gatekeeper opens it without warnings.
+## macOS security prompt
 
-### Option B: One-line install
+The current mac release is Developer ID signed but not notarized.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/teale-ai/teale-mono/main/mac-app/scripts/install.sh | sh
-```
+If macOS blocks the first launch:
 
-Downloads the latest release, installs to `/Applications/Teale.app`, and launches it.
+1. Right-click `Teale.app` and choose **Open**.
+2. Or go to **System Settings > Privacy & Security > Open Anyway**.
 
 ## First launch
 
-When you launch Teale for the first time:
+1. Open the **Supply** tab.
+2. Use the recommended action or pick a model from the catalog.
+3. Wait for the transfer to finish and for the model to load.
+4. Open **teale** to start chatting locally or select a live Teale Network model.
+5. Open the settings gear in the top right to choose language and display units.
 
-1. **Menu bar icon appears.** Teale runs as a MenuBarExtra --- look for the Teale icon in your menu bar, near the clock.
-2. **Click the icon** to open the Teale popover.
-3. **A model downloads automatically.** Teale selects a model based on your available RAM:
+## Local API
 
-    | RAM | Default model |
-    |-----|---------------|
-    | 8 GB | Llama 3.1 8B (4-bit, ~4.5 GB) |
-    | 16 GB | Llama 3.1 8B (4-bit) |
-    | 32 GB+ | Llama 3.1 70B (4-bit, ~36 GB) |
+The mac app exposes the released local API at:
 
-4. **Start chatting.** Once the model finishes downloading, you can type a message and get a response immediately.
-
-The CLI is bundled with the desktop app. After installing, you can also use Teale from your terminal:
-
-```bash
-teale status
+```text
+http://127.0.0.1:11435/v1
 ```
 
-## Updating
-
-Teale checks for updates automatically. When one is available, click **Update** in Settings → About, or re-run the one-line install.
+See [Quickstart: API](quickstart-api.md) and [API Reference](../api/index.md).
 
 ## Uninstall
 
-Drag Teale from Applications to the Trash. To also remove downloaded models and configuration:
+Move `Teale.app` to the Trash. To also remove local app data and downloaded models:
 
 ```bash
 rm -rf ~/Library/Application\ Support/Teale
@@ -64,6 +57,7 @@ rm -rf ~/Library/Application\ Support/Teale
 
 ## Next steps
 
-- [Quickstart: Chat](quickstart-chat.md) --- start a conversation in under a minute
-- [Quickstart: API](quickstart-api.md) --- use the OpenAI-compatible API
-- [Quickstart: Earn](quickstart-earn.md) --- share compute and earn USDC
+- [Quickstart: Chat](quickstart-chat.md)
+- [Quickstart: API](quickstart-api.md)
+- [Quickstart: Earn](quickstart-earn.md)
+- [App overview](../guides/app-overview.md)
