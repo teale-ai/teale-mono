@@ -75,7 +75,7 @@ function Read-JsonFile {
     }
 
     $result = $DefaultValue.Clone()
-    foreach ($key in $result.Keys) {
+    foreach ($key in @($result.Keys)) {
         if ($null -ne $raw.$key) {
             $result[$key] = $raw.$key
         }
