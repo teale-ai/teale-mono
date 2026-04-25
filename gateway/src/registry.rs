@@ -356,6 +356,20 @@ impl Registry {
             .count() as u32
     }
 
+    /// Count of healthy devices that are actively supplying inference.
+    pub fn supplying_device_count(&self) -> u32 {
+        self.devices
+            .iter()
+            .filter(|r| {
+                let st = r.value();
+                !st.is_quarantined()
+                    && st.capabilities.is_available
+                    && !st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
+                    && !st.capabilities.loaded_models.is_empty()
+            })
+            .count() as u32
+    }
+
     fn rebuild_model_index_for(&self, node_id: &str) {
         let idx = self.model_to_devices.read();
         for mut entry in idx.iter_mut() {
@@ -396,4 +410,45 @@ fn hardware_tps_prior(caps: &NodeCapabilities) -> f64 {
     // Ultra. Will be replaced by observed EWMA as requests flow.
     let bw = caps.hardware.memory_bandwidth_gbs.max(25.0);
     (bw / 5.0).max(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps(loaded_models: Vec<&str>, is_available: bool) -> NodeCapabilities {
+        NodeCapabilities {
+            hardware: teale_protocol::HardwareCapability {
+                chip_family: "m3Ultra".to_string(),
+                chip_name: "Apple M3 Ultra".to_string(),
+                total_ram_gb: 512.0,
+                gpu_core_count: 60,
+                memory_bandwidth_gbs: 819.0,
+                tier: 1,
+                gpu_backend: Some("metal".to_string()),
+                platform: Some("macOS".to_string()),
+                gpu_vram_gb: None,
+            },
+            loaded_models: loaded_models.into_iter().map(str::to_string).collect(),
+            max_model_size_gb: 1024.0,
+            is_available,
+            ptn_ids: None,
+            swappable_models: Vec::new(),
+            max_concurrent_requests: Some(4),
+            effective_context: Some(131072),
+            on_ac_power: None,
+        }
+    }
+
+    #[test]
+    fn supplying_device_count_only_includes_healthy_active_suppliers() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        registry.upsert_device("node-a".to_string(), "A".to_string(), caps(vec!["teale/auto"], true));
+        registry.upsert_device("node-b".to_string(), "B".to_string(), caps(vec!["moonshotai/kimi-k2.6"], true));
+        registry.upsert_device("node-c".to_string(), "C".to_string(), caps(Vec::new(), true));
+        registry.upsert_device("node-d".to_string(), "D".to_string(), caps(vec!["nousresearch/hermes-3-llama-3.1-8b"], false));
+        registry.quarantine("node-b", 60);
+
+        assert_eq!(registry.supplying_device_count(), 1);
+    }
 }

@@ -55,6 +55,8 @@ pub struct ModelsResponse {
     pub object: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connected_device_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_ram_gb: Option<f64>,
     pub data: Vec<ModelEntry>,
 }
 
