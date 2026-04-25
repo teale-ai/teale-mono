@@ -168,12 +168,11 @@ public final class AuthManager {
     public func signInWithOAuth(provider: Auth.Provider) async throws {
         authState = .signingIn
         do {
-            _ = try await client.auth.signInWithOAuth(
+            let session = try await client.auth.signInWithOAuth(
                 provider: provider,
                 redirectTo: redirectURL
             )
-            // OAuth opens browser — session is established via deep link callback
-            // The auth state listener will pick up the session
+            await finishOAuthSignIn(session: session)
         } catch {
             authState = .error(error.localizedDescription)
             throw error
@@ -184,13 +183,7 @@ public final class AuthManager {
     public func handleOAuthCallback(url: URL) async {
         do {
             let session = try await client.auth.session(from: url)
-            let profile = await ensureProfile(session: session)
-            currentUser = profile
-            authState = .signedIn(profile)
-            UserDefaults.standard.set(true, forKey: Self.anonymousKey)
-            await registerDevice()
-            await fetchDevices()
-            startLastSeenTimer()
+            await finishOAuthSignIn(session: session)
         } catch {
             authState = .error(error.localizedDescription)
         }
@@ -275,6 +268,16 @@ public final class AuthManager {
             .execute()
 
         return await loadProfile(userID: userID)
+    }
+
+    private func finishOAuthSignIn(session: Session) async {
+        let profile = await ensureProfile(session: session)
+        currentUser = profile
+        authState = .signedIn(profile)
+        UserDefaults.standard.set(true, forKey: Self.anonymousKey)
+        await registerDevice()
+        await fetchDevices()
+        startLastSeenTimer()
     }
 
     private func loadProfile(userID: UUID) async -> UserProfile {

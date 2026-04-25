@@ -114,7 +114,7 @@ public final class ChatService {
     // MARK: - Send Message
 
     /// Encrypt, store locally, and broadcast a message to group peers.
-    public func sendMessage(_ content: String) async {
+    public func sendMessage(_ content: String, metadata: MessageMetadata? = nil) async {
         guard let conversation = activeConversation else { return }
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
@@ -132,7 +132,8 @@ public final class ChatService {
                 senderNodeID: localNodeID,
                 senderID: currentUserID,
                 payload: payload,
-                messageType: .text
+                messageType: .text,
+                metadata: metadata
             )
 
             // Store locally
@@ -255,6 +256,7 @@ public final class ChatService {
     private func insertAgentMessage(
         content: String,
         messageType: MessageType,
+        metadata: MessageMetadata? = nil,
         conversationID: UUID
     ) async {
         do {
@@ -267,7 +269,8 @@ public final class ChatService {
                 senderNodeID: localNodeID,
                 senderID: nil,
                 payload: payload,
-                messageType: messageType
+                messageType: messageType,
+                metadata: metadata
             )
 
             await messageStore.append(stored, groupID: conversationID)
@@ -304,6 +307,7 @@ public final class ChatService {
             encryptedContent: "",
             encryptionKeyID: "demo",
             messageType: messageType,
+            metadata: nil,
             createdAt: Date()
         )
         let decrypted = DecryptedMessage(message: message, content: text)
@@ -319,7 +323,7 @@ public final class ChatService {
     }
 
     /// Encrypt and broadcast an AI response.
-    public func insertAIMessage(_ content: String, conversationID: UUID) async {
+    public func insertAIMessage(_ content: String, conversationID: UUID, metadata: MessageMetadata? = nil) async {
         do {
             var senderKey = await keyManager.mySenderKey(for: conversationID)
             let payload = try GroupCrypto.encrypt(content, using: &senderKey)
@@ -330,7 +334,8 @@ public final class ChatService {
                 senderNodeID: localNodeID,
                 senderID: nil,
                 payload: payload,
-                messageType: .aiResponse
+                messageType: .aiResponse,
+                metadata: metadata
             )
 
             await messageStore.append(stored, groupID: conversationID)
@@ -573,6 +578,7 @@ extension StoredMessage {
             encryptedContent: "", // Not needed for display — DecryptedMessage has content
             encryptionKeyID: payload.keyID,
             messageType: messageType,
+            metadata: metadata,
             createdAt: timestamp
         )
     }

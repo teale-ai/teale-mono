@@ -51,12 +51,16 @@ struct CompanionHomeChatSection: View {
 
         if let local = appState.engineStatus.currentModel {
             let identifier = local.openrouterId ?? local.huggingFaceRepo
+            let quotedPricing = gatewayState.networkModels.first(where: { $0.id == identifier })
             if seen.insert(identifier).inserted {
                 options.append(
                     CompanionHomeModelOption(
                         id: identifier,
                         label: "FREE - \(appState.companionShortModelLabel(identifier))",
-                        note: appState.companionText("chat.localFree", fallback: "Local is free on this Mac.")
+                        note: appState.companionText("chat.localFree", fallback: "Local is free on this Mac."),
+                        billedLocally: true,
+                        promptUSDPerToken: quotedPricing?.promptUSDPerToken,
+                        completionUSDPerToken: quotedPricing?.completionUSDPerToken
                     )
                 )
             }
@@ -78,7 +82,10 @@ struct CompanionHomeChatSection: View {
                         "chat.networkSpend",
                         fallback: "Network models spend {{unit}}. Device bearer is used automatically.",
                         replacements: ["unit": appState.companionDisplaySpendUnitLabel]
-                    )
+                    ),
+                    billedLocally: false,
+                    promptUSDPerToken: model.promptUSDPerToken,
+                    completionUSDPerToken: model.completionUSDPerToken
                 )
             )
         }
@@ -202,10 +209,11 @@ struct CompanionHomeChatSection: View {
                             .foregroundStyle(TealeDesign.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        ForEach(visibleMessages) { message in
+                        ForEach(Array(visibleMessages.enumerated()), id: \.element.id) { index, message in
                             CompanionHomeChatBubble(
                                 fromUser: message.messageType == .text,
-                                content: message.content
+                                content: message.content,
+                                meta: bubbleMeta(for: message, at: index)
                             )
                             .id(message.id)
                         }
@@ -391,6 +399,11 @@ struct CompanionHomeChatSection: View {
             ?? appState.companionText("chat.localFree", fallback: "Local is free on this Mac.")
     }
 
+    private func selectedModelOption(for thread: Conversation) -> CompanionHomeModelOption? {
+        let chosen = selectedModelID(for: thread)
+        return modelOptions.first(where: { $0.id == chosen }) ?? modelOptions.first
+    }
+
     private func currentThread(_ id: UUID) -> Conversation? {
         chatService.conversations.first(where: { $0.id == id })
     }
@@ -426,15 +439,20 @@ struct CompanionHomeChatSection: View {
             )
         }
 
+        let selectedOption = selectedModelOption(for: currentThread(thread.id) ?? thread)
+        let modelID = selectedOption?.id ?? selectedModelID(for: currentThread(thread.id) ?? thread)
+        let requestMessages = chatService.activeMessages.compactMap(apiMessage) + [APIMessage(role: "user", content: content)]
+
         await chatService.sendMessage(content)
 
-        let requestMessages = chatService.activeMessages.compactMap(apiMessage)
-        let modelID = selectedModelID(for: currentThread(thread.id) ?? thread)
-
         do {
-            let reply = try await streamReply(messages: requestMessages, modelID: modelID)
-            if !reply.isEmpty {
-                await chatService.insertAIMessage(reply, conversationID: thread.id)
+            let result = try await streamReply(messages: requestMessages, modelID: modelID)
+            if !result.text.isEmpty {
+                await chatService.insertAIMessage(
+                    result.text,
+                    conversationID: thread.id,
+                    metadata: aiResponseMetadata(for: result, option: selectedOption, modelID: modelID)
+                )
             }
             statusMessage = appState.companionText(
                 "chat.respondedVia",
@@ -485,7 +503,7 @@ struct CompanionHomeChatSection: View {
         }
     }
 
-    private func streamReply(messages: [APIMessage], modelID: String) async throws -> String {
+    private func streamReply(messages: [APIMessage], modelID: String) async throws -> CompanionHomeStreamResult {
         guard let url = URL(string: "http://127.0.0.1:\(appState.serverPort)/v1/chat/completions") else {
             throw CompanionHomeChatError.invalidResponse
         }
@@ -498,15 +516,15 @@ struct CompanionHomeChatSection: View {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(localAPIKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(
-            ChatCompletionRequest(
-                model: modelID,
-                messages: messages,
-                temperature: 0.7,
-                maxTokens: 1024,
-                stream: true
-            )
+        var chatRequest = ChatCompletionRequest(
+            model: modelID,
+            messages: messages,
+            temperature: 0.7,
+            maxTokens: 1024,
+            stream: true
         )
+        chatRequest.streamOptions = ["include_usage": true]
+        request.httpBody = try JSONEncoder().encode(chatRequest)
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -529,6 +547,10 @@ struct CompanionHomeChatSection: View {
         }
 
         var assistantReply = ""
+        var promptTokens = estimatedPromptTokens(for: messages)
+        var promptTokensEstimated = true
+        var completionTokens = 0
+        var completionTokensEstimated = true
         for try await line in bytes.lines {
             guard line.hasPrefix("data: ") else { continue }
             let payload = String(line.dropFirst(6))
@@ -540,15 +562,40 @@ struct CompanionHomeChatSection: View {
                 throw CompanionHomeChatError.server(apiError.error.message)
             }
             let chunk = try JSONDecoder().decode(ChatCompletionChunk.self, from: data)
+            if let usage = chunk.usage {
+                if usage.promptTokens > 0 {
+                    promptTokens = usage.promptTokens
+                    promptTokensEstimated = false
+                }
+                if usage.completionTokens >= 0 {
+                    completionTokens = usage.completionTokens
+                    completionTokensEstimated = false
+                }
+            }
             if let delta = chunk.choices.first?.delta.content, !delta.isEmpty {
                 assistantReply.append(delta)
+                if completionTokensEstimated {
+                    completionTokens = estimatedTokens(for: assistantReply)
+                }
                 await MainActor.run {
                     streamingText = assistantReply
                 }
             }
         }
 
-        return assistantReply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = assistantReply.trimmingCharacters(in: .whitespacesAndNewlines)
+        if completionTokens == 0, !trimmed.isEmpty {
+            completionTokens = estimatedTokens(for: trimmed)
+            completionTokensEstimated = true
+        }
+
+        return CompanionHomeStreamResult(
+            text: trimmed,
+            promptTokens: promptTokens,
+            promptTokensEstimated: promptTokensEstimated,
+            completionTokens: completionTokens,
+            completionTokensEstimated: completionTokensEstimated
+        )
     }
 
     private func localAPIKeyForChat() async -> String {
@@ -566,12 +613,133 @@ struct CompanionHomeChatSection: View {
             appState.gatewayAPIKey = bearer
         }
     }
+
+    private func bubbleMeta(for message: DecryptedMessage, at index: Int) -> CompanionHomeBubbleMeta? {
+        switch message.messageType {
+        case .text:
+            guard let meta = pairedAIResponseMetadata(after: index) else { return nil }
+            return makeBubbleMeta(
+                isInput: true,
+                tokenCount: meta.tokensPrompt,
+                tokenEstimated: meta.tokensPromptEstimated ?? false,
+                quotedCostCredits: meta.quotedPromptCostCredits,
+                billedCostCredits: meta.billedPromptCostCredits,
+                costIsFree: meta.billedLocally ?? false
+            )
+        case .aiResponse:
+            guard let meta = aiResponseMetadata(from: message) else { return nil }
+            return makeBubbleMeta(
+                isInput: false,
+                tokenCount: meta.tokensCompletion,
+                tokenEstimated: meta.tokensCompletionEstimated ?? false,
+                quotedCostCredits: meta.quotedCompletionCostCredits,
+                billedCostCredits: meta.billedCompletionCostCredits,
+                costIsFree: meta.billedLocally ?? false
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func pairedAIResponseMetadata(after index: Int) -> MessageMetadata.AIResponseMeta? {
+        let start = visibleMessages.index(after: index)
+        guard start < visibleMessages.endIndex else { return nil }
+        for following in visibleMessages.suffix(from: start) {
+            switch following.messageType {
+            case .aiResponse:
+                return aiResponseMetadata(from: following)
+            case .text:
+                return nil
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func aiResponseMetadata(from message: DecryptedMessage) -> MessageMetadata.AIResponseMeta? {
+        guard case .ai(let meta)? = message.metadata else { return nil }
+        return meta
+    }
+
+    private func makeBubbleMeta(
+        isInput: Bool,
+        tokenCount: Int?,
+        tokenEstimated: Bool,
+        quotedCostCredits: Int64?,
+        billedCostCredits: Int64?,
+        costIsFree: Bool
+    ) -> CompanionHomeBubbleMeta? {
+        guard let tokenCount, tokenCount > 0 else { return nil }
+        let tokenLabel = appState.companionText(
+            isInput ? (tokenEstimated ? "chat.tokens.inputApprox" : "chat.tokens.input")
+                    : (tokenEstimated ? "chat.tokens.outputApprox" : "chat.tokens.output"),
+            fallback: isInput
+                ? (tokenEstimated ? "~{{count}} input tokens" : "{{count}} input tokens")
+                : (tokenEstimated ? "~{{count}} output tokens" : "{{count}} output tokens"),
+            replacements: ["count": String(tokenCount)]
+        )
+        return CompanionHomeBubbleMeta(
+            tokenText: tokenLabel,
+            quotedCostText: quotedCostCredits.map { appState.companionDisplayAmountString(credits: $0, includeUnit: true) },
+            billedCostText: costIsFree ? nil : billedCostCredits.map { appState.companionDisplayAmountString(credits: $0, includeUnit: true) },
+            isFree: costIsFree
+        )
+    }
+
+    private func aiResponseMetadata(
+        for result: CompanionHomeStreamResult,
+        option: CompanionHomeModelOption?,
+        modelID: String
+    ) -> MessageMetadata {
+        let quotedPrompt = quotedCostCredits(tokens: result.promptTokens, usdPerToken: option?.promptUSDPerToken)
+        let quotedCompletion = quotedCostCredits(tokens: result.completionTokens, usdPerToken: option?.completionUSDPerToken)
+        let billedLocally = option?.billedLocally ?? false
+
+        return .ai(
+            .init(
+                model: modelID,
+                tokensPrompt: result.promptTokens,
+                tokensCompletion: result.completionTokens,
+                cost: nil,
+                quotedPromptCostCredits: quotedPrompt,
+                billedPromptCostCredits: billedLocally ? 0 : quotedPrompt,
+                quotedCompletionCostCredits: quotedCompletion,
+                billedCompletionCostCredits: billedLocally ? 0 : quotedCompletion,
+                billedLocally: billedLocally,
+                tokensPromptEstimated: result.promptTokensEstimated,
+                tokensCompletionEstimated: result.completionTokensEstimated
+            )
+        )
+    }
+
+    private func quotedCostCredits(tokens: Int, usdPerToken: Double?) -> Int64? {
+        guard tokens > 0, let usdPerToken else { return nil }
+        let credits = Double(tokens) * usdPerToken * CompanionDisplayUnit.creditsPerUSD
+        return Int64(credits.rounded())
+    }
+
+    private func estimatedPromptTokens(for messages: [APIMessage]) -> Int {
+        let promptBytes = messages.reduce(into: 0) { partialResult, message in
+            partialResult += message.content.lengthOfBytes(using: .utf8)
+        }
+        return max(1, Int(ceil(Double(promptBytes) / 4.0)) + 16)
+    }
+
+    private func estimatedTokens(for text: String) -> Int {
+        let bytes = text.lengthOfBytes(using: .utf8)
+        guard bytes > 0 else { return 0 }
+        return max(1, Int(ceil(Double(bytes) / 4.0)))
+    }
 }
 
 private struct CompanionHomeModelOption: Identifiable, Equatable {
     let id: String
     let label: String
     let note: String
+    let billedLocally: Bool
+    let promptUSDPerToken: Double?
+    let completionUSDPerToken: Double?
 }
 
 private struct CompanionHomeThreadChip: View {
@@ -613,6 +781,7 @@ private struct CompanionHomeThreadChip: View {
 private struct CompanionHomeChatBubble: View {
     let fromUser: Bool
     let content: String
+    var meta: CompanionHomeBubbleMeta? = nil
     var note: String? = nil
 
     var body: some View {
@@ -623,6 +792,9 @@ private struct CompanionHomeChatBubble: View {
                     .font(TealeDesign.mono)
                     .foregroundStyle(TealeDesign.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if let meta {
+                    CompanionHomeChatBubbleMetaView(meta: meta)
+                }
                 if let note, !note.isEmpty {
                     Text(note)
                         .font(TealeDesign.monoTiny)
@@ -638,6 +810,48 @@ private struct CompanionHomeChatBubble: View {
             .frame(maxWidth: 560, alignment: .leading)
             if !fromUser { Spacer(minLength: 40) }
         }
+    }
+}
+
+private struct CompanionHomeBubbleMeta: Equatable {
+    let tokenText: String
+    let quotedCostText: String?
+    let billedCostText: String?
+    let isFree: Bool
+}
+
+private struct CompanionHomeStreamResult {
+    let text: String
+    let promptTokens: Int
+    let promptTokensEstimated: Bool
+    let completionTokens: Int
+    let completionTokensEstimated: Bool
+}
+
+private struct CompanionHomeChatBubbleMetaView: View {
+    let meta: CompanionHomeBubbleMeta
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(meta.tokenText)
+            if meta.quotedCostText != nil || meta.billedCostText != nil || meta.isFree {
+                Text(" · ")
+                if meta.isFree {
+                    if let quotedCostText = meta.quotedCostText, !quotedCostText.isEmpty {
+                        Text(quotedCostText)
+                            .strikethrough()
+                            .foregroundStyle(TealeDesign.muted)
+                        Text(" ")
+                    }
+                    Text("FREE")
+                        .foregroundStyle(TealeDesign.teale)
+                } else if let billedCostText = meta.billedCostText, !billedCostText.isEmpty {
+                    Text(billedCostText)
+                }
+            }
+        }
+        .font(TealeDesign.monoTiny)
+        .foregroundStyle(TealeDesign.muted)
     }
 }
 

@@ -68,6 +68,7 @@ private struct TealeNavBar: View {
     @Environment(\.openURL) private var openURL
     @Binding var activeTab: CompanionTab
     @State private var shareButtonLabel = "share"
+    @State private var isSettingsMenuOpen = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -91,45 +92,84 @@ private struct TealeNavBar: View {
             CursorBlink()
             Spacer()
             HeaderToolButton(title: "x.com") {
+                isSettingsMenuOpen = false
                 openURL(URL(string: "https://x.com/teale_ai")!)
             }
             HeaderToolButton(title: shareButtonLabel) {
+                isSettingsMenuOpen = false
                 copyShareText()
             }
             settingsMenu
         }
+        .zIndex(20)
     }
 
     private var settingsMenu: some View {
-        Menu {
+        Button {
+            isSettingsMenuOpen.toggle()
+        } label: {
+            HeaderIconButton(systemImage: "gearshape")
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if isSettingsMenuOpen {
+                settingsPopover
+                    .offset(x: -6, y: 42)
+            }
+        }
+    }
+
+    private var settingsPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(AppLanguage.allCases) { language in
                 Button {
                     appState.language = language
+                    isSettingsMenuOpen = false
                 } label: {
                     SettingsMenuItemLabel(
                         title: language.displayName,
                         isSelected: appState.language == language
                     )
                 }
+                .buttonStyle(.plain)
             }
 
-            Divider()
+            Rectangle()
+                .fill(TealeDesign.border)
+                .frame(height: 1)
+                .padding(.vertical, 4)
 
             ForEach(CompanionDisplayUnit.allCases) { unit in
                 Button {
                     appState.companionDisplayUnit = unit
+                    isSettingsMenuOpen = false
                 } label: {
                     SettingsMenuItemLabel(
                         title: appState.companionMenuLabel(for: unit),
                         isSelected: appState.companionDisplayUnit == unit
                     )
                 }
+                .buttonStyle(.plain)
             }
-        } label: {
-            HeaderIconButton(systemImage: "gearshape")
         }
-        .menuStyle(.borderlessButton)
-        .tint(TealeDesign.teale)
+        .padding(12)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.05, green: 0.18, blue: 0.24, opacity: 0.98),
+                    Color(red: 0.03, green: 0.10, blue: 0.14, opacity: 0.98)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color(red: 0.16, green: 0.34, blue: 0.39), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .fixedSize()
+        .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 8)
     }
 
     private func copyShareText() {
@@ -157,11 +197,16 @@ private struct SettingsMenuItemLabel: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
+                .font(TealeDesign.mono)
+                .foregroundStyle(TealeDesign.text)
             if isSelected {
                 Spacer(minLength: 8)
                 Image(systemName: "checkmark")
+                    .foregroundStyle(TealeDesign.teale)
             }
         }
+        .frame(minWidth: 220, alignment: .leading)
+        .padding(.vertical, 4)
     }
 }
 

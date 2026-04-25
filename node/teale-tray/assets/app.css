@@ -717,6 +717,14 @@ footer,
   font-size: 12px;
 }
 
+.chat-bubble-meta-cost-strike {
+  text-decoration: line-through;
+}
+
+.chat-bubble-meta-cost-free {
+  color: var(--teale);
+}
+
 .chat-composer {
   margin-top: 14px;
   display: grid;

@@ -1744,6 +1744,10 @@ function sanitizeChatMessage(raw) {
     createdAt: normalizeChatTimestamp(raw.createdAt),
     tokenCount: normalizeTokenCount(raw.tokenCount),
     tokenEstimated: Boolean(raw.tokenEstimated),
+    quotedCostCredits: normalizeCreditCount(raw.quotedCostCredits),
+    billedCostCredits: normalizeCreditCount(raw.billedCostCredits),
+    costEstimated: Boolean(raw.costEstimated),
+    costFree: Boolean(raw.costFree),
   };
 }
 
@@ -1841,6 +1845,14 @@ function normalizeTokenCount(value) {
   return Math.round(numeric);
 }
 
+function normalizeCreditCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return null;
+  }
+  return Math.round(numeric);
+}
+
 function estimateChatTextTokens(text) {
   const bytes = new TextEncoder().encode(String(text || "")).length;
   if (!bytes) {
@@ -1885,6 +1897,103 @@ function parseChatUsage(raw) {
     promptTokens,
     completionTokens,
   };
+}
+
+function findChatPricingModel(target) {
+  if (!target?.modelId) {
+    return null;
+  }
+  return networkModels.find((model) => model.id === target.modelId) || null;
+}
+
+function quoteChatCostCredits(target, role, tokenCount) {
+  const normalizedTokens = normalizeTokenCount(tokenCount);
+  if (normalizedTokens == null || !target?.modelId) {
+    return null;
+  }
+  const pricing = findChatPricingModel(target);
+  if (!pricing) {
+    return null;
+  }
+  const usdPerToken = role === "user" ? Number(pricing.prompt) : Number(pricing.completion);
+  if (!Number.isFinite(usdPerToken)) {
+    return null;
+  }
+  return normalizeCreditCount(normalizedTokens * usdPerToken * 1_000_000);
+}
+
+function formatChatCostLabel(costCredits, estimated = false) {
+  const normalized = normalizeCreditCount(costCredits);
+  if (normalized == null) {
+    return "";
+  }
+  const label = formatDisplayCredits(normalized, true);
+  return estimated ? `~${label}` : label;
+}
+
+function buildChatMetaNode({ role, tokenCount, tokenEstimated = false, quotedCostCredits = null, billedCostCredits = null, costEstimated = false, costFree = false }) {
+  const tokenText = formatChatUsageMeta(role, tokenCount, tokenEstimated);
+  const quotedCostText = formatChatCostLabel(quotedCostCredits, costEstimated);
+  const billedCostText = costFree ? "" : formatChatCostLabel(billedCostCredits, costEstimated);
+  if (!tokenText && !quotedCostText && !billedCostText && !costFree) {
+    return null;
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "chat-bubble-meta";
+
+  if (tokenText) {
+    const tokenSpan = document.createElement("span");
+    tokenSpan.textContent = tokenText;
+    meta.appendChild(tokenSpan);
+  }
+
+  if (quotedCostText || billedCostText || costFree) {
+    if (tokenText) {
+      const separator = document.createElement("span");
+      separator.textContent = " · ";
+      meta.appendChild(separator);
+    }
+
+    if (costFree) {
+      if (quotedCostText) {
+        const strike = document.createElement("span");
+        strike.className = "chat-bubble-meta-cost-strike";
+        strike.textContent = quotedCostText;
+        meta.appendChild(strike);
+
+        const spacer = document.createElement("span");
+        spacer.textContent = " ";
+        meta.appendChild(spacer);
+      }
+
+      const free = document.createElement("span");
+      free.className = "chat-bubble-meta-cost-free";
+      free.textContent = "FREE";
+      meta.appendChild(free);
+    } else if (billedCostText) {
+      const cost = document.createElement("span");
+      cost.textContent = billedCostText;
+      meta.appendChild(cost);
+    }
+  }
+
+  return meta;
+}
+
+function buildChatMessageMetaNode(message) {
+  if (!message) {
+    return null;
+  }
+  return buildChatMetaNode({
+    role: message.role,
+    tokenCount: message.tokenCount,
+    tokenEstimated: message.tokenEstimated,
+    quotedCostCredits: message.quotedCostCredits,
+    billedCostCredits: message.billedCostCredits,
+    costEstimated: message.costEstimated,
+    costFree: message.costFree,
+  });
 }
 
 function creditsPerMillionFromUsdToken(value) {
@@ -2179,7 +2288,7 @@ function renderChatModelPicker(thread, options, snapshot) {
   }
 }
 
-function appendChatBubble(container, role, text, metaText = "", extraClass = "") {
+function appendChatBubble(container, role, text, metaContent = null, extraClass = "") {
   const row = document.createElement("div");
   row.className = `chat-message chat-message-${role}`;
 
@@ -2190,11 +2299,13 @@ function appendChatBubble(container, role, text, metaText = "", extraClass = "")
   }
   bubble.textContent = text;
 
-  if (metaText) {
+  if (typeof metaContent === "string" && metaContent) {
     const meta = document.createElement("div");
     meta.className = "chat-bubble-meta";
-    meta.textContent = metaText;
+    meta.textContent = metaContent;
     bubble.appendChild(meta);
+  } else if (metaContent instanceof Node) {
+    bubble.appendChild(metaContent);
   }
 
   row.appendChild(bubble);
@@ -2219,18 +2330,32 @@ function renderChatTranscript(thread) {
       els.chatTranscript,
       message.role,
       message.content,
-      chatMessageUsageMeta(message)
+      buildChatMessageMetaNode(message)
     );
   }
 
   if (draft || (chatRuntime.inFlight?.threadId === thread.id && !draft)) {
     const draftMeta = draft
-      ? formatChatUsageMeta(
-          "assistant",
-          chatRuntime.inFlight?.completionTokens ?? estimateChatTextTokens(draft),
-          chatRuntime.inFlight?.completionTokensEstimated ?? true
-        )
-      : "";
+      ? buildChatMetaNode({
+          role: "assistant",
+          tokenCount: chatRuntime.inFlight?.completionTokens ?? estimateChatTextTokens(draft),
+          tokenEstimated: chatRuntime.inFlight?.completionTokensEstimated ?? true,
+          quotedCostCredits: quoteChatCostCredits(
+            chatRuntime.inFlight?.modelTarget,
+            "assistant",
+            chatRuntime.inFlight?.completionTokens ?? estimateChatTextTokens(draft)
+          ),
+          billedCostCredits: chatRuntime.inFlight?.modelTarget?.provider === "local"
+            ? 0
+            : quoteChatCostCredits(
+                chatRuntime.inFlight?.modelTarget,
+                "assistant",
+                chatRuntime.inFlight?.completionTokens ?? estimateChatTextTokens(draft)
+              ),
+          costEstimated: chatRuntime.inFlight?.completionTokensEstimated ?? true,
+          costFree: chatRuntime.inFlight?.modelTarget?.provider === "local",
+        })
+      : null;
     appendChatBubble(
       els.chatTranscript,
       "assistant",
@@ -2399,6 +2524,10 @@ async function sendChatMessage() {
     createdAt: Date.now(),
     tokenCount: null,
     tokenEstimated: false,
+    quotedCostCredits: null,
+    billedCostCredits: null,
+    costEstimated: false,
+    costFree: activeOption.provider === "local",
   };
   thread.messages.push(userMessage);
   if (userMessagesBefore === 0) {
@@ -2411,6 +2540,9 @@ async function sendChatMessage() {
   }));
   userMessage.tokenCount = estimateChatPromptTokens(requestMessages);
   userMessage.tokenEstimated = true;
+  userMessage.quotedCostCredits = quoteChatCostCredits(activeOption, "user", userMessage.tokenCount);
+  userMessage.billedCostCredits = activeOption.provider === "local" ? 0 : userMessage.quotedCostCredits;
+  userMessage.costEstimated = true;
   persistChatState();
 
   els.chatInput.value = "";
@@ -2441,20 +2573,30 @@ async function sendChatMessage() {
     if (promptTokenCount != null && promptTokenCount > 0) {
       userMessage.tokenCount = promptTokenCount;
       userMessage.tokenEstimated = Boolean(inFlight?.promptTokensEstimated);
+      userMessage.quotedCostCredits = quoteChatCostCredits(activeOption, "user", promptTokenCount);
+      userMessage.billedCostCredits = activeOption.provider === "local" ? 0 : userMessage.quotedCostCredits;
+      userMessage.costEstimated = Boolean(inFlight?.promptTokensEstimated);
     }
     if (finalText) {
       const completionTokenCount = normalizeTokenCount(inFlight?.completionTokens);
+      const assistantTokenCount = completionTokenCount != null && completionTokenCount > 0
+        ? completionTokenCount
+        : estimateChatTextTokens(finalText);
+      const assistantTokenEstimated = completionTokenCount != null && completionTokenCount > 0
+        ? Boolean(inFlight?.completionTokensEstimated)
+        : true;
+      const assistantQuotedCostCredits = quoteChatCostCredits(activeOption, "assistant", assistantTokenCount);
       thread.messages.push({
         id: createId(),
         role: "assistant",
         content: finalText,
         createdAt: Date.now(),
-        tokenCount: completionTokenCount != null && completionTokenCount > 0
-          ? completionTokenCount
-          : estimateChatTextTokens(finalText),
-        tokenEstimated: completionTokenCount != null && completionTokenCount > 0
-          ? Boolean(inFlight?.completionTokensEstimated)
-          : true,
+        tokenCount: assistantTokenCount,
+        tokenEstimated: assistantTokenEstimated,
+        quotedCostCredits: assistantQuotedCostCredits,
+        billedCostCredits: activeOption.provider === "local" ? 0 : assistantQuotedCostCredits,
+        costEstimated: assistantTokenEstimated,
+        costFree: activeOption.provider === "local",
       });
       thread.updatedAt = Date.now();
     }
@@ -2469,6 +2611,9 @@ async function sendChatMessage() {
     if (promptTokenCount != null && promptTokenCount > 0) {
       userMessage.tokenCount = promptTokenCount;
       userMessage.tokenEstimated = Boolean(inFlight?.promptTokensEstimated);
+      userMessage.quotedCostCredits = quoteChatCostCredits(activeOption, "user", promptTokenCount);
+      userMessage.billedCostCredits = activeOption.provider === "local" ? 0 : userMessage.quotedCostCredits;
+      userMessage.costEstimated = Boolean(inFlight?.promptTokensEstimated);
     }
     persistChatState();
     chatRuntime.inFlight = null;
