@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use std::cmp::Reverse;
 use teale_protocol::openai::ModelsResponse;
 
 use crate::catalog::is_large;
@@ -48,11 +49,19 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
 
     let floor = &state.config.scheduler.per_model_floor;
     let connected_device_count = state.registry.device_count() as u32;
-    let entries: Vec<_> = state
+    let total_ram_gb: f64 = state
+        .registry
+        .snapshot_devices()
+        .iter()
+        .map(|dev| dev.capabilities.hardware.total_ram_gb)
+        .sum();
+    let supplying_device_count = state.registry.supplying_device_count();
+    let mut entries: Vec<_> = state
         .catalog
         .iter()
-        .filter(|m| !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
-        .filter(|m| {
+        .enumerate()
+        .filter(|(_, m)| !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
+        .filter(|(_, m)| {
             // Virtual meta-models (e.g. teale/auto) are always advertised;
             // resolution happens at request time against concrete supply.
             if m.is_virtual {
@@ -66,11 +75,21 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             };
             state.registry.loaded_count(&m.id) >= min
         })
-        .map(|m| {
-            let loaded_device_count = state.registry.loaded_count(&m.id);
-            m.to_entry_with_live_state(state.model_metrics.snapshot(&m.id), loaded_device_count)
+        .map(|(idx, m)| {
+            let loaded_device_count = if m.is_virtual {
+                supplying_device_count
+            } else {
+                state.registry.loaded_count(&m.id)
+            };
+            (
+                idx,
+                loaded_device_count,
+                m.to_entry_with_live_state(state.model_metrics.snapshot(&m.id), loaded_device_count),
+            )
         })
         .collect();
+    entries.sort_by_key(|(idx, loaded_device_count, _)| (Reverse(*loaded_device_count), *idx));
+    let entries = entries.into_iter().map(|(_, _, entry)| entry).collect();
 
     let mut h = HeaderMap::new();
     h.insert(header::VARY, HeaderValue::from_static("Accept"));
@@ -79,6 +98,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         Json(ModelsResponse {
             object: "list".to_string(),
             connected_device_count: Some(connected_device_count),
+            total_ram_gb: Some(total_ram_gb),
             data: entries,
         }),
     )

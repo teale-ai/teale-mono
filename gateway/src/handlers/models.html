@@ -100,6 +100,60 @@
     .summary dt { color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px; }
     .summary dd { margin: 0; color: var(--bright); font-variant-numeric: tabular-nums; }
     .summary dd small { color: var(--dim); margin-left: 6px; }
+    .catalog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin: 18px 0 6px;
+      flex-wrap: wrap;
+    }
+    .catalog-head .prompt { margin: 0; }
+    .catalog-controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .price-toggle {
+      display: inline-flex;
+      border: 1px solid var(--dim);
+      background: var(--card);
+    }
+    .price-toggle button {
+      appearance: none;
+      border: 0;
+      border-right: 1px solid var(--dim);
+      background: transparent;
+      color: var(--dim);
+      font: inherit;
+      padding: 7px 10px;
+      cursor: pointer;
+      text-transform: lowercase;
+    }
+    .price-toggle button:last-child { border-right: 0; }
+    .price-toggle button[aria-pressed="true"] {
+      background: var(--bright);
+      color: var(--bg);
+    }
+    .model-search {
+      min-width: 220px;
+      border: 1px solid var(--dim);
+      background: var(--card);
+      color: var(--bright);
+      font: inherit;
+      padding: 7px 10px;
+    }
+    .model-search::placeholder { color: var(--dim); opacity: 1; }
+    .catalog-empty {
+      display: none;
+      padding: 12px 14px;
+      border: 1px dashed var(--dim);
+      color: var(--dim);
+      background: var(--card);
+      margin: 6px 0 18px;
+    }
 
     pre.curl {
       margin: 0; padding: 14px 16px;
@@ -115,6 +169,11 @@
       .model { grid-template-columns: 1fr; }
       .model .tier { text-align: left; }
       .model dl.stats { grid-template-columns: 1fr; }
+      .catalog-head { align-items: flex-start; }
+      .catalog-controls { width: 100%; justify-content: stretch; }
+      .price-toggle { width: 100%; }
+      .price-toggle button { flex: 1 1 0; }
+      .model-search { width: 100%; min-width: 0; }
     }
   </style>
 </head>
@@ -131,12 +190,22 @@
   <dl class="summary">
     <dt>Models</dt><dd id="modelCount">—</dd>
     <dt>Devices</dt><dd id="deviceCount">— <small>(currently connected)</small></dd>
-    <dt>Credits peg</dt><dd>1 USD = 1,000,000 Teale credits</dd>
+    <dt>RAM</dt><dd id="ramTotal">—</dd>
     <dt>Fresh metrics</dt><dd id="trafficCount">— <small>(models with fresh samples)</small></dd>
   </dl>
 
-  <div class="prompt"><span class="arrow">&gt;</span> available models</div>
+  <div class="catalog-head">
+    <div class="prompt"><span class="arrow">&gt;</span> available models</div>
+    <div class="catalog-controls">
+      <div class="price-toggle" role="toolbar" aria-label="price display">
+        <button type="button" id="priceUsd" aria-pressed="true">usd</button>
+        <button type="button" id="priceCredits" aria-pressed="false">teale credits</button>
+      </div>
+      <input id="modelSearch" class="model-search" type="search" placeholder="search models" aria-label="search models">
+    </div>
+  </div>
   <div class="catalog" id="catalog" role="list"></div>
+  <div class="catalog-empty" id="catalogEmpty">no models match your search.</div>
 
   <div class="prompt"><span class="arrow">&gt;</span> use any model via OpenAI-compatible API</div>
   <pre class="curl" id="curl"></pre>
@@ -152,10 +221,12 @@
 (function () {
   "use strict";
   const CRED_PER_USD = 1_000_000;
+  let priceMode = "usd";
+  let searchQuery = "";
+  let latestData = null;
 
-  function fmtPrice(credPerToken) {
-    // pricing fields are strings of USD per token, e.g. "0.00000025"
-    const perMil = Number(credPerToken) * 1_000_000;
+  function fmtUsdPerMillion(usdPerToken) {
+    const perMil = Number(usdPerToken) * 1_000_000;
     if (!isFinite(perMil)) return "—";
     return "$" + perMil.toFixed(2);
   }
@@ -186,6 +257,11 @@
   function fmtTps(n) {
     return n == null || !isFinite(n) ? "—" : n.toFixed(1);
   }
+  function fmtRam(gb) {
+    if (gb == null || !isFinite(gb)) return "—";
+    if (gb >= 1024) return (gb / 1024).toFixed(gb % 1024 === 0 ? 0 : 1) + " TB";
+    return Math.round(gb).toLocaleString() + " GB";
+  }
   function pluralize(count, singular, plural) {
     return `${count} ${count === 1 ? singular : plural}`;
   }
@@ -196,17 +272,47 @@
     b.style.display = "block";
   }
 
+  function matchesSearch(model) {
+    if (!searchQuery) return true;
+    const haystack = [
+      model.id,
+      model.owned_by,
+      model.quantization,
+      model.description
+    ].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(searchQuery);
+  }
+
+  function pricingText(pricing) {
+    if (!pricing) return "—";
+    if (priceMode === "credits") {
+      return `prompt ${fmtCreditsPerMillion(pricing.prompt)} cr · completion ${fmtCreditsPerMillion(pricing.completion)} cr per 1M tokens`;
+    }
+    return `prompt ${fmtUsdPerMillion(pricing.prompt)} · completion ${fmtUsdPerMillion(pricing.completion)} per 1M tokens`;
+  }
+
+  function syncControls() {
+    document.getElementById("priceUsd").setAttribute("aria-pressed", priceMode === "usd" ? "true" : "false");
+    document.getElementById("priceCredits").setAttribute("aria-pressed", priceMode === "credits" ? "true" : "false");
+  }
+
   function render(data) {
+    latestData = data;
     const catalog = document.getElementById("catalog");
-    const models = data.data || [];
-    document.getElementById("modelCount").textContent = String(models.length);
+    const empty = document.getElementById("catalogEmpty");
+    const allModels = data.data || [];
+    const models = allModels.filter(matchesSearch);
+    document.getElementById("modelCount").textContent = String(allModels.length);
     document.getElementById("deviceCount").innerHTML =
       String(data.connected_device_count ?? "—") + ' <small>(currently connected)</small>';
-    const withFreshMetrics = models.filter(m => m.metrics && m.metrics.sample_count > 0).length;
+    document.getElementById("ramTotal").textContent = fmtRam(data.total_ram_gb);
+    const withFreshMetrics = allModels.filter(m => m.metrics && m.metrics.sample_count > 0).length;
     document.getElementById("trafficCount").innerHTML = String(withFreshMetrics) +
       ' <small>(models with fresh samples)</small>';
+    syncControls();
 
     catalog.innerHTML = "";
+    empty.style.display = models.length ? "none" : "block";
     models.forEach(m => {
       const el = document.createElement("div");
       el.className = "model";
@@ -241,10 +347,7 @@
       row("context", fmtCtx(m.context_length));
 
       if (m.pricing) {
-        row("pricing",
-          `prompt ${fmtPrice(m.pricing.prompt)} = ${fmtCreditsPerMillion(m.pricing.prompt)} cr · ` +
-          `completion ${fmtPrice(m.pricing.completion)} = ${fmtCreditsPerMillion(m.pricing.completion)} cr ` +
-          `per 1M tokens`);
+        row("pricing", pricingText(m.pricing));
       }
 
       row("devices", pluralize(m.loaded_device_count ?? 0, "device", "devices"));
@@ -280,7 +383,7 @@
       catalog.appendChild(el);
     });
 
-    const sample = models.find(m => m.metrics && m.metrics.sample_count > 0) || models[0];
+    const sample = allModels.find(m => m.metrics && m.metrics.sample_count > 0) || allModels[0];
     const curl = document.getElementById("curl");
     const id = sample ? sample.id : "<model-id>";
     curl.innerHTML =
@@ -303,6 +406,19 @@
       banner("failed to load /v1/models: " + (err && err.message ? err.message : String(err)), true);
     }
   }
+
+  document.getElementById("priceUsd").addEventListener("click", () => {
+    priceMode = "usd";
+    if (latestData) render(latestData);
+  });
+  document.getElementById("priceCredits").addEventListener("click", () => {
+    priceMode = "credits";
+    if (latestData) render(latestData);
+  });
+  document.getElementById("modelSearch").addEventListener("input", (event) => {
+    searchQuery = String(event.target.value || "").trim().toLowerCase();
+    if (latestData) render(latestData);
+  });
 
   load();
   setInterval(load, 30_000);
