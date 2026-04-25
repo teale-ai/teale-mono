@@ -2,6 +2,11 @@ const API_BASE = "http://127.0.0.1:11437";
 
 const els = {
   headerLine: document.getElementById("header-line"),
+  updateBanner: document.getElementById("update-banner"),
+  updateBannerMessage: document.getElementById("update-banner-message"),
+  updateBannerDownload: document.getElementById("update-banner-download"),
+  updateBannerRelease: document.getElementById("update-banner-release"),
+  updateBannerDismiss: document.getElementById("update-banner-dismiss"),
   settingsMenu: document.getElementById("settings-menu"),
   languageSelect: document.getElementById("language-select"),
   displayUnitSelect: document.getElementById("display-unit-select"),
@@ -124,8 +129,13 @@ const DISPLAY_UNIT_STORAGE_KEY = "teale.displayUnit";
 const CHAT_STORAGE_KEY = "teale.chat.v1";
 const OAUTH_CALLBACK_STORAGE_KEY = "__teale_pending_oauth_callback";
 const OAUTH_PROVIDER_STORAGE_KEY = "__teale_pending_oauth_provider";
+const UPDATE_DISMISSED_STORAGE_KEY = "teale.dismissedWindowsUpdateTag";
 const SHARE_STORY_TEXT = "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.";
 const SUPPORTED_LANGUAGES = new Set(["en", "es", "pt-BR", "fil-PH"]);
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const WINDOWS_RELEASES_API = "https://api.github.com/repos/teale-ai/teale-mono/releases?per_page=20";
+const WINDOWS_RELEASE_PREFIX = "teale-";
+const WINDOWS_RELEASE_ASSET_NAME = "Teale.exe";
 const translations = {
   en: {
     "nav.home": "teale",
@@ -798,6 +808,16 @@ function viewDescription(view) {
 let activeView = "home";
 let intervalHandle = null;
 let lastSnapshot = null;
+const updateState = {
+  checking: false,
+  currentVersion: "",
+  latestTag: "",
+  releaseUrl: "",
+  assetUrl: "",
+  lastCheckedAt: 0,
+  updateAvailable: false,
+  dismissedTag: loadDismissedUpdateTag(),
+};
 let supabaseClient = null;
 let supabaseAuthKey = null;
 let authSession = null;
@@ -834,6 +854,170 @@ let chatRuntime = {
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
+}
+
+function loadDismissedUpdateTag() {
+  try {
+    return window.localStorage.getItem(UPDATE_DISMISSED_STORAGE_KEY) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function persistDismissedUpdateTag(tag) {
+  updateState.dismissedTag = tag || "";
+  try {
+    if (updateState.dismissedTag) {
+      window.localStorage.setItem(UPDATE_DISMISSED_STORAGE_KEY, updateState.dismissedTag);
+    } else {
+      window.localStorage.removeItem(UPDATE_DISMISSED_STORAGE_KEY);
+    }
+  } catch (_error) {}
+}
+
+function normalizeReleaseVersion(value, tagPrefix = "") {
+  let normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (tagPrefix && normalized.startsWith(tagPrefix)) {
+    normalized = normalized.slice(tagPrefix.length);
+  }
+  normalized = normalized.replace(/^v/i, "").replaceAll(".", "");
+  if (!/^\d+$/.test(normalized)) {
+    return null;
+  }
+  return Number(normalized);
+}
+
+function versionLabel(value, tagPrefix = "") {
+  let label = String(value || "").trim();
+  if (!label) {
+    return "";
+  }
+  if (tagPrefix && label.startsWith(tagPrefix)) {
+    label = label.slice(tagPrefix.length);
+  }
+  return label.replace(/^v/i, "");
+}
+
+function selectLatestRelease(releases, { tagPrefix, assetName }) {
+  let bestRelease = null;
+  let bestVersion = null;
+  for (const release of Array.isArray(releases) ? releases : []) {
+    if (release?.draft || release?.prerelease) {
+      continue;
+    }
+    const tagName = String(release?.tag_name || "");
+    if (!tagName.startsWith(tagPrefix)) {
+      continue;
+    }
+    const asset = Array.isArray(release.assets)
+      ? release.assets.find((item) => item?.name === assetName)
+      : null;
+    if (!asset?.browser_download_url) {
+      continue;
+    }
+    const version = normalizeReleaseVersion(tagName, tagPrefix);
+    if (version == null) {
+      continue;
+    }
+    if (bestVersion == null || version > bestVersion) {
+      bestRelease = release;
+      bestVersion = version;
+    }
+  }
+  return bestRelease;
+}
+
+function renderUpdateBanner() {
+  if (!els.updateBanner) {
+    return;
+  }
+
+  const showBanner = Boolean(
+    updateState.updateAvailable && (updateState.assetUrl || updateState.releaseUrl)
+  );
+  els.updateBanner.hidden = !showBanner;
+  if (!showBanner) {
+    return;
+  }
+
+  const latestVersion = versionLabel(updateState.latestTag, WINDOWS_RELEASE_PREFIX) || updateState.latestTag;
+  const currentVersion = versionLabel(updateState.currentVersion, WINDOWS_RELEASE_PREFIX) || updateState.currentVersion;
+  els.updateBannerMessage.textContent = `Teale ${latestVersion} is ready for Windows. You're on ${currentVersion}. Download the new installer to update this PC.`;
+  els.updateBannerDownload.disabled = !updateState.assetUrl;
+  els.updateBannerRelease.disabled = !updateState.releaseUrl;
+}
+
+async function maybeRefreshWindowsUpdate(snapshot, force = false) {
+  const currentVersion = String(snapshot?.app_version || "").trim();
+  const versionChanged = currentVersion && currentVersion !== updateState.currentVersion;
+  updateState.currentVersion = currentVersion;
+
+  if (!currentVersion) {
+    updateState.updateAvailable = false;
+    renderUpdateBanner();
+    return;
+  }
+  if (!force && updateState.checking) {
+    return;
+  }
+  if (
+    !force &&
+    !versionChanged &&
+    updateState.lastCheckedAt &&
+    Date.now() - updateState.lastCheckedAt < UPDATE_CHECK_INTERVAL_MS
+  ) {
+    renderUpdateBanner();
+    return;
+  }
+
+  updateState.checking = true;
+  try {
+    const response = await fetch(WINDOWS_RELEASES_API, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Windows release check failed: ${response.status}`);
+    }
+    const releases = await response.json();
+    const release = selectLatestRelease(releases, {
+      tagPrefix: WINDOWS_RELEASE_PREFIX,
+      assetName: WINDOWS_RELEASE_ASSET_NAME,
+    });
+
+    updateState.lastCheckedAt = Date.now();
+    if (!release) {
+      updateState.latestTag = "";
+      updateState.releaseUrl = "";
+      updateState.assetUrl = "";
+      updateState.updateAvailable = false;
+      renderUpdateBanner();
+      return;
+    }
+
+    const asset = release.assets.find((item) => item?.name === WINDOWS_RELEASE_ASSET_NAME);
+    const remoteVersion = normalizeReleaseVersion(release.tag_name, WINDOWS_RELEASE_PREFIX);
+    const localVersion = normalizeReleaseVersion(currentVersion, WINDOWS_RELEASE_PREFIX);
+    updateState.latestTag = String(release.tag_name || "");
+    updateState.releaseUrl = String(release.html_url || "");
+    updateState.assetUrl = String(asset?.browser_download_url || "");
+    updateState.updateAvailable = Boolean(
+      remoteVersion != null &&
+      localVersion != null &&
+      remoteVersion > localVersion &&
+      updateState.latestTag !== updateState.dismissedTag
+    );
+  } catch (_error) {
+    renderUpdateBanner();
+  } finally {
+    updateState.checking = false;
+    renderUpdateBanner();
+  }
 }
 
 function updateDisplayUnitLabels() {
@@ -2687,6 +2871,15 @@ function postNativeMessage(payload) {
   return false;
 }
 
+function openExternalUrl(url) {
+  if (!url) {
+    return;
+  }
+  if (!postNativeMessage({ type: "openExternal", url })) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
 function authTrace(message) {
   console.log(`[auth] ${message}`);
   postNativeMessage({ type: "authLog", message });
@@ -2863,6 +3056,7 @@ function setDisconnected(error) {
   els.walletDeviceId.textContent = "-";
   els.walletDeviceId.title = "Copy device ID";
   els.walletStatus.textContent = "Offline";
+  renderUpdateBanner();
   els.walletModel.textContent = t("common.noModelLoaded");
   els.walletBalance.textContent = t("common.waitingLocalService");
   els.walletUsdc.textContent = "0.00";
@@ -4254,6 +4448,7 @@ function renderWallet(snapshot) {
 
 function render(snapshot) {
   lastSnapshot = snapshot;
+  renderUpdateBanner();
   renderHome(snapshot);
   renderSupply(snapshot);
   renderDemand(snapshot);
@@ -4282,6 +4477,7 @@ async function refresh() {
     await refreshAccountState();
   }
   render(snapshot);
+  maybeRefreshWindowsUpdate(snapshot).catch(() => renderUpdateBanner());
   if (activeView === "home") {
     await refreshNetworkStats();
     await refreshNetworkModels();
@@ -4428,14 +4624,25 @@ els.authSignoutButton.addEventListener("click", async () => {
 });
 
 els.followXButton.addEventListener("click", () => {
-  const url = "https://x.com/teale_ai";
-  if (!postNativeMessage({ type: "openExternal", url })) {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
+  openExternalUrl("https://x.com/teale_ai");
 });
 
 els.shareStoryButton.addEventListener("click", async () => {
   await copyText(SHARE_STORY_TEXT, "Share text");
+});
+
+els.updateBannerDownload.addEventListener("click", () => {
+  openExternalUrl(updateState.assetUrl || updateState.releaseUrl);
+});
+
+els.updateBannerRelease.addEventListener("click", () => {
+  openExternalUrl(updateState.releaseUrl || updateState.assetUrl);
+});
+
+els.updateBannerDismiss.addEventListener("click", () => {
+  persistDismissedUpdateTag(updateState.latestTag);
+  updateState.updateAvailable = false;
+  renderUpdateBanner();
 });
 
 els.localCurlCopy.addEventListener("click", async () => {
@@ -4639,5 +4846,6 @@ window.__tealeHandleOAuthCallback = async (url) => {
 applyTranslations();
 setActiveView("home");
 loadStoredOAuthCallback();
+renderUpdateBanner();
 refresh().catch((error) => setDisconnected(error));
 startPolling();

@@ -16,6 +16,10 @@ struct CompanionRootView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     TealeNavBar(activeTab: $activeTab)
                     TealeHeaderLine(activeTab: activeTab)
+                    if appState.updateChecker.updateAvailable || appState.updateChecker.lastError != nil {
+                        CompanionUpdateBanner()
+                            .padding(.top, 16)
+                    }
                     Rectangle()
                         .fill(TealeDesign.tealeDim)
                         .frame(height: 1)
@@ -60,6 +64,79 @@ struct CompanionRootView: View {
         case .account:
             CompanionAccountView()
         }
+    }
+}
+
+private struct CompanionUpdateBanner: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.openURL) private var openURL
+
+    private var checker: UpdateChecker {
+        appState.updateChecker
+    }
+
+    var body: some View {
+        TealeCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("update available")
+                    .font(TealeDesign.monoSmall)
+                    .tracking(0.8)
+                    .foregroundStyle(TealeDesign.warn)
+
+                Text(messageText)
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+
+                if let error = checker.lastError, !error.isEmpty {
+                    Text(error)
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(TealeDesign.fail)
+                }
+
+                HStack(spacing: 10) {
+                    if checker.updateAvailable {
+                        TealeActionButton(
+                            title: checker.installing ? "installing..." : "install update",
+                            primary: true,
+                            disabled: checker.installing || checker.checking
+                        ) {
+                            Task {
+                                let installed = await checker.installUpdate()
+                                if !installed, let url = checker.releaseURL {
+                                    await MainActor.run {
+                                        openURL(url)
+                                    }
+                                }
+                            }
+                        }
+
+                        if let releaseURL = checker.releaseURL {
+                            TealeActionButton(title: "view release") {
+                                openURL(releaseURL)
+                            }
+                        }
+
+                        TealeActionButton(title: "later") {
+                            checker.dismissUpdate()
+                        }
+                    } else if let releaseURL = checker.releaseURL {
+                        TealeActionButton(title: "view release") {
+                            openURL(releaseURL)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var messageText: String {
+        if checker.installing {
+            return "Installing the latest macOS build and relaunching Teale."
+        }
+        if let version = checker.latestVersionLabel {
+            return "Teale \(version) is available for macOS. Install in place and relaunch, or open the release notes first."
+        }
+        return "Teale found a newer macOS release, but the in-app installer needs the published release asset to finish."
     }
 }
 

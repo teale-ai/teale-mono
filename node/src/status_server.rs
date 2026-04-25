@@ -479,6 +479,7 @@ pub struct StatusState {
     pub requests_today: Arc<AtomicU64>,
     pub credits_today: Arc<std::sync::atomic::AtomicI64>,
     pub supplying_since: Arc<AtomicU64>,
+    app_version: String,
     display_name: String,
     hardware: HardwareCapability,
     model_dir: PathBuf,
@@ -509,6 +510,7 @@ impl StatusState {
             requests_today: Arc::new(AtomicU64::new(0)),
             credits_today: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             supplying_since: Arc::new(AtomicU64::new(0)),
+            app_version: installed_app_version(),
             display_name,
             hardware,
             model_dir,
@@ -547,7 +549,7 @@ impl StatusState {
         let state_reason = self.state_reason(&inner, service_state);
 
         AppSnapshot {
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            app_version: self.app_version.clone(),
             service_state: service_state.as_str().to_string(),
             state_reason,
             device: DeviceSnapshot {
@@ -1415,6 +1417,20 @@ impl StatusState {
         file.flush().await?;
         Ok(())
     }
+}
+
+fn installed_app_version() -> String {
+    version_file_for_current_install()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|raw| raw.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+fn version_file_for_current_install() -> Option<PathBuf> {
+    let current_exe = std::env::current_exe().ok()?;
+    let install_root = current_exe.parent()?.parent()?;
+    Some(install_root.join("version.txt"))
 }
 
 fn download_client() -> anyhow::Result<reqwest::Client> {

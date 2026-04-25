@@ -1,21 +1,27 @@
 import Foundation
-import SharedTypes
+import Observation
 #if canImport(AppKit)
 import AppKit
 #endif
 
 /// Lightweight auto-updater that checks GitHub Releases for newer versions.
 @MainActor
+@Observable
 public final class UpdateChecker {
     private static let repo = "teale-ai/teale-mono"
     private static let checkIntervalKey = "teale.lastUpdateCheck"
     private static let dismissedVersionKey = "teale.dismissedUpdateVersion"
     private static let checkInterval: TimeInterval = 4 * 3600 // 4 hours
+    private static let releaseTagPrefix = "mac-v"
+    private static let releaseAssetName = "Teale.zip"
 
     public private(set) var updateAvailable = false
     public private(set) var latestTag: String?
     public private(set) var releaseURL: URL?
+    public private(set) var downloadURL: URL?
     public private(set) var checking = false
+    public private(set) var installing = false
+    public private(set) var lastError: String?
 
     public init() {}
 
@@ -32,15 +38,19 @@ public final class UpdateChecker {
         checking = true
         defer { checking = false }
 
-        guard let (tag, url) = await fetchLatestRelease() else { return }
+        guard let release = await fetchLatestRelease() else { return }
 
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.checkIntervalKey)
 
         let dismissed = UserDefaults.standard.string(forKey: Self.dismissedVersionKey)
-        if tag != dismissed && isNewer(tag: tag) {
-            latestTag = tag
-            releaseURL = url
+        if release.tagName != dismissed && isNewer(tag: release.tagName) {
+            latestTag = release.tagName
+            releaseURL = release.htmlURL
+            downloadURL = release.asset(named: Self.releaseAssetName)?.browserDownloadURL
             updateAvailable = true
+            lastError = nil
+        } else {
+            clearAvailableUpdate()
         }
     }
 
@@ -49,14 +59,21 @@ public final class UpdateChecker {
         if let tag = latestTag {
             UserDefaults.standard.set(tag, forKey: Self.dismissedVersionKey)
         }
-        updateAvailable = false
+        lastError = nil
+        clearAvailableUpdate()
     }
 
     /// Download and install the update (replace current .app and relaunch).
     public func installUpdate() async -> Bool {
-        guard let tag = latestTag else { return false }
+        guard let downloadURL else {
+            lastError = "The macOS update asset was not published on the release."
+            return false
+        }
 
-        let downloadURL = URL(string: "https://github.com/\(Self.repo)/releases/download/\(tag)/Teale.zip")!
+        installing = true
+        lastError = nil
+        defer { installing = false }
+
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
         do {
@@ -76,14 +93,22 @@ public final class UpdateChecker {
             process.arguments = ["-x", "-k", zipPath.path, unzipDir.path]
             try process.run()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return false }
+            guard process.terminationStatus == 0 else {
+                lastError = "Teale could not unpack the downloaded macOS update."
+                try? FileManager.default.removeItem(at: tempDir)
+                return false
+            }
 
             // Find the .app in extracted contents
             let extracted = try FileManager.default.contentsOfDirectory(at: unzipDir, includingPropertiesForKeys: nil)
-            guard let newApp = extracted.first(where: { $0.pathExtension == "app" }) else { return false }
+            guard let newApp = extracted.first(where: { $0.pathExtension == "app" }) else {
+                lastError = "The downloaded macOS release did not contain a Teale app bundle."
+                try? FileManager.default.removeItem(at: tempDir)
+                return false
+            }
 
             // Replace current app
-            guard let currentApp = Bundle.main.bundleURL as URL? else { return false }
+            let currentApp = Bundle.main.bundleURL
             let backup = currentApp.deletingLastPathComponent().appendingPathComponent("Teale.app.bak")
 
             try? FileManager.default.removeItem(at: backup)
@@ -99,6 +124,8 @@ public final class UpdateChecker {
 
             // Remove backup
             try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.removeItem(at: tempDir)
+            clearAvailableUpdate()
 
             // Relaunch
             let relaunch = Process()
@@ -112,44 +139,91 @@ public final class UpdateChecker {
             }
             return true
         } catch {
+            lastError = error.localizedDescription
             try? FileManager.default.removeItem(at: tempDir)
             return false
         }
     }
 
+    public var latestVersionLabel: String? {
+        guard let latestTag else { return nil }
+        return latestTag.replacingOccurrences(of: Self.releaseTagPrefix, with: "")
+    }
+
     // MARK: - Private
 
-    private func fetchLatestRelease() async -> (tag: String, url: URL)? {
-        let apiURL = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!
+    private struct GitHubRelease: Decodable {
+        struct Asset: Decodable {
+            let name: String
+            let browserDownloadURL: URL
+
+            enum CodingKeys: String, CodingKey {
+                case name
+                case browserDownloadURL = "browser_download_url"
+            }
+        }
+
+        let tagName: String
+        let htmlURL: URL
+        let draft: Bool
+        let prerelease: Bool
+        let assets: [Asset]
+
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case htmlURL = "html_url"
+            case draft
+            case prerelease
+            case assets
+        }
+
+        func asset(named name: String) -> Asset? {
+            assets.first(where: { $0.name == name })
+        }
+    }
+
+    private func fetchLatestRelease() async -> GitHubRelease? {
+        let apiURL = URL(string: "https://api.github.com/repos/\(Self.repo)/releases?per_page=20")!
         var request = URLRequest(url: apiURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 10
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tag = json["tag_name"] as? String,
-              let htmlURL = json["html_url"] as? String,
-              let url = URL(string: htmlURL) else {
+              let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
             return nil
         }
-        return (tag, url)
+
+        return releases
+            .filter {
+                !$0.draft &&
+                !$0.prerelease &&
+                $0.tagName.hasPrefix(Self.releaseTagPrefix) &&
+                $0.asset(named: Self.releaseAssetName) != nil
+            }
+            .max { lhs, rhs in
+                (releaseVersion(for: lhs.tagName) ?? 0) < (releaseVersion(for: rhs.tagName) ?? 0)
+            }
     }
 
     private func isNewer(tag: String) -> Bool {
-        // Tags use the same YYYY.MM.DD.HHMM format as internal builds.
-        // Extract the numeric version from the tag (strip "v" prefix) and
-        // compare against the current build's CFBundleVersion (YYYYMMDDHHMM).
-        let tagVersion = tag
-            .replacingOccurrences(of: "v", with: "")
-            .replacingOccurrences(of: ".", with: "")
         let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
-
-        // Numeric comparison: higher number = newer build
-        guard let remote = Int(tagVersion), let local = Int(currentVersion) else {
-            // Fallback: if parsing fails, treat any different tag as newer
-            return !tag.contains(BuildVersion.commit)
-        }
+        guard let remote = releaseVersion(for: tag),
+              let local = Int64(currentVersion) else { return false }
         return remote > local
+    }
+
+    private func clearAvailableUpdate() {
+        updateAvailable = false
+        latestTag = nil
+        releaseURL = nil
+        downloadURL = nil
+    }
+
+    private func releaseVersion(for tag: String) -> Int64? {
+        let numeric = tag
+            .replacingOccurrences(of: Self.releaseTagPrefix, with: "")
+            .replacingOccurrences(of: ".", with: "")
+        return Int64(numeric)
     }
 }
