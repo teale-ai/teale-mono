@@ -443,10 +443,26 @@ mod tests {
     #[test]
     fn supplying_device_count_only_includes_healthy_active_suppliers() {
         let registry = Registry::new(ReliabilityConfig::default());
-        registry.upsert_device("node-a".to_string(), "A".to_string(), caps(vec!["teale/auto"], true));
-        registry.upsert_device("node-b".to_string(), "B".to_string(), caps(vec!["moonshotai/kimi-k2.6"], true));
-        registry.upsert_device("node-c".to_string(), "C".to_string(), caps(Vec::new(), true));
-        registry.upsert_device("node-d".to_string(), "D".to_string(), caps(vec!["nousresearch/hermes-3-llama-3.1-8b"], false));
+        registry.upsert_device(
+            "node-a".to_string(),
+            "A".to_string(),
+            caps(vec!["teale/auto"], true),
+        );
+        registry.upsert_device(
+            "node-b".to_string(),
+            "B".to_string(),
+            caps(vec!["moonshotai/kimi-k2.6"], true),
+        );
+        registry.upsert_device(
+            "node-c".to_string(),
+            "C".to_string(),
+            caps(Vec::new(), true),
+        );
+        registry.upsert_device(
+            "node-d".to_string(),
+            "D".to_string(),
+            caps(vec!["nousresearch/hermes-3-llama-3.1-8b"], false),
+        );
         registry.quarantine("node-b", 60);
 
         assert_eq!(registry.supplying_device_count(), 1);

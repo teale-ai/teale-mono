@@ -84,7 +84,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             (
                 idx,
                 loaded_device_count,
-                m.to_entry_with_live_state(state.model_metrics.snapshot(&m.id), loaded_device_count),
+                m.to_entry_with_live_state(
+                    state.model_metrics.snapshot(&m.id),
+                    loaded_device_count,
+                ),
             )
         })
         .collect();

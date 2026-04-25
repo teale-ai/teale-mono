@@ -3,12 +3,13 @@ name: Windows installer (Teale.exe)
 # Builds the partner-pilot Windows installer:
 #   - cargo builds teale-node.exe + teale-tray.exe (x86_64-pc-windows-msvc)
 #   - downloads llama-server with Vulkan backend from llama.cpp's releases
+#   - stages Supabase auth config so the shipped app exposes sign-in
 #   - stages all artifacts next to the .iss script and compiles with ISCC
 #   - uploads Teale.exe + checksums as workflow artifacts
 #   - publishes the installer to the GitHub release for tag builds
 #
 # Triggered on:
-#   - push of a tag matching `teale-v*` (canonical release path)
+#   - push of a tag matching `teale-*`
 #   - manual dispatch from the Actions tab (for testing the pipeline)
 
 on:
@@ -140,6 +141,37 @@ jobs:
           if (Test-Path $trayPath) {
             Copy-Item -Path $trayPath -Destination "node\installer\teale-tray.exe" -Force
           }
+
+      - name: Stage Supabase auth config
+        shell: pwsh
+        env:
+          TEALE_SUPABASE_URL: ${{ secrets.TEALE_SUPABASE_URL }}
+          TEALE_SUPABASE_ANON_KEY: ${{ secrets.TEALE_SUPABASE_ANON_KEY }}
+          TEALE_SUPABASE_REDIRECT_URL: ${{ secrets.TEALE_SUPABASE_REDIRECT_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_URL)) {
+            throw "Missing Actions secret TEALE_SUPABASE_URL"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_ANON_KEY)) {
+            throw "Missing Actions secret TEALE_SUPABASE_ANON_KEY"
+          }
+
+          $redirectUrl = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_REDIRECT_URL)) {
+            "teale://auth/callback"
+          } else {
+            $env:TEALE_SUPABASE_REDIRECT_URL
+          }
+
+          $config = @{
+            supabase_url = $env:TEALE_SUPABASE_URL
+            supabase_anon_key = $env:TEALE_SUPABASE_ANON_KEY
+            supabase_redirect_url = $redirectUrl
+          }
+
+          $config | ConvertTo-Json | Set-Content "node\installer\supabase-config.json" -Encoding UTF8
+
+          $supabaseHost = ([Uri]$env:TEALE_SUPABASE_URL).Host
+          Write-Host "Supabase auth config staged for host $supabaseHost"
 
       - name: Install Inno Setup
         shell: pwsh
