@@ -26,6 +26,11 @@ pub struct LlamaConfig {
     /// Path to the GGUF file on disk. Used as the `--model` arg to
     /// llama-server; NEVER advertised to the relay as a model id.
     pub model: String,
+    /// Model id to send to the local HTTP backend. Defaults to the
+    /// advertised `model_id`, but exo clusters often need a different
+    /// local slug than the canonical gateway catalog id.
+    #[serde(default)]
+    pub backend_model_id: Option<String>,
     /// Canonical model id advertised to the relay (and via it to the
     /// OpenRouter gateway). Must match an entry in
     /// `gateway/models.yaml` — e.g. `"meta-llama/llama-3.1-8b-instruct"`.
@@ -60,6 +65,14 @@ impl LlamaConfig {
             stem
         );
         stem
+    }
+
+    pub fn resolved_backend_model_id(&self) -> String {
+        self.backend_model_id
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.resolved_model_id())
     }
 }
 

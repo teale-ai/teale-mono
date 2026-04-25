@@ -313,6 +313,7 @@ fn default_llama_stub() -> config::LlamaConfig {
     config::LlamaConfig {
         binary: "llama-server".to_string(),
         model: "".to_string(),
+        backend_model_id: None,
         model_id: None,
         gpu_layers: 999,
         context_size: 4096,
@@ -338,7 +339,7 @@ async fn start_backend(
         }
 
         backend_name => {
-            let (port, model_id) = match backend_name {
+            let (port, model_id, backend_model_id) = match backend_name {
                 "mnn" => {
                     let mnn = config.mnn.as_ref().unwrap();
                     let mid = mnn.model_id.clone().unwrap_or_else(|| {
@@ -347,18 +348,22 @@ async fn start_backend(
                             .map(|f| f.to_string_lossy().to_string())
                             .unwrap_or_else(|| mnn.model_dir.clone())
                     });
-                    (mnn.port, mid)
+                    (mnn.port, mid.clone(), mid)
                 }
                 _ => {
                     let llama = config.llama.as_ref().unwrap();
                     if llama.model.trim().is_empty() {
                         return Ok((Backend::Unavailable, String::new(), None));
                     }
-                    (llama.port, llama.resolved_model_id())
+                    (
+                        llama.port,
+                        llama.resolved_model_id(),
+                        llama.resolved_backend_model_id(),
+                    )
                 }
             };
 
-            let inference = InferenceProxy::new(port, &model_id);
+            let inference = InferenceProxy::new(port, &model_id, &backend_model_id);
 
             let supervisor_opt = if args.no_backend {
                 info!(

@@ -280,7 +280,7 @@ impl SwapManager {
         });
 
         // 3. Wait for the new server to become healthy.
-        let proxy = InferenceProxy::new(new_cfg.port, &model_id);
+        let proxy = InferenceProxy::new(new_cfg.port, &model_id, &model_id);
         let elapsed_drain = total_started.elapsed();
         let health_budget = self
             .health_budget

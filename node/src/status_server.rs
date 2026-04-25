@@ -2093,6 +2093,7 @@ mod tests {
         LlamaConfig {
             binary: "llama-server".to_string(),
             model: String::new(),
+            backend_model_id: None,
             model_id: None,
             gpu_layers: 0,
             context_size: 8192,

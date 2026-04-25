@@ -20,7 +20,9 @@ url = "wss://relay.teale.com/ws"
 # Leave `binary` blank and pass `--no-backend` so teale-node doesn't try to
 # launch it (the cluster-runner is managed by launchd / systemd separately).
 binary = "/bin/true"
-model = "moonshotai/kimi-k2"  # advertised model id; matches the served model in exo
+model = "unsloth/Kimi-K2.6"    # local exo model id; not launched in --no-backend mode
+backend_model_id = "unsloth/Kimi-K2.6"
+model_id = "moonshotai/kimi-k2.6"
 port = 52415                   # exo's default OpenAI-compat port
 gpu_layers = 999
 context_size = 131072
@@ -32,7 +34,7 @@ gpu_backend = "metal"
 max_concurrent_requests = 4
 # No swappable_models — cluster is pinned to its flagship model;
 # swapping a 1TB MoE is not feasible in under 30s.
-heartbeat_interval_seconds = 10
+heartbeat_interval_seconds = 40
 shutdown_timeout_seconds = 60
 
 # Startup recipe:

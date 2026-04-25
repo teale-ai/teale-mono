@@ -32,15 +32,17 @@ fn is_mobile_environment() -> bool {
 #[derive(Clone)]
 pub struct InferenceProxy {
     base_url: String,
-    model_id: String,
+    advertised_model_id: String,
+    backend_model_id: String,
     client: reqwest::Client,
 }
 
 impl InferenceProxy {
-    pub fn new(port: u16, model_id: &str) -> Self {
+    pub fn new(port: u16, advertised_model_id: &str, backend_model_id: &str) -> Self {
         Self {
             base_url: format!("http://127.0.0.1:{}", port),
-            model_id: model_id.to_string(),
+            advertised_model_id: advertised_model_id.to_string(),
+            backend_model_id: backend_model_id.to_string(),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
@@ -49,27 +51,32 @@ impl InferenceProxy {
     }
 
     pub fn loaded_models(&self) -> Vec<String> {
-        vec![self.model_id.clone()]
+        vec![self.advertised_model_id.clone()]
     }
 
     /// Wait for backend to become healthy (up to timeout_secs).
     pub async fn wait_for_health(&self, timeout_secs: u64) -> anyhow::Result<()> {
-        let health_url = format!("{}/health", self.base_url);
+        let health_urls = [
+            format!("{}/health", self.base_url),
+            format!("{}/v1/models", self.base_url),
+            format!("{}/ollama/api/ps", self.base_url),
+        ];
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
 
         loop {
             if tokio::time::Instant::now() > deadline {
                 anyhow::bail!("backend health check timed out after {}s", timeout_secs);
             }
-            match self.client.get(&health_url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    info!("backend is healthy at {}", self.base_url);
-                    return Ok(());
-                }
-                _ => {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            for health_url in &health_urls {
+                match self.client.get(health_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        info!("backend is healthy at {} via {}", self.base_url, health_url);
+                        return Ok(());
+                    }
+                    _ => {}
                 }
             }
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
     }
 
@@ -82,6 +89,7 @@ impl InferenceProxy {
         let url = format!("{}/v1/chat/completions", self.base_url);
 
         let mut body = serde_json::to_value(request)?;
+        body["model"] = Value::String(self.backend_model_id.clone());
         body["stream"] = Value::Bool(true);
 
         let response = self
