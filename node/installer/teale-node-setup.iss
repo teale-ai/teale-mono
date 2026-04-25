@@ -19,7 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.25.1230"
+#define AppVer "2026.04.25.1237"
 
 [Setup]
 AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
@@ -103,7 +103,7 @@ Filename: "{app}\bin\teale-tray.exe"; Parameters: "--open-window"; Description: 
 
 ; Write version file.
 Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -Command ""Set-Content -Path '{app}\version.txt' -Value 'v{#AppVer}' -Encoding UTF8"""; \
+    Parameters: "-ExecutionPolicy Bypass -Command ""Set-Content -Path '{app}\version.txt' -Value 'v{#AppVer}' -Encoding ASCII"""; \
     Flags: runhidden waituntilterminated
 
 ; Register on-logon update-check scheduled task.

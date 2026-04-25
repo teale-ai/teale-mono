@@ -93,7 +93,8 @@ function Write-JsonFile {
 
     Ensure-ParentDirectory -Path $Path
     $payload = [PSCustomObject]$Value | ConvertTo-Json -Depth 8
-    Set-Content -Path $Path -Value $payload -Encoding UTF8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $payload, $utf8NoBom)
 }
 
 function Get-NormalizedVersionNumber($value) {
