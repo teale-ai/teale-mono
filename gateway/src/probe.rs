@@ -289,6 +289,7 @@ mod tests {
             description: None,
             aliases: vec!["kimi".into()],
             is_virtual: false,
+            routing_tags: vec![],
         }];
 
         let mk_device = |node_id: &str,
