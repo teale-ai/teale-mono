@@ -154,13 +154,28 @@ impl RelayHandle {
 
     #[cfg(test)]
     pub fn test_handle() -> Self {
-        let (outbox, _rx) = mpsc::unbounded_channel();
+        let (outbox, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
         Self {
             node_id: "test-node".into(),
             sessions: Arc::new(DashMap::new()),
             ready_waiters: Arc::new(Mutex::new(HashMap::new())),
             outbox,
         }
+    }
+
+    #[cfg(test)]
+    pub fn test_ready_waiter_ids(&self) -> Vec<String> {
+        self.ready_waiters.lock().keys().cloned().collect()
+    }
+
+    #[cfg(test)]
+    pub fn test_signal_ready(&self, session_id: &str) -> bool {
+        self.ready_waiters
+            .lock()
+            .remove(session_id)
+            .map(|tx| tx.send(()).is_ok())
+            .unwrap_or(false)
     }
 }
 
