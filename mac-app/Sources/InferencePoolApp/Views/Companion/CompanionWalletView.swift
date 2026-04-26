@@ -2,19 +2,21 @@ import SwiftUI
 import AppCore
 import CreditKit
 import GatewayKit
-import AppKit
 
 struct CompanionWalletView: View {
     @Environment(AppState.self) private var appState
-    @Environment(CompanionGatewayState.self) private var gatewayState
     @State private var recipient = ""
     @State private var amount = ""
     @State private var memo = ""
+    @State private var deviceCopied = false
+    @State private var gatewayBalance: GatewayWalletBalanceSnapshot?
+    @State private var gatewayTransactions: [GatewayWalletTransaction] = []
+    @State private var gatewayWalletLoaded = false
     @State private var isSending = false
     @State private var sendStatus = ""
     @State private var sendStatusIsError = false
     @State private var exportStatus = ""
-    @State private var deviceIDCopied = false
+    let refreshNonce: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -22,53 +24,74 @@ struct CompanionWalletView: View {
             sendSection
             ledgerSection
         }
-        .onAppear {
-            applyPendingRecipientIfNeeded()
+        .task(id: deviceID) {
+            await refreshGatewayWallet()
         }
-        .onChange(of: gatewayState.pendingWalletRecipient) { _, _ in
-            applyPendingRecipientIfNeeded()
+        .task(id: refreshNonce) {
+            guard refreshNonce > 0 else { return }
+            await refreshGatewayWallet()
         }
     }
 
     private var balancesSection: some View {
         TealeSection(prompt: appState.companionText("wallet.balances", fallback: "balances")) {
-            VStack(alignment: .leading, spacing: 10) {
-                TealeStats {
-                    TealeStatRow(
-                        label: appState.companionDisplayUnitTitle,
-                        value: appState.companionDisplayAmountString(amount: appState.wallet.balance),
-                        note: appState.companionText("wallet.balanceNote", fallback: "Balance goes up while supply is on.")
-                    )
-                    TealeStatRow(
-                        label: appState.companionText("wallet.usdc", fallback: "USDC"),
-                        value: appState.wallet.balance.description
-                    )
-                    TealeStatRow(
-                        label: appState.companionText("wallet.session", fallback: "Session"),
-                        value: "\(appState.totalTokensGenerated) tokens served",
-                        note: appState.companionText("wallet.sessionNote", fallback: "Availability earnings begin once a compatible model is loaded and serving.")
-                    )
-                    TealeStatRow(
-                        label: appState.companionText("wallet.lifetimeEarned", fallback: "Lifetime earned"),
-                        value: appState.companionDisplayAmountString(amount: appState.wallet.totalEarned)
-                    )
-                    TealeStatRow(
-                        label: appState.companionText("wallet.lifetimeSpent", fallback: "Lifetime spent"),
-                        value: appState.companionDisplayAmountString(amount: appState.wallet.totalSpent)
-                    )
-                    TealeStatRow(
-                        label: appState.companionText("wallet.requests", fallback: "Requests"),
-                        value: "\(appState.totalRequestsServed)"
-                    )
-                    TealeStatRow(
-                        label: appState.companionText("common.state", fallback: "State"),
-                        value: appState.companionState.displayText,
-                        valueColor: appState.companionState.chipColor
-                    )
-                }
-
+            TealeStats {
+                TealeStatRow(
+                    label: appState.companionDisplayUnitTitle,
+                    value: appState.companionDisplayAmountString(credits: displayedBalanceCredits),
+                    note: appState.companionText("wallet.balanceNote", fallback: "Balance goes up while supply is on.")
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.usdc", fallback: "USDC"),
+                    value: displayedUSDCBalance
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.session", fallback: "Session"),
+                    value: "\(appState.totalTokensGenerated) tokens served",
+                    note: appState.companionText("wallet.sessionNote", fallback: "Availability earnings begin once a compatible model is loaded and serving.")
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.lifetimeEarned", fallback: "Lifetime earned"),
+                    value: appState.companionDisplayAmountString(credits: displayedEarnedCredits)
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.lifetimeSpent", fallback: "Lifetime spent"),
+                    value: appState.companionDisplayAmountString(credits: displayedSpentCredits)
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.requests", fallback: "Requests"),
+                    value: "\(appState.totalRequestsServed)"
+                )
+                TealeStatRow(
+                    label: appState.companionText("common.state", fallback: "State"),
+                    value: appState.companionState.displayText,
+                    valueColor: appState.companionState.chipColor
+                )
                 deviceIDRow
             }
+        }
+    }
+
+    private var deviceIDRow: some View {
+        HStack(alignment: .top, spacing: 20) {
+            Text(appState.companionText("wallet.deviceWalletID", fallback: "Device wallet ID (to receive credits)").uppercased())
+                .font(TealeDesign.monoSmall)
+                .tracking(0.9)
+                .foregroundStyle(TealeDesign.muted)
+                .frame(width: 150, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Button(action: copyDeviceID) {
+                    Text(truncatedDeviceID)
+                        .font(TealeDesign.mono)
+                        .foregroundStyle(TealeDesign.teale)
+                }
+                .buttonStyle(.plain)
+
+                Text(deviceIDNote)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -77,7 +100,7 @@ struct CompanionWalletView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 12) {
                     CompanionFormField(title: appState.companionText("wallet.recipient", fallback: "Recipient")) {
-                        TextField(appState.companionText("wallet.recipientPlaceholder", fallback: "device id, phone, email, or github username"), text: $recipient)
+                        TextField(appState.companionText("wallet.recipientPlaceholder", fallback: "full device wallet id or account wallet id"), text: $recipient)
                             .textFieldStyle(.plain)
                             .font(TealeDesign.mono)
                             .foregroundStyle(TealeDesign.text)
@@ -111,7 +134,7 @@ struct CompanionWalletView: View {
                             await sendCredits()
                         }
                     }
-                    Text(appState.companionText("wallet.sendNote", fallback: "Sends from this Mac's device wallet through the Teale gateway."))
+                    Text(appState.companionText("wallet.sendNote", fallback: "Use full wallet IDs only. This device wallet can send to a 64-char device wallet ID or a full account wallet ID through the Teale gateway."))
                         .font(TealeDesign.monoSmall)
                         .foregroundStyle(TealeDesign.muted)
                 }
@@ -132,7 +155,7 @@ struct CompanionWalletView: View {
                     Spacer()
                     TealeActionButton(
                         title: appState.companionText("wallet.exportCSV", fallback: "export csv"),
-                        disabled: appState.wallet.recentTransactions.isEmpty
+                        disabled: displayedTransactions.isEmpty
                     ) {
                         exportLedgerCSV()
                     }
@@ -144,14 +167,18 @@ struct CompanionWalletView: View {
                         .foregroundStyle(TealeDesign.muted)
                 }
 
-                if appState.wallet.recentTransactions.isEmpty {
+                if displayedTransactions.isEmpty {
                     Text(appState.companionText("wallet.noTransactions", fallback: "No transactions yet. Supply a model to start earning."))
                         .font(TealeDesign.monoSmall)
                         .foregroundStyle(TealeDesign.muted)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(appState.wallet.recentTransactions.prefix(25).enumerated()), id: \.offset) { _, tx in
-                            LedgerRow(transaction: tx)
+                        ForEach(displayedTransactions) { transaction in
+                            if let gatewayTransaction = transaction.gateway {
+                                GatewayLedgerRow(transaction: gatewayTransaction)
+                            } else if let localTransaction = transaction.local {
+                                LedgerRow(transaction: localTransaction)
+                            }
                         }
                     }
                 }
@@ -170,32 +197,49 @@ struct CompanionWalletView: View {
     }
 
     private var currentCreditBalance: Int {
-        max(0, Int((appState.wallet.balance.value * 1_000_000).rounded()))
+        max(0, Int(displayedBalanceCredits))
     }
 
-    private var deviceIDRow: some View {
-        HStack(alignment: .top, spacing: 20) {
-            Text(appState.companionText("wallet.deviceID", fallback: "Device ID").uppercased())
-                .font(TealeDesign.monoSmall)
-                .tracking(0.9)
-                .foregroundStyle(TealeDesign.muted)
-                .frame(width: 150, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Button(action: copyDeviceID) {
-                    Text(companionTruncatedIdentifier(gatewayState.localDeviceID))
-                        .font(TealeDesign.mono)
-                        .foregroundStyle(TealeDesign.teale)
-                }
-                .buttonStyle(.plain)
+    private var deviceID: String {
+        GatewayIdentity.shared.deviceID
+    }
 
-                Text(deviceIDCopied
-                    ? appState.companionText("wallet.deviceIDCopied", fallback: "Device ID copied.")
-                    : appState.companionText("wallet.deviceIDNote", fallback: "Use this Teale device ID to receive credits into this device wallet."))
-                    .font(TealeDesign.monoSmall)
-                    .foregroundStyle(TealeDesign.muted)
-            }
-            Spacer(minLength: 0)
+    private var displayedBalanceCredits: Int64 {
+        gatewayBalance?.balanceCredits ?? Int64((appState.wallet.balance.value * 1_000_000).rounded())
+    }
+
+    private var displayedEarnedCredits: Int64 {
+        gatewayBalance?.totalEarnedCredits ?? Int64((appState.wallet.totalEarned.value * 1_000_000).rounded())
+    }
+
+    private var displayedSpentCredits: Int64 {
+        gatewayBalance?.totalSpentCredits ?? Int64((appState.wallet.totalSpent.value * 1_000_000).rounded())
+    }
+
+    private var displayedUSDCBalance: String {
+        String(format: "$%.6f", Double(displayedBalanceCredits) / 1_000_000.0)
+    }
+
+    private var displayedTransactions: [WalletDisplayTransaction] {
+        if gatewayWalletLoaded {
+            return gatewayTransactions.prefix(25).map { WalletDisplayTransaction(gateway: $0) }
         }
+        return appState.wallet.recentTransactions.prefix(25).map { WalletDisplayTransaction(local: $0) }
+    }
+
+    private var truncatedDeviceID: String {
+        guard deviceID.count > 16 else { return deviceID }
+        return "\(deviceID.prefix(8))...\(deviceID.suffix(8))"
+    }
+
+    private var deviceIDNote: String {
+        if deviceCopied {
+            return appState.companionText("wallet.deviceIDCopied", fallback: "Device wallet ID copied.")
+        }
+        return appState.companionText(
+            "wallet.deviceIDNote",
+            fallback: "Click to copy. Share this public device wallet ID when someone wants to send credits to this wallet."
+        )
     }
 
     @MainActor
@@ -252,10 +296,11 @@ struct CompanionWalletView: View {
             recipient = ""
             amount = ""
             memo = ""
+            await refreshGatewayWallet()
             sendStatus = "\(appState.companionText("wallet.sentPrefix", fallback: "Sent")) \(appState.companionDisplayAmountString(credits: amountCredits))."
             sendStatusIsError = false
         } catch {
-            sendStatus = error.localizedDescription
+            sendStatus = errorMessage(error)
             sendStatusIsError = true
         }
 
@@ -264,24 +309,42 @@ struct CompanionWalletView: View {
 
     private func exportLedgerCSV() {
         let formatter = ISO8601DateFormatter()
-        let rows = appState.wallet.recentTransactions.map { tx in
-            [
-                tx.id.uuidString,
-                formatter.string(from: tx.timestamp),
-                tx.type.rawValue,
-                String(tx.amount.value),
-                tx.description,
-                tx.peerNodeID ?? "",
-                tx.modelID ?? "",
-                tx.tokenCount.map(String.init) ?? "",
-            ]
-            .map(csvEscape)
-            .joined(separator: ",")
+        let rows: [String]
+        let header: String
+
+        if gatewayWalletLoaded {
+            header = "id,timestamp,type,amount_credits,note,ref_request_id"
+            rows = gatewayTransactions.map { tx in
+                [
+                    String(tx.id),
+                    formatter.string(from: tx.date),
+                    tx.type,
+                    String(tx.amount),
+                    tx.note ?? "",
+                    tx.refRequestID ?? "",
+                ]
+                .map(csvEscape)
+                .joined(separator: ",")
+            }
+        } else {
+            header = "id,timestamp,type,amount_usdc,description,peer_node_id,model_id,token_count"
+            rows = appState.wallet.recentTransactions.map { tx in
+                [
+                    tx.id.uuidString,
+                    formatter.string(from: tx.timestamp),
+                    tx.type.rawValue,
+                    String(tx.amount.value),
+                    tx.description,
+                    tx.peerNodeID ?? "",
+                    tx.modelID ?? "",
+                    tx.tokenCount.map(String.init) ?? "",
+                ]
+                .map(csvEscape)
+                .joined(separator: ",")
+            }
         }
 
-        let csv = ([
-            "id,timestamp,type,amount_usdc,description,peer_node_id,model_id,token_count",
-        ] + rows)
+        let csv = ([header] + rows)
         .joined(separator: "\n")
 
         let filename = "teale-ledger-\(timestampSlug()).csv"
@@ -300,6 +363,98 @@ struct CompanionWalletView: View {
         }
     }
 
+    private func copyDeviceID() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(deviceID, forType: .string)
+        deviceCopied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            deviceCopied = false
+        }
+    }
+
+    @MainActor
+    private func refreshGatewayWallet() async {
+        do {
+            let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+            let token = try await walletBearer(using: client)
+            var balance: GatewayWalletBalanceSnapshot
+            do {
+                balance = try await client.getJSON(
+                    path: "/v1/wallet/balance",
+                    bearerToken: token
+                )
+            } catch let GatewayAuthError.http(code, _) where code == 401 {
+                appState.gatewayAPIKey = ""
+                let refreshedToken = try await client.bearer()
+                appState.gatewayAPIKey = refreshedToken
+                balance = try await client.getJSON(
+                    path: "/v1/wallet/balance",
+                    bearerToken: refreshedToken
+                )
+            }
+            gatewayBalance = balance
+            gatewayWalletLoaded = true
+
+            do {
+                gatewayTransactions = try await gatewayWalletTransactions(
+                    using: client,
+                    bearerToken: appState.gatewayAPIKey.isEmpty ? token : appState.gatewayAPIKey
+                )
+            } catch {
+                gatewayTransactions = []
+            }
+        } catch {
+            if !gatewayWalletLoaded {
+                gatewayWalletLoaded = false
+            }
+        }
+    }
+
+    private func walletBearer(using client: GatewayAuthClient) async throws -> String {
+        if !appState.gatewayAPIKey.isEmpty {
+            return appState.gatewayAPIKey
+        }
+        let token = try await client.bearer()
+        appState.gatewayAPIKey = token
+        return token
+    }
+
+    private func errorMessage(_ error: Error) -> String {
+        if let gatewayError = error as? GatewayAuthError {
+            return gatewayError.description
+        }
+        return error.localizedDescription
+    }
+
+    private func gatewayWalletTransactions(
+        using client: GatewayAuthClient,
+        bearerToken: String
+    ) async throws -> [GatewayWalletTransaction] {
+        var components = URLComponents(url: client.base.appendingPathComponent("/v1/wallet/transactions"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "limit", value: "50"),
+            URLQueryItem(name: "include_availability", value: "true"),
+        ]
+        guard let url = components?.url else {
+            throw GatewayAuthError.network("invalid wallet transactions url")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await client.urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayAuthError.network("non-http response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+
+        return try JSONDecoder().decode(GatewayWalletTransactionsResponse.self, from: data).transactions
+    }
+
     private func preferredExportDirectory() -> URL {
         FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -314,23 +469,6 @@ struct CompanionWalletView: View {
     private func csvEscape(_ value: String) -> String {
         "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
-
-    private func copyDeviceID() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(gatewayState.localDeviceID, forType: .string)
-        deviceIDCopied = true
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            deviceIDCopied = false
-        }
-    }
-
-    private func applyPendingRecipientIfNeeded() {
-        guard let pendingRecipient = gatewayState.consumePendingWalletRecipient() else { return }
-        recipient = pendingRecipient
-        sendStatus = ""
-        sendStatusIsError = false
-    }
 }
 
 private struct GatewayWalletSendRequest: Encodable {
@@ -343,6 +481,66 @@ private struct GatewayWalletSendRequest: Encodable {
 private struct GatewayTransferReceipt: Decodable {
     let asset: String
     let amount: Int64
+}
+
+private struct GatewayWalletBalanceSnapshot: Decodable {
+    let deviceID: String
+    let balanceCredits: Int64
+    let totalEarnedCredits: Int64
+    let totalSpentCredits: Int64
+    let usdcCents: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case deviceID
+        case balanceCredits = "balance_credits"
+        case totalEarnedCredits = "total_earned_credits"
+        case totalSpentCredits = "total_spent_credits"
+        case usdcCents = "usdc_cents"
+    }
+}
+
+private struct GatewayWalletTransactionsResponse: Decodable {
+    let transactions: [GatewayWalletTransaction]
+}
+
+private struct GatewayWalletTransaction: Decodable, Identifiable {
+    let id: Int64
+    let deviceID: String
+    let type: String
+    let amount: Int64
+    let timestamp: Int64
+    let refRequestID: String?
+    let note: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case deviceID = "device_id"
+        case type
+        case amount
+        case timestamp
+        case refRequestID
+        case note
+    }
+
+    var date: Date {
+        Date(timeIntervalSince1970: TimeInterval(timestamp))
+    }
+}
+
+private struct WalletDisplayTransaction: Identifiable {
+    let id = UUID()
+    let local: USDCTransaction?
+    let gateway: GatewayWalletTransaction?
+
+    init(local: USDCTransaction) {
+        self.local = local
+        self.gateway = nil
+    }
+
+    init(gateway: GatewayWalletTransaction) {
+        self.local = nil
+        self.gateway = gateway
+    }
 }
 
 private struct CompanionFormField<Content: View>: View {
@@ -403,5 +601,43 @@ private struct LedgerRow: View {
         case .adjustment, .transfer: return transaction.amount.value >= 0
         case .spent, .platformFee: return false
         }
+    }
+}
+
+private struct GatewayLedgerRow: View {
+    @Environment(AppState.self) private var appState
+    let transaction: GatewayWalletTransaction
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(descriptionText)
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+                    .lineLimit(2)
+                Text(transaction.date.formatted(date: .abbreviated, time: .shortened))
+                    .font(TealeDesign.monoTiny)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 8)
+            Text(signedAmountText)
+                .font(TealeDesign.mono)
+                .foregroundStyle(transaction.amount >= 0 ? TealeDesign.teale : TealeDesign.text)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(Rectangle().stroke(TealeDesign.border.opacity(0.6), lineWidth: 1))
+    }
+
+    private var descriptionText: String {
+        if let note = transaction.note, !note.isEmpty {
+            return note
+        }
+        return transaction.type.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private var signedAmountText: String {
+        let amount = appState.companionDisplayAmountString(credits: abs(transaction.amount))
+        return transaction.amount >= 0 ? "+\(amount)" : "-\(amount)"
     }
 }

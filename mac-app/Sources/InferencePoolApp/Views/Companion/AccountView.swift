@@ -1,23 +1,33 @@
 import SwiftUI
+import AppKit
 import AppCore
 import AuthKit
-import AppKit
 import SharedTypes
 
 struct CompanionAccountView: View {
     @Environment(AppState.self) private var appState
-    @Environment(CompanionGatewayState.self) private var gatewayState
-    @Environment(\.openURL) private var openURL
     @State private var authNotice: String?
-
-    let onSendDevice: (String) -> Void
+    @State private var accountState = CompanionAccountState()
+    @State private var recipient = ""
+    @State private var amount = ""
+    @State private var memo = ""
+    let refreshNonce: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             accountSection
-            updateSection
+            accountWalletSection
+            sendSection
             detailsSection
             devicesSection
+            ledgerSection
+        }
+        .task(id: accountRefreshKey) {
+            await accountState.refresh(appState: appState, authManager: authManager)
+        }
+        .task(id: refreshNonce) {
+            guard refreshNonce > 0 else { return }
+            await accountState.refresh(appState: appState, authManager: authManager)
         }
     }
 
@@ -26,7 +36,50 @@ struct CompanionAccountView: View {
     private var isSignedIn: Bool { authState.isAuthenticated }
     private var authIsConfigured: Bool { authManager != nil }
 
-    // MARK: account
+    private var accountRefreshKey: String {
+        if let user = authManager?.currentUser, isSignedIn {
+            return user.id.uuidString
+        }
+        return "signed-out"
+    }
+
+    private var currentAccountBalance: Int {
+        max(0, Int(accountState.snapshot?.balanceCredits ?? 0))
+    }
+
+    private var parsedAmountCredits: Int? {
+        appState.companionParseDisplayAmountToCredits(amount)
+    }
+
+    private var canSend: Bool {
+        !accountState.isSending &&
+        !recipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        parsedAmountCredits != nil &&
+        parsedAmountCredits ?? 0 <= currentAccountBalance &&
+        accountState.snapshot != nil
+    }
+
+    private var accountStatus: String {
+        if isSignedIn {
+            return appState.companionText("account.signedIn", fallback: "Signed in")
+        }
+        return authIsConfigured
+            ? appState.companionText("account.notSignedIn", fallback: "Not signed in")
+            : appState.companionText("account.authUnavailable", fallback: "Auth unavailable")
+    }
+
+    private var statusNote: String {
+        if let authNotice, !authNotice.isEmpty {
+            return authNotice
+        }
+        if let user = authManager?.currentUser {
+            return user.email ?? user.phone ?? user.id.uuidString
+        }
+        if authIsConfigured {
+            return appState.companionText("account.notSignedIn", fallback: "Not signed in")
+        }
+        return appState.companionText("account.authUnavailableDetail", fallback: "Sign-in is unavailable in this build.")
+    }
 
     private var accountSection: some View {
         TealeSection(prompt: appState.companionText("account.account", fallback: "account")) {
@@ -37,6 +90,7 @@ struct CompanionAccountView: View {
                     note: statusNote
                 )
             }
+
             if authIsConfigured {
                 if !isSignedIn {
                     HStack(spacing: 10) {
@@ -46,7 +100,7 @@ struct CompanionAccountView: View {
                     }
                     .padding(.top, 6)
                 } else {
-                    HStack {
+                    HStack(spacing: 10) {
                         TealeActionButton(title: appState.companionText("account.signOut", fallback: "Sign out")) {
                             Task {
                                 await authManager?.signOut()
@@ -56,55 +110,128 @@ struct CompanionAccountView: View {
                     .padding(.top, 6)
                 }
             }
-            Text(appState.companionText("account.linkNote", fallback: "Sign in to link this machine to a person. Device wallet earnings continue working without human sign-in."))
-                .font(TealeDesign.monoSmall)
-                .foregroundStyle(TealeDesign.muted)
-                .padding(.top, 8)
-            if let authNotice, !authNotice.isEmpty {
-                Text(authNotice)
+
+            Text(appState.companionText(
+                "account.linkNote",
+                fallback: "Sign in to link this machine to a person. Device wallet earnings continue working without human sign-in."
+            ))
+            .font(TealeDesign.monoSmall)
+            .foregroundStyle(TealeDesign.muted)
+            .padding(.top, 8)
+
+            if let syncNotice = accountState.syncNotice, !syncNotice.isEmpty {
+                Text(syncNotice)
                     .font(TealeDesign.monoSmall)
-                    .foregroundStyle(TealeDesign.warn)
+                    .foregroundStyle(accountState.syncNoticeIsError ? TealeDesign.fail : TealeDesign.muted)
                     .padding(.top, 6)
             }
         }
     }
 
-    private var userNote: String {
-        if let user = authManager?.currentUser {
-            return user.email ?? user.phone ?? user.id.uuidString
+    private var accountWalletSection: some View {
+        TealeSection(prompt: appState.companionText("account.wallet", fallback: "account wallet")) {
+            if !isSignedIn {
+                signedOutMessage
+            } else if accountState.loading && accountState.snapshot == nil {
+                loadingMessage
+            } else if let snapshot = accountState.snapshot {
+                TealeStats {
+                    TealeStatRow(
+                        label: appState.companionText("account.walletBalance", fallback: "Account balance"),
+                        value: appState.companionDisplayAmountString(credits: snapshot.balanceCredits),
+                        note: appState.companionText(
+                            "account.walletBalanceNote",
+                            fallback: "Sweeps from linked device wallets land here first."
+                        )
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("account.walletUSDC", fallback: "USDC"),
+                        value: accountUSDCLabel(snapshot.usdcCents)
+                    )
+                }
+                .padding(.bottom, 10)
+
+                CopyableIdentifierRow(
+                    label: appState.companionText("account.accountWalletID", fallback: "Account wallet ID"),
+                    value: snapshot.accountUserID,
+                    copiedLabel: appState.companionText("account.accountWalletCopied", fallback: "Account wallet ID copied."),
+                    note: appState.companionText(
+                        "account.accountWalletIDNote",
+                        fallback: "Click to copy. Share this full account wallet ID when someone should send credits into the account wallet."
+                    )
+                )
+            } else {
+                unavailableWalletMessage
+            }
         }
-        return appState.companionText("account.notSignedIn", fallback: "Not signed in")
     }
 
-    private var accountStatus: String {
-        if isSignedIn { return appState.companionText("account.signedIn", fallback: "Signed in") }
-        return authIsConfigured
-            ? appState.companionText("account.notSignedIn", fallback: "Not signed in")
-            : appState.companionText("account.authUnavailable", fallback: "Auth unavailable")
-    }
+    private var sendSection: some View {
+        TealeSection(prompt: appState.companionText("account.send", fallback: "send from account wallet")) {
+            if !isSignedIn {
+                signedOutMessage
+            } else if accountState.snapshot == nil {
+                unavailableWalletMessage
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 12) {
+                        AccountFormField(title: appState.companionText("wallet.recipient", fallback: "Recipient")) {
+                            TextField(
+                                appState.companionText(
+                                    "account.recipientPlaceholder",
+                                    fallback: "full device wallet id or account wallet id"
+                                ),
+                                text: $recipient
+                            )
+                            .textFieldStyle(.plain)
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.text)
+                        }
 
-    private var statusNote: String {
-        if let authNotice, !authNotice.isEmpty {
-            return authNotice
+                        AccountFormField(title: appState.companionText("wallet.amount", fallback: "Amount")) {
+                            TextField(appState.companionDisplayAmountPlaceholder, text: $amount)
+                                .textFieldStyle(.plain)
+                                .font(TealeDesign.mono)
+                                .foregroundStyle(TealeDesign.text)
+                        }
+                        .frame(width: 180)
+                    }
+
+                    AccountFormField(title: appState.companionText("wallet.memo", fallback: "Memo")) {
+                        TextField(appState.companionText("wallet.memoPlaceholder", fallback: "optional note"), text: $memo)
+                            .textFieldStyle(.plain)
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.text)
+                    }
+
+                    HStack(spacing: 10) {
+                        TealeActionButton(
+                            title: accountState.isSending
+                                ? appState.companionText("wallet.sending", fallback: "sending...")
+                                : appState.companionText("wallet.sendAction", fallback: "send"),
+                            primary: true,
+                            disabled: !canSend
+                        ) {
+                            Task { await sendFromAccountWallet() }
+                        }
+
+                        Text(appState.companionText(
+                            "account.sendNote",
+                            fallback: "Use full wallet IDs only. This account wallet can send to a full account wallet ID or a 64-char device wallet ID."
+                        ))
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(TealeDesign.muted)
+                    }
+
+                    if !accountState.sendStatus.isEmpty {
+                        Text(accountState.sendStatus)
+                            .font(TealeDesign.monoSmall)
+                            .foregroundStyle(accountState.sendStatusIsError ? TealeDesign.fail : TealeDesign.muted)
+                    }
+                }
+            }
         }
-        if authIsConfigured {
-            return userNote
-        }
-        return appState.companionText("account.authUnavailableDetail", fallback: "Sign-in is unavailable in this build.")
     }
-
-    private func openSignIn() {
-        guard let authManager else {
-            authNotice = appState.companionText("account.authUnavailableDetail", fallback: "Sign-in is unavailable in this build.")
-            return
-        }
-
-        authNotice = nil
-        appState.showSignIn = true
-        LoginWindowController.shared.show(authManager: authManager, appState: appState)
-    }
-
-    // MARK: details
 
     private var detailsSection: some View {
         TealeSection(prompt: appState.companionText("account.details", fallback: "details")) {
@@ -118,191 +245,264 @@ struct CompanionAccountView: View {
         }
     }
 
-    // MARK: updates
-
-    private var updateSection: some View {
-        TealeSection(prompt: appState.companionText("account.updates", fallback: "updates")) {
-            TealeStats {
-                TealeStatRow(
-                    label: appState.companionText("account.currentVersion", fallback: "Current version"),
-                    value: checker.currentVersionLabel
-                )
-                TealeStatRow(
-                    label: appState.companionText("account.updateStatus", fallback: "Update status"),
-                    value: checker.statusSummary,
-                    note: appState.companionText(
-                        "account.updateSchedule",
-                        fallback: "Teale checks GitHub releases every 4 hours while the mac app is running."
-                    )
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                TealeToggleRow(
-                    title: appState.companionText(
-                        "account.autoDownloadUpdates",
-                        fallback: "download updates automatically"
-                    ),
-                    detail: appState.companionText(
-                        "account.autoDownloadUpdatesDetail",
-                        fallback: "New macOS builds download in the background as soon as Teale sees them."
-                    ),
-                    isOn: Binding(
-                        get: { checker.autoDownloadEnabled },
-                        set: { checker.autoDownloadEnabled = $0 }
-                    )
-                )
-
-                TealeToggleRow(
-                    title: appState.companionText(
-                        "account.autoInstallUpdates",
-                        fallback: "install after download"
-                    ),
-                    detail: appState.companionText(
-                        "account.autoInstallUpdatesDetail",
-                        fallback: "After download finishes, replace Teale.app and relaunch automatically."
-                    ),
-                    isOn: Binding(
-                        get: { checker.autoInstallEnabled },
-                        set: { checker.autoInstallEnabled = $0 }
-                    )
-                )
-            }
-            .padding(.top, 10)
-
-            HStack(spacing: 10) {
-                TealeActionButton(
-                    title: checker.checking ? "checking..." : appState.companionText("account.checkUpdates", fallback: "check now"),
-                    primary: true,
-                    disabled: checker.checking || checker.installing
-                ) {
-                    Task {
-                        await checker.check()
-                    }
-                }
-
-                if checker.updateAvailable || checker.downloadedUpdateReady {
-                    TealeActionButton(
-                        title: installButtonTitle,
-                        disabled: checker.installing || checker.downloading
-                    ) {
-                        Task {
-                            _ = await checker.installUpdate()
-                        }
-                    }
-                }
-
-                if let releaseURL = checker.releaseURL {
-                    TealeActionButton(title: appState.companionText("account.viewRelease", fallback: "view release")) {
-                        openURL(releaseURL)
-                    }
-                }
-            }
-            .padding(.top, 10)
-        }
-    }
-
-    // MARK: devices
-
     private var devicesSection: some View {
         TealeSection(prompt: appState.companionText("account.devices", fallback: "devices")) {
             if !isSignedIn {
-                Text(appState.companionText("account.viewDevicesSignedOut", fallback: "Sign in to view devices on this account."))
-                    .font(TealeDesign.monoSmall)
-                    .foregroundStyle(TealeDesign.muted)
-            } else if gatewayState.isLoadingAccountDevices && gatewayState.accountSummary == nil && gatewayState.lastAccountRefreshError == nil {
-                Text(appState.companionText("account.gatewayDevicesLoading", fallback: "Loading Teale device wallets for this account..."))
-                    .font(TealeDesign.monoSmall)
-                    .foregroundStyle(TealeDesign.muted)
-            } else if let error = gatewayState.lastAccountRefreshError, gatewayState.accountSummary == nil {
-                Text("\(appState.companionText("account.gatewayDevicesUnavailable", fallback: "Could not load Teale device wallets for this account.")) \(error)")
-                    .font(TealeDesign.monoSmall)
-                    .foregroundStyle(TealeDesign.warn)
-            } else if let devices = gatewayState.accountSummary?.devices, !devices.isEmpty {
+                signedOutMessage
+            } else if accountState.loading && accountState.snapshot == nil {
+                loadingMessage
+            } else if let devices = accountState.snapshot?.devices, !devices.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let error = gatewayState.lastAccountRefreshError, !error.isEmpty {
-                        Text("\(appState.companionText("account.gatewayDevicesUnavailable", fallback: "Could not load Teale device wallets for this account.")) \(error)")
-                            .font(TealeDesign.monoSmall)
-                            .foregroundStyle(TealeDesign.warn)
+                    ForEach(devices) { device in
+                        AccountWalletDeviceRow(
+                            device: device,
+                            balanceText: appState.companionDisplayAmountString(credits: device.walletBalanceCredits),
+                            isSweeping: accountState.sweepingDeviceID == device.deviceID,
+                            onSweep: {
+                                Task {
+                                    await accountState.sweep(
+                                        deviceID: device.deviceID,
+                                        appState: appState,
+                                        authManager: authManager
+                                    )
+                                }
+                            }
+                        )
                     }
-                    ForEach(devices, id: \.id) { device in
-                        GatewayDeviceRow(device: device, onSendDevice: onSendDevice)
+                }
+
+                if !accountState.sweepStatus.isEmpty {
+                    Text(accountState.sweepStatus)
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(accountState.sweepStatusIsError ? TealeDesign.fail : TealeDesign.muted)
+                        .padding(.top, 10)
+                }
+            } else {
+                Text(appState.companionText("account.noDevices", fallback: "No linked devices found yet."))
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+        }
+    }
+
+    private var ledgerSection: some View {
+        TealeSection(prompt: appState.companionText("account.ledger", fallback: "account ledger")) {
+            if !isSignedIn {
+                signedOutMessage
+            } else if accountState.loading && accountState.snapshot == nil {
+                loadingMessage
+            } else if let transactions = accountState.snapshot?.transactions, !transactions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(transactions.prefix(25))) { transaction in
+                        AccountLedgerRow(transaction: transaction)
                     }
                 }
             } else {
-                Text(appState.companionText("account.noGatewayDevices", fallback: "No Teale device wallets are linked to this account yet."))
-                    .font(TealeDesign.monoSmall)
-                    .foregroundStyle(TealeDesign.muted)
+                Text(appState.companionText(
+                    "account.noTransactions",
+                    fallback: "No account-wallet transfers or sweeps have landed yet."
+                ))
+                .font(TealeDesign.monoSmall)
+                .foregroundStyle(TealeDesign.muted)
             }
         }
     }
 
-    private var checker: UpdateChecker { appState.updateChecker }
+    private var signedOutMessage: some View {
+        Text(appState.companionText("account.signInForWallet", fallback: "Sign in to load the account wallet."))
+            .font(TealeDesign.monoSmall)
+            .foregroundStyle(TealeDesign.muted)
+    }
 
-    private var installButtonTitle: String {
-        if checker.installing {
-            return appState.companionText("account.installingUpdate", fallback: "installing...")
+    private var loadingMessage: some View {
+        Text(appState.companionText(
+            "account.loadingWallet",
+            fallback: "Syncing the gateway account wallet for this signed-in device."
+        ))
+        .font(TealeDesign.monoSmall)
+        .foregroundStyle(TealeDesign.muted)
+    }
+
+    private var unavailableWalletMessage: some View {
+        Text(
+            accountState.syncNotice
+                ?? appState.companionText(
+                    "account.unavailableWallet",
+                    fallback: "The gateway account wallet is not available yet for this device."
+                )
+        )
+        .font(TealeDesign.monoSmall)
+        .foregroundStyle(accountState.syncNoticeIsError ? TealeDesign.fail : TealeDesign.muted)
+    }
+
+    private func openSignIn() {
+        guard let authManager else {
+            authNotice = appState.companionText("account.authUnavailableDetail", fallback: "Sign-in is unavailable in this build.")
+            return
         }
-        if checker.downloading {
-            return appState.companionText("account.downloadingUpdate", fallback: "downloading...")
+
+        authNotice = nil
+        appState.showSignIn = true
+        LoginWindowController.shared.show(authManager: authManager, appState: appState)
+    }
+
+    @MainActor
+    private func sendFromAccountWallet() async {
+        guard let amountCredits = parsedAmountCredits else {
+            accountState.sendStatus = appState.companionDisplayUnit == .credits
+                ? appState.companionText("wallet.enterCredits", fallback: "Enter a whole-number credit amount.")
+                : appState.companionText("wallet.enterUSD", fallback: "Enter a USD amount greater than 0.")
+            accountState.sendStatusIsError = true
+            return
         }
-        if checker.downloadedUpdateReady {
-            return appState.companionText("account.installDownloadedUpdate", fallback: "install downloaded update")
+
+        let trimmedRecipient = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRecipient.isEmpty else {
+            accountState.sendStatus = appState.companionText("wallet.enterRecipient", fallback: "Enter a recipient first.")
+            accountState.sendStatusIsError = true
+            return
         }
-        return appState.companionText("account.installUpdate", fallback: "download + install")
+
+        guard amountCredits <= currentAccountBalance else {
+            accountState.sendStatus = appState.companionText(
+                "account.exceedsBalance",
+                fallback: "That exceeds this account wallet balance."
+            )
+            accountState.sendStatusIsError = true
+            return
+        }
+
+        await accountState.send(
+            recipient: trimmedRecipient,
+            amountCredits: amountCredits,
+            memo: memo,
+            appState: appState,
+            authManager: authManager
+        )
+
+        if !accountState.sendStatusIsError {
+            recipient = ""
+            amount = ""
+            memo = ""
+        }
+    }
+
+    private func accountUSDCLabel(_ usdcCents: Int64) -> String {
+        String(format: "$%.2f", Double(usdcCents) / 100.0)
     }
 }
 
-private struct GatewayDeviceRow: View {
-    @Environment(AppState.self) private var appState
-    @Environment(CompanionGatewayState.self) private var gatewayState
-
-    let device: CompanionGatewayAccountDevice
-    let onSendDevice: (String) -> Void
-
+private struct CopyableIdentifierRow: View {
+    let label: String
+    let value: String
+    let copiedLabel: String
+    let note: String
     @State private var copied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(device.deviceName ?? companionTruncatedIdentifier(device.deviceID))
+        HStack(alignment: .top, spacing: 20) {
+            Text(label.uppercased())
+                .font(TealeDesign.monoSmall)
+                .tracking(0.9)
+                .foregroundStyle(TealeDesign.muted)
+                .frame(width: 150, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Button(action: copyValue) {
+                    Text(truncatedValue)
                         .font(TealeDesign.mono)
-                        .foregroundStyle(TealeDesign.text)
-                    Text(platformLine)
-                        .font(TealeDesign.monoTiny)
-                        .foregroundStyle(TealeDesign.muted)
+                        .foregroundStyle(TealeDesign.teale)
                 }
-                Spacer(minLength: 8)
-                Text(appState.companionDisplayAmountString(credits: device.walletBalanceCredits, compact: true))
-                    .font(TealeDesign.mono)
-                    .foregroundStyle(TealeDesign.teale)
+                .buttonStyle(.plain)
+
+                Text(copied ? copiedLabel : note)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
             }
+            Spacer(minLength: 0)
+        }
+    }
 
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(appState.companionText("account.gatewayDeviceID", fallback: "Teale device ID").uppercased())
-                        .font(TealeDesign.monoSmall)
-                        .tracking(0.9)
-                        .foregroundStyle(TealeDesign.muted)
-                    Button(action: copyDeviceID) {
-                        Text(companionTruncatedIdentifier(device.deviceID))
-                            .font(TealeDesign.mono)
-                            .foregroundStyle(TealeDesign.teale)
-                    }
-                    .buttonStyle(.plain)
+    private var truncatedValue: String {
+        guard value.count > 16 else { return value }
+        return "\(value.prefix(8))...\(value.suffix(8))"
+    }
 
-                    Text(copied
-                        ? appState.companionText("account.gatewayDeviceCopied", fallback: "Device ID copied.")
-                        : appState.companionText("account.gatewayDeviceNote", fallback: "Use this ID as the wallet recipient for bearer-token devices on your account."))
+    private func copyValue() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
+        }
+    }
+}
+
+private struct AccountFormField<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(TealeDesign.monoSmall)
+                .tracking(0.9)
+                .foregroundStyle(TealeDesign.muted)
+            content()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(TealeDesign.cardStrong.opacity(0.85))
+                .overlay(
+                    Rectangle().stroke(TealeDesign.border.opacity(0.9), lineWidth: 1)
+                )
+        }
+    }
+}
+
+private struct AccountWalletDeviceRow: View {
+    @Environment(AppState.self) private var appState
+    let device: CompanionAccountDeviceSnapshot
+    let balanceText: String
+    let isSweeping: Bool
+    let onSweep: () -> Void
+    @State private var copied = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(deviceLabel)
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+                Text(detailLine)
+                    .font(TealeDesign.monoTiny)
+                    .foregroundStyle(TealeDesign.muted)
+                Button(action: copyDeviceID) {
+                    Text(truncatedDeviceID)
                         .font(TealeDesign.monoSmall)
-                        .foregroundStyle(TealeDesign.muted)
+                        .foregroundStyle(TealeDesign.teale)
                 }
-
-                Spacer(minLength: 12)
-
-                TealeActionButton(title: appState.companionText("account.sendToDevice", fallback: "send credits")) {
-                    onSendDevice(device.deviceID)
+                .buttonStyle(.plain)
+                Text(
+                    copied
+                        ? appState.companionText("wallet.deviceIDCopied", fallback: "Device wallet ID copied.")
+                        : appState.companionText("account.deviceWalletIDNote", fallback: "Click to copy the full linked device wallet ID.")
+                )
+                .font(TealeDesign.monoTiny)
+                .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 8) {
+                Text(balanceText)
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+                TealeActionButton(
+                    title: isSweeping
+                        ? appState.companionText("account.sweeping", fallback: "sweeping...")
+                        : appState.companionText("account.sweep", fallback: "sweep"),
+                    disabled: isSweeping
+                ) {
+                    onSweep()
                 }
             }
         }
@@ -311,17 +511,18 @@ private struct GatewayDeviceRow: View {
         .overlay(Rectangle().stroke(TealeDesign.border.opacity(0.6), lineWidth: 1))
     }
 
-    private var platformLine: String {
-        let platform = device.platform ?? "device"
-        let relativeText = RelativeDateTimeFormatter().localizedString(for: lastSeenDate, relativeTo: Date())
-        if device.deviceID == gatewayState.localDeviceID {
-            return "\(platform) · \(appState.companionText("account.thisDevice", fallback: "This device")) · \(relativeText)"
-        }
-        return "\(platform) · \(relativeText)"
+    private var deviceLabel: String {
+        device.deviceName ?? device.deviceID
     }
 
-    private var lastSeenDate: Date {
-        Date(timeIntervalSince1970: TimeInterval(device.lastSeen))
+    private var detailLine: String {
+        let platformLabel = (device.platform?.isEmpty == false ? device.platform! : "device").uppercased()
+        return "\(platformLabel) · last seen \(Date(timeIntervalSince1970: TimeInterval(device.lastSeen)).formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    private var truncatedDeviceID: String {
+        guard device.deviceID.count > 16 else { return device.deviceID }
+        return "\(device.deviceID.prefix(8))...\(device.deviceID.suffix(8))"
     }
 
     private func copyDeviceID() {
@@ -332,5 +533,52 @@ private struct GatewayDeviceRow: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             copied = false
         }
+    }
+}
+
+private struct AccountLedgerRow: View {
+    @Environment(AppState.self) private var appState
+    let transaction: CompanionAccountLedgerEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(descriptionText)
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+                    .lineLimit(2)
+                Text(detailLine)
+                    .font(TealeDesign.monoTiny)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 8)
+            Text(signedAmountText)
+                .font(TealeDesign.mono)
+                .foregroundStyle(transaction.amount >= 0 ? TealeDesign.teale : TealeDesign.text)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(Rectangle().stroke(TealeDesign.border.opacity(0.6), lineWidth: 1))
+    }
+
+    private var descriptionText: String {
+        if let note = transaction.note, !note.isEmpty {
+            return note
+        }
+        return transaction.entryType.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private var detailLine: String {
+        var parts = [transaction.asset.uppercased()]
+        if let deviceID = transaction.deviceID, !deviceID.isEmpty {
+            parts.append(deviceID.prefix(8).description)
+        }
+        parts.append(Date(timeIntervalSince1970: TimeInterval(transaction.timestamp)).formatted(date: .abbreviated, time: .shortened))
+        return parts.joined(separator: " · ")
+    }
+
+    private var signedAmountText: String {
+        let amount = appState.companionDisplayAmountString(credits: abs(transaction.amount))
+        return transaction.amount >= 0 ? "+\(amount)" : "-\(amount)"
     }
 }
