@@ -400,6 +400,7 @@ private struct CreateGroupSheet: View {
 private struct WalletSheet: View {
     @Bindable var state: TealeNetState
     @Binding var isPresented: Bool
+    @State private var copiedDeviceID = false
 
     var body: some View {
         NavigationStack {
@@ -418,6 +419,22 @@ private struct WalletSheet: View {
                     }
                     .buttonStyle(.plain)
 
+                    HStack {
+                        Text("Device ID").foregroundStyle(.secondary)
+                        Spacer()
+                        Button(action: copyDeviceID) {
+                            Text(shortDeviceID(state.deviceID))
+                                .font(.body.monospaced())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Text(
+                        copiedDeviceID
+                            ? "Device ID copied."
+                            : "Share this public device ID when someone wants to send credits to this wallet."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     HStack {
                         Text("Balance").foregroundStyle(.secondary)
                         Spacer()
@@ -464,6 +481,15 @@ private struct WalletSheet: View {
             .refreshable { await state.refreshWallet() }
         }
     }
+
+    private func copyDeviceID() {
+        UIPasteboard.general.string = state.deviceID
+        copiedDeviceID = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copiedDeviceID = false
+        }
+    }
 }
 
 private struct TxRow: View {
@@ -483,6 +509,11 @@ private struct TxRow: View {
                 .foregroundStyle(tx.amount >= 0 ? Color.positive : Color.negative)
         }
     }
+}
+
+private func shortDeviceID(_ deviceID: String) -> String {
+    guard deviceID.count > 16 else { return deviceID }
+    return "\(deviceID.prefix(8))...\(deviceID.suffix(8))"
 }
 
 // MARK: - Group chat view

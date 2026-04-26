@@ -1238,6 +1238,11 @@ impl StatusState {
         Ok(())
     }
 
+    async fn force_refresh_gateway_wallet(&self) -> anyhow::Result<AppSnapshot> {
+        self.refresh_gateway_wallet_snapshot().await?;
+        Ok(self.snapshot().await)
+    }
+
     async fn send_device_wallet(&self, payload: WalletSendRequest) -> anyhow::Result<AppSnapshot> {
         let token = self.gateway_device_token().await?;
         let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
@@ -2208,6 +2213,16 @@ async fn route(
             let body = serde_json::to_string(
                 &state
                     .send_device_wallet(payload)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/wallet/refresh") => {
+            let body = serde_json::to_string(
+                &state
+                    .force_refresh_gateway_wallet()
                     .await
                     .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
             )
