@@ -318,12 +318,35 @@ public struct RemoteWalletSnapshot: Codable, Sendable {
     public var balance: Double
     public var totalEarned: Double
     public var totalSpent: Double
+    public var wanNodeID: String?
+    public var relayConnected: Bool?
+    public var localServingReady: Bool?
+    public var identityMismatch: Bool?
+    public var earningEligible: Bool?
+    public var error: String?
 
-    public init(deviceID: String, balance: Double, totalEarned: Double, totalSpent: Double) {
+    public init(
+        deviceID: String,
+        balance: Double,
+        totalEarned: Double,
+        totalSpent: Double,
+        wanNodeID: String? = nil,
+        relayConnected: Bool? = nil,
+        localServingReady: Bool? = nil,
+        identityMismatch: Bool? = nil,
+        earningEligible: Bool? = nil,
+        error: String? = nil
+    ) {
         self.deviceID = deviceID
         self.balance = balance
         self.totalEarned = totalEarned
         self.totalSpent = totalSpent
+        self.wanNodeID = wanNodeID
+        self.relayConnected = relayConnected
+        self.localServingReady = localServingReady
+        self.identityMismatch = identityMismatch
+        self.earningEligible = earningEligible
+        self.error = error
     }
 }
 

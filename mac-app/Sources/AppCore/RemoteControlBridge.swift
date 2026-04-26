@@ -90,8 +90,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         )
     }
 
-    private func gatewayBaseURL() -> URL {
-        let fallback = URL(string: "https://gateway.teale.com/v1")!
+    private func gatewayRootURL() -> URL {
+        let fallback = URL(string: "https://gateway.teale.com")!
         guard var components = URLComponents(string: appState.gatewayFallbackURL) else {
             return fallback
         }
@@ -106,10 +106,14 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             components.host = host.replacingOccurrences(of: "relay.", with: "gateway.", options: .anchored)
         }
 
-        components.path = "/v1"
+        components.path = ""
         components.query = nil
         components.fragment = nil
         return components.url ?? fallback
+    }
+
+    private func gatewayBaseURL() -> URL {
+        gatewayRootURL().appendingPathComponent("v1")
     }
 
     func remoteLoadModel(_ request: RemoteModelControlRequest) async throws -> RemoteAppSnapshot {
@@ -416,26 +420,54 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     // MARK: - Wallet
 
     func remoteWalletBalance() async -> RemoteWalletSnapshot {
-        await appState.wallet.refreshBalance()
-        return RemoteWalletSnapshot(
-            deviceID: GatewayIdentity.shared.deviceID,
-            balance: appState.wallet.balance.value,
-            totalEarned: appState.wallet.totalEarned.value,
-            totalSpent: appState.wallet.totalSpent.value
-        )
+        let deviceID = GatewayIdentity.shared.deviceID
+        let wanNodeID = try? AppState.canonicalWANIdentity().nodeID
+        let relayConnected = appState.wanEnabled && appState.wanManager.state.relayStatus == .connected
+        let localServingReady = appState.engineStatus.isReady || appState.engineStatus.isGenerating
+        let identityMismatch = wanNodeID != nil && wanNodeID != deviceID
+
+        do {
+            let balance = try await gatewayWalletBalance()
+            return RemoteWalletSnapshot(
+                deviceID: balance.deviceID,
+                balance: creditsToUSDC(balance.balanceCredits),
+                totalEarned: creditsToUSDC(balance.totalEarnedCredits),
+                totalSpent: creditsToUSDC(balance.totalSpentCredits),
+                wanNodeID: wanNodeID,
+                relayConnected: relayConnected,
+                localServingReady: localServingReady,
+                identityMismatch: identityMismatch,
+                earningEligible: relayConnected && localServingReady && !identityMismatch
+            )
+        } catch {
+            return RemoteWalletSnapshot(
+                deviceID: deviceID,
+                balance: 0,
+                totalEarned: 0,
+                totalSpent: 0,
+                wanNodeID: wanNodeID,
+                relayConnected: relayConnected,
+                localServingReady: localServingReady,
+                identityMismatch: identityMismatch,
+                earningEligible: false,
+                error: error.localizedDescription
+            )
+        }
     }
 
     func remoteWalletTransactions(limit: Int) async -> [RemoteTransactionSnapshot] {
-        await appState.wallet.refreshBalance()
-        return appState.wallet.recentTransactions.prefix(limit).map { tx in
-            RemoteTransactionSnapshot(
-                id: tx.id,
-                type: tx.type.rawValue,
-                amount: tx.amount.value,
-                description: tx.description,
-                peerNodeID: tx.peerNodeID,
-                timestamp: tx.timestamp
-            )
+        do {
+            return try await gatewayWalletTransactions(limit: limit).map { tx in
+                RemoteTransactionSnapshot(
+                    id: gatewayTransactionUUID(tx.id),
+                    type: tx.type.lowercased(),
+                    amount: creditsToUSDC(tx.amount),
+                    description: gatewayTransactionDescription(tx),
+                    timestamp: Date(timeIntervalSince1970: TimeInterval(tx.timestamp))
+                )
+            }
+        } catch {
+            return []
         }
     }
 
@@ -551,7 +583,91 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         }
     }
 
+    private func gatewayWalletBalance() async throws -> GatewayWalletBalanceSnapshot {
+        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        let token = try await client.bearer()
+        return try await client.getJSON(path: "/v1/wallet/balance", bearerToken: token)
+    }
+
+    private func gatewayWalletTransactions(limit: Int) async throws -> [GatewayWalletTransactionSnapshot] {
+        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        let token = try await client.bearer()
+        var components = URLComponents(
+            url: gatewayRootURL().appendingPathComponent("/v1/wallet/transactions"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "limit", value: String(max(1, min(limit, 500)))),
+            URLQueryItem(name: "include_availability", value: "true"),
+        ]
+        guard let url = components?.url else {
+            throw GatewayAuthError.network("invalid wallet transactions url")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await client.urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayAuthError.network("non-http response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+
+        return try JSONDecoder().decode(GatewayWalletTransactionsEnvelope.self, from: data).transactions
+    }
+
+    private func creditsToUSDC(_ credits: Int64) -> Double {
+        Double(credits) / 1_000_000.0
+    }
+
+    private func gatewayTransactionUUID(_ id: Int64) -> UUID {
+        let lowBits = UInt64(bitPattern: id) & 0xFFFFFFFFFFFF
+        let suffix = String(format: "%012llx", lowBits)
+        return UUID(uuidString: "00000000-0000-0000-0000-\(suffix)") ?? UUID()
+    }
+
+    private func gatewayTransactionDescription(_ tx: GatewayWalletTransactionSnapshot) -> String {
+        let typeLabel = tx.type
+            .lowercased()
+            .split(separator: "_")
+            .map { $0.capitalized }
+            .joined(separator: " ")
+        if let note = tx.note, !note.isEmpty {
+            return "\(typeLabel): \(note)"
+        }
+        return typeLabel
+    }
+
     private func appVersion() -> String {
         BuildVersion.display
     }
+}
+
+private struct GatewayWalletBalanceSnapshot: Decodable {
+    let deviceID: String
+    let balanceCredits: Int64
+    let totalEarnedCredits: Int64
+    let totalSpentCredits: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case deviceID
+        case balanceCredits = "balance_credits"
+        case totalEarnedCredits = "total_earned_credits"
+        case totalSpentCredits = "total_spent_credits"
+    }
+}
+
+private struct GatewayWalletTransactionsEnvelope: Decodable {
+    let transactions: [GatewayWalletTransactionSnapshot]
+}
+
+private struct GatewayWalletTransactionSnapshot: Decodable {
+    let id: Int64
+    let type: String
+    let amount: Int64
+    let timestamp: Int64
+    let note: String?
 }

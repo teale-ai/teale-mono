@@ -2,6 +2,7 @@ import SwiftUI
 import AppCore
 import SharedTypes
 import ModelManager
+import GatewayKit
 
 struct CompanionSupplyView: View {
     @Environment(AppState.self) private var appState
@@ -43,6 +44,16 @@ struct CompanionSupplyView: View {
                     label: appState.companionText("common.model", fallback: "Model"),
                     value: appState.engineStatus.currentModel?.name ?? appState.companionText("common.noModelLoaded", fallback: "No model loaded")
                 )
+                TealeStatRow(
+                    label: appState.companionText("wallet.relay", fallback: "Relay"),
+                    value: appState.companionSupplyIdentityStatus.relayLabel,
+                    note: "WAN node \(companionTruncatedIdentifier(appState.companionSupplyIdentityStatus.wanNodeID)) · identity \(appState.companionSupplyIdentityStatus.identityLabel)"
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.gatewayEligibility", fallback: "Gateway eligibility"),
+                    value: appState.companionSupplyIdentityStatus.eligibilityLabel,
+                    note: appState.companionSupplyIdentityStatus.summary
+                )
             }
             if appState.engineStatus.isReady || appState.engineStatus.isGenerating {
                 HStack(spacing: 10) {
@@ -65,7 +76,7 @@ struct CompanionSupplyView: View {
                     value: availabilityRate,
                     note: appState.companionText(
                         "supply.availabilityNote",
-                        fallback: "Earned for keeping a loaded model online and available to the network."
+                        fallback: "This is the projected gateway availability rate once relay connectivity and identity alignment are in place."
                     )
                 )
                 TealeStatRow(
@@ -79,8 +90,8 @@ struct CompanionSupplyView: View {
                 TealeStatRow(label: appState.companionText("supply.session", fallback: "Session"), value: "\(appState.totalTokensGenerated) tokens served")
                 TealeStatRow(
                     label: appState.companionText("common.wallet", fallback: "Wallet"),
-                    value: appState.companionDisplayAmountString(amount: appState.wallet.balance),
-                    note: appState.companionText("supply.walletNote", fallback: "The wallet view shows the balance grow in real time.")
+                    value: gatewayWalletLabel,
+                    note: appState.companionSupplyIdentityStatus.supplyWalletNote
                 )
             }
             HStack {
@@ -93,7 +104,7 @@ struct CompanionSupplyView: View {
     }
 
     private var availabilityRate: String {
-        guard appState.engineStatus.isReady || appState.engineStatus.isGenerating else {
+        guard appState.companionSupplyIdentityStatus.localServingReady else {
             return appState.companionText("supply.waitingLoadedModel", fallback: "Waiting for a loaded model...")
         }
         guard let perTickCredits = availabilityCreditsPerTick else {
@@ -124,6 +135,13 @@ struct CompanionSupplyView: View {
             return 1
         }
         return max(1, Int64((combinedPrice / reference).rounded()))
+    }
+
+    private var gatewayWalletLabel: String {
+        if let balanceCredits = gatewayState.walletBalance?.balanceCredits {
+            return appState.companionDisplayAmountString(credits: balanceCredits)
+        }
+        return companionTruncatedIdentifier(GatewayIdentity.shared.deviceID)
     }
 
     private var loadedModelSummary: CompanionNetworkModelSummary? {

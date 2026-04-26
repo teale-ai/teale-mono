@@ -212,6 +212,7 @@ let package = Package(
                 "AuthKit",
                 "ChatKit",
                 "CompilerKit",
+                "GatewayKit",
             ]
         ),
 
@@ -345,6 +346,10 @@ let package = Package(
         .testTarget(
             name: "TealeSDKTests",
             dependencies: ["TealeSDK"]
+        ),
+        .testTarget(
+            name: "TealeTests",
+            dependencies: ["Teale", "AppCore", "GatewayKit", "WANKit"]
         ),
     ]
 )

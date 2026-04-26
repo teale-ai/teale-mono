@@ -18,12 +18,25 @@ import TealeNetKit
 import CompilerKit
 import ChatKit
 import PrivacyFilterKit
+import GatewayKit
 
 // MARK: - App State
 
 @MainActor
 @Observable
 public final class AppState {
+    struct CanonicalWANIdentityResolution: Sendable {
+        let identity: WANNodeIdentity
+        let previousStoredNodeID: String?
+
+        var replacedLegacyIdentity: Bool {
+            if let previousStoredNodeID {
+                return previousStoredNodeID != identity.nodeID
+            }
+            return false
+        }
+    }
+
     private enum Preferences {
         static let maxStorageGB = "teale.maxStorageGB"
         static let wanRelayURL = "teale.wanRelayURL"
@@ -1382,10 +1395,10 @@ public final class AppState {
         // Run network-heavy work off the main actor so API endpoints remain responsive.
         Task.detached { [weak self] in
             do {
-                let identity = try WANNodeIdentity.loadOrCreate()
+                let identityResolution = try Self.resolveCanonicalWANIdentity()
                 let config = WANConfig(
                     relayServerURLs: [relayURL],
-                    identity: identity,
+                    identity: identityResolution.identity,
                     displayName: hostName
                 )
                 let deviceInfo = DeviceInfo(
@@ -1404,7 +1417,12 @@ public final class AppState {
                 await MainActor.run {
                     self.isWANBusy = false
                     if relayStatus == .connected {
-                        self.wanLastError = nil
+                        if identityResolution.replacedLegacyIdentity,
+                           let previousStoredNodeID = identityResolution.previousStoredNodeID {
+                            self.wanLastError = "Migrated WAN identity from \(previousStoredNodeID.prefix(12))... to gateway wallet \(identityResolution.identity.nodeID.prefix(12))...."
+                        } else {
+                            self.wanLastError = nil
+                        }
                     } else {
                         // Only surface relay failures — STUN failures are non-fatal (relay fallback works)
                         let relayFailures = diagnostics.filter { $0.contains("FAILED") && $0.contains("Relay") }
@@ -1441,6 +1459,25 @@ public final class AppState {
                 await self.applyInferenceBackendSelection()
             }
         }
+    }
+
+    nonisolated static func canonicalWANIdentity() throws -> WANNodeIdentity {
+        try WANNodeIdentity(privateKeyData: GatewayIdentity.shared.privateKeyRawRepresentation)
+    }
+
+    nonisolated static func resolveCanonicalWANIdentity(
+        gatewayIdentity: GatewayIdentity = .shared,
+        identityFileURL: URL = WANNodeIdentity.identityFileURL
+    ) throws -> CanonicalWANIdentityResolution {
+        let canonicalIdentity = try WANNodeIdentity(privateKeyData: gatewayIdentity.privateKeyRawRepresentation)
+        let previousStoredNodeID = try? WANNodeIdentity.loadFromFile(at: identityFileURL).nodeID
+        if previousStoredNodeID != canonicalIdentity.nodeID {
+            try WANNodeIdentity.saveToFile(canonicalIdentity, at: identityFileURL)
+        }
+        return CanonicalWANIdentityResolution(
+            identity: canonicalIdentity,
+            previousStoredNodeID: previousStoredNodeID
+        )
     }
 
     private func disableWAN(clearError: Bool = true) {

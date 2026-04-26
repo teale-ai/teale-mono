@@ -7,6 +7,7 @@ import ModelManager
 import CreditKit
 import ClusterKit
 import WANKit
+import GatewayKit
 
 /// Windows-parity top-level navigation tabs.
 enum CompanionTab: String, CaseIterable, Hashable {
@@ -57,9 +58,9 @@ enum CompanionEngineState {
         switch self {
         case .starting: return "Connecting to the local Teale service..."
         case .loading: return "Loading weights into GPU memory..."
-        case .serving: return "Accepting inference requests from the network."
+        case .serving: return "Local serving is ready. Wallet earnings still require relay connectivity and a gateway-aligned device identity."
         case .downloading: return "Fetching model weights from HuggingFace..."
-        case .needsModel: return "Pick a model in the catalog to start earning."
+        case .needsModel: return "Pick a model in the catalog to become eligible for network earnings."
         case .pausedUser: return "Supply is paused. Resume from the tray menu."
         case .pausedBattery: return "Waiting for AC power before resuming."
         case .error(let msg): return msg
@@ -274,6 +275,18 @@ extension AppState {
     }
 
     @MainActor
+    var companionSupplyIdentityStatus: CompanionSupplyIdentityStatus {
+        let gatewayDeviceID = GatewayIdentity.shared.deviceID
+        let wanNodeID = (try? WANNodeIdentity.loadFromFile().nodeID) ?? gatewayDeviceID
+        return CompanionSupplyIdentityStatus(
+            gatewayDeviceID: gatewayDeviceID,
+            wanNodeID: wanNodeID,
+            localServingReady: engineStatus.isReady || engineStatus.isGenerating,
+            relayConnected: wanEnabled && wanManager.state.relayStatus == .connected
+        )
+    }
+
+    @MainActor
     private func deviceTPSSamples(
         lanPeers: [PeerInfo],
         wanPeers: [WANPeerSummary]
@@ -309,6 +322,67 @@ struct CompanionNetworkModelSummary: Identifiable, Hashable {
     let deviceCount: Int
     let promptUSDPerToken: Double?
     let completionUSDPerToken: Double?
+}
+
+struct CompanionSupplyIdentityStatus {
+    let gatewayDeviceID: String
+    let wanNodeID: String
+    let localServingReady: Bool
+    let relayConnected: Bool
+
+    var identityMismatch: Bool {
+        gatewayDeviceID != wanNodeID
+    }
+
+    var earningEligible: Bool {
+        localServingReady && relayConnected && !identityMismatch
+    }
+
+    var relayLabel: String {
+        relayConnected ? "Connected" : "Disconnected"
+    }
+
+    var identityLabel: String {
+        identityMismatch ? "Mismatch" : "Aligned"
+    }
+
+    var eligibilityLabel: String {
+        earningEligible ? "Eligible" : "Not yet"
+    }
+
+    var summary: String {
+        if earningEligible {
+            return "Relay connected, model loaded, and WAN identity matches this gateway wallet."
+        }
+        if identityMismatch {
+            return "This install is serving under a different WAN node ID than the gateway wallet shown here."
+        }
+        if !relayConnected {
+            return "Relay is not connected yet, so this wallet cannot earn network credits."
+        }
+        if !localServingReady {
+            return "Load a compatible model to make this wallet eligible for network earnings."
+        }
+        return "Waiting for wallet eligibility."
+    }
+
+    var walletBalanceNote: String {
+        earningEligible
+            ? "This is the live gateway-backed device wallet balance."
+            : "This is the live gateway-backed device wallet balance. Earnings start only after relay connectivity, a loaded model, and an aligned device identity."
+    }
+
+    var sessionNote: String {
+        earningEligible
+            ? "Session tokens reflect local serving. Gateway credits land in this wallet when routed Teale requests use this device."
+            : "Session tokens reflect local serving only. They do not guarantee gateway wallet earnings until eligibility is green."
+    }
+
+    var supplyWalletNote: String {
+        earningEligible
+            ? "Open Wallet to watch the gateway-backed device balance update."
+            : "Open Wallet to verify gateway eligibility before expecting the device balance to move."
+    }
 }
 
 private struct CompanionModelPricing {
