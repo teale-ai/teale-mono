@@ -111,6 +111,7 @@ models:
     quantization: Q5_K_M
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
     description: "Helpful assistant-tuned Llama variant for general chat and lightweight coding."
+    routing_tags: [agent-harness]
     aliases: [hermes-3-llama-3.1-8b, hermes-3-8b]
 
   - id: qwen/qwen3-32b
