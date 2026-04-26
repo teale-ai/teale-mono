@@ -95,7 +95,7 @@ pub struct StreamingPlaceholderRestorer {
 impl StreamingPlaceholderRestorer {
     pub fn new(placeholder_map: HashMap<String, String>) -> Self {
         let mut replacements: Vec<_> = placeholder_map.into_iter().collect();
-        replacements.sort_by(|lhs, rhs| rhs.0.len().cmp(&lhs.0.len()));
+        replacements.sort_by_key(|rhs| std::cmp::Reverse(rhs.0.len()));
         let placeholders = replacements
             .iter()
             .map(|(key, _)| key.clone())
@@ -255,10 +255,7 @@ fn placeholder_prefix(label: &str) -> String {
         "account_number" => "PRIVATE_ACCOUNT_NUMBER".to_string(),
         "secret" => "SECRET".to_string(),
         _ => {
-            let normalized = label
-                .to_ascii_uppercase()
-                .replace('-', "_")
-                .replace(' ', "_");
+            let normalized = label.to_ascii_uppercase().replace(['-', ' '], "_");
             if normalized.is_empty() {
                 "REDACTED".to_string()
             } else {

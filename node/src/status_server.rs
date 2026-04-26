@@ -2267,7 +2267,7 @@ impl HttpResponse {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+    use std::sync::{Arc, OnceLock};
 
     use super::{
         proxy_chat_completion, read_http_request, route, write_sse_response, ServiceState,
@@ -2348,9 +2348,9 @@ mod tests {
         ))
     }
 
-    fn helper_env_guard() -> &'static StdMutex<()> {
-        static GUARD: OnceLock<StdMutex<()>> = OnceLock::new();
-        GUARD.get_or_init(|| StdMutex::new(()))
+    fn helper_env_guard() -> &'static tokio::sync::Mutex<()> {
+        static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     async fn spawn_helper_stub() -> (String, tokio::task::JoinHandle<()>) {
@@ -2538,9 +2538,7 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_proxy_emits_sse_headers_and_forwards_done() {
-        let _guard = helper_env_guard()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = helper_env_guard().lock().await;
         let (helper_url, helper_task) = spawn_helper_stub().await;
         std::env::set_var("TEALE_OPF_HELPER_URL", &helper_url);
 
@@ -2631,9 +2629,7 @@ mod tests {
 
     #[tokio::test]
     async fn network_chat_fails_closed_when_helper_is_unavailable() {
-        let _guard = helper_env_guard()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = helper_env_guard().lock().await;
         let helper_url = unused_local_url().await;
         std::env::set_var("TEALE_OPF_HELPER_URL", &helper_url);
 
