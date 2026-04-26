@@ -2268,6 +2268,7 @@ impl HttpResponse {
 mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, OnceLock};
+    use std::time::Duration;
 
     use super::{
         proxy_chat_completion, read_http_request, route, write_sse_response, ServiceState,
@@ -2359,8 +2360,11 @@ mod tests {
             .expect("bind helper stub");
         let addr = listener.local_addr().expect("helper stub addr");
         let task = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut socket, _) = listener.accept().await.expect("accept helper stub");
+            loop {
+                let accept = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+                let Ok(Ok((mut socket, _))) = accept else {
+                    break;
+                };
                 let request = read_http_request(&mut socket)
                     .await
                     .expect("parse helper request")
