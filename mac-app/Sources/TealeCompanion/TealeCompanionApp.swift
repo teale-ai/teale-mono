@@ -3,9 +3,18 @@ import SharedTypes
 import AuthKit
 import ChatKit
 
+enum CompanionTab: Hashable {
+    case teale
+    case chats
+    case wallet
+    case me
+    case signIn
+}
+
 @main
 struct TealeCompanionApp: App {
     @State private var appState = CompanionAppState()
+    @State private var selectedTab: CompanionTab = .teale
 
     var body: some Scene {
         WindowGroup {
@@ -21,12 +30,13 @@ struct TealeCompanionApp: App {
     // signed in (or chosen anonymous mode), matching the prior behavior.
     @ViewBuilder
     private var rootTabs: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             #if os(iOS)
             TealeNetworkTabView()
                 .tabItem {
                     Label("Teale", systemImage: "brain.head.profile")
                 }
+                .tag(CompanionTab.teale)
             #endif
 
             if let authManager = appState.authManager, authManager.authState.canUseApp {
@@ -34,16 +44,19 @@ struct TealeCompanionApp: App {
                     .tabItem {
                         Label("Chats", systemImage: "bubble.left.and.bubble.right.fill")
                     }
+                    .tag(CompanionTab.chats)
 
                 CompanionWalletView(appState: appState)
                     .tabItem {
                         Label("Wallet", systemImage: "creditcard.fill")
                     }
+                    .tag(CompanionTab.wallet)
 
-                MeTab(appState: appState)
+                MeTab(appState: appState, selectedTab: $selectedTab)
                     .tabItem {
                         Label("Me", systemImage: "person.crop.circle.fill")
                     }
+                    .tag(CompanionTab.me)
             } else if let authManager = appState.authManager {
                 // Existing Supabase login still available as a tab rather
                 // than a gate, so the main Teale features are always usable.
@@ -51,6 +64,7 @@ struct TealeCompanionApp: App {
                     .tabItem {
                         Label("Sign in", systemImage: "person.crop.circle")
                     }
+                    .tag(CompanionTab.signIn)
             }
         }
         .tint(Color.teale)
@@ -83,6 +97,7 @@ struct TealeCompanionApp: App {
 
 private struct MeTab: View {
     var appState: CompanionAppState
+    @Binding var selectedTab: CompanionTab
 
     var body: some View {
         NavigationStack {
@@ -101,7 +116,7 @@ private struct MeTab: View {
                 }
                 Section("Settings") {
                     NavigationLink {
-                        CompanionSettingsView(appState: appState)
+                        CompanionSettingsView(appState: appState, selectedTab: $selectedTab)
                     } label: {
                         Label("Preferences", systemImage: "gear")
                     }

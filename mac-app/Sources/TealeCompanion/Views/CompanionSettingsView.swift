@@ -1,9 +1,15 @@
 import SwiftUI
 import SharedTypes
 import AuthKit
+#if os(iOS)
+import UIKit
+#else
+import AppKit
+#endif
 
 struct CompanionSettingsView: View {
     var appState: CompanionAppState
+    @Binding var selectedTab: CompanionTab
     @State private var showResetConfirmation = false
 
     var body: some View {
@@ -34,6 +40,46 @@ struct CompanionSettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                    }
+                }
+
+                Section("Account Devices") {
+                    if let authManager = appState.authManager,
+                       authManager.authState.isAuthenticated {
+                        if appState.gatewayAccount.isLoading && appState.gatewayAccount.summary == nil {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Loading Teale device wallets...")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if let error = appState.gatewayAccount.errorMessage,
+                                  appState.gatewayAccount.summary == nil {
+                            Label(error, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        } else if let devices = appState.gatewayAccount.summary?.devices,
+                                  !devices.isEmpty {
+                            ForEach(devices) { device in
+                                SettingsGatewayDeviceRow(
+                                    device: device,
+                                    localDeviceID: appState.gatewayAccount.localDeviceID,
+                                    onUseInWallet: { deviceID in
+                                        appState.gatewayAccount.stageWalletRecipient(deviceID)
+                                        selectedTab = .wallet
+                                    }
+                                )
+                            }
+                        } else {
+                            Text("No Teale device wallets linked to this account yet.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Sign in to load Teale device wallets for this account.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -174,5 +220,91 @@ struct CompanionSettingsView: View {
                 Text("This will clear all conversations, wallet data, and settings. This cannot be undone.")
             }
         }
+        .onAppear {
+            Task {
+                await appState.gatewayAccount.refreshIfNeeded(
+                    authManager: appState.authManager,
+                    deviceName: appState.displayName,
+                    force: false
+                )
+            }
+        }
+    }
+}
+
+private struct SettingsGatewayDeviceRow: View {
+    let device: CompanionGatewayAccountDevice
+    let localDeviceID: String
+    let onUseInWallet: (String) -> Void
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.deviceName ?? shortDeviceID(device.deviceID))
+                        .font(.subheadline.weight(.semibold))
+                    Text(platformLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(formatCredits(device.walletBalanceCredits))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.teale)
+                    .monospacedDigit()
+            }
+
+            Button {
+                copyText(device.deviceID)
+                copied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    copied = false
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(shortDeviceID(device.deviceID))
+                        .font(.system(.body, design: .monospaced).weight(.semibold))
+                    Text(copied ? "Device ID copied." : "Tap to copy the full Teale device ID.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button("Send Credits") {
+                onUseInWallet(device.deviceID)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var platformLine: String {
+        let platform = device.platform ?? "device"
+        if device.deviceID == localDeviceID {
+            return "\(platform) · this device"
+        }
+        return platform
+    }
+
+    private func shortDeviceID(_ value: String) -> String {
+        guard value.count > 16 else { return value }
+        return "\(value.prefix(8))...\(value.suffix(8))"
+    }
+
+    private func formatCredits(_ credits: Int64) -> String {
+        "\(credits.formatted()) credits"
+    }
+
+    private func copyText(_ value: String) {
+        #if os(iOS)
+        UIPasteboard.general.string = value
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        #endif
     }
 }

@@ -2,9 +2,11 @@ import SwiftUI
 import AppCore
 import CreditKit
 import GatewayKit
+import AppKit
 
 struct CompanionWalletView: View {
     @Environment(AppState.self) private var appState
+    @Environment(CompanionGatewayState.self) private var gatewayState
     @State private var recipient = ""
     @State private var amount = ""
     @State private var memo = ""
@@ -12,6 +14,7 @@ struct CompanionWalletView: View {
     @State private var sendStatus = ""
     @State private var sendStatusIsError = false
     @State private var exportStatus = ""
+    @State private var deviceIDCopied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -19,42 +22,52 @@ struct CompanionWalletView: View {
             sendSection
             ledgerSection
         }
+        .onAppear {
+            applyPendingRecipientIfNeeded()
+        }
+        .onChange(of: gatewayState.pendingWalletRecipient) { _, _ in
+            applyPendingRecipientIfNeeded()
+        }
     }
 
     private var balancesSection: some View {
         TealeSection(prompt: appState.companionText("wallet.balances", fallback: "balances")) {
-            TealeStats {
-                TealeStatRow(
-                    label: appState.companionDisplayUnitTitle,
-                    value: appState.companionDisplayAmountString(amount: appState.wallet.balance),
-                    note: appState.companionText("wallet.balanceNote", fallback: "Balance goes up while supply is on.")
-                )
-                TealeStatRow(
-                    label: appState.companionText("wallet.usdc", fallback: "USDC"),
-                    value: appState.wallet.balance.description
-                )
-                TealeStatRow(
-                    label: appState.companionText("wallet.session", fallback: "Session"),
-                    value: "\(appState.totalTokensGenerated) tokens served",
-                    note: appState.companionText("wallet.sessionNote", fallback: "Availability earnings begin once a compatible model is loaded and serving.")
-                )
-                TealeStatRow(
-                    label: appState.companionText("wallet.lifetimeEarned", fallback: "Lifetime earned"),
-                    value: appState.companionDisplayAmountString(amount: appState.wallet.totalEarned)
-                )
-                TealeStatRow(
-                    label: appState.companionText("wallet.lifetimeSpent", fallback: "Lifetime spent"),
-                    value: appState.companionDisplayAmountString(amount: appState.wallet.totalSpent)
-                )
-                TealeStatRow(
-                    label: appState.companionText("wallet.requests", fallback: "Requests"),
-                    value: "\(appState.totalRequestsServed)"
-                )
-                TealeStatRow(
-                    label: appState.companionText("common.state", fallback: "State"),
-                    value: appState.companionState.displayText,
-                    valueColor: appState.companionState.chipColor
-                )
+            VStack(alignment: .leading, spacing: 10) {
+                TealeStats {
+                    TealeStatRow(
+                        label: appState.companionDisplayUnitTitle,
+                        value: appState.companionDisplayAmountString(amount: appState.wallet.balance),
+                        note: appState.companionText("wallet.balanceNote", fallback: "Balance goes up while supply is on.")
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("wallet.usdc", fallback: "USDC"),
+                        value: appState.wallet.balance.description
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("wallet.session", fallback: "Session"),
+                        value: "\(appState.totalTokensGenerated) tokens served",
+                        note: appState.companionText("wallet.sessionNote", fallback: "Availability earnings begin once a compatible model is loaded and serving.")
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("wallet.lifetimeEarned", fallback: "Lifetime earned"),
+                        value: appState.companionDisplayAmountString(amount: appState.wallet.totalEarned)
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("wallet.lifetimeSpent", fallback: "Lifetime spent"),
+                        value: appState.companionDisplayAmountString(amount: appState.wallet.totalSpent)
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("wallet.requests", fallback: "Requests"),
+                        value: "\(appState.totalRequestsServed)"
+                    )
+                    TealeStatRow(
+                        label: appState.companionText("common.state", fallback: "State"),
+                        value: appState.companionState.displayText,
+                        valueColor: appState.companionState.chipColor
+                    )
+                }
+
+                deviceIDRow
             }
         }
     }
@@ -158,6 +171,31 @@ struct CompanionWalletView: View {
 
     private var currentCreditBalance: Int {
         max(0, Int((appState.wallet.balance.value * 1_000_000).rounded()))
+    }
+
+    private var deviceIDRow: some View {
+        HStack(alignment: .top, spacing: 20) {
+            Text(appState.companionText("wallet.deviceID", fallback: "Device ID").uppercased())
+                .font(TealeDesign.monoSmall)
+                .tracking(0.9)
+                .foregroundStyle(TealeDesign.muted)
+                .frame(width: 150, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Button(action: copyDeviceID) {
+                    Text(companionTruncatedIdentifier(gatewayState.localDeviceID))
+                        .font(TealeDesign.mono)
+                        .foregroundStyle(TealeDesign.teale)
+                }
+                .buttonStyle(.plain)
+
+                Text(deviceIDCopied
+                    ? appState.companionText("wallet.deviceIDCopied", fallback: "Device ID copied.")
+                    : appState.companionText("wallet.deviceIDNote", fallback: "Use this Teale device ID to receive credits into this device wallet."))
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 0)
+        }
     }
 
     @MainActor
@@ -275,6 +313,23 @@ struct CompanionWalletView: View {
 
     private func csvEscape(_ value: String) -> String {
         "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
+    private func copyDeviceID() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(gatewayState.localDeviceID, forType: .string)
+        deviceIDCopied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            deviceIDCopied = false
+        }
+    }
+
+    private func applyPendingRecipientIfNeeded() {
+        guard let pendingRecipient = gatewayState.consumePendingWalletRecipient() else { return }
+        recipient = pendingRecipient
+        sendStatus = ""
+        sendStatusIsError = false
     }
 }
 

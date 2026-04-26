@@ -1,4 +1,3 @@
-#if os(iOS)
 import Foundation
 
 struct GwBalance: Decodable, Sendable {
@@ -20,6 +19,13 @@ struct GwLedgerEntry: Decodable, Identifiable, Sendable {
 }
 
 struct GwTxListRes: Decodable { let transactions: [GwLedgerEntry] }
+
+struct GwWalletSendRequest: Encodable, Sendable {
+    let asset: String
+    let recipient: String
+    let amount: Int64
+    let memo: String?
+}
 
 final class GatewayWalletClient: @unchecked Sendable {
 
@@ -44,6 +50,22 @@ final class GatewayWalletClient: @unchecked Sendable {
         return res.transactions
     }
 
+    func send(_ requestBody: GwWalletSendRequest) async throws {
+        let token = try await auth.bearer()
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/wallet/send"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(requestBody)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw GatewayAuthError.network("non-http response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
     private func getJSON<R: Decodable>(_ path: String) async throws -> R {
         let token = try await auth.bearer()
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -59,4 +81,3 @@ final class GatewayWalletClient: @unchecked Sendable {
         return try JSONDecoder().decode(R.self, from: data)
     }
 }
-#endif

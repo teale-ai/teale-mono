@@ -3448,6 +3448,18 @@ function renderAccountDevices() {
     const actionRow = document.createElement("div");
     actionRow.className = "actions actions-tight";
 
+    const send = document.createElement("button");
+    send.className = "action";
+    send.textContent = t("account.sendToDevice", { fallback: "Send credits" });
+    send.disabled = !accountSummary?.account_user_id;
+    send.addEventListener("click", () => {
+      els.accountSendRecipient.value = device.deviceId || "";
+      accountSendStatus = "";
+      updateSendControls();
+      els.accountSendAmount.focus();
+    });
+    actionRow.append(send);
+
     const sweep = document.createElement("button");
     sweep.className = "action";
     sweep.textContent = t("account.device.sweep", { fallback: "Sweep" });

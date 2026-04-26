@@ -71,6 +71,16 @@
     <string name="wallet_usdc">USDC</string>
     <string name="wallet_transactions">Transactions</string>
     <string name="wallet_empty">No transactions yet.</string>
+    <string name="wallet_device_id">Device ID</string>
+    <string name="wallet_device_id_copied">Device ID copied.</string>
+    <string name="wallet_device_id_note">Tap to copy the full Teale device ID for this device wallet.</string>
+    <string name="wallet_send_title">Send credits</string>
+    <string name="wallet_send_recipient">Recipient</string>
+    <string name="wallet_send_recipient_note">Use a device ID to fund another bearer-token device wallet.</string>
+    <string name="wallet_send_amount">Credits</string>
+    <string name="wallet_send_memo">Memo (optional)</string>
+    <string name="wallet_send_sending">Sending…</string>
+    <string name="wallet_send_note">Sends route through this device bearer and land in the target device wallet when the recipient is a Teale device ID.</string>
 
     <!-- Tasks -->
     <string name="tasks_title">Tasks</string>

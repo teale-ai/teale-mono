@@ -61,10 +61,11 @@ PER-USER BEHAVIOR:
 
 AUTO-UPDATE:
   - On every login, the TealeUpdateCheck scheduled task pings
-    https://api.github.com/repos/teale-ai/teale-node/releases/latest.
-  - If installed version < latest version, shows a Windows toast and opens
-    the download page. User downloads the new Teale.exe, runs it — Inno
-    Setup upgrades in place.
+    https://api.github.com/repos/teale-ai/teale-mono/releases?per_page=20
+    and selects the newest published release that contains Teale.exe.
+  - If installed version < latest version, shows a Windows toast with a
+    "Download and install update" action that opens the newest Teale.exe
+    installer. Running that installer upgrades Teale in place.
 
 TO PUBLISH AN UPDATE:
   1. Regenerate the timestamp (macOS/Linux: `date '+%Y.%m.%d.%H%M'`).
