@@ -5,6 +5,9 @@ const els = {
   settingsMenu: document.getElementById("settings-menu"),
   languageSelect: document.getElementById("language-select"),
   displayUnitSelect: document.getElementById("display-unit-select"),
+  privacyFilterSelect: document.getElementById("privacy-filter-select"),
+  privacyFilterStatus: document.getElementById("privacy-filter-status"),
+  privacyFilterDetail: document.getElementById("privacy-filter-detail"),
   followXButton: document.getElementById("follow-x-button"),
   shareStoryButton: document.getElementById("share-story-button"),
   viewButtons: Array.from(document.querySelectorAll("[data-view-button]")),
@@ -913,6 +916,42 @@ function setDisplayUnit(nextValue) {
     updateSendControls();
     renderChat(lastSnapshot);
   }
+}
+
+function privacyHelperLabel(state) {
+  switch (state) {
+    case "ready":
+      return "Helper status: ready";
+    case "unavailable":
+      return "Helper status: unavailable";
+    case "unsupported":
+      return "Helper status: unsupported";
+    default:
+      return "Helper status: disabled";
+  }
+}
+
+function renderPrivacyFilter(snapshot = lastSnapshot) {
+  const privacy = snapshot?.privacy_filter || {};
+  const mode = privacy.mode || "off";
+  const helperStatus = privacy.helper_status || "disabled";
+  const helperDetail = privacy.helper_detail || "Privacy filtering is off.";
+
+  if (els.privacyFilterSelect) {
+    els.privacyFilterSelect.value = mode;
+  }
+  if (els.privacyFilterStatus) {
+    els.privacyFilterStatus.textContent = privacyHelperLabel(helperStatus);
+  }
+  if (els.privacyFilterDetail) {
+    els.privacyFilterDetail.textContent = helperDetail;
+  }
+}
+
+async function setPrivacyFilterMode(mode) {
+  const response = await post("/v1/app/privacy-filter/mode", { mode });
+  render(response);
+  return response;
 }
 
 function providerDisplayName(provider) {
@@ -4254,6 +4293,7 @@ function renderWallet(snapshot) {
 
 function render(snapshot) {
   lastSnapshot = snapshot;
+  renderPrivacyFilter(snapshot);
   renderHome(snapshot);
   renderSupply(snapshot);
   renderDemand(snapshot);
@@ -4599,6 +4639,19 @@ els.languageSelect.addEventListener("change", (event) => {
 
 els.displayUnitSelect.addEventListener("change", (event) => {
   setDisplayUnit(event.target.value);
+});
+
+els.privacyFilterSelect.addEventListener("change", async (event) => {
+  const nextMode = event.target.value;
+  try {
+    await setPrivacyFilterMode(nextMode);
+    if (els.settingsMenu) {
+      els.settingsMenu.open = false;
+    }
+  } catch (error) {
+    alert(`Could not update privacy filter mode: ${error.message}`);
+    renderPrivacyFilter(lastSnapshot);
+  }
 });
 
 for (const button of els.networkModelSortButtons) {

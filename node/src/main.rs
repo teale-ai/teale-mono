@@ -18,6 +18,7 @@ mod litert;
 mod model_registry;
 #[cfg(windows)]
 mod power_win;
+mod privacy_filter;
 mod relay;
 mod status_server;
 mod supervisor;

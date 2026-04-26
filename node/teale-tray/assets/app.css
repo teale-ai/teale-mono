@@ -153,6 +153,12 @@ footer,
   outline-offset: 1px;
 }
 
+.settings-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .icon-action {
   display: inline-flex;
   align-items: center;

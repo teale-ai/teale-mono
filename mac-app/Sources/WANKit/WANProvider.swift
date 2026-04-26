@@ -1,6 +1,7 @@
 import Foundation
 import SharedTypes
 import ClusterKit
+import PrivacyFilterKit
 
 // MARK: - WAN Inference Provider
 
@@ -229,10 +230,11 @@ public actor WANProvider: InferenceProvider {
             throw WANError.peerDisconnected
         }
 
+        let prepared = try await preparedRemoteRequest(from: request)
         let requestID = UUID()
         let payload = InferenceRequestPayload(
             requestID: requestID,
-            request: request,
+            request: prepared.request,
             streaming: true
         )
 
@@ -260,31 +262,31 @@ public actor WANProvider: InferenceProvider {
                         if chunk.chunk.choices.first?.finishReason != nil {
                             if totalTokens > 0 {
                                 let model = request.model ?? "unknown"
-                                await self._onRemoteInferenceCompleted?(totalTokens, model, nodeID)
-                            }
-                            return ChatCompletionResponse(
-                                id: "chatcmpl-\(requestID.uuidString)",
-                                model: request.model ?? "unknown",
-                                choices: [
-                                    .init(index: 0, message: APIMessage(role: "assistant", content: fullContent), finishReason: "stop")
-                                ],
-                                usage: .init(promptTokens: 0, completionTokens: totalTokens, totalTokens: totalTokens)
-                            )
-                        }
-
-                    case .inferenceComplete(let complete) where complete.requestID == requestID:
-                        if totalTokens > 0 {
-                            let model = request.model ?? "unknown"
                             await self._onRemoteInferenceCompleted?(totalTokens, model, nodeID)
                         }
-                        return ChatCompletionResponse(
+                        return prepared.restoreResponse(ChatCompletionResponse(
                             id: "chatcmpl-\(requestID.uuidString)",
-                            model: request.model ?? "unknown",
+                            model: prepared.request.model ?? "unknown",
                             choices: [
                                 .init(index: 0, message: APIMessage(role: "assistant", content: fullContent), finishReason: "stop")
                             ],
                             usage: .init(promptTokens: 0, completionTokens: totalTokens, totalTokens: totalTokens)
-                        )
+                        ))
+                    }
+
+                    case .inferenceComplete(let complete) where complete.requestID == requestID:
+                        if totalTokens > 0 {
+                            let model = prepared.request.model ?? "unknown"
+                            await self._onRemoteInferenceCompleted?(totalTokens, model, nodeID)
+                        }
+                        return prepared.restoreResponse(ChatCompletionResponse(
+                            id: "chatcmpl-\(requestID.uuidString)",
+                            model: prepared.request.model ?? "unknown",
+                            choices: [
+                                .init(index: 0, message: APIMessage(role: "assistant", content: fullContent), finishReason: "stop")
+                            ],
+                            usage: .init(promptTokens: 0, completionTokens: totalTokens, totalTokens: totalTokens)
+                        ))
 
                     case .inferenceError(let error) where error.requestID == requestID:
                         throw WANError.peerConnectionFailed(error.errorMessage)
@@ -314,16 +316,18 @@ public actor WANProvider: InferenceProvider {
         connection: WANTransportConnection,
         continuation: AsyncThrowingStream<ChatCompletionChunk, Error>.Continuation
     ) async throws {
+        let prepared = try await preparedRemoteRequest(from: request)
         let requestID = UUID()
         let payload = InferenceRequestPayload(
             requestID: requestID,
-            request: request,
+            request: prepared.request,
             streaming: true
         )
 
         // Subscribe before sending so a fast peer cannot race the reply past us.
         let messages = await connection.incomingMessages
         try await connection.send(.inferenceRequest(payload))
+        let restorer = prepared.makeStreamingRestorer()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             // Timeout task
@@ -335,20 +339,35 @@ public actor WANProvider: InferenceProvider {
             // Message processing task
             group.addTask {
                 var totalTokens = 0
+                var lastChunk: ChatCompletionChunk?
                 for await message in messages {
                     switch message {
                     case .inferenceChunk(let chunk) where chunk.requestID == requestID:
-                        if let content = chunk.chunk.choices.first?.delta.content {
+                        var restoredChunk = chunk.chunk
+                        if let content = restoredChunk.choices.first?.delta.content {
                             totalTokens += max(content.count / 4, 1)
                         }
-                        continuation.yield(chunk.chunk)
+                        if let restorer {
+                            let terminal = restoredChunk.choices.first?.finishReason != nil
+                            let restoredText = restorer.consume(
+                                restoredChunk.choices.first?.delta.content ?? "",
+                                terminal: terminal
+                            )
+                            if !restoredChunk.choices.isEmpty {
+                                restoredChunk.choices[0].delta.content = restoredText.isEmpty ? nil : restoredText
+                            }
+                        }
+                        if Self.shouldEmit(restoredChunk) {
+                            lastChunk = restoredChunk
+                            continuation.yield(restoredChunk)
+                        }
 
                         // Detect stream completion from finish_reason in chunk
                         // (handles case where InferenceComplete message is lost on WAN)
-                        if chunk.chunk.choices.first?.finishReason != nil {
+                        if restoredChunk.choices.first?.finishReason != nil {
                             continuation.finish()
                             if totalTokens > 0 {
-                                let model = request.model ?? "unknown"
+                                let model = prepared.request.model ?? "unknown"
                                 let peer = connection.remoteNodeID
                                 await self._onRemoteInferenceCompleted?(totalTokens, model, peer)
                             }
@@ -356,10 +375,14 @@ public actor WANProvider: InferenceProvider {
                         }
 
                     case .inferenceComplete(let complete) where complete.requestID == requestID:
+                        if let restorer,
+                           let trailing = Self.trailingChunk(from: restorer, template: lastChunk) {
+                            continuation.yield(trailing)
+                        }
                         continuation.finish()
                         // Record spending via callback
                         if totalTokens > 0 {
-                            let model = request.model ?? "unknown"
+                            let model = prepared.request.model ?? "unknown"
                             let peer = connection.remoteNodeID
                             await self._onRemoteInferenceCompleted?(totalTokens, model, peer)
                         }
@@ -384,5 +407,36 @@ public actor WANProvider: InferenceProvider {
             }
             group.cancelAll()
         }
+    }
+
+    private func preparedRemoteRequest(from request: ChatCompletionRequest) async throws -> PreparedPrivacyFilteredRequest {
+        let mode = PrivacyFilterMode.storedDefault()
+        guard mode != .off else {
+            return PreparedPrivacyFilteredRequest(request: request, placeholderMap: [:])
+        }
+        return try await DesktopPrivacyFilter.shared.prepare(request: request)
+    }
+
+    private static func shouldEmit(_ chunk: ChatCompletionChunk) -> Bool {
+        if chunk.usage != nil { return true }
+        if chunk.choices.first?.finishReason != nil { return true }
+        let content = chunk.choices.first?.delta.content ?? ""
+        return !content.isEmpty
+    }
+
+    private static func trailingChunk(
+        from restorer: StreamingPlaceholderRestorer,
+        template: ChatCompletionChunk?
+    ) -> ChatCompletionChunk? {
+        let trailing = restorer.finish()
+        guard !trailing.isEmpty, var chunk = template else { return nil }
+        if chunk.choices.isEmpty {
+            chunk.choices = [.init(index: 0, delta: .init(role: nil, content: trailing), finishReason: nil)]
+        } else {
+            chunk.choices[0].delta.content = trailing
+            chunk.choices[0].finishReason = nil
+        }
+        chunk.usage = nil
+        return chunk
     }
 }

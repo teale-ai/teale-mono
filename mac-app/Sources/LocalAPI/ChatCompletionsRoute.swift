@@ -3,6 +3,7 @@ import Hummingbird
 import NIOCore
 import SharedTypes
 import InferenceEngine
+import PrivacyFilterKit
 
 // MARK: - Chat Completions Route
 
@@ -23,6 +24,7 @@ enum ChatCompletionsRoute {
         }
 
         let isStreaming = chatRequest.stream ?? false
+        let privacyMode = PrivacyFilterMode.storedDefault()
 
         // Local-first gateway fallback. If the request names a specific model
         // that this node can't serve locally AND the user has configured a
@@ -35,18 +37,34 @@ enum ChatCompletionsRoute {
            await !canServeLocally(modelID: requestedModel, engine: engine),
            await !canServeViaPeers(modelID: requestedModel, peerModelProvider: peerModelProvider),
            let fallback = gatewayFallbackConfig() {
+            let prepared = try await preparedRequest(
+                from: chatRequest,
+                shouldFilter: privacyMode != .off
+            )
             return try await proxyToGateway(
-                body: body,
+                prepared: prepared,
                 config: fallback,
                 isStreaming: isStreaming
             )
         }
 
         do {
+            let prepared = try await preparedRequest(
+                from: chatRequest,
+                shouldFilter: privacyMode == .always
+            )
             if isStreaming {
-                return try await handleStreaming(request: chatRequest, engine: engine, onCompleted: onCompleted)
+                return try await handleStreaming(
+                    prepared: prepared,
+                    engine: engine,
+                    onCompleted: onCompleted
+                )
             } else {
-                return try await handleNonStreaming(request: chatRequest, engine: engine, onCompleted: onCompleted)
+                return try await handleNonStreaming(
+                    prepared: prepared,
+                    engine: engine,
+                    onCompleted: onCompleted
+                )
             }
         } catch {
             if isModelError(error) {
@@ -61,19 +79,32 @@ enum ChatCompletionsRoute {
                     body: .init(byteBuffer: .init(data: data))
                 )
             }
+            if error is DesktopPrivacyFilterError {
+                let errorResponse = APIErrorResponse(
+                    message: error.localizedDescription,
+                    type: "service_unavailable"
+                )
+                let data = try JSONEncoder().encode(errorResponse)
+                return Response(
+                    status: .serviceUnavailable,
+                    headers: [.contentType: "application/json"],
+                    body: .init(byteBuffer: .init(data: data))
+                )
+            }
             throw error
         }
     }
 
     private static func handleNonStreaming(
-        request: ChatCompletionRequest,
+        prepared: PreparedPrivacyFilteredRequest,
         engine: InferenceEngineManager,
         onCompleted: RequestCompletedHandler?
     ) async throws -> Response {
-        let response = try await engine.generateFull(request: request)
-        let tokenCount = (response.choices.first?.message.content.count ?? 0) / 4
+        let response = try await engine.generateFull(request: prepared.request)
+        let restored = prepared.restoreResponse(response)
+        let tokenCount = (restored.choices.first?.message.content.count ?? 0) / 4
         await onCompleted?(tokenCount)
-        let data = try JSONEncoder().encode(response)
+        let data = try JSONEncoder().encode(restored)
         return Response(
             status: .ok,
             headers: [.contentType: "application/json"],
@@ -82,20 +113,42 @@ enum ChatCompletionsRoute {
     }
 
     private static func handleStreaming(
-        request: ChatCompletionRequest,
+        prepared: PreparedPrivacyFilteredRequest,
         engine: InferenceEngineManager,
         onCompleted: RequestCompletedHandler?
     ) async throws -> Response {
-        let stream = engine.generate(request: request)
+        let stream = engine.generate(request: prepared.request)
         let encoder = JSONEncoder()
         let completedHandler = onCompleted
+        let restorer = prepared.makeStreamingRestorer()
 
         let responseBody = ResponseBody(contentLength: nil) { writer in
             var tokenCount = 0
+            var lastChunk: ChatCompletionChunk?
             do {
                 for try await chunk in stream {
                     tokenCount += 1
+                    var chunk = chunk
+                    if let restorer {
+                        let terminal = chunk.choices.first?.finishReason != nil
+                        let restoredText = restorer.consume(
+                            chunk.choices.first?.delta.content ?? "",
+                            terminal: terminal
+                        )
+                        if !chunk.choices.isEmpty {
+                            chunk.choices[0].delta.content = restoredText.isEmpty ? nil : restoredText
+                        }
+                    }
+                    guard shouldEmit(chunk: chunk) else { continue }
+                    lastChunk = chunk
                     let data = try encoder.encode(chunk)
+                    if let str = String(data: data, encoding: .utf8) {
+                        try await writer.write(.init(string: "data: \(str)\n\n"))
+                    }
+                }
+                if let restorer,
+                   let trailing = trailingChunk(from: restorer, template: lastChunk) {
+                    let data = try encoder.encode(trailing)
                     if let str = String(data: data, encoding: .utf8) {
                         try await writer.write(.init(string: "data: \(str)\n\n"))
                     }
@@ -170,7 +223,7 @@ enum ChatCompletionsRoute {
     /// streaming requests we pipe the upstream SSE lines back to the local
     /// client; for non-streaming we return the upstream JSON as-is.
     private static func proxyToGateway(
-        body: ByteBuffer,
+        prepared: PreparedPrivacyFilteredRequest,
         config: GatewayFallbackConfig,
         isStreaming: Bool
     ) async throws -> Response {
@@ -178,7 +231,10 @@ enum ChatCompletionsRoute {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        urlRequest.httpBody = Data(buffer: body)
+        if prepared.isFiltered {
+            urlRequest.setValue("1", forHTTPHeaderField: "X-Teale-Privacy-Filtered")
+        }
+        urlRequest.httpBody = try JSONEncoder().encode(prepared.request)
 
         let sessionConfig = URLSessionConfiguration.ephemeral
         sessionConfig.timeoutIntervalForRequest = 30
@@ -189,10 +245,17 @@ enum ChatCompletionsRoute {
         if !isStreaming {
             let (data, response) = try await session.data(for: urlRequest)
             let status = HTTPResponse.Status(code: (response as? HTTPURLResponse)?.statusCode ?? 502)
+            let responseData: Data
+            if prepared.isFiltered,
+               let decoded = try? JSONDecoder().decode(ChatCompletionResponse.self, from: data) {
+                responseData = try JSONEncoder().encode(prepared.restoreResponse(decoded))
+            } else {
+                responseData = data
+            }
             return Response(
                 status: status,
                 headers: [.contentType: "application/json"],
-                body: .init(byteBuffer: .init(bytes: Array(data)))
+                body: .init(byteBuffer: .init(bytes: Array(responseData)))
             )
         }
 
@@ -210,10 +273,49 @@ enum ChatCompletionsRoute {
             )
         }
 
+        let restorer = prepared.makeStreamingRestorer()
         let responseBody = ResponseBody(contentLength: nil) { writer in
             do {
+                var lastChunk: ChatCompletionChunk?
                 for try await line in bytes.lines {
-                    try await writer.write(.init(string: "\(line)\n"))
+                    guard line.hasPrefix("data: ") else {
+                        try await writer.write(.init(string: "\(line)\n"))
+                        continue
+                    }
+
+                    let payload = String(line.dropFirst(6))
+                    if payload == "[DONE]" {
+                        if let restorer,
+                           let trailing = trailingChunk(from: restorer, template: lastChunk) {
+                            let data = try JSONEncoder().encode(trailing)
+                            if let str = String(data: data, encoding: .utf8) {
+                                try await writer.write(.init(string: "data: \(str)\n\n"))
+                            }
+                        }
+                        try await writer.write(.init(string: "data: [DONE]\n"))
+                        continue
+                    }
+
+                    guard let restorer,
+                          var chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: Data(payload.utf8)) else {
+                        try await writer.write(.init(string: "\(line)\n"))
+                        continue
+                    }
+
+                    let terminal = chunk.choices.first?.finishReason != nil
+                    let restoredText = restorer.consume(
+                        chunk.choices.first?.delta.content ?? "",
+                        terminal: terminal
+                    )
+                    if !chunk.choices.isEmpty {
+                        chunk.choices[0].delta.content = restoredText.isEmpty ? nil : restoredText
+                    }
+                    guard shouldEmit(chunk: chunk) else { continue }
+                    lastChunk = chunk
+                    let data = try JSONEncoder().encode(chunk)
+                    if let str = String(data: data, encoding: .utf8) {
+                        try await writer.write(.init(string: "data: \(str)\n"))
+                    }
                 }
             } catch {
                 let errorMsg = "data: {\"error\": \"gateway stream failed: \(error.localizedDescription)\"}\n\n"
@@ -230,5 +332,38 @@ enum ChatCompletionsRoute {
             ],
             body: responseBody
         )
+    }
+
+    private static func preparedRequest(
+        from request: ChatCompletionRequest,
+        shouldFilter: Bool
+    ) async throws -> PreparedPrivacyFilteredRequest {
+        guard shouldFilter else {
+            return PreparedPrivacyFilteredRequest(request: request, placeholderMap: [:])
+        }
+        return try await DesktopPrivacyFilter.shared.prepare(request: request)
+    }
+
+    private static func shouldEmit(chunk: ChatCompletionChunk) -> Bool {
+        if chunk.usage != nil { return true }
+        if chunk.choices.first?.finishReason != nil { return true }
+        let content = chunk.choices.first?.delta.content ?? ""
+        return !content.isEmpty
+    }
+
+    private static func trailingChunk(
+        from restorer: StreamingPlaceholderRestorer,
+        template: ChatCompletionChunk?
+    ) -> ChatCompletionChunk? {
+        let trailing = restorer.finish()
+        guard !trailing.isEmpty, var chunk = template else { return nil }
+        if chunk.choices.isEmpty {
+            chunk.choices = [.init(index: 0, delta: .init(role: nil, content: trailing), finishReason: nil)]
+        } else {
+            chunk.choices[0].delta.content = trailing
+            chunk.choices[0].finishReason = nil
+        }
+        chunk.usage = nil
+        return chunk
     }
 }

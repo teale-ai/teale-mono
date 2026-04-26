@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::privacy_filter::PrivacyFilterMode;
 use crate::windows_model_catalog::{model_by_file_name, WINDOWS_MODEL_CATALOG};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -17,6 +18,8 @@ pub struct PersistedModelRecord {
 pub struct PersistedRegistry {
     #[serde(default)]
     pub active_model_id: Option<String>,
+    #[serde(default)]
+    pub privacy_filter_mode: PrivacyFilterMode,
     #[serde(default)]
     pub models: BTreeMap<String, PersistedModelRecord>,
 }
