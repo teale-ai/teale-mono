@@ -96,8 +96,15 @@ impl StreamingPlaceholderRestorer {
     pub fn new(placeholder_map: HashMap<String, String>) -> Self {
         let mut replacements: Vec<_> = placeholder_map.into_iter().collect();
         replacements.sort_by(|lhs, rhs| rhs.0.len().cmp(&lhs.0.len()));
-        let placeholders = replacements.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
-        let max_placeholder_len = placeholders.iter().map(|value| value.len()).max().unwrap_or(0);
+        let placeholders = replacements
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let max_placeholder_len = placeholders
+            .iter()
+            .map(|value| value.len())
+            .max()
+            .unwrap_or(0);
         Self {
             replacements,
             placeholders,
@@ -205,19 +212,20 @@ impl PlaceholderPlanner {
 
             result.push_str(&text[cursor_byte..start_byte]);
             let semantic_key = format!("{}\u{1f}{}", span.label, span.text);
-            let placeholder = if let Some(existing) = self.placeholder_by_semantic_key.get(&semantic_key) {
-                existing.clone()
-            } else {
-                let prefix = placeholder_prefix(&span.label);
-                let next = self.next_index_by_prefix.entry(prefix.clone()).or_insert(0);
-                *next += 1;
-                let placeholder = format!("<{}_{}>", prefix, *next);
-                self.placeholder_by_semantic_key
-                    .insert(semantic_key, placeholder.clone());
-                self.placeholder_map
-                    .insert(placeholder.clone(), span.text.clone());
-                placeholder
-            };
+            let placeholder =
+                if let Some(existing) = self.placeholder_by_semantic_key.get(&semantic_key) {
+                    existing.clone()
+                } else {
+                    let prefix = placeholder_prefix(&span.label);
+                    let next = self.next_index_by_prefix.entry(prefix.clone()).or_insert(0);
+                    *next += 1;
+                    let placeholder = format!("<{}_{}>", prefix, *next);
+                    self.placeholder_by_semantic_key
+                        .insert(semantic_key, placeholder.clone());
+                    self.placeholder_map
+                        .insert(placeholder.clone(), span.text.clone());
+                    placeholder
+                };
             result.push_str(&placeholder);
             cursor = span.end;
         }
@@ -383,7 +391,11 @@ impl PrivacyFilterService {
         if request.tools.as_ref().is_some_and(|value| !value.is_null()) {
             bail!("privacy filtering currently does not support tool-enabled remote chat");
         }
-        if request.tool_choice.as_ref().is_some_and(|value| !value.is_null()) {
+        if request
+            .tool_choice
+            .as_ref()
+            .is_some_and(|value| !value.is_null())
+        {
             bail!("privacy filtering currently does not support tool-enabled remote chat");
         }
         if request
@@ -394,7 +406,10 @@ impl PrivacyFilterService {
             bail!("privacy filtering currently supports only plain text remote chat");
         }
         for message in &request.messages {
-            if message.tool_calls.as_ref().is_some_and(|value| !value.is_null())
+            if message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|value| !value.is_null())
                 || message.tool_call_id.as_ref().is_some()
             {
                 bail!("privacy filtering currently does not support tool call messages");
@@ -531,8 +546,7 @@ impl PrivacyFilterService {
 }
 
 fn helper_base_url() -> String {
-    std::env::var("TEALE_OPF_HELPER_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:11439".to_string())
+    std::env::var("TEALE_OPF_HELPER_URL").unwrap_or_else(|_| "http://127.0.0.1:11439".to_string())
 }
 
 fn locate_helper_script() -> anyhow::Result<PathBuf> {
@@ -550,9 +564,7 @@ fn locate_helper_script() -> anyhow::Result<PathBuf> {
         }
     }
 
-    Err(anyhow!(
-        "scripts/privacy_filter_helper.py was not found"
-    ))
+    Err(anyhow!("scripts/privacy_filter_helper.py was not found"))
 }
 
 fn candidate_roots() -> Vec<PathBuf> {
@@ -687,7 +699,10 @@ mod tests {
     #[test]
     fn streaming_restorer_does_not_restore_transformed_placeholder() {
         let mut map = HashMap::new();
-        map.insert("<PRIVATE_EMAIL_1>".to_string(), "taylor@example.com".to_string());
+        map.insert(
+            "<PRIVATE_EMAIL_1>".to_string(),
+            "taylor@example.com".to_string(),
+        );
         let mut restorer = StreamingPlaceholderRestorer::new(map);
 
         assert_eq!(

@@ -764,10 +764,7 @@ impl StatusState {
         self.inner.lock().await.registry.privacy_filter_mode
     }
 
-    pub async fn set_privacy_filter_mode(
-        &self,
-        mode: PrivacyFilterMode,
-    ) -> anyhow::Result<()> {
+    pub async fn set_privacy_filter_mode(&self, mode: PrivacyFilterMode) -> anyhow::Result<()> {
         let mut inner = self.inner.lock().await;
         inner.registry.privacy_filter_mode = mode;
         self.registry_store.save(&inner.registry)?;
@@ -1889,7 +1886,10 @@ fn restore_stream_payload(
         return;
     };
 
-    let Some(delta) = choice.get_mut("delta").and_then(|value| value.as_object_mut()) else {
+    let Some(delta) = choice
+        .get_mut("delta")
+        .and_then(|value| value.as_object_mut())
+    else {
         if terminal {
             let trailing = restorer.consume("", true);
             if !trailing.is_empty() {
