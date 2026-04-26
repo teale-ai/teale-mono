@@ -62,7 +62,10 @@ struct CompanionRootView: View {
         case .wallet:
             CompanionWalletView()
         case .account:
-            CompanionAccountView()
+            CompanionAccountView(onSendDevice: { deviceID in
+                gatewayState.stageWalletRecipient(deviceID)
+                activeTab = .wallet
+            })
         }
     }
 }

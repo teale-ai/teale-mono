@@ -126,6 +126,7 @@ final class CompanionAppState {
     let toolRegistry: ToolRegistry
     private(set) var heartbeatScheduler: HeartbeatScheduler?
     private(set) var autoTopUpScheduler: AutoTopUpScheduler?
+    let gatewayAccount: GatewayAccountCoordinator
 
     // Wallet
     var walletBalance: Double = 0.0
@@ -170,6 +171,7 @@ final class CompanionAppState {
         self.currentUserID = chatUserID
         self.chatService = ChatService(currentUserID: chatUserID, localNodeID: UUID().uuidString)
         self.toolRegistry = ToolRegistry()
+        self.gatewayAccount = GatewayAccountCoordinator()
 
         // Migrate stale relay URLs from previous versions
         if wanRelayURL.contains("teale.network") || wanRelayURL.isEmpty {

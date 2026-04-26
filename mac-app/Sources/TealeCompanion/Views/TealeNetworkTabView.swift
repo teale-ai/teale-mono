@@ -405,6 +405,19 @@ private struct WalletSheet: View {
         NavigationStack {
             List {
                 Section {
+                    Button {
+                        state.copyDeviceIDToClipboard()
+                    } label: {
+                        HStack {
+                            Text("Device ID").foregroundStyle(.secondary)
+                            Spacer()
+                            Text(deviceShort(state.deviceID))
+                                .font(.system(.body, design: .monospaced).weight(.semibold))
+                                .foregroundStyle(Color.teale)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
                     HStack {
                         Text("Balance").foregroundStyle(.secondary)
                         Spacer()

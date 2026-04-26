@@ -8,8 +8,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -34,6 +36,14 @@ data class LedgerEntry(
 
 @Serializable
 data class TransactionsRes(val transactions: List<LedgerEntry>)
+
+@Serializable
+data class WalletSendRequest(
+    val asset: String,
+    val recipient: String,
+    val amount: Long,
+    val memo: String? = null,
+)
 
 class WalletRepository(
     private val baseUrl: String,
@@ -81,4 +91,40 @@ class WalletRepository(
     }
 
     fun currentBalance(): BalanceSnapshot? = _balance.value
+
+    fun currentDeviceID(): String? = _balance.value?.deviceID
+
+    suspend fun sendCredits(
+        recipient: String,
+        amount: Long,
+        memo: String? = null,
+    ) = withContext(Dispatchers.IO) {
+        val token = tokenClient.bearer()
+        val payload = json.encodeToString(
+            WalletSendRequest.serializer(),
+            WalletSendRequest(
+                asset = "credits",
+                recipient = recipient,
+                amount = amount,
+                memo = memo?.takeIf { it.isNotBlank() },
+            )
+        )
+        val req = Request.Builder()
+            .url("$baseUrl/v1/wallet/send")
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Content-Type", "application/json")
+            .post(payload.toRequestBody("application/json".toMediaType()))
+            .build()
+        http.newCall(req).execute().use { response ->
+            if (response.code == 401) {
+                tokenClient.invalidate()
+            }
+            if (!response.isSuccessful) {
+                error(response.body?.string().orEmpty().ifBlank {
+                    "wallet send failed: ${response.code}"
+                })
+            }
+        }
+        refresh()
+    }
 }

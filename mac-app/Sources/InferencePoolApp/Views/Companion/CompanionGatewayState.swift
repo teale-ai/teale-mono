@@ -9,13 +9,21 @@ final class CompanionGatewayState {
     var networkModels: [CompanionNetworkModelSummary] = []
     var networkStats: CompanionGatewayNetworkStats?
     var bearerToken: String = ""
+    var accountSummary: CompanionGatewayAccountSummary?
+    var pendingWalletRecipient: String?
+    var isLoadingAccountDevices = false
     var lastModelRefreshError: String?
     var lastStatsRefreshError: String?
+    var lastAccountRefreshError: String?
 
     private var authClient: GatewayAuthClient?
+    private var accountClient: CompanionGatewayAccountClient?
     private var authBaseURL: URL?
     private var modelsFetchedAt: Date?
     private var statsFetchedAt: Date?
+    private var accountFetchedAt: Date?
+    private var accountLinkedAt: Date?
+    private var linkedAccountUserID: String?
 
     func refresh(appState: AppState, force: Bool = false) async {
         let rootURL = companionGatewayRootURL(for: appState.gatewayFallbackURL)
@@ -23,12 +31,17 @@ final class CompanionGatewayState {
         if authBaseURL != rootURL || authClient == nil {
             authBaseURL = rootURL
             authClient = GatewayAuthClient(baseURL: rootURL)
+            accountClient = authClient.map { CompanionGatewayAccountClient(authClient: $0) }
             modelsFetchedAt = nil
             statsFetchedAt = nil
+            accountFetchedAt = nil
+            accountLinkedAt = nil
         }
 
         let token = await ensureBearer(appState: appState)
         let now = Date()
+
+        await refreshAccount(appState: appState, now: now, force: force)
 
         if force || shouldRefresh(lastFetchedAt: modelsFetchedAt, now: now, interval: 10) {
             await refreshModels(baseURL: apiBaseURL, bearerToken: token)
@@ -43,6 +56,20 @@ final class CompanionGatewayState {
 
     var selectedNetworkModelID: String {
         networkModels.first?.id ?? "teale/auto"
+    }
+
+    var localDeviceID: String {
+        GatewayIdentity.shared.deviceID
+    }
+
+    func stageWalletRecipient(_ recipient: String) {
+        pendingWalletRecipient = recipient
+    }
+
+    func consumePendingWalletRecipient() -> String? {
+        let recipient = pendingWalletRecipient
+        pendingWalletRecipient = nil
+        return recipient
     }
 
     private func ensureBearer(appState: AppState) async -> String? {
@@ -134,6 +161,67 @@ final class CompanionGatewayState {
     private func shouldRefresh(lastFetchedAt: Date?, now: Date, interval: TimeInterval) -> Bool {
         guard let lastFetchedAt else { return true }
         return now.timeIntervalSince(lastFetchedAt) >= interval
+    }
+
+    private func refreshAccount(appState: AppState, now: Date, force: Bool) async {
+        guard let authManager = appState.authManager,
+              let user = authManager.currentUser,
+              authManager.authState.isAuthenticated else {
+            clearAccountState()
+            return
+        }
+
+        guard let accountClient else { return }
+
+        let accountUserID = user.id.uuidString
+        let shouldLink = force
+            || linkedAccountUserID != accountUserID
+            || shouldRefresh(lastFetchedAt: accountLinkedAt, now: now, interval: 60)
+        let shouldFetch = force
+            || shouldRefresh(lastFetchedAt: accountFetchedAt, now: now, interval: 12)
+
+        guard shouldLink || shouldFetch else { return }
+
+        isLoadingAccountDevices = true
+        defer { isLoadingAccountDevices = false }
+
+        do {
+            if shouldLink {
+                let summary = try await accountClient.linkAccount(
+                    CompanionGatewayAccountLinkRequest(
+                        accountUserID: accountUserID,
+                        deviceName: appState.companionDeviceName,
+                        platform: "macos",
+                        displayName: user.displayName,
+                        phone: user.phone,
+                        email: user.email,
+                        githubUsername: nil
+                    )
+                )
+                accountSummary = summary
+                linkedAccountUserID = accountUserID
+                accountLinkedAt = now
+                accountFetchedAt = now
+            }
+
+            if shouldFetch && !shouldLink {
+                accountSummary = try await accountClient.fetchAccountSummary()
+                accountFetchedAt = now
+            }
+
+            lastAccountRefreshError = nil
+        } catch {
+            lastAccountRefreshError = error.localizedDescription
+        }
+    }
+
+    private func clearAccountState() {
+        accountSummary = nil
+        lastAccountRefreshError = nil
+        isLoadingAccountDevices = false
+        accountFetchedAt = nil
+        accountLinkedAt = nil
+        linkedAccountUserID = nil
     }
 
     private func getJSON<T: Decodable>(url: URL, bearerToken: String? = nil) async throws -> T {

@@ -1,12 +1,16 @@
 import SwiftUI
 import AppCore
 import AuthKit
+import AppKit
 import SharedTypes
 
 struct CompanionAccountView: View {
     @Environment(AppState.self) private var appState
+    @Environment(CompanionGatewayState.self) private var gatewayState
     @Environment(\.openURL) private var openURL
     @State private var authNotice: String?
+
+    let onSendDevice: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -206,14 +210,27 @@ struct CompanionAccountView: View {
                 Text(appState.companionText("account.viewDevicesSignedOut", fallback: "Sign in to view devices on this account."))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
-            } else if let devices = authManager?.devices, !devices.isEmpty {
+            } else if gatewayState.isLoadingAccountDevices && gatewayState.accountSummary == nil && gatewayState.lastAccountRefreshError == nil {
+                Text(appState.companionText("account.gatewayDevicesLoading", fallback: "Loading Teale device wallets for this account..."))
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+            } else if let error = gatewayState.lastAccountRefreshError, gatewayState.accountSummary == nil {
+                Text("\(appState.companionText("account.gatewayDevicesUnavailable", fallback: "Could not load Teale device wallets for this account.")) \(error)")
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.warn)
+            } else if let devices = gatewayState.accountSummary?.devices, !devices.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
+                    if let error = gatewayState.lastAccountRefreshError, !error.isEmpty {
+                        Text("\(appState.companionText("account.gatewayDevicesUnavailable", fallback: "Could not load Teale device wallets for this account.")) \(error)")
+                            .font(TealeDesign.monoSmall)
+                            .foregroundStyle(TealeDesign.warn)
+                    }
                     ForEach(devices, id: \.id) { device in
-                        DeviceRow(device: device)
+                        GatewayDeviceRow(device: device, onSendDevice: onSendDevice)
                     }
                 }
             } else {
-                Text(appState.companionText("account.noDevices", fallback: "No linked devices found yet."))
+                Text(appState.companionText("account.noGatewayDevices", fallback: "No Teale device wallets are linked to this account yet."))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
             }
@@ -236,34 +253,84 @@ struct CompanionAccountView: View {
     }
 }
 
-private struct DeviceRow: View {
-    let device: DeviceRecord
+private struct GatewayDeviceRow: View {
+    @Environment(AppState.self) private var appState
+    @Environment(CompanionGatewayState.self) private var gatewayState
+
+    let device: CompanionGatewayAccountDevice
+    let onSendDevice: (String) -> Void
+
+    @State private var copied = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(device.deviceName)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.deviceName ?? companionTruncatedIdentifier(device.deviceID))
+                        .font(TealeDesign.mono)
+                        .foregroundStyle(TealeDesign.text)
+                    Text(platformLine)
+                        .font(TealeDesign.monoTiny)
+                        .foregroundStyle(TealeDesign.muted)
+                }
+                Spacer(minLength: 8)
+                Text(appState.companionDisplayAmountString(credits: device.walletBalanceCredits, compact: true))
                     .font(TealeDesign.mono)
-                    .foregroundStyle(TealeDesign.text)
-                Text(detailLine)
-                    .font(TealeDesign.monoTiny)
-                    .foregroundStyle(TealeDesign.muted)
+                    .foregroundStyle(TealeDesign.teale)
             }
-            Spacer(minLength: 8)
-            Text(device.platform.rawValue)
-                .font(TealeDesign.monoTiny)
-                .foregroundStyle(TealeDesign.teale)
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.companionText("account.gatewayDeviceID", fallback: "Teale device ID").uppercased())
+                        .font(TealeDesign.monoSmall)
+                        .tracking(0.9)
+                        .foregroundStyle(TealeDesign.muted)
+                    Button(action: copyDeviceID) {
+                        Text(companionTruncatedIdentifier(device.deviceID))
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.teale)
+                    }
+                    .buttonStyle(.plain)
+
+                    Text(copied
+                        ? appState.companionText("account.gatewayDeviceCopied", fallback: "Device ID copied.")
+                        : appState.companionText("account.gatewayDeviceNote", fallback: "Use this ID as the wallet recipient for bearer-token devices on your account."))
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(TealeDesign.muted)
+                }
+
+                Spacer(minLength: 12)
+
+                TealeActionButton(title: appState.companionText("account.sendToDevice", fallback: "send credits")) {
+                    onSendDevice(device.deviceID)
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(Rectangle().stroke(TealeDesign.border.opacity(0.6), lineWidth: 1))
     }
 
-    private var detailLine: String {
-        var parts: [String] = []
-        if let chip = device.chipName { parts.append(chip) }
-        if let ram = device.ramGB { parts.append("\(ram) GB") }
-        parts.append(device.id.uuidString.prefix(8).description)
-        return parts.joined(separator: " · ")
+    private var platformLine: String {
+        let platform = device.platform ?? "device"
+        let relativeText = RelativeDateTimeFormatter().localizedString(for: lastSeenDate, relativeTo: Date())
+        if device.deviceID == gatewayState.localDeviceID {
+            return "\(platform) · \(appState.companionText("account.thisDevice", fallback: "This device")) · \(relativeText)"
+        }
+        return "\(platform) · \(relativeText)"
+    }
+
+    private var lastSeenDate: Date {
+        Date(timeIntervalSince1970: TimeInterval(device.lastSeen))
+    }
+
+    private func copyDeviceID() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(device.deviceID, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
+        }
     }
 }
