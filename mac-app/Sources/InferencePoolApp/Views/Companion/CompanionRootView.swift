@@ -9,13 +9,21 @@ struct CompanionRootView: View {
     @Environment(AppState.self) private var appState
     @State private var activeTab: CompanionTab = .home
     @State private var gatewayState = CompanionGatewayState()
+    @State private var refreshNonce = 0
+    @State private var headerRefreshInFlight = false
 
     var body: some View {
         ZStack {
             TealeDesign.pageBackground
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    TealeNavBar(activeTab: $activeTab)
+                    TealeNavBar(
+                        activeTab: $activeTab,
+                        isRefreshing: headerRefreshInFlight,
+                        onRefresh: {
+                            Task { await refreshFromHeader() }
+                        }
+                    )
                     TealeHeaderLine(activeTab: activeTab)
                     if shouldShowUpdateBanner {
                         CompanionUpdateBanner()
@@ -60,13 +68,19 @@ struct CompanionRootView: View {
         case .demand:
             CompanionDemandView()
         case .wallet:
-            CompanionWalletView()
+            CompanionWalletView(refreshNonce: refreshNonce)
         case .account:
-            CompanionAccountView(onSendDevice: { deviceID in
-                gatewayState.stageWalletRecipient(deviceID)
-                activeTab = .wallet
-            })
+            CompanionAccountView(refreshNonce: refreshNonce)
         }
+    }
+
+    @MainActor
+    private func refreshFromHeader() async {
+        guard !headerRefreshInFlight else { return }
+        headerRefreshInFlight = true
+        await gatewayState.refresh(appState: appState, force: true)
+        refreshNonce &+= 1
+        headerRefreshInFlight = false
     }
 }
 
@@ -189,6 +203,8 @@ private struct TealeNavBar: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openURL) private var openURL
     @Binding var activeTab: CompanionTab
+    let isRefreshing: Bool
+    let onRefresh: () -> Void
     @State private var shareButtonLabel = "share"
     @State private var isSettingsMenuOpen = false
     @State private var privacyStatus = PrivacyHelperStatus(state: .disabled)
@@ -222,6 +238,12 @@ private struct TealeNavBar: View {
                 isSettingsMenuOpen = false
                 copyShareText()
             }
+            Button(action: onRefresh) {
+                HeaderIconButton(systemImage: "arrow.clockwise")
+                    .opacity(isRefreshing ? 0.6 : 1.0)
+            }
+            .buttonStyle(.plain)
+            .disabled(isRefreshing)
             settingsMenu
         }
         .zIndex(20)
@@ -322,6 +344,13 @@ private struct TealeNavBar: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            Rectangle()
+                .fill(TealeDesign.border)
+                .frame(height: 1)
+                .padding(.vertical, 4)
+
+            updaterSection
         }
         .padding(12)
         .background(
@@ -341,6 +370,109 @@ private struct TealeNavBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .fixedSize()
         .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 8)
+    }
+
+    private var checker: UpdateChecker {
+        appState.updateChecker
+    }
+
+    private var updaterSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(appState.companionText("settings.updates", fallback: "updates"))
+                .font(TealeDesign.monoSmall)
+                .foregroundStyle(TealeDesign.muted)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(appState.companionText("account.currentVersion", fallback: "Current version").uppercased())
+                    .font(TealeDesign.monoTiny)
+                    .foregroundStyle(TealeDesign.muted)
+                Text(checker.currentVersionLabel)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.text)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(appState.companionText("account.updateStatus", fallback: "Update status").uppercased())
+                    .font(TealeDesign.monoTiny)
+                    .foregroundStyle(TealeDesign.muted)
+                Text(checker.statusSummary)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.text)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            TealeToggleRow(
+                title: appState.companionText(
+                    "account.autoDownloadUpdates",
+                    fallback: "download updates automatically"
+                ),
+                detail: appState.companionText(
+                    "settings.autoDownloadUpdatesDetail",
+                    fallback: "Background download on new macOS releases."
+                ),
+                isOn: Binding(
+                    get: { checker.autoDownloadEnabled },
+                    set: { checker.autoDownloadEnabled = $0 }
+                )
+            )
+
+            TealeToggleRow(
+                title: appState.companionText(
+                    "account.autoInstallUpdates",
+                    fallback: "install after download"
+                ),
+                detail: appState.companionText(
+                    "settings.autoInstallUpdatesDetail",
+                    fallback: "Replace Teale.app and relaunch when the download finishes."
+                ),
+                isOn: Binding(
+                    get: { checker.autoInstallEnabled },
+                    set: { checker.autoInstallEnabled = $0 }
+                )
+            )
+
+            HStack(spacing: 8) {
+                TealeActionButton(
+                    title: checker.checking ? "checking..." : appState.companionText("account.checkUpdates", fallback: "check now"),
+                    primary: true,
+                    disabled: checker.checking || checker.installing
+                ) {
+                    Task {
+                        await checker.check()
+                    }
+                }
+
+                if checker.updateAvailable || checker.downloadedUpdateReady {
+                    TealeActionButton(
+                        title: updaterInstallButtonTitle,
+                        disabled: checker.installing || checker.downloading
+                    ) {
+                        Task {
+                            _ = await checker.installUpdate()
+                        }
+                    }
+                }
+
+                if let releaseURL = checker.releaseURL {
+                    TealeActionButton(title: appState.companionText("account.viewRelease", fallback: "view release")) {
+                        openURL(releaseURL)
+                    }
+                }
+            }
+        }
+    }
+
+    private var updaterInstallButtonTitle: String {
+        if checker.installing {
+            return appState.companionText("account.installingUpdate", fallback: "installing...")
+        }
+        if checker.downloading {
+            return appState.companionText("account.downloadingUpdate", fallback: "downloading...")
+        }
+        if checker.downloadedUpdateReady {
+            return appState.companionText("account.installDownloadedUpdate", fallback: "install downloaded update")
+        }
+        return appState.companionText("account.installUpdate", fallback: "install update")
     }
 
     private func privacyModeLabel(_ mode: PrivacyFilterMode) -> String {
@@ -464,7 +596,7 @@ private struct TealeHeaderLine: View {
         case .wallet:
             return appState.companionText("header.wallet", fallback: "device balances, send assets, and ledger history")
         case .account:
-            return appState.companionText("header.account", fallback: "account details, balances, and linked devices")
+            return appState.companionText("header.account", fallback: "account wallet, linked device wallets, and profile details")
         }
     }
 }
