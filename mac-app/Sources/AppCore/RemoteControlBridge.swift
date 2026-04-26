@@ -5,6 +5,7 @@ import LlamaCppKit
 import TealeNetKit
 import AgentKit
 import AuthKit
+import PrivacyFilterKit
 
 @MainActor
 final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
@@ -18,6 +19,7 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         await appState.refreshDownloadedModels()
 
         let loadedModel = await appState.engine.loadedModel
+        let privacyStatus = await DesktopPrivacyFilter.shared.status(for: appState.privacyFilterMode)
         let compatibleModels = appState.modelManager.compatibleModels
         let downloaded = appState.downloadedModelIDs
         let downloading = appState.modelManager.downloadingModels
@@ -59,6 +61,9 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
                 keepAwake: appState.keepAwake,
                 autoManageModels: appState.autoManageModels,
                 inferenceBackend: appState.inferenceBackend.rawValue,
+                privacyFilterMode: appState.privacyFilterMode.rawValue,
+                privacyFilterStatus: privacyStatus.state.rawValue,
+                privacyFilterDetail: privacyStatus.detail,
                 language: appState.language.rawValue
             ),
             models: models
@@ -208,6 +213,14 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
                 throw RemoteControlError.invalidSetting("inference_backend must be one of: \(valid)")
             }
             appState.inferenceBackend = value
+        }
+
+        if let privacyFilterMode = update.privacyFilterMode {
+            guard let value = PrivacyFilterMode(rawValue: privacyFilterMode) else {
+                let valid = PrivacyFilterMode.allCases.map(\.rawValue).joined(separator: ", ")
+                throw RemoteControlError.invalidSetting("privacy_filter_mode must be one of: \(valid)")
+            }
+            appState.privacyFilterMode = value
         }
 
         if let lang = update.language {

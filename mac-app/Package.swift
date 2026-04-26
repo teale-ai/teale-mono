@@ -103,6 +103,7 @@ let package = Package(
                 "SharedTypes",
                 "HardwareProfile",
                 "ClusterKit",
+                "PrivacyFilterKit",
             ]
         ),
 
@@ -171,12 +172,21 @@ let package = Package(
             ]
         ),
 
+        // MARK: - PrivacyFilterKit (desktop-local OPF orchestration)
+        .target(
+            name: "PrivacyFilterKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
         // MARK: - LocalAPI
         .target(
             name: "LocalAPI",
             dependencies: [
                 "SharedTypes",
                 "InferenceEngine",
+                "PrivacyFilterKit",
                 .product(name: "Hummingbird", package: "hummingbird"),
             ]
         ),
@@ -197,6 +207,7 @@ let package = Package(
                 "WANKit",
                 "CreditKit",
                 "WalletKit",
+                "PrivacyFilterKit",
                 "AgentKit",
                 "AuthKit",
                 "ChatKit",
@@ -310,6 +321,10 @@ let package = Package(
         .testTarget(
             name: "WANKitTests",
             dependencies: ["WANKit"]
+        ),
+        .testTarget(
+            name: "PrivacyFilterKitTests",
+            dependencies: ["PrivacyFilterKit"]
         ),
         .testTarget(
             name: "CreditKitTests",

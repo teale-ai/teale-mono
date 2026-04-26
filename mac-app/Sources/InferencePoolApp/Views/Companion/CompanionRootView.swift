@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import PrivacyFilterKit
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -187,6 +188,7 @@ private struct TealeNavBar: View {
     @Binding var activeTab: CompanionTab
     @State private var shareButtonLabel = "share"
     @State private var isSettingsMenuOpen = false
+    @State private var privacyStatus = PrivacyHelperStatus(state: .disabled)
 
     var body: some View {
         HStack(spacing: 10) {
@@ -229,6 +231,14 @@ private struct TealeNavBar: View {
             HeaderIconButton(systemImage: "gearshape")
         }
         .buttonStyle(.plain)
+        .task(id: isSettingsMenuOpen) {
+            guard isSettingsMenuOpen else { return }
+            await refreshPrivacyStatus()
+        }
+        .task(id: appState.privacyFilterMode) {
+            guard isSettingsMenuOpen else { return }
+            await refreshPrivacyStatus()
+        }
         .overlay(alignment: .topTrailing) {
             if isSettingsMenuOpen {
                 settingsPopover
@@ -251,6 +261,46 @@ private struct TealeNavBar: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            Rectangle()
+                .fill(TealeDesign.border)
+                .frame(height: 1)
+                .padding(.vertical, 4)
+
+            Text("privacy")
+                .font(TealeDesign.monoSmall)
+                .foregroundStyle(TealeDesign.muted)
+
+            ForEach(PrivacyFilterMode.allCases) { mode in
+                Button {
+                    appState.privacyFilterMode = mode
+                    Task { await refreshPrivacyStatus() }
+                } label: {
+                    SettingsMenuItemLabel(
+                        title: privacyModeLabel(mode),
+                        isSelected: appState.privacyFilterMode == mode
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                Text("helper")
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(privacyStatusLabel)
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(privacyStatusColor)
+                    if let detail = privacyStatus.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(TealeDesign.monoTiny)
+                            .foregroundStyle(TealeDesign.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
 
             Rectangle()
                 .fill(TealeDesign.border)
@@ -288,6 +338,45 @@ private struct TealeNavBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .fixedSize()
         .shadow(color: .black.opacity(0.25), radius: 16, x: 0, y: 8)
+    }
+
+    private func privacyModeLabel(_ mode: PrivacyFilterMode) -> String {
+        switch mode {
+        case .off:
+            return "privacy: off"
+        case .autoWAN:
+            return "privacy: wan auto"
+        case .always:
+            return "privacy: always"
+        }
+    }
+
+    private var privacyStatusLabel: String {
+        switch privacyStatus.state {
+        case .disabled:
+            return "disabled"
+        case .unsupported:
+            return "unsupported"
+        case .ready:
+            return "ready"
+        case .unavailable:
+            return "unavailable"
+        }
+    }
+
+    private var privacyStatusColor: Color {
+        switch privacyStatus.state {
+        case .ready:
+            return TealeDesign.teale
+        case .unavailable, .unsupported:
+            return TealeDesign.warn
+        case .disabled:
+            return TealeDesign.muted
+        }
+    }
+
+    private func refreshPrivacyStatus() async {
+        privacyStatus = await DesktopPrivacyFilter.shared.status(for: appState.privacyFilterMode)
     }
 
     private func copyShareText() {

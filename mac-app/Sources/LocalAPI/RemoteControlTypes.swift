@@ -149,6 +149,9 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
     public var keepAwake: Bool
     public var autoManageModels: Bool
     public var inferenceBackend: String
+    public var privacyFilterMode: String
+    public var privacyFilterStatus: String
+    public var privacyFilterDetail: String?
     public var language: String
 
     public init(
@@ -169,6 +172,9 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
         keepAwake: Bool = false,
         autoManageModels: Bool = false,
         inferenceBackend: String = "local_mlx",
+        privacyFilterMode: String = "off",
+        privacyFilterStatus: String = "disabled",
+        privacyFilterDetail: String? = nil,
         language: String = "en"
     ) {
         self.clusterEnabled = clusterEnabled
@@ -188,6 +194,9 @@ public struct RemoteSettingsSnapshot: Codable, Sendable {
         self.keepAwake = keepAwake
         self.autoManageModels = autoManageModels
         self.inferenceBackend = inferenceBackend
+        self.privacyFilterMode = privacyFilterMode
+        self.privacyFilterStatus = privacyFilterStatus
+        self.privacyFilterDetail = privacyFilterDetail
         self.language = language
     }
 }
@@ -246,6 +255,7 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
     public var keepAwake: Bool?
     public var autoManageModels: Bool?
     public var inferenceBackend: String?
+    public var privacyFilterMode: String?
     public var language: String?
 
     enum CodingKeys: String, CodingKey {
@@ -262,6 +272,7 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         case keepAwake = "keep_awake"
         case autoManageModels = "auto_manage_models"
         case inferenceBackend = "inference_backend"
+        case privacyFilterMode = "privacy_filter_mode"
         case language
     }
 
@@ -279,6 +290,7 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         keepAwake: Bool? = nil,
         autoManageModels: Bool? = nil,
         inferenceBackend: String? = nil,
+        privacyFilterMode: String? = nil,
         language: String? = nil
     ) {
         self.clusterEnabled = clusterEnabled
@@ -294,6 +306,7 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         self.keepAwake = keepAwake
         self.autoManageModels = autoManageModels
         self.inferenceBackend = inferenceBackend
+        self.privacyFilterMode = privacyFilterMode
         self.language = language
     }
 }

@@ -17,6 +17,7 @@ import LlamaCppKit
 import TealeNetKit
 import CompilerKit
 import ChatKit
+import PrivacyFilterKit
 
 // MARK: - App State
 
@@ -271,6 +272,9 @@ public final class AppState {
     /// migrating to the Keychain.
     public var gatewayAPIKey: String = UserDefaults.standard.string(forKey: gatewayAPIKeyKey) ?? "" {
         didSet { UserDefaults.standard.set(gatewayAPIKey, forKey: Self.gatewayAPIKeyKey) }
+    }
+    public var privacyFilterMode: PrivacyFilterMode = .storedDefault() {
+        didSet { privacyFilterMode.persist() }
     }
     public var maxStorageGB: Double = UserDefaults.standard.object(forKey: Preferences.maxStorageGB) as? Double ?? 50.0 {
         didSet {

@@ -25,6 +25,10 @@ use crate::cluster::NodeRuntimeState;
 use crate::config::{ControlConfig, LlamaConfig};
 use crate::hardware::HardwareCapability;
 use crate::model_registry::{PersistedRegistry, RegistryStore};
+use crate::privacy_filter::{
+    PreparedPrivacyRequest, PrivacyFilterMode, PrivacyFilterService, PrivacyFilterSnapshot,
+    StreamingPlaceholderRestorer,
+};
 use crate::swap::SwapManager;
 use crate::windows_model_catalog::{
     compatible_models, context_for_model, model_by_id, recommended_model, WindowsCatalogModel,
@@ -247,6 +251,7 @@ pub struct AppSnapshot {
     pub device: DeviceSnapshot,
     pub auth: AuthConfigSnapshot,
     pub demand: DemandSnapshot,
+    pub privacy_filter: PrivacyFilterSnapshot,
     pub wallet: WalletSnapshot,
     pub wallet_transactions: Vec<WalletTransactionSnapshot>,
     pub loaded_model_id: Option<String>,
@@ -305,6 +310,11 @@ struct AppChatRequest {
     provider: ChatProvider,
     #[serde(flatten)]
     request: ChatCompletionRequest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PrivacyFilterModeUpdateRequest {
+    mode: PrivacyFilterMode,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -459,7 +469,7 @@ impl InFlightTransfer {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct RuntimeInner {
     registry: PersistedRegistry,
     download_progress: HashMap<String, f64>,
@@ -488,6 +498,7 @@ pub struct StatusState {
     control: ControlConfig,
     relay_url: String,
     node_state: Arc<NodeRuntimeState>,
+    privacy_filter: PrivacyFilterService,
     inner: Arc<Mutex<RuntimeInner>>,
 }
 
@@ -518,6 +529,7 @@ impl StatusState {
             control,
             relay_url,
             node_state,
+            privacy_filter: PrivacyFilterService::new().expect("privacy filter client init"),
             inner: Arc::new(Mutex::new(RuntimeInner {
                 registry,
                 initializing,
@@ -542,9 +554,13 @@ impl StatusState {
         let current_model_id = self.swap.current_model_id().await;
         let recommended = recommended_model(self.hardware.total_ram_gb).map(|m| m.id.to_string());
         let on_ac = self.node_state.on_ac_power.load(Ordering::SeqCst);
-        let inner = self.inner.lock().await;
+        let inner = self.inner.lock().await.clone();
         let service_state = self.resolve_state(&inner, current_model_id.as_deref(), on_ac);
         let state_reason = self.state_reason(&inner, service_state);
+        let privacy_filter = self
+            .privacy_filter
+            .snapshot(inner.registry.privacy_filter_mode)
+            .await;
 
         AppSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -558,6 +574,7 @@ impl StatusState {
             },
             auth: self.auth_snapshot(),
             demand: self.demand_snapshot(&inner, current_model_id.clone()),
+            privacy_filter,
             wallet: self.wallet_snapshot(&inner, service_state, current_model_id.as_deref()),
             wallet_transactions: inner.wallet_transactions.clone(),
             loaded_model_id: current_model_id.clone(),
@@ -741,6 +758,20 @@ impl StatusState {
 
     pub async fn set_gateway_wallet_error(&self, message: impl Into<String>) {
         self.inner.lock().await.gateway_wallet_error = Some(message.into());
+    }
+
+    pub async fn privacy_filter_mode(&self) -> PrivacyFilterMode {
+        self.inner.lock().await.registry.privacy_filter_mode
+    }
+
+    pub async fn set_privacy_filter_mode(
+        &self,
+        mode: PrivacyFilterMode,
+    ) -> anyhow::Result<()> {
+        let mut inner = self.inner.lock().await;
+        inner.registry.privacy_filter_mode = mode;
+        self.registry_store.save(&inner.registry)?;
+        Ok(())
     }
 
     fn validate_catalog_model(&self, model_id: &str) -> anyhow::Result<WindowsCatalogModel> {
@@ -1599,7 +1630,7 @@ async fn read_http_request(
 async fn proxy_chat_completion(
     body: &[u8],
     state: Arc<StatusState>,
-) -> Result<reqwest::Response, (&'static str, String)> {
+) -> Result<ProxiedChatResponse, (&'static str, String)> {
     let payload: AppChatRequest = serde_json::from_slice(body)
         .map_err(|e| ("400 Bad Request", format!("invalid chat payload: {e}")))?;
 
@@ -1607,7 +1638,7 @@ async fn proxy_chat_completion(
     request.stream = Some(true);
     request.stream_options = Some(json!({ "include_usage": true }));
 
-    let (url, bearer_token) = match payload.provider {
+    let (url, bearer_token, prepared) = match payload.provider {
         ChatProvider::Local => {
             let loaded_model_id = state
                 .swap
@@ -1620,7 +1651,14 @@ async fn proxy_chat_completion(
                 .as_ref()
                 .map(|config| config.port)
                 .unwrap_or(11436);
-            (format!("http://127.0.0.1:{port}/v1/chat/completions"), None)
+            (
+                format!("http://127.0.0.1:{port}/v1/chat/completions"),
+                None,
+                PreparedPrivacyRequest {
+                    request,
+                    placeholder_map: HashMap::new(),
+                },
+            )
         }
         ChatProvider::Network => {
             if request
@@ -1638,12 +1676,19 @@ async fn proxy_chat_completion(
                 .gateway_device_token()
                 .await
                 .map_err(|e| ("409 Conflict", e.to_string()))?;
+            let mode = state.privacy_filter_mode().await;
+            let prepared = state
+                .privacy_filter
+                .prepare_request(request, mode)
+                .await
+                .map_err(map_privacy_prepare_error)?;
             (
                 format!(
                     "{}/chat/completions",
                     relay_to_gateway_base_url(&state.relay_url)
                 ),
                 Some(token),
+                prepared,
             )
         }
     };
@@ -1657,9 +1702,12 @@ async fn proxy_chat_completion(
     let mut builder = client
         .post(&url)
         .header("Accept", "text/event-stream")
-        .json(&request);
+        .json(&prepared.request);
     if let Some(token) = bearer_token {
         builder = builder.bearer_auth(token);
+    }
+    if prepared.is_filtered() {
+        builder = builder.header("X-Teale-Privacy-Filtered", "1");
     }
 
     let response = builder
@@ -1682,12 +1730,21 @@ async fn proxy_chat_completion(
         ));
     }
 
-    Ok(response)
+    Ok(ProxiedChatResponse {
+        response,
+        restorer: prepared.streaming_restorer(),
+    })
+}
+
+#[derive(Debug)]
+struct ProxiedChatResponse {
+    response: reqwest::Response,
+    restorer: Option<StreamingPlaceholderRestorer>,
 }
 
 async fn write_sse_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
-    response: reqwest::Response,
+    proxied: ProxiedChatResponse,
 ) -> Result<(), (&'static str, String)> {
     let headers = concat!(
         "HTTP/1.1 200 OK\r\n",
@@ -1708,13 +1765,24 @@ async fn write_sse_response<W: AsyncWrite + Unpin>(
         )
     })?;
 
-    let mut stream = response.bytes_stream();
+    let mut restorer = proxied.restorer;
+    let mut stream = proxied.response.bytes_stream();
+    let mut buffer = String::new();
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                if let Err(err) = writer.write_all(&bytes).await {
-                    warn!("chat proxy write failed: {err}");
-                    return Ok(());
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                buffer = buffer.replace('\r', "");
+
+                while let Some(boundary) = buffer.find("\n\n") {
+                    let raw_event = buffer[..boundary].to_string();
+                    buffer = buffer[boundary + 2..].to_string();
+                    for rendered in render_sse_event(&raw_event, restorer.as_mut()) {
+                        if let Err(err) = writer.write_all(rendered.as_bytes()).await {
+                            warn!("chat proxy write failed: {err}");
+                            return Ok(());
+                        }
+                    }
                 }
             }
             Err(err) => {
@@ -1724,8 +1792,131 @@ async fn write_sse_response<W: AsyncWrite + Unpin>(
         }
     }
 
+    if !buffer.is_empty() {
+        for rendered in render_sse_event(&buffer, restorer.as_mut()) {
+            if let Err(err) = writer.write_all(rendered.as_bytes()).await {
+                warn!("chat proxy write failed: {err}");
+                return Ok(());
+            }
+        }
+    } else if let Some(restorer) = restorer.as_mut() {
+        let trailing = restorer.finish();
+        if !trailing.is_empty() {
+            let rendered = synthetic_sse_content_event(trailing);
+            if let Err(err) = writer.write_all(rendered.as_bytes()).await {
+                warn!("chat proxy write failed: {err}");
+                return Ok(());
+            }
+        }
+    }
+
     let _ = writer.flush().await;
     Ok(())
+}
+
+fn map_privacy_prepare_error(error: anyhow::Error) -> (&'static str, String) {
+    let message = error.to_string();
+    if message.contains("currently supports only")
+        || message.contains("does not support tool")
+        || message.contains("supports only plain text")
+    {
+        ("400 Bad Request", message)
+    } else {
+        (
+            "503 Service Unavailable",
+            format!("privacy filter unavailable: {message}"),
+        )
+    }
+}
+
+fn render_sse_event(
+    raw_event: &str,
+    restorer: Option<&mut StreamingPlaceholderRestorer>,
+) -> Vec<String> {
+    let data = raw_event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(|line| line.trim_start())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if data.is_empty() {
+        return vec![format!("{raw_event}\n\n")];
+    }
+
+    if data == "[DONE]" {
+        let mut rendered = Vec::new();
+        if let Some(restorer) = restorer {
+            let trailing = restorer.finish();
+            if !trailing.is_empty() {
+                rendered.push(synthetic_sse_content_event(trailing));
+            }
+        }
+        rendered.push("data: [DONE]\n\n".to_string());
+        return rendered;
+    }
+
+    let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return vec![format!("{raw_event}\n\n")];
+    };
+
+    if let Some(restorer) = restorer {
+        restore_stream_payload(&mut payload, restorer);
+    }
+
+    match serde_json::to_string(&payload) {
+        Ok(body) => vec![format!("data: {body}\n\n")],
+        Err(_) => vec![format!("{raw_event}\n\n")],
+    }
+}
+
+fn restore_stream_payload(
+    payload: &mut serde_json::Value,
+    restorer: &mut StreamingPlaceholderRestorer,
+) {
+    let terminal = payload
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("finish_reason"))
+        .is_some_and(|value| !value.is_null());
+
+    let Some(choice) = payload
+        .get_mut("choices")
+        .and_then(|value| value.as_array_mut())
+        .and_then(|choices| choices.first_mut())
+    else {
+        return;
+    };
+
+    let Some(delta) = choice.get_mut("delta").and_then(|value| value.as_object_mut()) else {
+        if terminal {
+            let trailing = restorer.consume("", true);
+            if !trailing.is_empty() {
+                choice["delta"] = json!({ "content": trailing });
+            }
+        }
+        return;
+    };
+
+    let restored = if let Some(content) = delta.get("content").and_then(|value| value.as_str()) {
+        restorer.consume(content, terminal)
+    } else if terminal {
+        restorer.consume("", true)
+    } else {
+        String::new()
+    };
+
+    if !restored.is_empty() || delta.contains_key("content") {
+        delta.insert("content".to_string(), serde_json::Value::String(restored));
+    }
+}
+
+fn synthetic_sse_content_event(content: String) -> String {
+    format!(
+        "data: {}\n\n",
+        json!({ "choices": [{ "delta": { "content": content }, "finish_reason": null }] })
+    )
 }
 
 async fn handle_chat_proxy(
@@ -1838,6 +2029,22 @@ async fn route(
                 "200 OK",
                 json!({ "ok": true }).to_string(),
             ))
+        }
+        ("POST", "/v1/app/privacy-filter/mode") => {
+            let payload: PrivacyFilterModeUpdateRequest =
+                serde_json::from_slice(body).map_err(|e| {
+                    (
+                        "400 Bad Request",
+                        format!("invalid privacy filter payload: {e}"),
+                    )
+                })?;
+            state
+                .set_privacy_filter_mode(payload.mode)
+                .await
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            let body = serde_json::to_string(&state.snapshot().await)
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
         }
         ("POST", "/v1/app/auth/session") => {
             let payload: AuthSessionLookupRequest = serde_json::from_slice(body).map_err(|e| {
@@ -2060,7 +2267,7 @@ impl HttpResponse {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
     use super::{
         proxy_chat_completion, read_http_request, route, write_sse_response, ServiceState,
@@ -2071,6 +2278,7 @@ mod tests {
     use crate::config::{ControlConfig, LlamaConfig};
     use crate::hardware::HardwareCapability;
     use crate::model_registry::{PersistedRegistry, RegistryStore};
+    use crate::privacy_filter::PrivacyFilterMode;
     use crate::swap::SwapManager;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -2138,6 +2346,59 @@ mod tests {
             relay_url,
             node_state,
         ))
+    }
+
+    fn helper_env_guard() -> &'static StdMutex<()> {
+        static GUARD: OnceLock<StdMutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| StdMutex::new(()))
+    }
+
+    async fn spawn_helper_stub() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind helper stub");
+        let addr = listener.local_addr().expect("helper stub addr");
+        let task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept helper stub");
+                let request = read_http_request(&mut socket)
+                    .await
+                    .expect("parse helper request")
+                    .expect("helper request should exist");
+                let body_text = String::from_utf8_lossy(&request.body);
+                let (status, body) = if request.method == "GET" && request.path == "/health" {
+                    ("200 OK", r#"{"ready":true,"error":null}"#.to_string())
+                } else if request.method == "POST" && request.path == "/v1/redact" {
+                    let spans = if body_text.contains("Taylor") {
+                        r#"{"ok":true,"spans":[{"label":"private_person","start":3,"end":9,"text":"Taylor"}]}"#
+                    } else {
+                        r#"{"ok":true,"spans":[]}"#
+                    };
+                    ("200 OK", spans.to_string())
+                } else {
+                    ("404 Not Found", r#"{"error":"not found"}"#.to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write helper response");
+            }
+        });
+        (format!("http://127.0.0.1:{}", addr.port()), task)
+    }
+
+    async fn unused_local_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind unused local port");
+        let addr = listener.local_addr().expect("unused local addr");
+        drop(listener);
+        format!("http://127.0.0.1:{}", addr.port())
     }
 
     #[tokio::test]
@@ -2277,6 +2538,12 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_proxy_emits_sse_headers_and_forwards_done() {
+        let _guard = helper_env_guard()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (helper_url, helper_task) = spawn_helper_stub().await;
+        std::env::set_var("TEALE_OPF_HELPER_URL", &helper_url);
+
         let upstream = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind upstream listener");
@@ -2293,10 +2560,18 @@ mod tests {
             assert!(request
                 .to_ascii_lowercase()
                 .contains("authorization: bearer test-device-token"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("x-teale-privacy-filtered: 1"));
             assert!(request.contains("\"stream_options\":{\"include_usage\":true}"));
+            assert!(request.contains("<PRIVATE_PERSON_1>"));
+            assert!(!request.contains("\"hi Taylor\""));
 
-            let body =
-                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n";
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello <PRIVATE_\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"PERSON_1>\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -2315,9 +2590,13 @@ mod tests {
             let mut inner = state.inner.lock().await;
             inner.gateway_device_token = Some("test-device-token".to_string());
         }
+        state
+            .set_privacy_filter_mode(PrivacyFilterMode::AutoWan)
+            .await
+            .expect("set privacy mode");
 
         let response = proxy_chat_completion(
-            br#"{"provider":"network","model":"meta-llama/test","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+            br#"{"provider":"network","model":"meta-llama/test","messages":[{"role":"user","content":"hi Taylor"}],"stream":true}"#,
             state,
         )
         .await
@@ -2337,12 +2616,52 @@ mod tests {
             .expect("read forwarded stream");
         forward_task.await.expect("forward task");
         upstream_task.await.expect("upstream task");
+        helper_task.await.expect("helper task");
+        std::env::remove_var("TEALE_OPF_HELPER_URL");
 
         let output = String::from_utf8(rendered).expect("stream output utf8");
         assert!(output.contains("HTTP/1.1 200 OK"));
         assert!(output.contains("Content-Type: text/event-stream; charset=utf-8"));
         assert!(output.contains("data: [DONE]"));
-        assert!(output.contains("\"hello\""));
+        assert!(output.contains("Taylor"));
+        assert!(!output.contains("<PRIVATE_PERSON_1>"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn network_chat_fails_closed_when_helper_is_unavailable() {
+        let _guard = helper_env_guard()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let helper_url = unused_local_url().await;
+        std::env::set_var("TEALE_OPF_HELPER_URL", &helper_url);
+
+        let tmp = temp_dir();
+        let state = build_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
+        );
+        {
+            let mut inner = state.inner.lock().await;
+            inner.gateway_device_token = Some("test-device-token".to_string());
+        }
+        state
+            .set_privacy_filter_mode(PrivacyFilterMode::AutoWan)
+            .await
+            .expect("set privacy mode");
+
+        let err = proxy_chat_completion(
+            br#"{"provider":"network","model":"meta-llama/test","messages":[{"role":"user","content":"hi Taylor"}],"stream":true}"#,
+            state,
+        )
+        .await
+        .expect_err("network chat should fail closed without helper");
+
+        std::env::remove_var("TEALE_OPF_HELPER_URL");
+        assert_eq!(err.0, "503 Service Unavailable");
+        assert!(err.1.contains("privacy filter unavailable"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
