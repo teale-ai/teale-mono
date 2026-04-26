@@ -37,6 +37,10 @@ pub struct CatalogModel {
     /// via `resolve_auto`.
     #[serde(default, rename = "virtual")]
     pub is_virtual: bool,
+    /// Routing tags used by virtual models such as `teale/auto` to recognize
+    /// request classes that need stricter model selection than "smallest that fits".
+    #[serde(default)]
+    pub routing_tags: Vec<String>,
 }
 
 impl CatalogModel {
@@ -94,6 +98,27 @@ impl CatalogModel {
     pub fn completion_price_usd(&self) -> f64 {
         self.pricing_completion.parse::<f64>().unwrap_or(0.0)
     }
+
+    pub fn has_routing_tag(&self, tag: &str) -> bool {
+        self.routing_tags
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(tag))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRouteProfile {
+    Generic,
+    AgentHarness,
+}
+
+impl AutoRouteProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::AgentHarness => "agent_harness",
+        }
+    }
 }
 
 pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {
@@ -138,7 +163,8 @@ pub fn estimated_size_gb(params_b: f64, quantization: Option<&str>) -> f64 {
 pub fn resolve_auto(
     catalog: &[CatalogModel],
     required_ctx: u32,
-    loaded_count: impl Fn(&str) -> u32,
+    profile: AutoRouteProfile,
+    eligible_count: impl Fn(&str, u32) -> u32,
     floor_small: u32,
     floor_large: u32,
 ) -> Option<&CatalogModel> {
@@ -146,23 +172,114 @@ pub fn resolve_auto(
         .iter()
         .filter(|m| !m.is_virtual)
         .filter(|m| m.context_length >= required_ctx)
+        .filter(|m| match profile {
+            AutoRouteProfile::Generic => true,
+            AutoRouteProfile::AgentHarness => m.has_routing_tag("agent-harness"),
+        })
         .filter(|m| {
             let required = if is_large(m.params_b) {
                 floor_large
             } else {
                 floor_small
             };
-            loaded_count(&m.id) >= required
+            eligible_count(&m.id, required_ctx) >= required
         })
         .collect();
 
-    // Prefer smallest params_b (cheapest, frees bigger nodes for harder work).
-    // Tiebreak on context_length desc so we pick the one with the most headroom.
     candidates.sort_by(|a, b| {
-        a.params_b
-            .partial_cmp(&b.params_b)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b.context_length.cmp(&a.context_length))
+        match profile {
+            // For agent harnesses, stay inside a curated set of models we have
+            // explicitly marked as suitable for coding/tool-heavy workflows, then
+            // still prefer the smallest fit to conserve larger supply.
+            AutoRouteProfile::AgentHarness => a
+                .params_b
+                .partial_cmp(&b.params_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.context_length.cmp(&a.context_length)),
+            // Generic traffic keeps the old "smallest fit wins" behavior.
+            AutoRouteProfile::Generic => a
+                .params_b
+                .partial_cmp(&b.params_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.context_length.cmp(&a.context_length)),
+        }
     });
     candidates.first().copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(id: &str, params_b: f64, context_length: u32, tags: &[&str]) -> CatalogModel {
+        CatalogModel {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            owned_by: "test".to_string(),
+            context_length,
+            max_output_tokens: 8192,
+            params_b,
+            pricing_prompt: "0.00000010".to_string(),
+            pricing_completion: "0.00000020".to_string(),
+            quantization: None,
+            supported_parameters: vec![],
+            description: None,
+            aliases: vec![],
+            is_virtual: false,
+            routing_tags: tags.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn generic_auto_picks_smallest_eligible_model() {
+        let catalog = vec![
+            model("small", 8.0, 32768, &[]),
+            model("big", 27.0, 262144, &["agent-harness"]),
+        ];
+        let picked = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::Generic,
+            |id, _| u32::from(id == "small" || id == "big"),
+            1,
+            1,
+        )
+        .expect("should resolve");
+        assert_eq!(picked.id, "small");
+    }
+
+    #[test]
+    fn agent_harness_auto_ignores_untagged_models() {
+        let catalog = vec![
+            model("small", 8.0, 32768, &[]),
+            model("agentic", 27.0, 262144, &["agent-harness"]),
+        ];
+        let picked = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::AgentHarness,
+            |id, _| u32::from(id == "small" || id == "agentic"),
+            1,
+            1,
+        )
+        .expect("should resolve");
+        assert_eq!(picked.id, "agentic");
+    }
+
+    #[test]
+    fn auto_resolution_uses_context_eligible_supply() {
+        let catalog = vec![model("agentic", 27.0, 262144, &["agent-harness"])];
+        let picked = resolve_auto(
+            &catalog,
+            120_000,
+            AutoRouteProfile::AgentHarness,
+            |_, need_ctx| u32::from(need_ctx <= 64_000),
+            1,
+            1,
+        );
+        assert!(
+            picked.is_none(),
+            "should reject when no node can honor context"
+        );
+    }
 }

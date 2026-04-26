@@ -30,7 +30,7 @@ use uuid::Uuid;
 use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
 use crate::auth::AuthPrincipal;
-use crate::catalog::{is_large, resolve_auto, CatalogModel};
+use crate::catalog::{is_large, resolve_auto, AutoRouteProfile, CatalogModel};
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::metrics;
@@ -39,6 +39,7 @@ use crate::state::AppState;
 
 pub async fn chat_completions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(principal): Extension<AuthPrincipal>,
     Json(mut req): Json<Value>,
 ) -> Result<Response, GatewayError> {
@@ -65,11 +66,25 @@ pub async fn chat_completions(
     // is strict per project policy — no silent downgrade; on miss we 503.
     if catalog_model.is_virtual {
         let required_ctx = estimate_required_context(&parsed);
+        let auto_profile = infer_auto_route_profile(&headers, &parsed);
         let registry = state.registry.clone();
         let resolved = resolve_auto(
             &state.catalog,
             required_ctx,
-            |id| registry.loaded_count(id),
+            auto_profile,
+            |id, need_ctx| {
+                registry
+                    .eligible_devices(id)
+                    .into_iter()
+                    .filter(|device| {
+                        device
+                            .capabilities
+                            .effective_context
+                            .map(|have| have >= need_ctx)
+                            .unwrap_or(true)
+                    })
+                    .count() as u32
+            },
             floor.small,
             floor.large,
         )
@@ -87,6 +102,7 @@ pub async fn chat_completions(
             virtual_id = %catalog_model.id,
             resolved_id = %resolved.id,
             required_ctx,
+            auto_profile = auto_profile.as_str(),
             "teale/auto resolved"
         );
         metrics::REQUESTS_TOTAL
@@ -286,6 +302,64 @@ fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
     let prompt_est = (prompt_chars / 4) as u32;
     let completion_budget = req.max_tokens.unwrap_or(4096);
     prompt_est.saturating_add(completion_budget)
+}
+
+fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) -> AutoRouteProfile {
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if [
+        "openclaw",
+        "hermes",
+        "codex",
+        "claude-code",
+        "cline",
+        "roo",
+        "aider",
+    ]
+    .iter()
+    .any(|needle| user_agent.contains(needle))
+    {
+        return AutoRouteProfile::AgentHarness;
+    }
+
+    let prompt_chars: usize = req
+        .messages
+        .iter()
+        .map(|m| match &m.content {
+            Value::String(s) => s.len(),
+            other => other.to_string().len(),
+        })
+        .sum();
+
+    let has_agent_bootstrap_marker = req.messages.iter().any(|m| {
+        let content = match &m.content {
+            Value::String(s) => s.as_str(),
+            _ => return false,
+        };
+        [
+            "AGENTS.md",
+            "TOOLS.md",
+            "SOUL.md",
+            "HEARTBEAT.md",
+            "workspace",
+            "repo-level reasoning",
+        ]
+        .iter()
+        .any(|needle| content.contains(needle))
+    });
+
+    if has_agent_bootstrap_marker
+        || req.tools.is_some()
+        || req.tool_choice.is_some()
+        || (prompt_chars >= 12_000 && req.max_tokens.unwrap_or(4096) >= 4096)
+    {
+        AutoRouteProfile::AgentHarness
+    } else {
+        AutoRouteProfile::Generic
+    }
 }
 
 /// Remaining credits on a share-key (budget - consumed), or None if the key
@@ -1030,6 +1104,7 @@ fn _touch_unused_headers() -> header::HeaderName {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
     use teale_protocol::openai::ApiMessage;
 
     fn kimi_like() -> CatalogModel {
@@ -1078,6 +1153,41 @@ quantization: null
                 tool_calls: None,
                 tool_call_id: None,
             }],
+            temperature: None,
+            top_p: None,
+            max_tokens,
+            stream: None,
+            stream_options: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            seed: None,
+            user: None,
+        }
+    }
+
+    fn req_with_system(system: &str, max_tokens: Option<u32>) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: Some("teale/auto".into()),
+            messages: vec![
+                ApiMessage {
+                    role: "system".into(),
+                    content: Value::String(system.into()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                ApiMessage {
+                    role: "user".into(),
+                    content: Value::String("hi".into()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
             temperature: None,
             top_p: None,
             max_tokens,
@@ -1186,5 +1296,29 @@ quantization: null
         let decision = compute_clamp(&model, &req, 10).expect("should accept at floor");
         assert_eq!(decision.effective_max, 1);
         assert!(decision.clamped);
+    }
+
+    #[test]
+    fn auto_profile_detects_openclaw_user_agent() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("OpenClaw/1.0"));
+        let req = req_with("hi", Some(128));
+        assert_eq!(
+            infer_auto_route_profile(&headers, &req),
+            AutoRouteProfile::AgentHarness
+        );
+    }
+
+    #[test]
+    fn auto_profile_detects_agent_bootstrap_prompt() {
+        let headers = HeaderMap::new();
+        let req = req_with_system(
+            "Load AGENTS.md and TOOLS.md from the workspace.",
+            Some(8192),
+        );
+        assert_eq!(
+            infer_auto_route_profile(&headers, &req),
+            AutoRouteProfile::AgentHarness
+        );
     }
 }

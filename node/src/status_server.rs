@@ -764,10 +764,7 @@ impl StatusState {
         self.inner.lock().await.registry.privacy_filter_mode
     }
 
-    pub async fn set_privacy_filter_mode(
-        &self,
-        mode: PrivacyFilterMode,
-    ) -> anyhow::Result<()> {
+    pub async fn set_privacy_filter_mode(&self, mode: PrivacyFilterMode) -> anyhow::Result<()> {
         let mut inner = self.inner.lock().await;
         inner.registry.privacy_filter_mode = mode;
         self.registry_store.save(&inner.registry)?;
@@ -1889,7 +1886,10 @@ fn restore_stream_payload(
         return;
     };
 
-    let Some(delta) = choice.get_mut("delta").and_then(|value| value.as_object_mut()) else {
+    let Some(delta) = choice
+        .get_mut("delta")
+        .and_then(|value| value.as_object_mut())
+    else {
         if terminal {
             let trailing = restorer.consume("", true);
             if !trailing.is_empty() {
@@ -2267,7 +2267,8 @@ impl HttpResponse {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+    use std::sync::{Arc, OnceLock};
+    use std::time::Duration;
 
     use super::{
         proxy_chat_completion, read_http_request, route, write_sse_response, ServiceState,
@@ -2348,9 +2349,9 @@ mod tests {
         ))
     }
 
-    fn helper_env_guard() -> &'static StdMutex<()> {
-        static GUARD: OnceLock<StdMutex<()>> = OnceLock::new();
-        GUARD.get_or_init(|| StdMutex::new(()))
+    fn helper_env_guard() -> &'static tokio::sync::Mutex<()> {
+        static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     async fn spawn_helper_stub() -> (String, tokio::task::JoinHandle<()>) {
@@ -2359,8 +2360,11 @@ mod tests {
             .expect("bind helper stub");
         let addr = listener.local_addr().expect("helper stub addr");
         let task = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut socket, _) = listener.accept().await.expect("accept helper stub");
+            loop {
+                let accept = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+                let Ok(Ok((mut socket, _))) = accept else {
+                    break;
+                };
                 let request = read_http_request(&mut socket)
                     .await
                     .expect("parse helper request")
@@ -2538,9 +2542,7 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_proxy_emits_sse_headers_and_forwards_done() {
-        let _guard = helper_env_guard()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = helper_env_guard().lock().await;
         let (helper_url, helper_task) = spawn_helper_stub().await;
         std::env::set_var("TEALE_OPF_HELPER_URL", &helper_url);
 
@@ -2631,9 +2633,7 @@ mod tests {
 
     #[tokio::test]
     async fn network_chat_fails_closed_when_helper_is_unavailable() {
-        let _guard = helper_env_guard()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = helper_env_guard().lock().await;
         let helper_url = unused_local_url().await;
         std::env::set_var("TEALE_OPF_HELPER_URL", &helper_url);
 
