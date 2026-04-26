@@ -8,6 +8,7 @@ import GatewayKit
 final class CompanionGatewayState {
     var networkModels: [CompanionNetworkModelSummary] = []
     var networkStats: CompanionGatewayNetworkStats?
+    var walletBalance: CompanionGatewayWalletBalance?
     var bearerToken: String = ""
     var accountSummary: CompanionGatewayAccountSummary?
     var pendingWalletRecipient: String?
@@ -15,6 +16,7 @@ final class CompanionGatewayState {
     var lastModelRefreshError: String?
     var lastStatsRefreshError: String?
     var lastAccountRefreshError: String?
+    var lastWalletRefreshError: String?
 
     private var authClient: GatewayAuthClient?
     private var accountClient: CompanionGatewayAccountClient?
@@ -24,6 +26,7 @@ final class CompanionGatewayState {
     private var accountFetchedAt: Date?
     private var accountLinkedAt: Date?
     private var linkedAccountUserID: String?
+    private var walletFetchedAt: Date?
 
     func refresh(appState: AppState, force: Bool = false) async {
         let rootURL = companionGatewayRootURL(for: appState.gatewayFallbackURL)
@@ -36,6 +39,7 @@ final class CompanionGatewayState {
             statsFetchedAt = nil
             accountFetchedAt = nil
             accountLinkedAt = nil
+            walletFetchedAt = nil
         }
 
         let token = await ensureBearer(appState: appState)
@@ -51,6 +55,11 @@ final class CompanionGatewayState {
         if force || shouldRefresh(lastFetchedAt: statsFetchedAt, now: now, interval: 15) {
             await refreshStats(baseURL: apiBaseURL)
             statsFetchedAt = now
+        }
+
+        if force || shouldRefresh(lastFetchedAt: walletFetchedAt, now: now, interval: 10) {
+            await refreshWalletBalance(baseURL: apiBaseURL, bearerToken: token, appState: appState)
+            walletFetchedAt = now
         }
     }
 
@@ -158,6 +167,38 @@ final class CompanionGatewayState {
         }
     }
 
+    private func refreshWalletBalance(baseURL: URL, bearerToken: String?, appState: AppState) async {
+        guard let bearerToken, !bearerToken.isEmpty else {
+            walletBalance = nil
+            lastWalletRefreshError = "missing bearer"
+            return
+        }
+
+        do {
+            walletBalance = try await getJSON(
+                url: baseURL.appending(path: "wallet/balance"),
+                bearerToken: bearerToken
+            )
+            lastWalletRefreshError = nil
+        } catch let GatewayAuthError.http(code, _) where code == 401 {
+            do {
+                let refreshed = await ensureBearer(appState: appState)
+                guard let refreshed, !refreshed.isEmpty else {
+                    throw GatewayAuthError.http(code, "unauthorized")
+                }
+                walletBalance = try await getJSON(
+                    url: baseURL.appending(path: "wallet/balance"),
+                    bearerToken: refreshed
+                )
+                lastWalletRefreshError = nil
+            } catch {
+                lastWalletRefreshError = error.localizedDescription
+            }
+        } catch {
+            lastWalletRefreshError = error.localizedDescription
+        }
+    }
+
     private func shouldRefresh(lastFetchedAt: Date?, now: Date, interval: TimeInterval) -> Bool {
         guard let lastFetchedAt else { return true }
         return now.timeIntervalSince(lastFetchedAt) >= interval
@@ -240,6 +281,18 @@ final class CompanionGatewayState {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: data)
+    }
+}
+
+struct CompanionGatewayWalletBalance: Decodable {
+    let balanceCredits: Int64
+    let totalEarnedCredits: Int64
+    let totalSpentCredits: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case balanceCredits = "balance_credits"
+        case totalEarnedCredits = "total_earned_credits"
+        case totalSpentCredits = "total_spent_credits"
     }
 }
 

@@ -34,6 +34,7 @@ extension Wallet {
                 return
             }
 
+            print("  Device ID:     \(w.deviceID)")
             print("  Balance:       $\(String(format: "%.6f", w.balance)) USDC")
             print("  Total earned:  $\(String(format: "%.6f", w.totalEarned)) USDC")
             print("  Total spent:   $\(String(format: "%.6f", w.totalSpent)) USDC")

@@ -15,6 +15,8 @@ Both macOS and Windows show a device wallet with:
 - ledger history
 - CSV export
 
+The device ID is the public receive address for the device wallet. Sharing it publicly is fine; sending funds out still requires bearer-authenticated access to the sender's wallet.
+
 This is the wallet that earns while your device is available and serving.
 
 ## Credits vs USD

@@ -1371,6 +1371,29 @@ fn resolve_transfer_target_tx(
         ) {
             return Ok(ResolvedTransferTarget::Device { device_id });
         }
+        if let Ok(account_user_id) = tx.query_row(
+            "SELECT account_user_id FROM account_wallets WHERE account_user_id = ?",
+            [trimmed],
+            |r| r.get::<_, String>(0),
+        ) {
+            return tx
+                .query_row(
+                    "SELECT account_user_id, display_name, phone, email, github_username
+                     FROM account_wallets
+                     WHERE account_user_id = ?",
+                    [account_user_id],
+                    |r| {
+                        Ok(ResolvedTransferTarget::Account {
+                            account_user_id: r.get(0)?,
+                            display_name: r.get(1)?,
+                            phone: r.get(2)?,
+                            email: r.get(3)?,
+                            github_username: r.get(4)?,
+                        })
+                    },
+                )
+                .map_err(|_| TransferError::RecipientAccountNotFound);
+        }
     }
 
     match parse_transfer_lookup(raw_recipient)? {
@@ -3751,6 +3774,46 @@ mod tests {
         assert_eq!(get_balance(&pool, "sender").balance_credits, 310);
 
         let summary = account_summary(&pool, "user-123").unwrap();
+        assert_eq!(summary.balance_credits, 90);
+        assert!(summary
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "TRANSFER_IN" && entry.amount == 90));
+    }
+
+    #[test]
+    fn transfer_from_device_wallet_to_bare_account_wallet_id_credits_account_wallet() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "sender").unwrap();
+        upsert_device(&pool, "recipient-device").unwrap();
+        record_bonus(&pool, "sender", 400).unwrap();
+        link_device_to_account(
+            &pool,
+            "recipient-device",
+            "270E90AF-4661-4DF1-949B-1A0BA1F705EE",
+            &AccountLinkMetadata {
+                email: Some("account@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let receipt = transfer_from_device_wallet(
+            &pool,
+            "sender",
+            "270E90AF-4661-4DF1-949B-1A0BA1F705EE",
+            90,
+            Some("alms from thou32"),
+        )
+        .unwrap();
+        assert_eq!(receipt.recipient.kind, "account");
+        assert_eq!(
+            receipt.recipient.account_user_id.as_deref(),
+            Some("270E90AF-4661-4DF1-949B-1A0BA1F705EE")
+        );
+        assert_eq!(get_balance(&pool, "sender").balance_credits, 310);
+
+        let summary = account_summary(&pool, "270E90AF-4661-4DF1-949B-1A0BA1F705EE").unwrap();
         assert_eq!(summary.balance_credits, 90);
         assert!(summary
             .transactions

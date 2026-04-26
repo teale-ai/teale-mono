@@ -10,6 +10,7 @@ const els = {
   privacyFilterDetail: document.getElementById("privacy-filter-detail"),
   followXButton: document.getElementById("follow-x-button"),
   shareStoryButton: document.getElementById("share-story-button"),
+  headerRefresh: document.getElementById("header-refresh-button"),
   viewButtons: Array.from(document.querySelectorAll("[data-view-button]")),
   views: Array.from(document.querySelectorAll("[data-view]")),
 
@@ -167,9 +168,11 @@ const translations = {
     "wallet.prompt.ledger": "ledger",
     "wallet.asset.credits": "Teale credits",
     "wallet.asset.usdc": "USDC",
-    "wallet.input.recipient": "device id, key, phone, or github username",
+    "wallet.input.recipient": "full device wallet id or account wallet id",
+    "wallet.action.refresh": "Refresh",
+    "wallet.action.refreshing": "Refreshing...",
     "wallet.action.sendSoon": "Send coming soon",
-    "wallet.send.note": "Transfers are not wired in the Windows companion backend yet. This will eventually support device IDs that route to device wallets, keys, account phone numbers, and GitHub usernames.",
+    "wallet.send.note": "Use full wallet IDs only. Device wallet sends target a 64-char device wallet ID or a full account wallet ID.",
     "wallet.action.export": "Export CSV",
     "account.prompt.account": "account",
     "account.prompt.wallet": "account wallet",
@@ -180,7 +183,7 @@ const translations = {
     "account.input.phone": "+1 555 123 4567",
     "account.input.code": "123456",
     "account.auth.note.default": "Signing in is not required. Teale works without an account. Sign in if you want a human account that can manage multiple devices and get support.",
-    "account.send.note": "Account wallet transfers are not wired in the Windows companion backend yet.",
+    "account.send.note": "Use full wallet IDs only. Account wallet sends target a full account wallet ID or a 64-char device wallet ID.",
     "common.asset": "Asset",
     "common.recipient": "Recipient",
     "common.amount": "Amount",
@@ -281,9 +284,11 @@ const translations = {
     "wallet.prompt.ledger": "账本",
     "wallet.asset.credits": "Teale credits",
     "wallet.asset.usdc": "USDC",
-    "wallet.input.recipient": "device id、密钥、手机号或 GitHub 用户名",
+    "wallet.input.recipient": "完整 device wallet id 或 account wallet id",
+    "wallet.action.refresh": "刷新",
+    "wallet.action.refreshing": "刷新中...",
     "wallet.action.sendSoon": "发送即将上线",
-    "wallet.send.note": "Windows companion 后端尚未接通转账。后续将支持 device ID、密钥、账户手机号和 GitHub 用户名。",
+    "wallet.send.note": "仅支持完整 wallet ID。device wallet 发送仅面向 64 位字符的 device wallet ID 或完整的 account wallet ID。",
     "wallet.action.export": "导出 CSV",
     "account.prompt.account": "账户",
     "account.prompt.wallet": "账户钱包",
@@ -294,7 +299,7 @@ const translations = {
     "account.input.phone": "+86 138 0013 8000",
     "account.input.code": "123456",
     "account.auth.note.default": "登录不是必需的。Teale 没有账户也能使用。若你想用一个人类账户来管理多台设备并获得支持，再登录即可。",
-    "account.send.note": "Windows companion 后端尚未接通账户钱包转账。",
+    "account.send.note": "仅支持完整 wallet ID。account wallet 发送仅面向完整的 account wallet ID 或 64 位字符的 device wallet ID。",
     "common.asset": "资产",
     "common.recipient": "接收方",
     "common.amount": "数量",
@@ -395,9 +400,11 @@ const translations = {
     "wallet.prompt.ledger": "razão",
     "wallet.asset.credits": "Créditos Teale",
     "wallet.asset.usdc": "USDC",
-    "wallet.input.recipient": "id do dispositivo, chave, telefone ou usuário do GitHub",
+    "wallet.input.recipient": "id completo da wallet do dispositivo ou id da wallet da conta",
+    "wallet.action.refresh": "Atualizar",
+    "wallet.action.refreshing": "Atualizando...",
     "wallet.action.sendSoon": "Envio em breve",
-    "wallet.send.note": "Transferências ainda não estão conectadas no backend do companion para Windows. No futuro isso vai aceitar IDs de dispositivo, chaves, telefones da conta e nomes de usuário do GitHub.",
+    "wallet.send.note": "Use apenas IDs completos. Envios da wallet do dispositivo usam um ID de wallet do dispositivo com 64 caracteres ou um ID completo de wallet da conta.",
     "wallet.action.export": "Exportar CSV",
     "account.prompt.account": "conta",
     "account.prompt.wallet": "carteira da conta",
@@ -408,7 +415,7 @@ const translations = {
     "account.input.phone": "+55 11 99999-9999",
     "account.input.code": "123456",
     "account.auth.note.default": "Fazer login não é obrigatório. O Teale funciona sem conta. Entre apenas se quiser uma conta humana para gerenciar vários dispositivos e obter suporte.",
-    "account.send.note": "As transferências da carteira da conta ainda não estão conectadas no backend do companion para Windows.",
+    "account.send.note": "Use apenas IDs completos. Envios da wallet da conta usam um ID completo de wallet da conta ou um ID de wallet do dispositivo com 64 caracteres.",
     "common.asset": "Ativo",
     "common.recipient": "Destinatário",
     "common.amount": "Valor",
@@ -509,9 +516,11 @@ const translations = {
     "wallet.prompt.ledger": "libro",
     "wallet.asset.credits": "Créditos Teale",
     "wallet.asset.usdc": "USDC",
-    "wallet.input.recipient": "id del dispositivo, clave, teléfono o usuario de GitHub",
+    "wallet.input.recipient": "id completo de wallet de dispositivo o id de wallet de cuenta",
+    "wallet.action.refresh": "Actualizar",
+    "wallet.action.refreshing": "Actualizando...",
     "wallet.action.sendSoon": "Envío próximamente",
-    "wallet.send.note": "Las transferencias todavía no están conectadas en el backend del companion de Windows. En el futuro esto aceptará IDs de dispositivo, claves, teléfonos de cuenta y nombres de usuario de GitHub.",
+    "wallet.send.note": "Usa solo IDs completos. Los envíos desde la wallet del dispositivo usan un ID de wallet de dispositivo de 64 caracteres o un ID completo de wallet de cuenta.",
     "wallet.action.export": "Exportar CSV",
     "account.prompt.account": "cuenta",
     "account.prompt.wallet": "cartera de la cuenta",
@@ -522,7 +531,7 @@ const translations = {
     "account.input.phone": "+34 600 123 456",
     "account.input.code": "123456",
     "account.auth.note.default": "Iniciar sesión no es obligatorio. Teale funciona sin una cuenta. Inicia sesión solo si quieres una cuenta humana para administrar varios dispositivos y obtener soporte.",
-    "account.send.note": "Las transferencias de la cartera de la cuenta todavía no están conectadas en el backend del companion de Windows.",
+    "account.send.note": "Usa solo IDs completos. Los envíos desde la wallet de cuenta usan un ID completo de wallet de cuenta o un ID de wallet de dispositivo de 64 caracteres.",
     "common.asset": "Activo",
     "common.recipient": "Destinatario",
     "common.amount": "Cantidad",
@@ -623,9 +632,11 @@ const translations = {
     "wallet.prompt.ledger": "ledger",
     "wallet.asset.credits": "Teale credits",
     "wallet.asset.usdc": "USDC",
-    "wallet.input.recipient": "device id, key, phone, o GitHub username",
+    "wallet.input.recipient": "full device wallet id o account wallet id",
+    "wallet.action.refresh": "Refresh",
+    "wallet.action.refreshing": "Refreshing...",
     "wallet.action.sendSoon": "Papunta na ang send",
-    "wallet.send.note": "Hindi pa naka-wire ang transfers sa Windows companion backend. Sa susunod susuporta ito sa device IDs, keys, account phone numbers, at GitHub usernames.",
+    "wallet.send.note": "Buong wallet IDs lang ang gamitin. Ang send mula sa device wallet ay para sa 64-char device wallet ID o buong account wallet ID.",
     "wallet.action.export": "I-export ang CSV",
     "account.prompt.account": "account",
     "account.prompt.wallet": "account wallet",
@@ -636,7 +647,7 @@ const translations = {
     "account.input.phone": "+63 917 123 4567",
     "account.input.code": "123456",
     "account.auth.note.default": "Hindi kailangan ang pag-sign in. Gumagana ang Teale kahit walang account. Mag-sign in lang kung gusto mo ng human account para mamahala ng maraming device at makakuha ng support.",
-    "account.send.note": "Hindi pa naka-wire ang account wallet transfers sa Windows companion backend.",
+    "account.send.note": "Buong wallet IDs lang ang gamitin. Ang send mula sa account wallet ay para sa buong account wallet ID o 64-char device wallet ID.",
     "common.asset": "Asset",
     "common.recipient": "Tatanggap",
     "common.amount": "Halaga",
@@ -823,6 +834,7 @@ let networkStatsFetchedAt = 0;
 let selectedNetworkModelId = null;
 let demandSort = { key: "devices", dir: "desc" };
 let pendingModelAction = null;
+let walletRefreshInFlight = false;
 let walletSendInFlight = false;
 let accountSendInFlight = false;
 let walletSendStatus = "";
@@ -3246,7 +3258,7 @@ function defaultDeviceSendNote() {
   if (els.sendAsset.value !== "credits") {
     return "USDC transfers are not available yet. Send Teale credits for now.";
   }
-  return `Send from this device wallet to a device ID, phone, email, or GitHub username. Display is in ${displayUnit === "usd" ? "USD" : "credits"}.`;
+  return `Use full wallet IDs only. Send from this device wallet to a 64-char device wallet ID or a full account wallet ID. Display is in ${displayUnit === "usd" ? "USD" : "credits"}.`;
 }
 
 function defaultAccountSendNote() {
@@ -3261,7 +3273,7 @@ function defaultAccountSendNote() {
   if (els.accountSendAsset.value !== "credits") {
     return "USDC transfers are not available yet. Send Teale credits for now.";
   }
-  return `Send from the account wallet to a device ID, phone, email, or GitHub username. Display is in ${displayUnit === "usd" ? "USD" : "credits"}.`;
+  return `Use full wallet IDs only. Send from the account wallet to a full account wallet ID or a 64-char device wallet ID. Display is in ${displayUnit === "usd" ? "USD" : "credits"}.`;
 }
 
 function updateSendControls() {
@@ -4305,6 +4317,16 @@ function renderWallet(snapshot) {
 
 function render(snapshot) {
   lastSnapshot = snapshot;
+  if (walletRefreshInFlight) {
+    setBusyButton(els.headerRefresh, t("wallet.action.refreshing", { fallback: "Refreshing..." }));
+  } else {
+    els.headerRefresh.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 4.75a7.25 7.25 0 0 1 6.86 4.95h-2.61a.75.75 0 0 0 0 1.5H21a.75.75 0 0 0 .75-.75V5.7a.75.75 0 0 0-1.5 0v2.13A8.75 8.75 0 1 0 20.75 12a.75.75 0 0 0-1.5 0A7.25 7.25 0 1 1 12 4.75Z"></path>
+      </svg>`
+      ;
+  }
+  els.headerRefresh.disabled = walletRefreshInFlight || !snapshot?.wallet?.current_device_id;
   renderPrivacyFilter(snapshot);
   renderHome(snapshot);
   renderSupply(snapshot);
@@ -4548,6 +4570,24 @@ els.walletDeviceId.addEventListener("click", async () => {
     "Device ID",
     (value) => truncateDeviceId(value)
   );
+});
+
+els.headerRefresh.addEventListener("click", async () => {
+  if (walletRefreshInFlight) {
+    return;
+  }
+  walletRefreshInFlight = true;
+  render(lastSnapshot);
+  try {
+    lastSnapshot = await post("/v1/app/wallet/refresh", {});
+    await refreshAccountState();
+    render(lastSnapshot);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    walletRefreshInFlight = false;
+    render(lastSnapshot);
+  }
 });
 
 els.ledgerExport.addEventListener("click", () => {

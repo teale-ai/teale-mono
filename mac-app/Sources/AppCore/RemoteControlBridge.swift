@@ -5,6 +5,7 @@ import LlamaCppKit
 import TealeNetKit
 import AgentKit
 import AuthKit
+import GatewayKit
 import PrivacyFilterKit
 
 @MainActor
@@ -417,6 +418,7 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     func remoteWalletBalance() async -> RemoteWalletSnapshot {
         await appState.wallet.refreshBalance()
         return RemoteWalletSnapshot(
+            deviceID: GatewayIdentity.shared.deviceID,
             balance: appState.wallet.balance.value,
             totalEarned: appState.wallet.totalEarned.value,
             totalSpent: appState.wallet.totalSpent.value
