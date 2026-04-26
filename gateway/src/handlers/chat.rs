@@ -411,27 +411,6 @@ async fn pick_and_dispatch(
     exclude: &[String],
     min_context: Option<u32>,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String), GatewayError> {
-    let candidates = state.registry.eligible_devices(&catalog_model.id);
-    let selected = state
-        .scheduler
-        .pick(
-            &candidates,
-            &catalog_model.id,
-            exclude,
-            &state.registry,
-            min_context,
-        )
-        .ok_or_else(|| GatewayError::NoEligibleDevice(catalog_model.id.clone()))?;
-
-    let target_node = selected.node_id.clone();
-    // Bump live in-flight counter so the next pick_and_dispatch sees this
-    // node as busier. Use a scope guard so the counter rolls back if
-    // any of the dispatch steps below fail before we successfully hand
-    // off a Receiver to the caller (otherwise an open/send failure would
-    // leave the counter permanently elevated).
-    state.registry.inc_in_flight(&target_node);
-    let inc_guard = InFlightGuard::new(state.registry.clone(), target_node.clone());
-
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
     let mut outbound: ChatCompletionRequest = serde_json::from_value(req_body.clone())
@@ -444,39 +423,93 @@ async fn pick_and_dispatch(
     // opting out of the thing OR needs).
     outbound.stream_options = Some(serde_json::json!({ "include_usage": true }));
 
-    // Open a relay session.
+    let mut excluded: Vec<String> = exclude.to_vec();
+    let mut last_dispatch_error: Option<String> = None;
     let open_timeout = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
-    let session_id = state
-        .relay
-        .open_session(&target_node, open_timeout)
-        .await
-        .map_err(|e| GatewayError::Upstream(format!("relay open: {}", e)))?;
 
-    // Register a PendingSession and start pumping.
-    let (tx, rx) = mpsc::channel::<SessionEvent>(128);
-    let request_id = Uuid::new_v4().to_string();
-    state.relay.register_session(PendingSession {
-        request_id: request_id.clone(),
-        device_node_id: target_node.clone(),
-        session_id: session_id.clone(),
-        chunks_tx: tx,
-    });
+    loop {
+        let candidates = state.registry.eligible_devices(&catalog_model.id);
+        let selected = match state.scheduler.pick(
+            &candidates,
+            &catalog_model.id,
+            &excluded,
+            &state.registry,
+            min_context,
+        ) {
+            Some(selected) => selected,
+            None => {
+                return Err(match last_dispatch_error {
+                    Some(message) => GatewayError::AllUpstreamsFailed(message),
+                    None => GatewayError::NoEligibleDevice(catalog_model.id.clone()),
+                });
+            }
+        };
 
-    // Send the inferenceRequest.
-    let ir = ClusterMessage::InferenceRequest(Box::new(InferenceRequestPayload {
-        request_id: request_id.clone(),
-        request: outbound,
-        streaming: true,
-    }));
-    state
-        .relay
-        .send_cluster(&target_node, &session_id, &ir)
-        .map_err(|e| GatewayError::Upstream(format!("relay send: {}", e)))?;
+        let target_node = selected.node_id.clone();
+        // Bump live in-flight counter so the next pick_and_dispatch sees this
+        // node as busier. Use a scope guard so the counter rolls back if
+        // any of the dispatch steps below fail before we successfully hand
+        // off a Receiver to the caller (otherwise an open/send failure would
+        // leave the counter permanently elevated).
+        state.registry.inc_in_flight(&target_node);
+        let inc_guard = InFlightGuard::new(state.registry.clone(), target_node.clone());
 
-    // Successful hand-off; caller is responsible for dec_in_flight when
-    // the session closes. Defuse the guard so we don't decrement here.
-    inc_guard.defuse();
-    Ok((rx, target_node, session_id))
+        // Open a relay session.
+        let session_id = match state.relay.open_session(&target_node, open_timeout).await {
+            Ok(session_id) => session_id,
+            Err(e) => {
+                let message = format!("relay open: {}", e);
+                warn!(
+                    device = %target_node,
+                    "dispatch failed before session hand-off: {}",
+                    message
+                );
+                state
+                    .registry
+                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                excluded.push(target_node);
+                last_dispatch_error = Some(message);
+                continue;
+            }
+        };
+
+        // Register a PendingSession and start pumping.
+        let (tx, rx) = mpsc::channel::<SessionEvent>(128);
+        let request_id = Uuid::new_v4().to_string();
+        state.relay.register_session(PendingSession {
+            request_id: request_id.clone(),
+            device_node_id: target_node.clone(),
+            session_id: session_id.clone(),
+            chunks_tx: tx,
+        });
+
+        // Send the inferenceRequest.
+        let ir = ClusterMessage::InferenceRequest(Box::new(InferenceRequestPayload {
+            request_id: request_id.clone(),
+            request: outbound.clone(),
+            streaming: true,
+        }));
+        if let Err(e) = state.relay.send_cluster(&target_node, &session_id, &ir) {
+            let message = format!("relay send: {}", e);
+            warn!(
+                device = %target_node,
+                "dispatch failed before session hand-off: {}",
+                message
+            );
+            state.relay.close_session(&target_node, &session_id);
+            state
+                .registry
+                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            excluded.push(target_node);
+            last_dispatch_error = Some(message);
+            continue;
+        }
+
+        // Successful hand-off; caller is responsible for dec_in_flight when
+        // the session closes. Defuse the guard so we don't decrement here.
+        inc_guard.defuse();
+        return Ok((rx, target_node, session_id));
+    }
 }
 
 /// Decrements the in-flight counter on drop. Defuse() opts out if the
@@ -1104,8 +1137,21 @@ fn _touch_unused_headers() -> header::HeaderName {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use axum::http::HeaderValue;
     use teale_protocol::openai::ApiMessage;
+    use teale_protocol::{HardwareCapability, NodeCapabilities};
+    use tokio::sync::broadcast;
+    use tokio::time::{sleep, Instant};
+
+    use crate::auth::TokenTable;
+    use crate::config::{Config, PerModelFloor, RelayConfig, ReliabilityConfig, SchedulerConfig};
+    use crate::model_metrics::ModelMetricsTracker;
+    use crate::registry::Registry;
+    use crate::scheduler::Scheduler;
+    use crate::state::{AppState, ShareKeyIssuers};
 
     fn kimi_like() -> CatalogModel {
         // Mirrors the catalog entry for moonshotai/kimi-k2.6: $0.50/M prompt,
@@ -1201,6 +1247,76 @@ quantization: null
             response_format: None,
             seed: None,
             user: None,
+        }
+    }
+
+    fn dispatch_test_config(ttft_deadline_seconds: u64) -> Config {
+        Config {
+            bind: "127.0.0.1:0".into(),
+            display_name: "test-gateway".into(),
+            relay: RelayConfig {
+                url: "ws://127.0.0.1:0/ws".into(),
+            },
+            identity_path: "/tmp/test-gateway-identity.key".into(),
+            models_yaml: "models.yaml".into(),
+            scheduler: SchedulerConfig {
+                max_queue_depth: 8,
+                swap_penalty: 0.3,
+                tps_weight: 1.0,
+                per_model_floor: PerModelFloor { large: 1, small: 1 },
+            },
+            reliability: ReliabilityConfig {
+                request_timeout_seconds: 60,
+                ttft_deadline_seconds,
+                max_retries: 1,
+                heartbeat_stale_seconds: 3600,
+                quarantine_seconds: 30,
+                discover_interval_seconds: 10,
+            },
+            synthetic_probes: Default::default(),
+        }
+    }
+
+    fn dispatch_caps(loaded: &[&str], swappable: &[&str]) -> NodeCapabilities {
+        NodeCapabilities {
+            hardware: HardwareCapability {
+                chip_family: "m4Max".into(),
+                chip_name: "m4Max".into(),
+                total_ram_gb: 64.0,
+                gpu_core_count: 40,
+                memory_bandwidth_gbs: 546.0,
+                tier: 1,
+                gpu_backend: Some("metal".into()),
+                platform: Some("macOS".into()),
+                gpu_vram_gb: None,
+            },
+            loaded_models: loaded.iter().map(|s| s.to_string()).collect(),
+            max_model_size_gb: 48.0,
+            is_available: true,
+            ptn_ids: None,
+            swappable_models: swappable.iter().map(|s| s.to_string()).collect(),
+            max_concurrent_requests: Some(4),
+            effective_context: Some(32768),
+            on_ac_power: Some(true),
+        }
+    }
+
+    fn dispatch_test_state(config: Config, catalog_model: &CatalogModel) -> AppState {
+        let registry = Registry::new(config.reliability.clone());
+        let scheduler = Arc::new(Scheduler::new(config.scheduler.clone()));
+        let relay = crate::relay_client::RelayHandle::test_handle();
+        let (group_tx, _group_rx) = broadcast::channel(16);
+        AppState {
+            config,
+            tokens: TokenTable::default(),
+            registry,
+            scheduler,
+            relay,
+            catalog: Arc::new(vec![catalog_model.clone()]),
+            db: None,
+            group_tx,
+            model_metrics: Arc::new(ModelMetricsTracker::new()),
+            share_key_issuers: ShareKeyIssuers::default(),
         }
     }
 
@@ -1320,5 +1436,61 @@ quantization: null
             infer_auto_route_profile(&headers, &req),
             AutoRouteProfile::AgentHarness
         );
+    }
+
+    #[tokio::test]
+    async fn pick_and_dispatch_quarantines_failed_open_and_tries_next_device() {
+        let model = kimi_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-b".into(),
+            "Node B".into(),
+            dispatch_caps(&[], &[&model.id]),
+        );
+
+        let relay = state.relay.clone();
+        let signal_second_ready = tokio::spawn(async move {
+            let mut seen = std::collections::HashSet::new();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                for session_id in relay.test_ready_waiter_ids() {
+                    if seen.insert(session_id.clone()) && seen.len() == 2 {
+                        assert!(relay.test_signal_ready(&session_id));
+                        return;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for second relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+        )
+        .await
+        .expect("dispatch should retry on relay-open failure");
+        drop(rx);
+
+        signal_second_ready
+            .await
+            .expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "node-b");
+        let eligible = state.registry.eligible_devices(&model.id);
+        let eligible_ids: Vec<_> = eligible.iter().map(|d| d.node_id.as_str()).collect();
+        assert_eq!(eligible_ids, vec!["node-b"]);
+        assert_eq!(state.registry.in_flight("node-a"), 0);
+        assert_eq!(state.registry.in_flight("node-b"), 1);
     }
 }
