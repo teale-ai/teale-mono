@@ -314,11 +314,13 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
 // MARK: - Wallet Types
 
 public struct RemoteWalletSnapshot: Codable, Sendable {
+    public var deviceID: String
     public var balance: Double
     public var totalEarned: Double
     public var totalSpent: Double
 
-    public init(balance: Double, totalEarned: Double, totalSpent: Double) {
+    public init(deviceID: String, balance: Double, totalEarned: Double, totalSpent: Double) {
+        self.deviceID = deviceID
         self.balance = balance
         self.totalEarned = totalEarned
         self.totalSpent = totalSpent

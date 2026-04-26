@@ -32,6 +32,11 @@
               <path d="M12 14.75a.75.75 0 0 1-.75-.75V5.81L8.53 8.53a.75.75 0 1 1-1.06-1.06l4-4a.75.75 0 0 1 1.06 0l4 4a.75.75 0 1 1-1.06 1.06l-2.72-2.72V14a.75.75 0 0 1-.75.75ZM4.75 12.5a.75.75 0 0 1 .75.75v5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-5a.75.75 0 0 1 1.5 0v5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.25v-5a.75.75 0 0 1 .75-.75Z"></path>
             </svg>
           </button>
+          <button id="header-refresh-button" class="icon-action" type="button" title="Refresh wallet data" aria-label="Refresh wallet data">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4.75a7.25 7.25 0 0 1 6.86 4.95h-2.61a.75.75 0 0 0 0 1.5H21a.75.75 0 0 0 .75-.75V5.7a.75.75 0 0 0-1.5 0v2.13A8.75 8.75 0 1 0 20.75 12a.75.75 0 0 0-1.5 0A7.25 7.25 0 1 1 12 4.75Z"></path>
+            </svg>
+          </button>
           <details id="settings-menu" class="settings-menu">
             <summary id="settings-summary" class="icon-action" title="Settings" aria-label="Settings">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -346,7 +351,7 @@
               </label>
               <label class="field field-wide">
                 <span data-i18n="common.recipient">Recipient</span>
-                <input id="send-recipient" type="text" placeholder="device id, key, phone, or github username" data-i18n-placeholder="wallet.input.recipient" />
+                <input id="send-recipient" type="text" placeholder="full device wallet id or account wallet id" data-i18n-placeholder="wallet.input.recipient" />
               </label>
               <label class="field">
                 <span data-i18n="common.amount">Amount</span>
@@ -361,7 +366,7 @@
               <button id="send-submit" class="action action-primary" type="button" disabled data-i18n="wallet.action.sendSoon">Send coming soon</button>
             </div>
             <p id="send-note" class="muted" data-i18n="wallet.send.note">
-              Transfers are not wired in the Windows companion backend yet. This will eventually support device IDs, keys, account phone numbers, and GitHub usernames.
+              Use full wallet IDs only. Device wallet sends target a 64-char device wallet ID or a full account wallet ID.
             </p>
           </div>
         </section>
@@ -433,7 +438,7 @@
               </label>
               <label class="field field-wide">
                 <span data-i18n="common.recipient">Recipient</span>
-                <input id="account-send-recipient" type="text" placeholder="device id, key, phone, or github username" data-i18n-placeholder="wallet.input.recipient" />
+                <input id="account-send-recipient" type="text" placeholder="full device wallet id or account wallet id" data-i18n-placeholder="wallet.input.recipient" />
               </label>
               <label class="field">
                 <span data-i18n="common.amount">Amount</span>
@@ -448,7 +453,7 @@
               <button id="account-send-submit" class="action action-primary" type="button" disabled data-i18n="wallet.action.sendSoon">Send coming soon</button>
             </div>
             <p id="account-send-note" class="muted" data-i18n="account.send.note">
-              Account wallet transfers are not wired in the Windows companion backend yet.
+              Use full wallet IDs only. Account wallet sends target a full account wallet ID or a 64-char device wallet ID.
             </p>
           </div>
         </section>

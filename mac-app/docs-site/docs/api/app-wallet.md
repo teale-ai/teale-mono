@@ -6,7 +6,12 @@ The released apps expose device-wallet operations directly, and the Windows comp
 
 ### GET /v1/app/wallet
 
-macOS returns the current device wallet snapshot, including balance and totals.
+macOS returns the current device wallet snapshot, including:
+
+- `deviceID`
+- balance
+- total earned
+- total spent
 
 ### GET /v1/app/wallet/transactions
 
@@ -33,6 +38,7 @@ The released send flow is for **Teale credits**. USDC transfers are not part of 
 
 - device IDs route to the destination device wallet
 - phone, email, and GitHub username route to the destination account wallet
+- sharing a device ID publicly is safe for receiving funds; spending still requires the sender's own bearer-authenticated wallet session
 
 ## Windows account endpoints
 
