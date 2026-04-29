@@ -108,7 +108,9 @@ pub struct LedgerEntry {
 #[derive(Debug, Clone)]
 pub enum ConsumerPrincipal {
     Device(String),
-    Account { account_user_id: String },
+    Account {
+        account_user_id: String,
+    },
     Share {
         issuer_device_id: String,
         key_id: String,
@@ -2446,7 +2448,8 @@ pub fn settle_request(
                 )?;
             }
             ConsumerPrincipal::Share { key_id, .. } => {
-                let paying_device_id = paying_device_id.expect("share principal has issuer device id");
+                let paying_device_id =
+                    paying_device_id.expect("share principal has issuer device id");
                 // Always bump the key's consumed_credits ticker so budget
                 // exhaustion tracks across both semantics.
                 tx.execute(
@@ -4135,11 +4138,9 @@ mod tests {
         assert!(keys[0].last_used_at.is_some());
 
         assert!(revoke_account_api_key(&pool, "user-123", &minted.key_id).unwrap());
-        assert!(
-            resolve_account_api_key(&pool, &minted.token)
-                .unwrap()
-                .is_none()
-        );
+        assert!(resolve_account_api_key(&pool, &minted.token)
+            .unwrap()
+            .is_none());
         assert!(!revoke_account_api_key(&pool, "user-123", &minted.key_id).unwrap());
     }
 
