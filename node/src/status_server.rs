@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +45,7 @@ enum ServiceState {
     NeedsModel,
     Downloading,
     Loading,
+    Offline,
     Serving,
     PausedUser,
     PausedBattery,
@@ -58,6 +59,7 @@ impl ServiceState {
             ServiceState::NeedsModel => "needs_model",
             ServiceState::Downloading => "downloading",
             ServiceState::Loading => "loading",
+            ServiceState::Offline => "offline",
             ServiceState::Serving => "serving",
             ServiceState::PausedUser => "paused_user",
             ServiceState::PausedBattery => "paused_battery",
@@ -79,6 +81,7 @@ impl ServiceState {
             ServiceState::PausedBattery => Some("battery"),
             ServiceState::Downloading => Some("downloading"),
             ServiceState::Loading => Some("loading"),
+            ServiceState::Offline => Some("offline"),
             ServiceState::NeedsModel => Some("needs_model"),
             ServiceState::Starting => Some("starting"),
             _ => None,
@@ -544,6 +547,7 @@ pub struct StatusState {
     control: ControlConfig,
     relay_url: String,
     node_state: Arc<NodeRuntimeState>,
+    relay_connected: Arc<AtomicBool>,
     privacy_filter: PrivacyFilterService,
     inner: Arc<Mutex<RuntimeInner>>,
 }
@@ -575,6 +579,7 @@ impl StatusState {
             control,
             relay_url,
             node_state,
+            relay_connected: Arc::new(AtomicBool::new(false)),
             privacy_filter: PrivacyFilterService::new().expect("privacy filter client init"),
             inner: Arc::new(Mutex::new(RuntimeInner {
                 registry,
@@ -598,11 +603,19 @@ impl StatusState {
 
     pub async fn snapshot(&self) -> AppSnapshot {
         let current_model_id = self.swap.current_model_id().await;
+        let backend_ready = self.swap.is_ready().await;
         let recommended = recommended_model(self.hardware.total_ram_gb).map(|m| m.id.to_string());
         let on_ac = self.node_state.on_ac_power.load(Ordering::SeqCst);
+        let relay_connected = self.relay_connected.load(Ordering::SeqCst);
         let inner = self.inner.lock().await.clone();
-        let service_state = self.resolve_state(&inner, current_model_id.as_deref(), on_ac);
-        let state_reason = self.state_reason(&inner, service_state);
+        let service_state = self.resolve_state(
+            &inner,
+            current_model_id.as_deref(),
+            on_ac,
+            backend_ready,
+            relay_connected,
+        );
+        let state_reason = self.state_reason(&inner, service_state, backend_ready, relay_connected);
         let privacy_filter = self
             .privacy_filter
             .snapshot(inner.registry.privacy_filter_mode)
@@ -644,9 +657,17 @@ impl StatusState {
 
     pub(crate) async fn legacy_status(&self) -> LegacyStatusDTO {
         let current_model_id = self.swap.current_model_id().await;
+        let backend_ready = self.swap.is_ready().await;
         let on_ac = self.node_state.on_ac_power.load(Ordering::SeqCst);
+        let relay_connected = self.relay_connected.load(Ordering::SeqCst);
         let inner = self.inner.lock().await;
-        let state = self.resolve_state(&inner, current_model_id.as_deref(), on_ac);
+        let state = self.resolve_state(
+            &inner,
+            current_model_id.as_deref(),
+            on_ac,
+            backend_ready,
+            relay_connected,
+        );
         LegacyStatusDTO {
             state: state.legacy_state().to_string(),
             supplying_since: self.supplying_since_secs().map(|secs| secs.to_string()),
@@ -789,6 +810,10 @@ impl StatusState {
         self.inner.lock().await.last_fatal_error = None;
     }
 
+    pub fn mark_relay_connected(&self, connected: bool) {
+        self.relay_connected.store(connected, Ordering::SeqCst);
+    }
+
     pub async fn set_gateway_wallet(
         &self,
         wallet: GatewayWalletState,
@@ -857,6 +882,8 @@ impl StatusState {
         inner: &RuntimeInner,
         loaded_model_id: Option<&str>,
         on_ac: bool,
+        backend_ready: bool,
+        relay_connected: bool,
     ) -> ServiceState {
         if inner.initializing {
             return ServiceState::Starting;
@@ -874,6 +901,9 @@ impl StatusState {
             return ServiceState::PausedBattery;
         }
         if loaded_model_id.is_some() {
+            if !backend_ready || !relay_connected {
+                return ServiceState::Offline;
+            }
             return ServiceState::Serving;
         }
         if inner.last_fatal_error.is_some() {
@@ -882,7 +912,13 @@ impl StatusState {
         ServiceState::NeedsModel
     }
 
-    fn state_reason(&self, inner: &RuntimeInner, state: ServiceState) -> Option<String> {
+    fn state_reason(
+        &self,
+        inner: &RuntimeInner,
+        state: ServiceState,
+        backend_ready: bool,
+        relay_connected: bool,
+    ) -> Option<String> {
         match state {
             ServiceState::Starting => Some("Teale is starting up.".to_string()),
             ServiceState::NeedsModel => Some("Download a model to start supplying.".to_string()),
@@ -894,6 +930,19 @@ impl StatusState {
                 .loading_model_id
                 .as_ref()
                 .map(|id| format!("Loading {}.", id)),
+            ServiceState::Offline => {
+                if !backend_ready {
+                    Some("Model is loaded, but the local backend is not ready yet.".to_string())
+                } else if !relay_connected {
+                    Some(
+                        inner.last_fatal_error.clone().unwrap_or_else(|| {
+                            "Relay is offline. Waiting to reconnect.".to_string()
+                        }),
+                    )
+                } else {
+                    Some("Teale is offline.".to_string())
+                }
+            }
             ServiceState::Serving => Some("Ready to serve inference.".to_string()),
             ServiceState::PausedUser => Some("Supply is paused by you.".to_string()),
             ServiceState::PausedBattery => Some("Plug in AC power to resume supply.".to_string()),
@@ -2427,7 +2476,7 @@ impl HttpResponse {
                 "Cache-Control: no-store\r\n",
                 "Access-Control-Allow-Origin: *\r\n",
                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n",
-                "Access-Control-Allow-Headers: Content-Type, Accept\r\n",
+                "Access-Control-Allow-Headers: Content-Type, Accept, Authorization\r\n",
                 "Access-Control-Max-Age: 86400\r\n",
                 "Access-Control-Allow-Private-Network: true\r\n",
                 "\r\n{}"
@@ -2525,6 +2574,45 @@ mod tests {
         ))
     }
 
+    fn build_loaded_state(
+        tmp: &Path,
+        relay_url: String,
+        llama: Option<LlamaConfig>,
+        model_id: &str,
+    ) -> Arc<StatusState> {
+        let registry_store = RegistryStore::new(tmp.join("model-registry.json"));
+        let node_state = Arc::new(NodeRuntimeState::new(1));
+        let advertised_model_id = model_id.to_string();
+        let swap = SwapManager::new(
+            Backend::Http(crate::inference::InferenceProxy::new(
+                11436,
+                &advertised_model_id,
+                &advertised_model_id,
+            )),
+            None,
+            advertised_model_id.clone(),
+            None,
+            llama.clone().unwrap_or_else(dummy_llama),
+            vec![],
+            node_state.clone(),
+        );
+        Arc::new(StatusState::new(
+            "WIN".to_string(),
+            dummy_hw(16.0),
+            tmp.to_path_buf(),
+            registry_store,
+            PersistedRegistry {
+                active_model_id: Some(advertised_model_id),
+                ..Default::default()
+            },
+            swap,
+            llama,
+            ControlConfig::default(),
+            relay_url,
+            node_state,
+        ))
+    }
+
     fn helper_env_guard() -> &'static tokio::sync::Mutex<()> {
         static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -2598,6 +2686,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_reports_offline_when_model_is_loaded_but_relay_is_down() {
+        let tmp = temp_dir();
+        let state = build_loaded_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
+            "nousresearch/hermes-3-llama-3.1-8b",
+        );
+
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.service_state, ServiceState::Offline.as_str());
+        assert_eq!(
+            snapshot.state_reason.as_deref(),
+            Some("Relay is offline. Waiting to reconnect.")
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn snapshot_reports_serving_when_model_is_loaded_and_relay_is_connected() {
+        let tmp = temp_dir();
+        let state = build_loaded_state(
+            &tmp,
+            "wss://relay.teale.com/ws".to_string(),
+            Some(dummy_llama()),
+            "nousresearch/hermes-3-llama-3.1-8b",
+        );
+        state.mark_relay_connected(true);
+
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.service_state, ServiceState::Serving.as_str());
+        assert_eq!(
+            snapshot.state_reason.as_deref(),
+            Some("Ready to serve inference.")
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
     async fn options_preflight_returns_cors_headers() {
         let tmp = temp_dir();
         let state = build_state(
@@ -2613,7 +2742,9 @@ mod tests {
         assert!(rendered.contains("204 No Content"));
         assert!(rendered.contains("Access-Control-Allow-Origin: *"));
         assert!(rendered.contains("Access-Control-Allow-Methods: GET, POST, OPTIONS"));
-        assert!(rendered.contains("Access-Control-Allow-Headers: Content-Type, Accept"));
+        assert!(
+            rendered.contains("Access-Control-Allow-Headers: Content-Type, Accept, Authorization")
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

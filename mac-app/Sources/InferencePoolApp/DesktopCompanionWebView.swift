@@ -27,6 +27,7 @@ private enum DesktopCompanionConfig {
         "walletRefresh": "/v1/desktop/app/wallet/refresh",
         "walletSend": "/v1/desktop/app/wallet/send",
         "authPending": "teale://localhost/auth/pending",
+        "bundledApp": "teale://localhost/",
         "localApiKey": "teale://localhost/auth/local-api-key",
     ]
 }
@@ -101,6 +102,7 @@ final class DesktopCompanionBridge {
         let payload: [String: Any] = [
             "apiBase": "http://127.0.0.1:\(appState.serverPort)",
             "platform": "macos",
+            "shellMode": true,
             "deviceLabel": "Mac device",
             "chatTransport": "openai",
             "routes": DesktopCompanionConfig.routes,
