@@ -63,15 +63,15 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
-    if initial_auth_callback.is_none() && args.len() <= 1 {
-        if forward_ipc_message(IpcMessage {
+    if initial_auth_callback.is_none()
+        && args.len() <= 1
+        && forward_ipc_message(IpcMessage {
             kind: "openWindow".into(),
             url: None,
         })
         .is_ok()
-        {
-            return Ok(());
-        }
+    {
+        return Ok(());
     }
 
     let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
@@ -131,9 +131,10 @@ pub fn run() -> anyhow::Result<()> {
 fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let host = request.uri().host().unwrap_or_default();
     let raw_path = request.uri().path();
-    let path = if matches!(raw_path, "/" | "") || (host == "auth" && raw_path == "/callback") {
-        "index.html"
-    } else if raw_path == "/auth/callback" {
+    let path = if matches!(raw_path, "/" | "")
+        || raw_path == "/auth/callback"
+        || (host == "auth" && raw_path == "/callback")
+    {
         "index.html"
     } else {
         raw_path.trim_start_matches('/')
@@ -170,7 +171,7 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
 fn show_window(window: &tao::window::Window) {
     window.set_visible(true);
     window.set_minimized(false);
-    let _ = window.set_focus();
+    window.set_focus();
 }
 
 fn start_auth_callback_listener(proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
