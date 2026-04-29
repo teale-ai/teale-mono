@@ -161,7 +161,7 @@ impl RelayHandle {
 
     fn send_json(&self, v: &serde_json::Value) -> anyhow::Result<()> {
         let text = serde_json::to_string(v)?;
-        self.outbox.send(Message::Text(text.into()))
+        self.outbox.send(Message::Text(text))
     }
 
     pub fn request_discover(&self) -> anyhow::Result<()> {
@@ -264,7 +264,7 @@ pub async fn spawn(
 
                         // register ourselves
                         let register_payload = make_register_payload(&identity, &display_name);
-                        if let Err(e) = local_outbox_tx.send(Message::Text(register_payload.into()))
+                        if let Err(e) = local_outbox_tx.send(Message::Text(register_payload))
                         {
                             warn!("send register: {}", e);
                         }
