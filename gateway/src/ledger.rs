@@ -108,6 +108,7 @@ pub struct LedgerEntry {
 #[derive(Debug, Clone)]
 pub enum ConsumerPrincipal {
     Device(String),
+    Account { account_user_id: String },
     Share {
         issuer_device_id: String,
         key_id: String,
@@ -115,13 +116,26 @@ pub enum ConsumerPrincipal {
 }
 
 impl ConsumerPrincipal {
-    /// Device ID whose balance is debited for this spend.
-    pub fn paying_device_id(&self) -> &str {
+    /// Stable ledger-side identifier for logs and receipts.
+    pub fn ledger_actor_id(&self) -> &str {
         match self {
             Self::Device(d) => d,
+            Self::Account { account_user_id } => account_user_id,
             Self::Share {
                 issuer_device_id, ..
             } => issuer_device_id,
+        }
+    }
+
+    /// Device ID whose balance is debited for this spend, when the spender is
+    /// still device-backed.
+    pub fn paying_device_id(&self) -> Option<&str> {
+        match self {
+            Self::Device(d) => Some(d),
+            Self::Account { .. } => None,
+            Self::Share {
+                issuer_device_id, ..
+            } => Some(issuer_device_id),
         }
     }
 }
@@ -187,6 +201,40 @@ pub struct ShareKeyPublic {
     pub created_at: i64,
     #[serde(rename = "revokedAt", skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<i64>,
+}
+
+/// Returned when an account-scoped API key is created. The raw token is only
+/// exposed once at mint time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApiKeyMinted {
+    #[serde(rename = "keyID")]
+    pub key_id: String,
+    pub token: String,
+    pub label: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+}
+
+/// Account-visible API key metadata; never includes the raw token after mint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApiKeyPublic {
+    #[serde(rename = "keyID")]
+    pub key_id: String,
+    #[serde(rename = "tokenPreview")]
+    pub token_preview: String,
+    pub label: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    #[serde(rename = "lastUsedAt", skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<i64>,
+    #[serde(rename = "revokedAt", skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedAccountApiKey {
+    pub key_id: String,
+    pub account_user_id: String,
 }
 
 /// Payload served by the public preview endpoint; no auth required.
@@ -534,6 +582,124 @@ pub fn resolve_token(pool: &DbPool, token: &str) -> Option<String> {
         |r| r.get::<_, String>(0),
     )
     .ok()
+}
+
+fn account_api_token_preview(token: &str) -> String {
+    if token.len() <= 16 {
+        return token.to_string();
+    }
+    format!("{}...{}", &token[..12], &token[token.len() - 4..])
+}
+
+pub fn mint_account_api_key(
+    pool: &DbPool,
+    account_user_id: &str,
+    label: Option<&str>,
+) -> anyhow::Result<AccountApiKeyMinted> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    tx.query_row(
+        "SELECT account_user_id FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |_r| Ok(()),
+    )?;
+
+    let key_id = format!("ak_{}", uuid::Uuid::new_v4().simple());
+    let token = format!("tok_acct_{}", uuid::Uuid::new_v4().simple());
+    let cleaned_label = label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(64).collect::<String>());
+
+    tx.execute(
+        "INSERT INTO account_api_keys
+            (key_id, token, account_user_id, label, created_at)
+         VALUES (?, ?, ?, ?, ?)",
+        params![key_id, token, account_user_id, cleaned_label, now],
+    )?;
+
+    tx.commit()?;
+
+    Ok(AccountApiKeyMinted {
+        key_id,
+        token,
+        label: cleaned_label,
+        created_at: now,
+    })
+}
+
+pub fn list_account_api_keys(
+    pool: &DbPool,
+    account_user_id: &str,
+) -> anyhow::Result<Vec<AccountApiKeyPublic>> {
+    let conn = pool.lock();
+    let mut stmt = conn.prepare(
+        "SELECT key_id, token, label, created_at, last_used_at, revoked_at
+         FROM account_api_keys
+         WHERE account_user_id = ?
+         ORDER BY created_at DESC, key_id DESC",
+    )?;
+    let rows = stmt.query_map([account_user_id], |r| {
+        let token: String = r.get(1)?;
+        Ok(AccountApiKeyPublic {
+            key_id: r.get(0)?,
+            token_preview: account_api_token_preview(&token),
+            label: r.get(2)?,
+            created_at: r.get(3)?,
+            last_used_at: r.get(4)?,
+            revoked_at: r.get(5)?,
+        })
+    })?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
+}
+
+pub fn revoke_account_api_key(
+    pool: &DbPool,
+    account_user_id: &str,
+    key_id: &str,
+) -> anyhow::Result<bool> {
+    let conn = pool.lock();
+    let now = unix_now();
+    let changed = conn.execute(
+        "UPDATE account_api_keys
+         SET revoked_at = COALESCE(revoked_at, ?)
+         WHERE key_id = ? AND account_user_id = ? AND revoked_at IS NULL",
+        params![now, key_id, account_user_id],
+    )?;
+    Ok(changed > 0)
+}
+
+pub fn resolve_account_api_key(
+    pool: &DbPool,
+    token: &str,
+) -> anyhow::Result<Option<ResolvedAccountApiKey>> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let resolved = tx
+        .query_row(
+            "SELECT key_id, account_user_id
+             FROM account_api_keys
+             WHERE token = ? AND revoked_at IS NULL",
+            [token],
+            |r| {
+                Ok(ResolvedAccountApiKey {
+                    key_id: r.get(0)?,
+                    account_user_id: r.get(1)?,
+                })
+            },
+        )
+        .ok();
+    if let Some(resolved) = &resolved {
+        tx.execute(
+            "UPDATE account_api_keys SET last_used_at = ? WHERE key_id = ?",
+            params![now, resolved.key_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(resolved)
 }
 
 /// Record a bonus and mint-pool debit atomically. Returns the balance after.
@@ -1675,6 +1841,46 @@ pub fn transfer_from_account_wallet(
     amount_credits: i64,
     memo: Option<&str>,
 ) -> Result<TransferReceipt, TransferError> {
+    let account_user_id = account_user_id_for_device(pool, requester_device_id)
+        .ok_or(TransferError::AccountNotLinked)?;
+    transfer_from_account_wallet_for_account(
+        pool,
+        &account_user_id,
+        raw_recipient,
+        amount_credits,
+        memo,
+        Some(requester_device_id),
+    )
+}
+
+pub fn account_user_id_for_device(pool: &DbPool, device_id: &str) -> Option<String> {
+    let conn = pool.lock();
+    conn.query_row(
+        "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+        [device_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+pub fn account_balance_credits(pool: &DbPool, account_user_id: &str) -> i64 {
+    let conn = pool.lock();
+    conn.query_row(
+        "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+pub fn transfer_from_account_wallet_for_account(
+    pool: &DbPool,
+    account_user_id: &str,
+    raw_recipient: &str,
+    amount_credits: i64,
+    memo: Option<&str>,
+    actor_device_id: Option<&str>,
+) -> Result<TransferReceipt, TransferError> {
     if amount_credits <= 0 {
         return Err(TransferError::InvalidAmount);
     }
@@ -1683,17 +1889,17 @@ pub fn transfer_from_account_wallet(
     let now = unix_now();
     let tx = conn.transaction()?;
 
-    let account_user_id: String = tx
-        .query_row(
-            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
-            [requester_device_id],
-            |r| r.get(0),
-        )
-        .map_err(|_| TransferError::AccountNotLinked)?;
+    tx.query_row(
+        "SELECT account_user_id FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |_r| Ok(()),
+    )
+    .map_err(|_| TransferError::AccountNotLinked)?;
+
     let sender_balance: i64 = tx
         .query_row(
             "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
-            [account_user_id.clone()],
+            [account_user_id],
             |r| r.get(0),
         )
         .unwrap_or(0);
@@ -1710,7 +1916,7 @@ pub fn transfer_from_account_wallet(
         ResolvedTransferTarget::Account {
             account_user_id: recipient_account_id,
             ..
-        } if recipient_account_id == &account_user_id
+        } if recipient_account_id == account_user_id
     ) {
         return Err(TransferError::SameWallet);
     }
@@ -1729,7 +1935,7 @@ pub fn transfer_from_account_wallet(
             account_user_id,
             -amount_credits,
             now,
-            requester_device_id,
+            actor_device_id,
             format_sender_note(&recipient, memo),
         ],
     )?;
@@ -1774,7 +1980,7 @@ pub fn transfer_from_account_wallet(
                     recipient_account_id,
                     amount_credits,
                     now,
-                    requester_device_id,
+                    actor_device_id,
                     format_recipient_note(&sender_label, memo),
                 ],
             )?;
@@ -1791,20 +1997,10 @@ pub fn transfer_from_account_wallet(
             (!trimmed.is_empty()).then_some(trimmed.to_string())
         }),
         sender_kind: "account".to_string(),
-        sender_id: account_user_id,
+        sender_id: account_user_id.to_string(),
         sender_balance_credits: sender_balance - amount_credits,
         recipient: recipient.summary(),
     })
-}
-
-pub fn account_user_id_for_device(pool: &DbPool, device_id: &str) -> Option<String> {
-    let conn = pool.lock();
-    conn.query_row(
-        "SELECT account_user_id FROM account_devices WHERE device_id = ?",
-        [device_id],
-        |r| r.get(0),
-    )
-    .ok()
 }
 
 pub fn account_summary_for_device(
@@ -2061,7 +2257,8 @@ fn list_account_transactions_locked(
 }
 
 /// Called after a chat completion. Distributes:
-///   - consumer SPENT (negative) — debited from the paying device (issuer for share-key spends)
+///   - consumer SPENT (negative) — debited from the paying device, account
+///     wallet, or share-key issuer/pool
 ///   - provider DIRECT_EARN (70% of effective cost)
 ///   - AVAILABILITY_EARN to all other eligible online devices (25%, pro-rata)
 ///   - OPS_FEE (5%) internal — plus any integer-division leftover and the
@@ -2099,10 +2296,12 @@ pub fn settle_request(
     // this is bounded by the wallet balance; for share-keys, by the key's
     // pre-funded pool remainder. In both cases the non-negative invariant
     // holds: we never debit more than the source can cover.
-    tx.execute(
-        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
-        [paying_device_id],
-    )?;
+    if let Some(paying_device_id) = paying_device_id {
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+            [paying_device_id],
+        )?;
+    }
     // Share-key funded status (only relevant for Share principals). Keys
     // minted post-refactor (`funded=1`) have a pre-stocked pool; legacy keys
     // (`funded=0`) still debit the issuer's wallet at settle time until an
@@ -2119,6 +2318,7 @@ pub fn settle_request(
     };
     let effective_cost = match consumer {
         ConsumerPrincipal::Device(_) => {
+            let paying_device_id = paying_device_id.expect("device principal has device id");
             let bal: i64 = tx
                 .query_row(
                     "SELECT balance FROM balances WHERE device_id = ?",
@@ -2128,7 +2328,18 @@ pub fn settle_request(
                 .unwrap_or(0);
             cost.min(bal.max(0))
         }
+        ConsumerPrincipal::Account { account_user_id } => {
+            let bal: i64 = tx
+                .query_row(
+                    "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
+                    [account_user_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            cost.min(bal.max(0))
+        }
         ConsumerPrincipal::Share { key_id, .. } => {
+            let paying_device_id = paying_device_id.expect("share principal has issuer device id");
             if share_funded == Some(1) {
                 // New semantics: debit from the pre-funded pool.
                 let remaining = sum_share_key_contributions_tx(&tx, key_id).unwrap_or(0);
@@ -2165,7 +2376,7 @@ pub fn settle_request(
     // Filter provider + paying device out of availability recipients.
     let recipients: Vec<&String> = online_device_ids
         .iter()
-        .filter(|d| Some(d.as_str()) != provider_device_id && *d != paying_device_id)
+        .filter(|d| Some(d.as_str()) != provider_device_id && Some(d.as_str()) != paying_device_id)
         .collect();
 
     let per_peer = if recipients.is_empty() {
@@ -2180,6 +2391,9 @@ pub fn settle_request(
 
     let note_base = match consumer {
         ConsumerPrincipal::Device(_) => format!("model={}", model),
+        ConsumerPrincipal::Account { account_user_id } => {
+            format!("account={} model={}", account_user_id, model)
+        }
         ConsumerPrincipal::Share { key_id, .. } => {
             format!("share_key:{} model={}", key_id, model)
         }
@@ -2194,14 +2408,28 @@ pub fn settle_request(
     // attribution regardless of source (device wallet OR share-key pool). We
     // always record it (even at effective_cost==0) so the request shows up
     // in wallet history.
-    tx.execute(
-        "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
-         VALUES (?, 'SPENT', ?, ?, ?, ?)",
-        params![paying_device_id, -effective_cost, now, request_id, &note],
-    )?;
+    match consumer {
+        ConsumerPrincipal::Device(_) | ConsumerPrincipal::Share { .. } => {
+            let paying_device_id = paying_device_id.expect("device-backed principal has device id");
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+                 VALUES (?, 'SPENT', ?, ?, ?, ?)",
+                params![paying_device_id, -effective_cost, now, request_id, &note],
+            )?;
+        }
+        ConsumerPrincipal::Account { account_user_id } => {
+            tx.execute(
+                "INSERT INTO account_ledger
+                    (account_user_id, asset, amount, type, timestamp, device_id, note)
+                 VALUES (?, 'credits', ?, 'INFERENCE_SPENT', ?, NULL, ?)",
+                params![account_user_id, -effective_cost, now, &note],
+            )?;
+        }
+    }
     if effective_cost > 0 {
         match consumer {
             ConsumerPrincipal::Device(_) => {
+                let paying_device_id = paying_device_id.expect("device principal has device id");
                 // Device path: debit the wallet and bump total_spent.
                 tx.execute(
                     "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
@@ -2209,7 +2437,16 @@ pub fn settle_request(
                     params![effective_cost, effective_cost, paying_device_id],
                 )?;
             }
+            ConsumerPrincipal::Account { account_user_id } => {
+                tx.execute(
+                    "UPDATE account_wallets
+                     SET balance_credits = balance_credits - ?, updated_at = ?
+                     WHERE account_user_id = ?",
+                    params![effective_cost, now, account_user_id],
+                )?;
+            }
             ConsumerPrincipal::Share { key_id, .. } => {
+                let paying_device_id = paying_device_id.expect("share principal has issuer device id");
                 // Always bump the key's consumed_credits ticker so budget
                 // exhaustion tracks across both semantics.
                 tx.execute(
@@ -3858,6 +4095,99 @@ mod tests {
             .transactions
             .iter()
             .any(|entry| entry.type_ == "TRANSFER_OUT" && entry.amount == -120));
+    }
+
+    #[test]
+    fn account_api_keys_are_revocable_and_track_last_use() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                display_name: Some("Taylor".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let minted = mint_account_api_key(&pool, "user-123", Some("CLI")).unwrap();
+        assert!(minted.key_id.starts_with("ak_"));
+        assert!(minted.token.starts_with("tok_acct_"));
+        assert_eq!(minted.label.as_deref(), Some("CLI"));
+
+        let keys = list_account_api_keys(&pool, "user-123").unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key_id, minted.key_id);
+        assert_eq!(keys[0].label.as_deref(), Some("CLI"));
+        assert!(keys[0].token_preview.starts_with("tok_acct_"));
+        assert!(keys[0].last_used_at.is_none());
+        assert!(keys[0].revoked_at.is_none());
+
+        let resolved = resolve_account_api_key(&pool, &minted.token)
+            .unwrap()
+            .expect("account API key resolves");
+        assert_eq!(resolved.key_id, minted.key_id);
+        assert_eq!(resolved.account_user_id, "user-123");
+
+        let keys = list_account_api_keys(&pool, "user-123").unwrap();
+        assert!(keys[0].last_used_at.is_some());
+
+        assert!(revoke_account_api_key(&pool, "user-123", &minted.key_id).unwrap());
+        assert!(
+            resolve_account_api_key(&pool, &minted.token)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!revoke_account_api_key(&pool, "user-123", &minted.key_id).unwrap());
+    }
+
+    #[test]
+    fn account_principal_settlement_debits_account_wallet() {
+        let pool = open_in_memory().unwrap();
+        let owner_device = "owner-device";
+        let provider = "provider";
+        let peer = "peer";
+        for device_id in &[owner_device, provider, peer] {
+            upsert_device(&pool, device_id).unwrap();
+        }
+        record_bonus(&pool, owner_device, 300).unwrap();
+        link_device_to_account(
+            &pool,
+            owner_device,
+            "user-123",
+            &AccountLinkMetadata {
+                email: Some("taylor@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sweep_device_to_account(&pool, owner_device, owner_device).unwrap();
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Account {
+                account_user_id: "user-123".into(),
+            },
+            Some(provider),
+            &[provider.to_string(), peer.to_string()],
+            200,
+            "req-account",
+            "qwen/qwen3.6-27b",
+        )
+        .unwrap();
+
+        assert_eq!(account_balance_credits(&pool, "user-123"), 100);
+        assert_eq!(get_balance(&pool, owner_device).balance_credits, 0);
+        assert_eq!(get_balance(&pool, provider).balance_credits, 140);
+        assert!(get_balance(&pool, peer).balance_credits > 0);
+
+        let account = account_summary(&pool, "user-123").unwrap();
+        assert!(account
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "INFERENCE_SPENT" && entry.amount == -200));
     }
 
     #[test]

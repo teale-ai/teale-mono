@@ -243,6 +243,41 @@ pub struct AccountLedgerSnapshot {
     pub note: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApiKeySnapshot {
+    #[serde(rename = "keyID")]
+    pub key_id: String,
+    #[serde(rename = "tokenPreview")]
+    pub token_preview: String,
+    pub label: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    #[serde(rename = "lastUsedAt")]
+    pub last_used_at: Option<i64>,
+    #[serde(rename = "revokedAt")]
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApiKeysResponse {
+    pub keys: Vec<AccountApiKeySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApiKeyMintedResponse {
+    #[serde(rename = "keyID")]
+    pub key_id: String,
+    pub token: String,
+    pub label: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountApiKeyRevokeResponse {
+    pub revoked: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub app_version: String,
@@ -290,6 +325,17 @@ struct AccountLinkRequest {
 struct AccountDeviceControlRequest {
     #[serde(rename = "deviceID")]
     device_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountApiKeyCreateRequest {
+    label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountApiKeyRevokeRequest {
+    #[serde(rename = "keyID")]
+    key_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1238,6 +1284,75 @@ impl StatusState {
         Ok(())
     }
 
+    async fn account_api_keys(&self) -> anyhow::Result<AccountApiKeysResponse> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/api-keys");
+        let client = gateway_client(Duration::from_secs(10))?;
+        let response = client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("account not linked");
+        }
+        response
+            .error_for_status()
+            .with_context(|| format!("account api key list failed at {url}"))?
+            .json::<AccountApiKeysResponse>()
+            .await
+            .context("decode account api key list response")
+    }
+
+    async fn create_account_api_key(
+        &self,
+        payload: AccountApiKeyCreateRequest,
+    ) -> anyhow::Result<AccountApiKeyMintedResponse> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/api-keys");
+        let client = gateway_client(Duration::from_secs(15))?;
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({
+                "label": payload.label.as_deref().map(str::trim).filter(|value| !value.is_empty()),
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        response
+            .error_for_status()
+            .with_context(|| format!("account api key create failed at {url}"))?
+            .json::<AccountApiKeyMintedResponse>()
+            .await
+            .context("decode account api key create response")
+    }
+
+    async fn revoke_account_api_key(
+        &self,
+        key_id: &str,
+    ) -> anyhow::Result<AccountApiKeyRevokeResponse> {
+        let token = self.gateway_device_token().await?;
+        let gateway_base_url = relay_to_gateway_base_url(&self.relay_url);
+        let url = format!("{gateway_base_url}/account/api-keys/{key_id}");
+        let client = gateway_client(Duration::from_secs(10))?;
+        let response = client
+            .delete(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .with_context(|| format!("DELETE {url}"))?;
+        response
+            .error_for_status()
+            .with_context(|| format!("account api key revoke failed at {url}"))?
+            .json::<AccountApiKeyRevokeResponse>()
+            .await
+            .context("decode account api key revoke response")
+    }
+
     async fn force_refresh_gateway_wallet(&self) -> anyhow::Result<AppSnapshot> {
         self.refresh_gateway_wallet_snapshot().await?;
         Ok(self.snapshot().await)
@@ -2106,6 +2221,18 @@ async fn route(
                 .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
             Ok(HttpResponse::json("200 OK", body))
         }
+        ("GET", "/v1/app/account/api-keys") => {
+            let keys = match state.account_api_keys().await {
+                Ok(keys) => keys,
+                Err(err) if err.to_string().contains("account not linked") => {
+                    return Err(("404 Not Found", "account not linked".to_string()))
+                }
+                Err(err) => return Err(("502 Bad Gateway", err.to_string())),
+            };
+            let body = serde_json::to_string(&keys)
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
         ("POST", "/v1/app/account/link") => {
             let payload: AccountLinkRequest = serde_json::from_slice(body).map_err(|e| {
                 (
@@ -2116,6 +2243,23 @@ async fn route(
             let body = serde_json::to_string(
                 &state
                     .link_account(payload)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/account/api-keys") => {
+            let payload: AccountApiKeyCreateRequest =
+                serde_json::from_slice(body).map_err(|e| {
+                    (
+                        "400 Bad Request",
+                        format!("invalid account api key payload: {e}"),
+                    )
+                })?;
+            let body = serde_json::to_string(
+                &state
+                    .create_account_api_key(payload)
                     .await
                     .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
             )
@@ -2149,6 +2293,23 @@ async fn route(
             let body = serde_json::to_string(
                 &state
                     .send_account_wallet(payload)
+                    .await
+                    .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
+            )
+            .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            Ok(HttpResponse::json("200 OK", body))
+        }
+        ("POST", "/v1/app/account/api-keys/revoke") => {
+            let payload: AccountApiKeyRevokeRequest =
+                serde_json::from_slice(body).map_err(|e| {
+                    (
+                        "400 Bad Request",
+                        format!("invalid account api key revoke payload: {e}"),
+                    )
+                })?;
+            let body = serde_json::to_string(
+                &state
+                    .revoke_account_api_key(payload.key_id.trim())
                     .await
                     .map_err(|e| ("502 Bad Gateway", e.to_string()))?,
             )

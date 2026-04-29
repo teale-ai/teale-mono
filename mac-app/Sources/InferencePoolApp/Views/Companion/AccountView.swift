@@ -11,12 +11,14 @@ struct CompanionAccountView: View {
     @State private var recipient = ""
     @State private var amount = ""
     @State private var memo = ""
+    @State private var apiKeyLabel = ""
     let refreshNonce: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             accountSection
             accountWalletSection
+            apiKeysSection
             sendSection
             detailsSection
             devicesSection
@@ -28,6 +30,98 @@ struct CompanionAccountView: View {
         .task(id: refreshNonce) {
             guard refreshNonce > 0 else { return }
             await accountState.refresh(appState: appState, authManager: authManager)
+        }
+    }
+
+    private var apiKeysSection: some View {
+        TealeSection(prompt: appState.companionText("account.apiKeys", fallback: "direct gateway api keys")) {
+            if !isSignedIn {
+                signedOutMessage
+            } else if accountState.snapshot == nil {
+                unavailableWalletMessage
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(appState.companionText(
+                        "account.apiKeysNote",
+                        fallback: "Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them."
+                    ))
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.muted)
+
+                    HStack(alignment: .bottom, spacing: 12) {
+                        AccountFormField(title: appState.companionText("account.apiKeyLabel", fallback: "Label")) {
+                            TextField(
+                                appState.companionText("account.apiKeyLabelPlaceholder", fallback: "optional name like claude code"),
+                                text: $apiKeyLabel
+                            )
+                            .textFieldStyle(.plain)
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.text)
+                        }
+
+                        TealeActionButton(
+                            title: accountState.isCreatingAPIKey
+                                ? appState.companionText("account.creatingAPIKey", fallback: "creating...")
+                                : appState.companionText("account.createAPIKey", fallback: "create api key"),
+                            primary: true,
+                            disabled: accountState.isCreatingAPIKey
+                        ) {
+                            Task { await createAPIKey() }
+                        }
+                    }
+
+                    if let createdAPIToken = accountState.createdAPIToken, !createdAPIToken.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(appState.companionText(
+                                "account.apiKeyShownOnce",
+                                fallback: "This raw API key is only shown once. Copy it now for direct gateway clients."
+                            ))
+                            .font(TealeDesign.monoSmall)
+                            .foregroundStyle(TealeDesign.muted)
+                            TealeCodeBlock(text: createdAPIToken)
+                            HStack(spacing: 10) {
+                                TealeActionButton(title: appState.companionText("account.copyAPIKey", fallback: "copy api key")) {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(createdAPIToken, forType: .string)
+                                }
+                            }
+                        }
+                    }
+
+                    if !accountState.apiKeys.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(accountState.apiKeys) { apiKey in
+                                AccountAPIKeyRow(
+                                    apiKey: apiKey,
+                                    isRevoking: accountState.revokingAPIKeyID == apiKey.keyID,
+                                    onRevoke: {
+                                        Task {
+                                            await accountState.revokeAPIKey(
+                                                keyID: apiKey.keyID,
+                                                appState: appState,
+                                                authManager: authManager
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    } else {
+                        Text(appState.companionText(
+                            "account.noAPIKeys",
+                            fallback: "No direct gateway API keys created yet."
+                        ))
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(TealeDesign.muted)
+                    }
+
+                    if !accountState.apiKeyStatus.isEmpty {
+                        Text(accountState.apiKeyStatus)
+                            .font(TealeDesign.monoSmall)
+                            .foregroundStyle(accountState.apiKeyStatusIsError ? TealeDesign.fail : TealeDesign.muted)
+                    }
+                }
+            }
         }
     }
 
@@ -390,6 +484,18 @@ struct CompanionAccountView: View {
     private func accountUSDCLabel(_ usdcCents: Int64) -> String {
         String(format: "$%.2f", Double(usdcCents) / 100.0)
     }
+
+    @MainActor
+    private func createAPIKey() async {
+        await accountState.createAPIKey(
+            label: apiKeyLabel,
+            appState: appState,
+            authManager: authManager
+        )
+        if !accountState.apiKeyStatusIsError, accountState.createdAPIToken != nil {
+            apiKeyLabel = ""
+        }
+    }
 }
 
 private struct CopyableIdentifierRow: View {
@@ -533,6 +639,59 @@ private struct AccountWalletDeviceRow: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             copied = false
         }
+    }
+}
+
+private struct AccountAPIKeyRow: View {
+    @Environment(AppState.self) private var appState
+    let apiKey: CompanionAccountAPIKey
+    let isRevoking: Bool
+    let onRevoke: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(apiKey.label?.isEmpty == false ? apiKey.label! : appState.companionText("account.unnamedAPIKey", fallback: "Unnamed API key"))
+                    .font(TealeDesign.mono)
+                    .foregroundStyle(TealeDesign.text)
+                Text(apiKey.tokenPreview)
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.teale)
+                Text(detailLine)
+                    .font(TealeDesign.monoTiny)
+                    .foregroundStyle(TealeDesign.muted)
+            }
+            Spacer(minLength: 8)
+            if apiKey.isRevoked {
+                Text(appState.companionText("account.apiKeyRevokedState", fallback: "revoked"))
+                    .font(TealeDesign.monoSmall)
+                    .foregroundStyle(TealeDesign.fail)
+            } else {
+                TealeActionButton(
+                    title: isRevoking
+                        ? appState.companionText("account.revokingAPIKey", fallback: "revoking...")
+                        : appState.companionText("account.revokeAPIKey", fallback: "revoke"),
+                    disabled: isRevoking
+                ) {
+                    onRevoke()
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(Rectangle().stroke(TealeDesign.border.opacity(0.6), lineWidth: 1))
+    }
+
+    private var detailLine: String {
+        var parts = [
+            "created \(Date(timeIntervalSince1970: TimeInterval(apiKey.createdAt)).formatted(date: .abbreviated, time: .shortened))"
+        ]
+        if let lastUsedAt = apiKey.lastUsedAt {
+            parts.append("last used \(Date(timeIntervalSince1970: TimeInterval(lastUsedAt)).formatted(date: .abbreviated, time: .shortened))")
+        } else {
+            parts.append(appState.companionText("account.apiKeyNeverUsed", fallback: "never used"))
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

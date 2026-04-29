@@ -108,6 +108,13 @@ public actor GatewayAuthClient {
         return try await roundTrip(req)
     }
 
+    public func deleteJSON<Res: Decodable>(path: String, bearerToken: String) async throws -> Res {
+        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        return try await roundTrip(req)
+    }
+
     private func roundTrip<Res: Decodable>(_ req: URLRequest) async throws -> Res {
         let (data, resp): (Data, URLResponse)
         do { (data, resp) = try await session.data(for: req) }

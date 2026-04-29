@@ -291,17 +291,17 @@
             <dl class="stats">
               <dt>Base URL</dt>
               <dd id="network-base-url">-</dd>
-              <dt>Bearer</dt>
+              <dt>Device bearer</dt>
               <dd>
-                <button id="network-token" class="device-id-button" type="button" title="Copy bearer token">Syncing...</button>
-                <small id="network-token-note">Requests deduct from Teale credits.</small>
+                <button id="network-token" class="device-id-button" type="button" title="Copy device bearer">Syncing...</button>
+                <small id="network-token-note">The rotating device bearer is for app transport and debugging. Use a human-account API key for persistent direct gateway clients.</small>
               </dd>
               <dt>Selected</dt>
               <dd id="network-selected-model">Waiting for gateway models...</dd>
             </dl>
-            <pre id="network-curl" class="code-block">Waiting for a network bearer token...</pre>
+            <pre id="network-curl" class="code-block">Waiting for gateway models...</pre>
             <div class="actions">
-              <button id="network-token-copy" class="action" type="button" data-i18n="demand.action.copyBearer">Copy bearer token</button>
+              <button id="network-token-copy" class="action" type="button">Copy device bearer</button>
               <button id="network-curl-copy" class="action" type="button" data-i18n="demand.action.copyNetworkCurl">Copy network curl</button>
             </div>
           </div>
@@ -455,6 +455,34 @@
             <p id="account-send-note" class="muted" data-i18n="account.send.note">
               Use full wallet IDs only. Account wallet sends target a full account wallet ID or a 64-char device wallet ID.
             </p>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> direct gateway api keys</p>
+          <div class="card">
+            <p class="muted" id="account-api-key-note">
+              Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them.
+            </p>
+            <div class="form-grid">
+              <label class="field field-wide">
+                <span>Label</span>
+                <input id="account-api-key-label" type="text" placeholder="optional name like claude code" />
+              </label>
+              <div class="actions actions-tight">
+                <button id="account-api-key-create" class="action action-primary" type="button">Create API key</button>
+              </div>
+            </div>
+            <div id="account-api-key-created-wrap" hidden>
+              <p class="muted">This raw API key is only shown once. Copy it now for direct gateway clients.</p>
+              <pre id="account-api-key-created" class="code-block"></pre>
+              <div class="actions">
+                <button id="account-api-key-created-copy" class="action" type="button">Copy API key</button>
+              </div>
+            </div>
+            <div id="account-api-keys-list" class="ledger-list"></div>
+            <p id="account-api-keys-empty" class="muted">Sign in to manage direct gateway API keys.</p>
+            <p id="account-api-key-status" class="muted"></p>
           </div>
         </section>
 

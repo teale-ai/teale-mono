@@ -9,6 +9,7 @@ import SharedTypes
 @Observable
 final class CompanionAccountState {
     var snapshot: CompanionAccountWalletSnapshot?
+    var apiKeys: [CompanionAccountAPIKey] = []
     var loading = false
     var syncNotice: String?
     var syncNoticeIsError = false
@@ -16,8 +17,13 @@ final class CompanionAccountState {
     var sweepStatusIsError = false
     var sendStatus = ""
     var sendStatusIsError = false
+    var apiKeyStatus = ""
+    var apiKeyStatusIsError = false
     var isSending = false
+    var isCreatingAPIKey = false
     var sweepingDeviceID: String?
+    var revokingAPIKeyID: String?
+    var createdAPIToken: String?
 
     func refresh(appState: AppState, authManager: AuthManager?) async {
         guard let user = signedInUser(from: authManager) else {
@@ -41,12 +47,14 @@ final class CompanionAccountState {
                 deviceName: appState.companionDeviceName,
                 platform: .macos
             )
+            apiKeys = try await CompanionAccountGatewayClient.listAPIKeys(appState: appState)
             syncNotice = nil
             syncNoticeIsError = false
         } catch {
             if snapshot == nil {
                 snapshot = nil
             }
+            apiKeys = []
             syncNotice = gatewayErrorMessage(error)
             syncNoticeIsError = true
         }
@@ -137,8 +145,87 @@ final class CompanionAccountState {
         isSending = false
     }
 
+    func createAPIKey(
+        label: String,
+        appState: AppState,
+        authManager: AuthManager?
+    ) async {
+        guard signedInUser(from: authManager) != nil else {
+            snapshot = nil
+            apiKeys = []
+            apiKeyStatus = appState.companionText(
+                "account.signInForWallet",
+                fallback: "Sign in to load the account wallet."
+            )
+            apiKeyStatusIsError = true
+            return
+        }
+
+        isCreatingAPIKey = true
+        apiKeyStatus = ""
+        apiKeyStatusIsError = false
+        createdAPIToken = nil
+
+        do {
+            let minted = try await CompanionAccountGatewayClient.createAPIKey(
+                appState: appState,
+                label: label.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            createdAPIToken = minted.token
+            apiKeys = try await CompanionAccountGatewayClient.listAPIKeys(appState: appState)
+            apiKeyStatus = appState.companionText(
+                "account.apiKeyCreated",
+                fallback: "Created a direct gateway API key for this human account."
+            )
+        } catch {
+            apiKeyStatus = gatewayErrorMessage(error)
+            apiKeyStatusIsError = true
+        }
+
+        isCreatingAPIKey = false
+    }
+
+    func revokeAPIKey(
+        keyID: String,
+        appState: AppState,
+        authManager: AuthManager?
+    ) async {
+        guard signedInUser(from: authManager) != nil else {
+            snapshot = nil
+            apiKeys = []
+            apiKeyStatus = appState.companionText(
+                "account.signInForWallet",
+                fallback: "Sign in to load the account wallet."
+            )
+            apiKeyStatusIsError = true
+            return
+        }
+
+        revokingAPIKeyID = keyID
+        apiKeyStatus = ""
+        apiKeyStatusIsError = false
+
+        do {
+            _ = try await CompanionAccountGatewayClient.revokeAPIKey(
+                appState: appState,
+                keyID: keyID
+            )
+            apiKeys = try await CompanionAccountGatewayClient.listAPIKeys(appState: appState)
+            apiKeyStatus = appState.companionText(
+                "account.apiKeyRevoked",
+                fallback: "Revoked the direct gateway API key."
+            )
+        } catch {
+            apiKeyStatus = gatewayErrorMessage(error)
+            apiKeyStatusIsError = true
+        }
+
+        revokingAPIKeyID = nil
+    }
+
     private func reset() {
         snapshot = nil
+        apiKeys = []
         loading = false
         syncNotice = nil
         syncNoticeIsError = false
@@ -146,8 +233,13 @@ final class CompanionAccountState {
         sweepStatusIsError = false
         sendStatus = ""
         sendStatusIsError = false
+        apiKeyStatus = ""
+        apiKeyStatusIsError = false
         isSending = false
+        isCreatingAPIKey = false
         sweepingDeviceID = nil
+        revokingAPIKeyID = nil
+        createdAPIToken = nil
     }
 
     private func signedInUser(from authManager: AuthManager?) -> UserProfile? {
@@ -221,6 +313,40 @@ private enum CompanionAccountGatewayClient {
     }
 
     @MainActor
+    static func listAPIKeys(appState: AppState) async throws -> [CompanionAccountAPIKey] {
+        let response: CompanionAccountAPIKeyListResponse = try await getJSON(
+            appState: appState,
+            path: "/v1/account/api-keys"
+        )
+        return response.keys
+    }
+
+    @MainActor
+    static func createAPIKey(
+        appState: AppState,
+        label: String
+    ) async throws -> CompanionAccountAPIKeyMinted {
+        try await postJSON(
+            appState: appState,
+            path: "/v1/account/api-keys",
+            body: CompanionCreateAccountAPIKeyRequest(
+                label: label.isEmpty ? nil : label
+            )
+        )
+    }
+
+    @MainActor
+    static func revokeAPIKey(
+        appState: AppState,
+        keyID: String
+    ) async throws -> CompanionAccountAPIKeyRevokeResponse {
+        try await deleteJSON(
+            appState: appState,
+            path: "/v1/account/api-keys/\(keyID)"
+        )
+    }
+
+    @MainActor
     private static func getJSON<Response: Decodable>(
         appState: AppState,
         path: String
@@ -248,6 +374,21 @@ private enum CompanionAccountGatewayClient {
         } catch let GatewayAuthError.http(code, _) where code == 401 {
             let refreshed = try await refreshBearer(using: client, appState: appState)
             return try await client.postJSON(path: path, body: body, bearerToken: refreshed)
+        }
+    }
+
+    @MainActor
+    private static func deleteJSON<Response: Decodable>(
+        appState: AppState,
+        path: String
+    ) async throws -> Response {
+        let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        let token = try await bearer(using: client, appState: appState)
+        do {
+            return try await client.deleteJSON(path: path, bearerToken: token)
+        } catch let GatewayAuthError.http(code, _) where code == 401 {
+            let refreshed = try await refreshBearer(using: client, appState: appState)
+            return try await client.deleteJSON(path: path, bearerToken: refreshed)
         }
     }
 
@@ -355,6 +496,49 @@ struct CompanionAccountTransferReceipt: Decodable {
     let amount: Int64
 }
 
+struct CompanionAccountAPIKey: Decodable, Identifiable {
+    let keyID: String
+    let tokenPreview: String
+    let label: String?
+    let createdAt: Int64
+    let lastUsedAt: Int64?
+    let revokedAt: Int64?
+
+    var id: String { keyID }
+    var isRevoked: Bool { revokedAt != nil }
+
+    enum CodingKeys: String, CodingKey {
+        case keyID = "keyID"
+        case tokenPreview = "tokenPreview"
+        case label
+        case createdAt = "createdAt"
+        case lastUsedAt = "lastUsedAt"
+        case revokedAt = "revokedAt"
+    }
+}
+
+struct CompanionAccountAPIKeyMinted: Decodable {
+    let keyID: String
+    let token: String
+    let label: String?
+    let createdAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case keyID = "keyID"
+        case token
+        case label
+        case createdAt = "createdAt"
+    }
+}
+
+private struct CompanionAccountAPIKeyListResponse: Decodable {
+    let keys: [CompanionAccountAPIKey]
+}
+
+private struct CompanionAccountAPIKeyRevokeResponse: Decodable {
+    let revoked: Bool
+}
+
 private struct CompanionAccountLinkRequest: Encodable {
     let accountUserID: String
     let deviceName: String
@@ -374,6 +558,10 @@ private struct CompanionAccountSendRequest: Encodable {
     let recipient: String
     let amount: Int
     let memo: String?
+}
+
+private struct CompanionCreateAccountAPIKeyRequest: Encodable {
+    let label: String?
 }
 
 private func normalizedRecipientID(_ rawValue: String) throws -> String {

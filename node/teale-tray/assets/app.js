@@ -112,6 +112,15 @@ const els = {
   accountWalletBalance: document.getElementById("account-wallet-balance"),
   accountWalletUsdc: document.getElementById("account-wallet-usdc"),
   accountWalletNote: document.getElementById("account-wallet-note"),
+  accountApiKeyNote: document.getElementById("account-api-key-note"),
+  accountApiKeyLabel: document.getElementById("account-api-key-label"),
+  accountApiKeyCreate: document.getElementById("account-api-key-create"),
+  accountApiKeyCreatedWrap: document.getElementById("account-api-key-created-wrap"),
+  accountApiKeyCreated: document.getElementById("account-api-key-created"),
+  accountApiKeyCreatedCopy: document.getElementById("account-api-key-created-copy"),
+  accountApiKeysList: document.getElementById("account-api-keys-list"),
+  accountApiKeysEmpty: document.getElementById("account-api-keys-empty"),
+  accountApiKeyStatus: document.getElementById("account-api-key-status"),
   accountIdentities: document.getElementById("account-identities"),
   accountDevices: document.getElementById("account-devices"),
   accountDevicesEmpty: document.getElementById("account-devices-empty"),
@@ -819,6 +828,8 @@ let authUser = null;
 let authIdentities = [];
 let accountDevices = [];
 let accountSummary = null;
+let accountApiKeys = [];
+let createdAccountApiKeyToken = null;
 let supabaseAccountDevices = [];
 let linkedSupabaseUserId = null;
 let linkedGatewayAccountStateKey = null;
@@ -837,8 +848,12 @@ let pendingModelAction = null;
 let walletRefreshInFlight = false;
 let walletSendInFlight = false;
 let accountSendInFlight = false;
+let accountApiKeyCreateInFlight = false;
+let accountApiKeyRevokeInFlight = null;
 let walletSendStatus = "";
 let accountSendStatus = "";
+let accountApiKeyStatus = "";
+let accountApiKeyStatusIsError = false;
 let chatState = loadChatState();
 let chatRuntime = {
   inFlight: null,
@@ -904,6 +919,7 @@ function setLanguage(language) {
     renderChat(lastSnapshot);
     renderAuthState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAccountDevices();
   }
 }
@@ -924,6 +940,7 @@ function setDisplayUnit(nextValue) {
     renderHomeNetworkStats();
     renderAuthState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAccountDevices();
     updateSendControls();
     renderChat(lastSnapshot);
@@ -1112,6 +1129,10 @@ function resetAccountAuthState() {
   linkedGatewayAccountStateKey = null;
   accountDevices = [];
   accountSummary = null;
+  accountApiKeys = [];
+  createdAccountApiKeyToken = null;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
   supabaseAccountDevices = [];
   clearAuthErrorState();
   clearPendingOAuthProvider();
@@ -1119,6 +1140,7 @@ function resetAccountAuthState() {
   els.authPhoneInput.value = "";
   els.authPhoneCodeInput.value = "";
   renderAccountWallet();
+  renderAccountApiKeys();
   renderAuthState();
   renderAccountDevices();
   renderHome(lastSnapshot);
@@ -2711,15 +2733,15 @@ function buildLocalCurl(demand) {
 }
 
 function buildNetworkCurl(demand, model) {
-  if (!demand?.network_base_url || !demand?.network_bearer_token) {
-    return "Waiting for a network bearer token...";
+  if (!demand?.network_base_url) {
+    return "Waiting for the gateway base URL...";
   }
   if (!model?.id) {
     return "Waiting for gateway models...";
   }
   return [
     `curl ${demand.network_base_url}/chat/completions \\`,
-    `  -H "Authorization: Bearer ${demand.network_bearer_token}" \\`,
+    `  -H "Authorization: Bearer $TEALE_API_KEY" \\`,
     `  -H "Content-Type: application/json" \\`,
     `  -d '{"model":"${model.id}","messages":[{"role":"user","content":"hi"}]}'`,
   ].join("\n");
@@ -2903,10 +2925,12 @@ function setDisconnected(error) {
   els.localCurl.textContent = "Waiting for a local model...";
   els.networkBaseUrl.textContent = "-";
   els.networkToken.textContent = t("common.syncing");
-  els.networkToken.title = "Copy bearer token";
+  els.networkToken.title = "Copy device bearer";
   els.networkToken.disabled = true;
+  els.networkTokenCopy.textContent = "Copy device bearer";
   els.networkSelectedModel.textContent = "Waiting for gateway models...";
-  els.networkCurl.textContent = "Waiting for a network bearer token...";
+  els.networkTokenNote.textContent = "The rotating device bearer is for app transport and debugging. Use a human-account API key for persistent direct gateway clients.";
+  els.networkCurl.textContent = "Waiting for gateway models...";
   els.networkModelTableBody.innerHTML = "";
   els.networkModelEmpty.textContent = "The network model table appears once Teale responds locally.";
 
@@ -3249,6 +3273,84 @@ function renderAccountWallet() {
   els.accountWalletBalance.textContent = "-";
   els.accountWalletUsdc.textContent = "0.00";
   els.accountWalletNote.textContent = t("account.wallet.note.signedOut");
+}
+
+function renderAccountApiKeys() {
+  const signedIn = Boolean(authUser);
+  const linked = Boolean(accountSummary?.account_user_id);
+
+  els.accountApiKeyNote.textContent = "Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them.";
+  els.accountApiKeyLabel.disabled = !signedIn || !linked || accountApiKeyCreateInFlight;
+  els.accountApiKeyCreate.disabled = !signedIn || !linked || accountApiKeyCreateInFlight;
+  if (accountApiKeyCreateInFlight) {
+    setBusyButton(els.accountApiKeyCreate, "Create API key");
+  } else {
+    els.accountApiKeyCreate.textContent = "Create API key";
+  }
+
+  els.accountApiKeyCreatedWrap.hidden = !createdAccountApiKeyToken;
+  els.accountApiKeyCreated.textContent = createdAccountApiKeyToken || "";
+
+  els.accountApiKeysList.innerHTML = "";
+  els.accountApiKeysEmpty.hidden = true;
+
+  if (!signedIn) {
+    els.accountApiKeysEmpty.hidden = false;
+    els.accountApiKeysEmpty.textContent = "Sign in to manage direct gateway API keys.";
+  } else if (!linked) {
+    els.accountApiKeysEmpty.hidden = false;
+    els.accountApiKeysEmpty.textContent = "Account API keys appear after this signed-in device is linked to the gateway account wallet.";
+  } else if (!accountApiKeys.length) {
+    els.accountApiKeysEmpty.hidden = false;
+    els.accountApiKeysEmpty.textContent = "No direct gateway API keys created yet.";
+  } else {
+    for (const key of accountApiKeys) {
+      const row = document.createElement("article");
+      row.className = "ledger-row";
+
+      const info = document.createElement("div");
+      const title = document.createElement("h3");
+      title.textContent = key.label || "Unnamed API key";
+      const meta = document.createElement("p");
+      meta.className = "ledger-meta";
+      const parts = [
+        key.tokenPreview || "-",
+        `created ${formatTimestamp(key.createdAt)}`,
+        key.lastUsedAt ? `last used ${formatTimestamp(key.lastUsedAt)}` : "never used",
+      ];
+      meta.textContent = parts.join(" // ");
+      info.append(title, meta);
+
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "actions actions-tight";
+      if (key.revokedAt) {
+        const revoked = document.createElement("div");
+        revoked.className = "amount-negative";
+        revoked.textContent = "revoked";
+        actionWrap.append(revoked);
+      } else {
+        const revoke = document.createElement("button");
+        revoke.className = "action";
+        revoke.type = "button";
+        revoke.disabled = accountApiKeyRevokeInFlight === key.keyID;
+        if (accountApiKeyRevokeInFlight === key.keyID) {
+          setBusyButton(revoke, "Revoke");
+        } else {
+          revoke.textContent = "Revoke";
+        }
+        revoke.addEventListener("click", () => {
+          revokeAccountApiKey(key.keyID).catch(() => {});
+        });
+        actionWrap.append(revoke);
+      }
+
+      row.append(info, actionWrap);
+      els.accountApiKeysList.appendChild(row);
+    }
+  }
+
+  els.accountApiKeyStatus.textContent = accountApiKeyStatus || "";
+  els.accountApiKeyStatus.className = accountApiKeyStatusIsError ? "error-note" : "muted";
 }
 
 function defaultDeviceSendNote() {
@@ -3656,9 +3758,15 @@ async function ensureAuthClient(authConfig) {
     linkedGatewayAccountStateKey = null;
     accountDevices = [];
     accountSummary = null;
+    accountApiKeys = [];
+    createdAccountApiKeyToken = null;
+    accountApiKeyStatus = "";
+    accountApiKeyStatusIsError = false;
     supabaseAccountDevices = [];
     clearAuthErrorState();
+    renderAccountWallet();
     renderAuthState();
+    renderAccountApiKeys();
     renderAccountDevices();
     return;
   }
@@ -3697,6 +3805,7 @@ async function ensureAuthClient(authConfig) {
     await ensureGatewayAccountLink();
     await refreshAccountState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAuthState();
     renderAccountDevices();
     renderHome(lastSnapshot);
@@ -3719,6 +3828,7 @@ async function ensureAuthClient(authConfig) {
   await ensureGatewayAccountLink();
   await refreshAccountState();
   renderAccountWallet();
+  renderAccountApiKeys();
   renderAuthState();
   renderAccountDevices();
 }
@@ -3728,19 +3838,25 @@ async function refreshAccountState() {
     console.warn("account summary fetch failed", error);
     return null;
   });
+  const apiKeysPromise = getJsonMaybeMissing("/v1/app/account/api-keys").catch((error) => {
+    console.warn("account api key fetch failed", error);
+    return null;
+  });
 
   if (!supabaseClient || !authUser) {
     authIdentities = [];
     supabaseAccountDevices = [];
     accountSummary = await summaryPromise;
     accountDevices = accountSummary?.devices || [];
+    accountApiKeys = [];
     authTrace(`account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=0 auth=none`);
     return;
   }
 
-  const [sessionState, summary, directSupabaseDevices] = await Promise.all([
+  const [sessionState, summary, apiKeysResponse, directSupabaseDevices] = await Promise.all([
     refreshAuthoritativeAuthState("refreshAccountState"),
     summaryPromise,
+    apiKeysPromise,
     supabaseClient
       .from("devices")
       .select("id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active")
@@ -3762,14 +3878,65 @@ async function refreshAccountState() {
 
   accountSummary = summary;
   accountDevices = summary?.devices || [];
+  accountApiKeys = apiKeysResponse?.keys || [];
   supabaseAccountDevices = mergeSupabaseDeviceLists(
     supabaseAccountDevices,
     sessionState?.devices || [],
     directSupabaseDevices || []
   );
   authTrace(
-    `account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=${supabaseAccountDevices.length}`
+    `account state refreshed summaryDevices=${accountDevices.length} apiKeys=${accountApiKeys.length} supabaseDevices=${supabaseAccountDevices.length}`
   );
+}
+
+async function createAccountApiKey() {
+  if (!authUser || !accountSummary?.account_user_id || accountApiKeyCreateInFlight) {
+    return;
+  }
+  accountApiKeyCreateInFlight = true;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
+  createdAccountApiKeyToken = null;
+  renderAccountApiKeys();
+  try {
+    const response = await post("/v1/app/account/api-keys", {
+      label: els.accountApiKeyLabel.value.trim() || null,
+    });
+    createdAccountApiKeyToken = response?.token || null;
+    accountApiKeyStatus = "Created a direct gateway API key for this human account.";
+    const refreshed = await getJsonMaybeMissing("/v1/app/account/api-keys");
+    accountApiKeys = refreshed?.keys || [];
+    els.accountApiKeyLabel.value = "";
+  } catch (error) {
+    accountApiKeyStatus = error.message;
+    accountApiKeyStatusIsError = true;
+  } finally {
+    accountApiKeyCreateInFlight = false;
+    renderAccountApiKeys();
+  }
+}
+
+async function revokeAccountApiKey(keyId) {
+  if (!keyId || accountApiKeyRevokeInFlight === keyId) {
+    return;
+  }
+  accountApiKeyRevokeInFlight = keyId;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
+  renderAccountApiKeys();
+  try {
+    await post("/v1/app/account/api-keys/revoke", { keyID: keyId });
+    const refreshed = await getJsonMaybeMissing("/v1/app/account/api-keys");
+    accountApiKeys = refreshed?.keys || [];
+    accountApiKeyStatus = "Revoked the direct gateway API key.";
+  } catch (error) {
+    accountApiKeyStatus = error.message;
+    accountApiKeyStatusIsError = true;
+    throw error;
+  } finally {
+    accountApiKeyRevokeInFlight = null;
+    renderAccountApiKeys();
+  }
 }
 
 async function refreshAuthoritativeAuthState(reason, { throwOnError = false } = {}) {
@@ -4284,11 +4451,12 @@ function renderDemand(snapshot) {
   els.networkBaseUrl.textContent = demand.network_base_url || "-";
   els.networkToken.textContent = maskToken(demand.network_bearer_token);
   els.networkToken.title = demand.network_bearer_token
-    ? "Click to copy bearer token"
-    : "Copy bearer token";
+    ? "Click to copy device bearer"
+    : "Copy device bearer";
   els.networkToken.disabled = !demand.network_bearer_token;
+  els.networkTokenCopy.textContent = t("demand.action.copyDeviceBearer", { fallback: "Copy device bearer" });
   els.networkTokenNote.textContent = demand.network_bearer_token
-      ? `Use this bearer against gateway.teale.com. Requests spend from ${displayUnit === "usd" ? "USD" : "Teale credits"}.`
+      ? "This rotating device bearer is for Teale app transport and debugging. Use a human-account API key from Account for persistent direct gateway clients."
       : "Waiting for the device bearer token from the gateway wallet sync.";
   els.networkSelectedModel.textContent = selected ? selected.id : t("demand.selected.waiting", { fallback: "Waiting for gateway models..." });
   els.networkCurl.textContent = buildNetworkCurl(demand, selected);
@@ -4334,6 +4502,7 @@ function render(snapshot) {
   renderChat(snapshot);
   renderWallet(snapshot);
   renderAccountWallet();
+  renderAccountApiKeys();
   updateSendControls();
   renderAuthState();
   renderAccountDevices();
@@ -4462,6 +4631,7 @@ els.authPhoneVerifyButton.addEventListener("click", async () => {
     await ensureGatewayAccountLink();
     await refreshAccountState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAuthState();
     renderAccountDevices();
     renderHome(lastSnapshot);
@@ -4517,20 +4687,28 @@ els.localCurlCopy.addEventListener("click", async () => {
 });
 
 els.networkTokenCopy.addEventListener("click", async () => {
-  await copyText(lastSnapshot?.demand?.network_bearer_token || "", "Bearer token");
+  await copyText(lastSnapshot?.demand?.network_bearer_token || "", "Device bearer");
 });
 
 els.networkToken.addEventListener("click", async () => {
   await copyValueWithFlash(
     els.networkToken,
     lastSnapshot?.demand?.network_bearer_token || "",
-    "Bearer token",
+    "Device bearer",
     (value) => maskToken(value)
   );
 });
 
 els.networkCurlCopy.addEventListener("click", async () => {
   await copyText(els.networkCurl.textContent, "Network curl");
+});
+
+els.accountApiKeyCreate.addEventListener("click", async () => {
+  await createAccountApiKey();
+});
+
+els.accountApiKeyCreatedCopy.addEventListener("click", async () => {
+  await copyText(createdAccountApiKeyToken || "", "API key");
 });
 
 els.chatModelSelect.addEventListener("change", () => {
@@ -4736,6 +4914,7 @@ window.__tealeHandleOAuthCallback = async (url) => {
   await ensureGatewayAccountLink();
   await refreshAccountState();
   renderAccountWallet();
+  renderAccountApiKeys();
   renderAuthState();
   renderAccountDevices();
   renderHome(lastSnapshot);
