@@ -30,6 +30,30 @@ use crate::identity::GatewayIdentity;
 use crate::metrics;
 use crate::registry::Registry;
 
+#[derive(Clone, Default)]
+struct SharedOutbox(Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>);
+
+impl SharedOutbox {
+    fn replace(&self, tx: mpsc::UnboundedSender<Message>) {
+        *self.0.lock() = Some(tx);
+    }
+
+    fn clear(&self) {
+        self.0.lock().take();
+    }
+
+    fn send(&self, msg: Message) -> anyhow::Result<()> {
+        let tx = self
+            .0
+            .lock()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("relay not connected"))?;
+        tx.send(msg)
+            .map_err(|_| anyhow::anyhow!("relay outbox closed"))?;
+        Ok(())
+    }
+}
+
 /// One in-flight session waiting for its upstream response.
 pub struct PendingSession {
     pub request_id: String,
@@ -61,7 +85,7 @@ pub struct RelayHandle {
     sessions: Arc<DashMap<String, PendingSession>>,
     /// Waiters registered before `relayReady` arrives (by session_id).
     ready_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
-    outbox: mpsc::UnboundedSender<Message>,
+    outbox: SharedOutbox,
 }
 
 impl RelayHandle {
@@ -137,10 +161,7 @@ impl RelayHandle {
 
     fn send_json(&self, v: &serde_json::Value) -> anyhow::Result<()> {
         let text = serde_json::to_string(v)?;
-        self.outbox
-            .send(Message::Text(text))
-            .map_err(|_| anyhow::anyhow!("relay outbox closed"))?;
-        Ok(())
+        self.outbox.send(Message::Text(text.into()))
     }
 
     pub fn request_discover(&self) -> anyhow::Result<()> {
@@ -156,11 +177,13 @@ impl RelayHandle {
     pub fn test_handle() -> Self {
         let (outbox, mut rx) = mpsc::unbounded_channel();
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let shared_outbox = SharedOutbox::default();
+        shared_outbox.replace(outbox);
         Self {
             node_id: "test-node".into(),
             sessions: Arc::new(DashMap::new()),
             ready_waiters: Arc::new(Mutex::new(HashMap::new())),
-            outbox,
+            outbox: shared_outbox,
         }
     }
 
@@ -187,17 +210,16 @@ pub async fn spawn(
     registry: Arc<Registry>,
 ) -> anyhow::Result<RelayHandle> {
     let node_id = identity.node_id();
-
-    let (outbox_tx, mut outbox_rx) = mpsc::unbounded_channel::<Message>();
     let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
     let ready_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let outbox = SharedOutbox::default();
 
     let handle = RelayHandle {
         node_id: node_id.clone(),
         sessions: sessions.clone(),
         ready_waiters: ready_waiters.clone(),
-        outbox: outbox_tx.clone(),
+        outbox: outbox.clone(),
     };
 
     let connection_task = {
@@ -207,7 +229,7 @@ pub async fn spawn(
         let display_name = config.display_name.clone();
         let sessions = sessions.clone();
         let ready_waiters = ready_waiters.clone();
-        let outbox_tx = outbox_tx.clone();
+        let outbox = outbox.clone();
         let _reliability = config.reliability.clone();
 
         tokio::spawn(async move {
@@ -230,19 +252,7 @@ pub async fn spawn(
                         // writer task
                         let (local_outbox_tx, mut local_outbox_rx) =
                             mpsc::unbounded_channel::<Message>();
-                        let drain_task = {
-                            let mut main_rx =
-                                std::mem::replace(&mut outbox_rx, mpsc::unbounded_channel().1);
-                            tokio::spawn(async move {
-                                while let Some(m) = main_rx.recv().await {
-                                    if local_outbox_tx.send(m).is_err() {
-                                        break;
-                                    }
-                                }
-                                // When connection dies the local side errors out, and
-                                // we return here so the outer loop can respawn.
-                            })
-                        };
+                        outbox.replace(local_outbox_tx.clone());
                         let write_task = tokio::spawn(async move {
                             while let Some(msg) = local_outbox_rx.recv().await {
                                 if let Err(e) = write.send(msg).await {
@@ -254,7 +264,8 @@ pub async fn spawn(
 
                         // register ourselves
                         let register_payload = make_register_payload(&identity, &display_name);
-                        if let Err(e) = outbox_tx.send(Message::Text(register_payload)) {
+                        if let Err(e) = local_outbox_tx.send(Message::Text(register_payload.into()))
+                        {
                             warn!("send register: {}", e);
                         }
 
@@ -282,7 +293,6 @@ pub async fn spawn(
                                         &registry,
                                         &sessions,
                                         &ready_waiters,
-                                        &outbox_tx,
                                         &node_id,
                                         &mut sent_discover_after_ack,
                                     )
@@ -296,7 +306,6 @@ pub async fn spawn(
                                                 &registry,
                                                 &sessions,
                                                 &ready_waiters,
-                                                &outbox_tx,
                                                 &node_id,
                                                 &mut sent_discover_after_ack,
                                             )
@@ -305,7 +314,7 @@ pub async fn spawn(
                                     }
                                 }
                                 Ok(Message::Ping(d)) => {
-                                    let _ = outbox_tx.send(Message::Pong(d));
+                                    let _ = local_outbox_tx.send(Message::Pong(d));
                                 }
                                 Ok(Message::Close(_)) => {
                                     info!("relay sent Close");
@@ -325,7 +334,7 @@ pub async fn spawn(
                             }
                         }
 
-                        drain_task.abort();
+                        outbox.clear();
                         write_task.abort();
 
                         // Fail in-flight sessions.
@@ -378,7 +387,6 @@ async fn handle_incoming(
     registry: &Arc<Registry>,
     sessions: &Arc<DashMap<String, PendingSession>>,
     ready_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
-    _outbox_tx: &mpsc::UnboundedSender<Message>,
     _self_node_id: &str,
     sent_discover_after_ack: &mut bool,
 ) {
@@ -551,4 +559,36 @@ fn make_register_payload(identity: &Arc<GatewayIdentity>, display_name: &str) ->
         }
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_outbox_tracks_the_current_connection() {
+        let outbox = SharedOutbox::default();
+        assert!(outbox.send(Message::Text("before-connect".into())).is_err());
+
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        outbox.replace(tx1);
+        outbox
+            .send(Message::Text("first-connection".into()))
+            .unwrap();
+        let first = rx1.try_recv().unwrap();
+        assert!(matches!(first, Message::Text(text) if text.as_str() == "first-connection"));
+
+        outbox.clear();
+        assert!(outbox
+            .send(Message::Text("after-disconnect".into()))
+            .is_err());
+
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        outbox.replace(tx2);
+        outbox
+            .send(Message::Text("second-connection".into()))
+            .unwrap();
+        let second = rx2.try_recv().unwrap();
+        assert!(matches!(second, Message::Text(text) if text.as_str() == "second-connection"));
+    }
 }
