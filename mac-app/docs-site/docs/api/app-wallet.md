@@ -1,6 +1,6 @@
 # Wallet and Account Endpoints
 
-The released apps expose device-wallet operations directly, and the Windows companion also exposes account-level wallet and linked-device operations.
+The released apps expose device-wallet operations directly, and the Windows and Linux companions also expose account-level wallet and linked-device operations.
 
 ## Device wallet
 
@@ -40,9 +40,9 @@ The released send flow is for **Teale credits**. USDC transfers are not part of 
 - phone, email, and GitHub username route to the destination account wallet
 - sharing a device ID publicly is safe for receiving funds; spending still requires the sender's own bearer-authenticated wallet session
 
-## Windows account endpoints
+## Windows and Linux account endpoints
 
-The Windows companion API also exposes account state under `127.0.0.1:11437`.
+The Windows and Linux companion APIs also expose account state under `127.0.0.1:11437`.
 
 ### GET /v1/app/account
 
@@ -72,6 +72,6 @@ Sweeps a linked device balance into the account wallet.
 
 Removes a device from the linked-device list.
 
-## Windows auth session lookup
+## Windows and Linux auth session lookup
 
-`POST /v1/app/auth/session` is part of the released Windows auth flow and is used to hydrate the local companion session from an access token.
+`POST /v1/app/auth/session` is part of the released Windows and Linux auth flow and is used to hydrate the local companion session from an access token.

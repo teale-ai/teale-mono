@@ -11,6 +11,11 @@ import PrivacyFilterKit
 @MainActor
 final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     private unowned let appState: AppState
+    private var desktopGatewayWallet: GatewayWalletBalanceSnapshot?
+    private var desktopWalletTransactions: [GatewayWalletTransactionSnapshot] = []
+    private var desktopWalletSyncedAt: UInt64?
+    private var desktopWalletSyncError: String?
+    private var desktopLastWalletRefreshAt: Date?
 
     init(appState: AppState) {
         self.appState = appState
@@ -646,17 +651,522 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     }
 }
 
+extension RemoteControlBridge: DesktopCompanionControlling {
+    func desktop_snapshot() async throws -> DesktopCompanionAppSnapshot {
+        await refreshDesktopWalletSnapshotIfNeeded(force: false)
+
+        let loadedModel = await appState.engine.loadedModel
+        let privacyStatus = await DesktopPrivacyFilter.shared.status(for: appState.privacyFilterMode)
+        let compatibleModels = appState.modelManager.compatibleModels
+        let downloaded = appState.downloadedModelIDs
+        let downloading = appState.activeDownloads
+        let recommendedID = desktopRecommendedModelID(from: compatibleModels)
+        let currentModelID = loadedModel?.openrouterId ?? loadedModel?.id
+        let serviceState = desktopServiceState(currentModelID: currentModelID, downloading: downloading)
+
+        if appState.gatewayAPIKey.isEmpty {
+            _ = try? await desktopGatewayBearer(forceRefresh: false)
+        }
+
+        let models = compatibleModels.map { model in
+            DesktopCompanionModelSnapshot(
+                id: model.openrouterId ?? model.id,
+                display_name: model.name,
+                required_ram_gb: model.requiredRAMGB,
+                size_gb: model.estimatedSizeGB,
+                demand_rank: UInt32(max(0, model.popularityRank)),
+                recommended: (model.openrouterId ?? model.id) == recommendedID,
+                downloaded: downloaded.contains(model.id),
+                loaded: loadedModel?.id == model.id,
+                download_progress: downloading[model.id],
+                last_error: nil
+            )
+        }
+
+        return DesktopCompanionAppSnapshot(
+            app_version: appVersion(),
+            service_state: serviceState,
+            state_reason: desktopStateReason(for: serviceState, currentModelID: currentModelID),
+            device: DesktopCompanionDeviceSnapshot(
+                display_name: ProcessInfo.processInfo.hostName,
+                hardware: appState.hardware,
+                gpu_backend: appState.hardware.gpuBackend?.rawValue,
+                on_ac: appState.throttler.powerMonitor.powerState.isOnACPower
+            ),
+            auth: authSnapshot(),
+            demand: demandSnapshot(loadedModel: loadedModel),
+            privacy_filter: DesktopCompanionPrivacyFilterSnapshot(
+                mode: appState.privacyFilterMode.rawValue,
+                helper_status: privacyStatus.state.rawValue,
+                helper_detail: privacyStatus.detail
+            ),
+            wallet: desktopWalletSnapshot(service_state: serviceState),
+            wallet_transactions: desktopWalletTransactions.map { tx in
+                DesktopCompanionWalletTransactionSnapshot(
+                    id: tx.id,
+                    device_id: desktopGatewayWallet?.deviceID ?? GatewayIdentity.shared.deviceID,
+                    type: tx.type,
+                    amount: tx.amount,
+                    timestamp: tx.timestamp,
+                    refRequestID: nil,
+                    note: tx.note
+                )
+            },
+            loaded_model_id: loadedModel?.openrouterId ?? loadedModel?.id,
+            models: models,
+            active_transfer: desktopActiveTransferSnapshot()
+        )
+    }
+
+    func desktop_set_privacy_filter_mode(_ mode: PrivacyFilterMode) async throws -> DesktopCompanionAppSnapshot {
+        appState.privacyFilterMode = mode
+        return try await desktop_snapshot()
+    }
+
+    func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot {
+        guard let config = SupabaseConfig.default else {
+            throw GatewayAuthError.network("supabase auth is not configured")
+        }
+
+        let user = try await desktopSupabaseUserLookup(
+            config: config,
+            accessToken: access_token
+        )
+        let devices = try await desktopSupabaseDevicesLookup(
+            config: config,
+            accessToken: access_token,
+            userID: user.id
+        )
+
+        return DesktopCompanionAuthSessionSnapshot(
+            user: DesktopCompanionAuthUserSnapshot(
+                id: user.id,
+                phone: user.phone,
+                email: user.email,
+                app_metadata: nil,
+                user_metadata: nil,
+                identities: user.identities.map {
+                    DesktopCompanionAuthIdentitySnapshot(
+                        id: $0.id,
+                        provider: $0.provider,
+                        identity_data: $0.identity_data,
+                        email: $0.email
+                    )
+                }
+            ),
+            identities: user.identities.map {
+                DesktopCompanionAuthIdentitySnapshot(
+                    id: $0.id,
+                    provider: $0.provider,
+                    identity_data: $0.identity_data,
+                    email: $0.email
+                )
+            },
+            devices: devices
+        )
+    }
+
+    func desktop_network_models() async throws -> [DesktopCompanionNetworkModelSnapshot] {
+        let response: DesktopGatewayModelsResponse = try await desktopGatewayJSON(
+            method: "GET",
+            path: "/v1/models",
+            requiresAuth: false
+        )
+        return response.data.map { model in
+            DesktopCompanionNetworkModelSnapshot(
+                id: model.id,
+                context_length: model.context_length,
+                device_count: model.loaded_device_count ?? 0,
+                ttft_ms_p50: model.metrics?.ttft_ms_p50,
+                tps_p50: model.metrics?.tps_p50,
+                pricing_prompt: model.pricing?.prompt,
+                pricing_completion: model.pricing?.completion
+            )
+        }
+    }
+
+    func desktop_network_stats() async throws -> DesktopCompanionNetworkStatsSnapshot {
+        try await desktopGatewayJSON(
+            method: "GET",
+            path: "/v1/network/stats",
+            requiresAuth: false
+        )
+    }
+
+    func desktop_account_summary() async throws -> DesktopCompanionAccountSnapshot {
+        try await desktopGatewayJSON(method: "GET", path: "/v1/account/summary")
+    }
+
+    func desktop_account_api_keys() async throws -> DesktopCompanionAccountAPIKeysResponse {
+        try await desktopGatewayJSON(method: "GET", path: "/v1/account/api-keys")
+    }
+
+    func desktop_link_account(_ request: DesktopCompanionAccountLinkRequest) async throws -> DesktopCompanionAccountSnapshot {
+        try await desktopGatewayJSON(method: "POST", path: "/v1/account/link", body: request)
+    }
+
+    func desktop_create_account_api_key(label: String?) async throws -> DesktopCompanionAccountAPIKeyMintedResponse {
+        struct Payload: Encodable { let label: String? }
+        return try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/api-keys",
+            body: Payload(label: label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty)
+        )
+    }
+
+    func desktop_revoke_account_api_key(key_id: String) async throws -> DesktopCompanionAccountAPIKeyRevokeResponse {
+        try await desktopGatewayJSON(
+            method: "DELETE",
+            path: "/v1/account/api-keys/\(key_id)"
+        )
+    }
+
+    func desktop_sweep_account_device(device_id: String) async throws -> DesktopCompanionAccountSweepResponse {
+        struct Payload: Encodable { let deviceID: String }
+        let response: DesktopCompanionAccountSweepResponse = try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/sweep",
+            body: Payload(deviceID: device_id)
+        )
+        await refreshDesktopWalletSnapshotIfNeeded(force: true)
+        return response
+    }
+
+    func desktop_remove_account_device(device_id: String) async throws -> DesktopCompanionAccountSnapshot {
+        struct Payload: Encodable { let deviceID: String }
+        return try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/devices/remove",
+            body: Payload(deviceID: device_id)
+        )
+    }
+
+    func desktop_send_account_wallet(_ request: DesktopCompanionWalletSendRequest) async throws -> DesktopCompanionAccountSnapshot {
+        let _: EmptyGatewayResponse = try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/send",
+            body: request
+        )
+        await refreshDesktopWalletSnapshotIfNeeded(force: true)
+        return try await desktop_account_summary()
+    }
+
+    func desktop_refresh_wallet() async throws -> DesktopCompanionAppSnapshot {
+        await refreshDesktopWalletSnapshotIfNeeded(force: true)
+        return try await desktop_snapshot()
+    }
+
+    func desktop_send_device_wallet(_ request: DesktopCompanionWalletSendRequest) async throws -> DesktopCompanionAppSnapshot {
+        let _: EmptyGatewayResponse = try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/wallet/send",
+            body: request
+        )
+        await refreshDesktopWalletSnapshotIfNeeded(force: true)
+        return try await desktop_snapshot()
+    }
+
+    private func desktopServiceState(
+        currentModelID: String?,
+        downloading: [String: Double]
+    ) -> String {
+        if case .error = appState.engineStatus {
+            return "error"
+        }
+        if !appState.isServerRunning {
+            return "starting"
+        }
+        if !appState.contributeCompute {
+            return "paused_user"
+        }
+        if !downloading.isEmpty {
+            return "downloading"
+        }
+        if case .loadingModel = appState.engineStatus {
+            return "loading"
+        }
+        if currentModelID != nil {
+            return "serving"
+        }
+        return "needs_model"
+    }
+
+    private func desktopStateReason(for serviceState: String, currentModelID: String?) -> String? {
+        switch serviceState {
+        case "starting":
+            return "Starting the local Teale service."
+        case "paused_user":
+            return "Supply is paused for this Mac."
+        case "downloading":
+            return "Downloading the selected model."
+        case "loading":
+            return "Loading the selected model."
+        case "needs_model":
+            return currentModelID == nil ? "Choose a model to start serving." : nil
+        case "error":
+            if case .error(let message) = appState.engineStatus {
+                return message
+            }
+            return "The local runtime reported an error."
+        default:
+            return "Teale is ready locally."
+        }
+    }
+
+    private func desktopRecommendedModelID(from models: [ModelDescriptor]) -> String? {
+        models
+            .sorted {
+                if $0.requiredRAMGB == $1.requiredRAMGB {
+                    return $0.popularityRank < $1.popularityRank
+                }
+                return $0.requiredRAMGB > $1.requiredRAMGB
+            }
+            .first?.openrouterId ?? models.first?.id
+    }
+
+    private func desktopWalletSnapshot(service_state: String) -> DesktopCompanionWalletSnapshot {
+        let balance = desktopGatewayWallet
+        let availabilityCreditsPerTick: Int64 = service_state == "serving" ? 250 : 0
+        return DesktopCompanionWalletSnapshot(
+            current_device_id: balance?.deviceID ?? GatewayIdentity.shared.deviceID,
+            estimated_session_credits: Int64(appState.totalTokensGenerated),
+            credits_today: 0,
+            completed_requests: UInt64(appState.totalRequestsServed),
+            availability_credits_per_tick: availabilityCreditsPerTick,
+            availability_tick_seconds: 10,
+            availability_rate_credits_per_minute: availabilityCreditsPerTick > 0 ? availabilityCreditsPerTick * 6 : 0,
+            supplying_since: nil,
+            gateway_balance_credits: balance?.balanceCredits,
+            gateway_total_earned_credits: balance?.totalEarnedCredits,
+            gateway_total_spent_credits: balance?.totalSpentCredits,
+            gateway_usdc_cents: balance?.usdcCents,
+            gateway_synced_at: desktopWalletSyncedAt,
+            gateway_sync_error: desktopWalletSyncError
+        )
+    }
+
+    private func desktopActiveTransferSnapshot() -> DesktopCompanionTransferSnapshot? {
+        guard let (modelID, progress) = appState.activeDownloads.first else { return nil }
+        let model = appState.modelManager.compatibleModels.first(where: { $0.id == modelID })
+        let totalBytes = model.map { UInt64(max(0, $0.estimatedSizeGB) * 1024 * 1024 * 1024) }
+        let downloadedBytes = totalBytes.map { UInt64(Double($0) * min(max(progress, 0), 1)) } ?? 0
+        return DesktopCompanionTransferSnapshot(
+            model_id: model?.openrouterId ?? modelID,
+            phase: "downloading",
+            bytes_downloaded: downloadedBytes,
+            bytes_total: totalBytes,
+            bytes_per_sec: nil,
+            eta_seconds: nil
+        )
+    }
+
+    private func refreshDesktopWalletSnapshotIfNeeded(force: Bool) async {
+        if !force,
+           let lastRefresh = desktopLastWalletRefreshAt,
+           Date().timeIntervalSince(lastRefresh) < 15 {
+            return
+        }
+
+        desktopLastWalletRefreshAt = Date()
+        do {
+            let balance = try await gatewayWalletBalance()
+            let transactions = try await gatewayWalletTransactions(limit: 25)
+            desktopGatewayWallet = balance
+            desktopWalletTransactions = transactions
+            desktopWalletSyncedAt = UInt64(Date().timeIntervalSince1970)
+            desktopWalletSyncError = nil
+        } catch {
+            desktopWalletSyncError = error.localizedDescription
+            if desktopGatewayWallet == nil {
+                desktopWalletTransactions = []
+            }
+        }
+    }
+
+    private func desktopGatewayBearer(forceRefresh: Bool) async throws -> String {
+        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        if !forceRefresh, !appState.gatewayAPIKey.isEmpty {
+            return appState.gatewayAPIKey
+        }
+        let token = forceRefresh ? try await client.exchange() : try await client.bearer()
+        appState.gatewayAPIKey = token
+        return token
+    }
+
+    private func desktopGatewayJSON<Response: Decodable>(
+        method: String,
+        path: String,
+        requiresAuth: Bool = true
+    ) async throws -> Response {
+        try await desktopGatewayJSON(
+            method: method,
+            path: path,
+            requiresAuth: requiresAuth,
+            bodyData: nil
+        )
+    }
+
+    private func desktopGatewayJSON<Request: Encodable, Response: Decodable>(
+        method: String,
+        path: String,
+        body: Request
+    ) async throws -> Response {
+        try await desktopGatewayJSON(
+            method: method,
+            path: path,
+            requiresAuth: true,
+            bodyData: try JSONEncoder().encode(body)
+        )
+    }
+
+    private func desktopGatewayJSON<Response: Decodable>(
+        method: String,
+        path: String,
+        requiresAuth: Bool,
+        bodyData: Data?
+    ) async throws -> Response {
+        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+
+        func perform(with token: String?) async throws -> Response {
+            var request = URLRequest(url: gatewayRootURL().appending(path: path))
+            request.httpMethod = method
+            if let token {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            if let bodyData {
+                request.httpBody = bodyData
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+            let (data, response) = try await client.urlSession.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw GatewayAuthError.network("non-http response")
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            }
+            if Response.self == EmptyGatewayResponse.self {
+                return EmptyGatewayResponse() as! Response
+            }
+            return try JSONDecoder().decode(Response.self, from: data)
+        }
+
+        let token = requiresAuth ? try await desktopGatewayBearer(forceRefresh: false) : nil
+        do {
+            return try await perform(with: token)
+        } catch let GatewayAuthError.http(code, _) where requiresAuth && code == 401 {
+            let refreshed = try await desktopGatewayBearer(forceRefresh: true)
+            return try await perform(with: refreshed)
+        }
+    }
+
+    private func desktopSupabaseUserLookup(
+        config: SupabaseConfig,
+        accessToken: String
+    ) async throws -> DesktopSupabaseUserLookupResponse {
+        var request = URLRequest(url: config.url.appending(path: "auth/v1/user"))
+        request.httpMethod = "GET"
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayAuthError.network("non-http supabase response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        return try JSONDecoder().decode(DesktopSupabaseUserLookupResponse.self, from: data)
+    }
+
+    private func desktopSupabaseDevicesLookup(
+        config: SupabaseConfig,
+        accessToken: String,
+        userID: String
+    ) async throws -> [DesktopCompanionSupabaseDeviceSnapshot] {
+        var components = URLComponents(url: config.url.appending(path: "rest/v1/devices"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(
+                name: "select",
+                value: "id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active"
+            ),
+            URLQueryItem(name: "user_id", value: "eq.\(userID)"),
+            URLQueryItem(name: "order", value: "last_seen.desc"),
+        ]
+        guard let url = components?.url else {
+            throw GatewayAuthError.network("invalid supabase devices url")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GatewayAuthError.network("non-http supabase devices response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        return try JSONDecoder().decode([DesktopCompanionSupabaseDeviceSnapshot].self, from: data)
+    }
+}
+
+private struct EmptyGatewayResponse: Decodable {}
+
+private struct DesktopGatewayModelsResponse: Decodable {
+    let data: [DesktopGatewayModelEntry]
+}
+
+private struct DesktopGatewayModelEntry: Decodable {
+    let id: String
+    let context_length: UInt32?
+    let loaded_device_count: UInt32?
+    let pricing: DesktopGatewayPricing?
+    let metrics: DesktopGatewayMetrics?
+}
+
+private struct DesktopGatewayPricing: Decodable {
+    let prompt: String
+    let completion: String
+}
+
+private struct DesktopGatewayMetrics: Decodable {
+    let ttft_ms_p50: UInt32?
+    let tps_p50: Float?
+}
+
+private struct DesktopSupabaseUserLookupResponse: Decodable {
+    let id: String
+    let phone: String?
+    let email: String?
+    let identities: [DesktopSupabaseIdentity]
+}
+
+private struct DesktopSupabaseIdentity: Decodable {
+    let id: String?
+    let provider: String
+    let identity_data: [String: String]?
+    let email: String?
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 private struct GatewayWalletBalanceSnapshot: Decodable {
     let deviceID: String
     let balanceCredits: Int64
     let totalEarnedCredits: Int64
     let totalSpentCredits: Int64
+    let usdcCents: Int64
 
     enum CodingKeys: String, CodingKey {
         case deviceID
         case balanceCredits = "balance_credits"
         case totalEarnedCredits = "total_earned_credits"
         case totalSpentCredits = "total_spent_credits"
+        case usdcCents = "usdc_cents"
     }
 }
 

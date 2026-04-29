@@ -30,7 +30,7 @@ The `demand` block is useful for external clients because it exposes:
 
 `network_bearer_token` is the app's rotating device bearer. It is useful for the app's own transport and short-lived debugging, but persistent direct gateway clients should use a revocable human-account API key from **Account > direct gateway api keys** instead.
 
-## Windows
+## Windows and Linux
 
 Request:
 
@@ -38,7 +38,7 @@ Request:
 curl http://127.0.0.1:11437/v1/app
 ```
 
-The Windows snapshot includes:
+The Windows and Linux snapshots include:
 
 - `app_version`
 - `service_state`
@@ -52,9 +52,9 @@ The Windows snapshot includes:
 - `models`
 - `active_transfer`
 
-## Windows network metadata
+## Windows and Linux network metadata
 
-The Windows companion API also exposes the data used by the Demand and Home tabs:
+The Windows and Linux companion APIs also expose the data used by the Demand and Home tabs:
 
 ### GET /v1/app/network/models
 

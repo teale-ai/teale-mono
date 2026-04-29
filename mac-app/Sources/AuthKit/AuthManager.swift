@@ -189,6 +189,32 @@ public final class AuthManager {
         }
     }
 
+    /// Adopt a session minted outside the native auth flow so the runtime and
+    /// web companion stay on the same signed-in user.
+    public func adoptSession(accessToken: String, refreshToken: String) async throws {
+        authState = .signingIn
+        do {
+            let session = try await client.auth.setSession(
+                accessToken: accessToken,
+                refreshToken: refreshToken
+            )
+            await finishOAuthSignIn(session: session)
+        } catch {
+            authState = .error(error.localizedDescription)
+            throw error
+        }
+    }
+
+    public func currentSessionTokens() async -> (accessToken: String, refreshToken: String)? {
+        guard let session = try? await withTimeout(seconds: 5, operation: { try await self.client.auth.session }) else {
+            return nil
+        }
+        return (
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken
+        )
+    }
+
     // MARK: - Phone OTP
 
     /// Send an OTP code to a phone number.

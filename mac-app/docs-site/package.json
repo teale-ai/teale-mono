@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "prestart": "node scripts/sync-desktop-companion-web.mjs",
+    "prebuild": "node scripts/sync-desktop-companion-web.mjs",
     "start": "docusaurus start",
     "build": "docusaurus build",
     "serve": "docusaurus serve"

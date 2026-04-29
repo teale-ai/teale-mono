@@ -12,15 +12,18 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 
-# OS interop for icon loading + (on Windows) the message loop.
-[target.'cfg(windows)'.dependencies]
+# Shared desktop shell dependencies (Windows + Linux).
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 webbrowser = "1"
 ureq = { version = "2", default-features = false, features = ["json"] }
-tray-icon = "0.19"
 tao = "0.30"
 wry = { version = "0.45", features = ["protocol"] }
+
+# OS interop for icon loading + (on Windows) the message loop.
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.19"
 windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",

@@ -1107,12 +1107,14 @@ public final class AppState {
         isServerRunning = true
         let wanMgr = self.wanManager
         let clusterMgr = self.clusterManager
+        let controlBridge = RemoteControlBridge(appState: self)
         let server = LocalHTTPServer(
             engine: engine,
             port: serverPort,
             apiKeyStore: apiKeyStore,
             allowNetworkAccess: allowNetworkAccess,
-            controller: RemoteControlBridge(appState: self),
+            controller: controlBridge,
+            desktopController: controlBridge,
             peerModelProvider: {
                 var models: [(id: String, ownedBy: String)] = []
                 for peer in wanMgr.state.connectedPeers {
