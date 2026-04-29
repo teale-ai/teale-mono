@@ -56,26 +56,25 @@ jobs:
         run: |
           mkdir -p .build/linux-downloads
           eval "$(
-            python3 - <<'PY'
-import json
-import shlex
-import sys
-import urllib.request
+          python3 - <<'PY'
+          import json
+          import shlex
+          import urllib.request
 
-releases = json.load(
-    urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases")
-)
-for release in releases:
-    for asset in release.get("assets", []):
-        name = asset.get("name", "")
-        if name.startswith("llama-") and name.endswith("-bin-ubuntu-x64.tar.gz"):
-            print(f"LLAMA_RELEASE={shlex.quote(release['tag_name'])}")
-            print(f"LLAMA_ARCHIVE={shlex.quote(name)}")
-            print(f"LLAMA_URL={shlex.quote(asset['browser_download_url'])}")
-            raise SystemExit(0)
+          releases = json.load(
+              urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases")
+          )
+          for release in releases:
+              for asset in release.get("assets", []):
+                  name = asset.get("name", "")
+                  if name.startswith("llama-") and name.endswith("-bin-ubuntu-x64.tar.gz"):
+                      print(f"LLAMA_RELEASE={shlex.quote(release['tag_name'])}")
+                      print(f"LLAMA_ARCHIVE={shlex.quote(name)}")
+                      print(f"LLAMA_URL={shlex.quote(asset['browser_download_url'])}")
+                      raise SystemExit(0)
 
-raise SystemExit("No suitable llama.cpp Ubuntu x64 archive found in recent releases")
-PY
+          raise SystemExit("No suitable llama.cpp Ubuntu x64 archive found in recent releases")
+          PY
           )"
           curl --retry 6 --retry-all-errors --retry-delay 5 -fsSL \
             "${LLAMA_URL}" \
