@@ -69,7 +69,8 @@ pub struct RevokeAccountApiKeyRes {
 }
 
 fn require_pool(state: &AppState) -> Result<&DbPool, GatewayError> {
-    state.db
+    state
+        .db
         .as_ref()
         .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))
 }

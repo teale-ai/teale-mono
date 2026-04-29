@@ -53,7 +53,10 @@ pub enum PrincipalKind {
     /// Device-bound token issued by /v1/auth/device/exchange
     Device { device_id: String },
     /// Human-account-scoped API key for direct demand traffic.
-    Account { account_user_id: String, key_id: String },
+    Account {
+        account_user_id: String,
+        key_id: String,
+    },
     /// Temporary share key minted by a device for community previews.
     /// Spending debits the key's funded pool and ticks the key's
     /// `consumed_credits`; exhaustion/expiry/revoke is enforced in middleware.

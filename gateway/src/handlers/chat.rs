@@ -145,14 +145,13 @@ pub async fn chat_completions(
                 if share_key_is_funded(pool, key_id) {
                     pool_remaining
                 } else {
-                    let issuer_balance =
-                        ledger::get_balance(
-                            pool,
-                            consumer_p
-                                .paying_device_id()
-                                .expect("share principal has issuer device"),
-                        )
-                        .balance_credits;
+                    let issuer_balance = ledger::get_balance(
+                        pool,
+                        consumer_p
+                            .paying_device_id()
+                            .expect("share principal has issuer device"),
+                    )
+                    .balance_credits;
                     pool_remaining.min(issuer_balance)
                 }
             }
