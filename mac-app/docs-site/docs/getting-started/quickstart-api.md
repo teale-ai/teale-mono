@@ -8,6 +8,7 @@ Use the released apps as OpenAI-compatible local clients and as a gateway entry 
 
 - [Install on Mac](install-mac.md)
 - [Install on Windows](install-windows.md)
+- [Install on Linux](install-linux.md)
 
 Teale must be running with a local model loaded if you want local inference.
 
@@ -15,6 +16,7 @@ Teale must be running with a local model loaded if you want local inference.
 
 - macOS app: `http://127.0.0.1:11435/v1`
 - Windows local model server: use the **Demand** tab or `GET /v1/app` on `http://127.0.0.1:11437`
+- Linux local model server: use the **Demand** tab or `GET /v1/app` on `http://127.0.0.1:11437`
 
 ## Local curl
 
@@ -89,6 +91,7 @@ response = gateway.chat.completions.create(
 
 - macOS app state and demand metadata: `GET http://127.0.0.1:11435/v1/app`
 - Windows companion state and demand metadata: `GET http://127.0.0.1:11437/v1/app`
+- Linux companion state and demand metadata: `GET http://127.0.0.1:11437/v1/app`
 
 The demand snapshot includes:
 
@@ -99,7 +102,7 @@ The demand snapshot includes:
 
 ## What is documented here
 
-The released docs only cover the surfaces that ship in the macOS and Windows apps:
+The released docs only cover the surfaces that ship in the macOS, Windows, and Linux apps:
 
 - `GET /health`
 - `GET /v1/models`

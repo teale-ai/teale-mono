@@ -202,9 +202,9 @@ async fn main() -> anyhow::Result<()> {
         Some(initial_on_ac),
     );
 
-    // Localhost status endpoint for the tray app. Windows-pilot scoped —
-    // the tray only runs on Windows today, and the endpoint is bound to
-    // 127.0.0.1 so it's inert on any non-loopback-listening deployments.
+    // Localhost status endpoint for the desktop companion shells. It stays
+    // loopback-only so it remains inert on any non-loopback-listening
+    // deployments.
     let tray_status = Arc::new(status_server::StatusState::new(
         config.node.display_name.clone(),
         capabilities.hardware.clone(),

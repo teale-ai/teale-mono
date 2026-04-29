@@ -259,8 +259,8 @@ jobs:
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag `
-              --title "Teale $tag (Windows)" `
-              --notes "Windows installer build for Teale."
+              --title "Teale $tag" `
+              --notes "Desktop release assets for Teale."
           }
           gh release upload $tag `
             "node\installer\output\Teale.exe" `

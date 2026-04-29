@@ -1,9 +1,23 @@
 import Foundation
 import Hummingbird
+import HTTPTypes
 import SharedTypes
 import InferenceEngine
 
 // MARK: - HTTP Server
+
+struct PrivateNetworkAccessMiddleware<Context: RequestContext>: RouterMiddleware {
+    func handle(
+        _ request: Request,
+        context: Context,
+        next: (Request, Context) async throws -> Response
+    ) async throws -> Response {
+        let headerName = HTTPField.Name("Access-Control-Allow-Private-Network")!
+        var response = try await next(request, context)
+        response.headers[values: headerName].append("true")
+        return response
+    }
+}
 
 /// Returns model IDs available on connected peers (WAN + cluster).
 public typealias PeerModelProvider = @Sendable () async -> [(id: String, ownedBy: String)]
@@ -17,6 +31,7 @@ public actor LocalHTTPServer {
     private let apiKeyStore: APIKeyStore
     private let allowNetworkAccess: Bool
     private let controller: (any LocalAppControlling)?
+    private let desktopController: (any DesktopCompanionControlling)?
     private let peerModelProvider: PeerModelProvider?
     private let onRequestCompleted: RequestCompletedHandler?
 
@@ -26,6 +41,7 @@ public actor LocalHTTPServer {
         apiKeyStore: APIKeyStore = APIKeyStore(),
         allowNetworkAccess: Bool = false,
         controller: (any LocalAppControlling)? = nil,
+        desktopController: (any DesktopCompanionControlling)? = nil,
         peerModelProvider: PeerModelProvider? = nil,
         onRequestCompleted: RequestCompletedHandler? = nil
     ) {
@@ -34,6 +50,7 @@ public actor LocalHTTPServer {
         self.apiKeyStore = apiKeyStore
         self.allowNetworkAccess = allowNetworkAccess
         self.controller = controller
+        self.desktopController = desktopController
         self.peerModelProvider = peerModelProvider
         self.onRequestCompleted = onRequestCompleted
     }
@@ -43,6 +60,7 @@ public actor LocalHTTPServer {
         let keyStore = self.apiKeyStore
         let requireAuth = self.allowNetworkAccess
         let controller = self.controller
+        let desktopController = self.desktopController
         let peerModels = self.peerModelProvider
         let requestCompleted = self.onRequestCompleted
 
@@ -50,6 +68,7 @@ public actor LocalHTTPServer {
 
         // CORS
         router.addMiddleware {
+            PrivateNetworkAccessMiddleware()
             CORSMiddleware(
                 allowOrigin: .originBased,
                 allowHeaders: [.contentType, .authorization],
@@ -186,6 +205,94 @@ public actor LocalHTTPServer {
 
         router.get("/v1/app/agent/conversations") { _, _ -> Response in
             return try await RemoteControlRoute.agentConversations(controller: controller)
+        }
+
+        // Shared desktop web companion endpoints
+        router.get("/v1/desktop/app") { _, _ -> Response in
+            return try await DesktopCompanionRoute.snapshot(controller: desktopController)
+        }
+
+        router.post("/v1/desktop/app/privacy-filter/mode") { request, _ -> Response in
+            return try await DesktopCompanionRoute.setPrivacyFilterMode(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/auth/session") { request, _ -> Response in
+            return try await DesktopCompanionRoute.authSession(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.get("/v1/desktop/app/network/models") { _, _ -> Response in
+            return try await DesktopCompanionRoute.networkModels(controller: desktopController)
+        }
+
+        router.get("/v1/desktop/app/network/stats") { _, _ -> Response in
+            return try await DesktopCompanionRoute.networkStats(controller: desktopController)
+        }
+
+        router.get("/v1/desktop/app/account") { _, _ -> Response in
+            return try await DesktopCompanionRoute.accountSummary(controller: desktopController)
+        }
+
+        router.get("/v1/desktop/app/account/api-keys") { _, _ -> Response in
+            return try await DesktopCompanionRoute.accountAPIKeys(controller: desktopController)
+        }
+
+        router.post("/v1/desktop/app/account/link") { request, _ -> Response in
+            return try await DesktopCompanionRoute.linkAccount(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/account/api-keys") { request, _ -> Response in
+            return try await DesktopCompanionRoute.createAccountAPIKey(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/account/api-keys/revoke") { request, _ -> Response in
+            return try await DesktopCompanionRoute.revokeAccountAPIKey(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/account/sweep") { request, _ -> Response in
+            return try await DesktopCompanionRoute.sweepAccountDevice(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/account/devices/remove") { request, _ -> Response in
+            return try await DesktopCompanionRoute.removeAccountDevice(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/account/send") { request, _ -> Response in
+            return try await DesktopCompanionRoute.sendAccountWallet(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/wallet/refresh") { _, _ -> Response in
+            return try await DesktopCompanionRoute.refreshWallet(controller: desktopController)
+        }
+
+        router.post("/v1/desktop/app/wallet/send") { request, _ -> Response in
+            return try await DesktopCompanionRoute.sendDeviceWallet(
+                request: request,
+                controller: desktopController
+            )
         }
 
         let bindAddress = allowNetworkAccess ? "0.0.0.0" : "127.0.0.1"

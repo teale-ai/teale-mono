@@ -1,4 +1,32 @@
-const API_BASE = "http://127.0.0.1:11437";
+const DESKTOP_CONFIG = window.__TEALE_DESKTOP_CONFIG__ || {};
+const API_BASE = DESKTOP_CONFIG.apiBase || "http://127.0.0.1:11437";
+const ROUTES = {
+  snapshot: "/v1/app",
+  privacyFilterMode: "/v1/app/privacy-filter/mode",
+  chatCompletions: "/v1/app/chat/completions",
+  modelLoad: "/v1/app/models/load",
+  modelDownload: "/v1/app/models/download",
+  modelUnload: "/v1/app/models/unload",
+  authSession: "/v1/app/auth/session",
+  accountSummary: "/v1/app/account",
+  accountApiKeys: "/v1/app/account/api-keys",
+  accountApiKeysRevoke: "/v1/app/account/api-keys/revoke",
+  accountLink: "/v1/app/account/link",
+  accountSweep: "/v1/app/account/sweep",
+  accountSend: "/v1/app/account/send",
+  accountDevicesRemove: "/v1/app/account/devices/remove",
+  networkModels: "/v1/app/network/models",
+  networkStats: "/v1/app/network/stats",
+  walletRefresh: "/v1/app/wallet/refresh",
+  walletSend: "/v1/app/wallet/send",
+  authPending: "teale://localhost/auth/pending",
+  localApiKey: null,
+  ...DESKTOP_CONFIG.routes,
+};
+const DESKTOP_PLATFORM = DESKTOP_CONFIG.platform || "windows";
+const CHAT_TRANSPORT = DESKTOP_CONFIG.chatTransport || "app-proxy";
+const DESKTOP_DEVICE_LABEL = DESKTOP_CONFIG.deviceLabel
+  || `${DESKTOP_PLATFORM.charAt(0).toUpperCase()}${DESKTOP_PLATFORM.slice(1)} device`;
 
 const els = {
   headerLine: document.getElementById("header-line"),
@@ -825,6 +853,7 @@ let supabaseClient = null;
 let supabaseAuthKey = null;
 let authSession = null;
 let authUser = null;
+let pendingNativeSession = normalizeNativeSession(DESKTOP_CONFIG.nativeSession || null);
 let authIdentities = [];
 let accountDevices = [];
 let accountSummary = null;
@@ -855,15 +884,114 @@ let accountSendStatus = "";
 let accountApiKeyStatus = "";
 let accountApiKeyStatusIsError = false;
 let chatState = loadChatState();
+let lastNativeSyncedSessionKey = null;
 let chatRuntime = {
   inFlight: null,
   interruptedDrafts: {},
   infoMessage: "",
   errorMessage: "",
 };
+let localApiKey = DESKTOP_CONFIG.localApiKey || null;
+let localApiKeyPromise = null;
+
+function normalizeNativeSession(session) {
+  if (!session?.accessToken || !session?.refreshToken) {
+    return null;
+  }
+  return {
+    accessToken: session.accessToken,
+    refreshToken: session.refreshToken,
+  };
+}
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
+}
+
+async function ensureLocalApiKey() {
+  if (localApiKey || !ROUTES.localApiKey) {
+    return localApiKey;
+  }
+  if (!localApiKeyPromise) {
+    localApiKeyPromise = (async () => {
+      const response = await fetch(ROUTES.localApiKey, { cache: "no-store" }).catch(() => null);
+      if (!response?.ok) {
+        return null;
+      }
+      const payload = await response.json().catch(() => null);
+      localApiKey = payload?.key || null;
+      return localApiKey;
+    })().finally(() => {
+      localApiKeyPromise = null;
+    });
+  }
+  return localApiKeyPromise;
+}
+
+async function applyPendingNativeSessionIfNeeded() {
+  if (!supabaseClient || !pendingNativeSession) {
+    return null;
+  }
+
+  try {
+    const current = await supabaseClient.auth.getSession();
+    if (current?.data?.session) {
+      return current.data.session;
+    }
+  } catch (_error) {}
+
+  try {
+    authTrace("hydrating supabase session from native shell");
+    const { data, error } = await supabaseClient.auth.setSession({
+      access_token: pendingNativeSession.accessToken,
+      refresh_token: pendingNativeSession.refreshToken,
+    });
+    if (error) {
+      authTrace(`native session hydrate failed ${error.message}`);
+      return null;
+    }
+    if (data?.session) {
+      authTrace(`native session hydrate success user=${data.session.user?.id || "none"}`);
+      return data.session;
+    }
+  } catch (error) {
+    authTrace(`native session hydrate threw ${friendlyError(error)}`);
+  }
+  return null;
+}
+
+async function apiFetch(path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  const key = await ensureLocalApiKey();
+  if (key) {
+    headers.set("Authorization", `Bearer ${key}`);
+  }
+  return fetch(apiUrl(path), { ...init, headers });
+}
+
+function postNativeSessionSync(session) {
+  const accessToken = session?.access_token;
+  const refreshToken = session?.refresh_token;
+
+  if (!accessToken || !refreshToken) {
+    if (lastNativeSyncedSessionKey !== "__signed_out__") {
+      postNativeMessage({ type: "authSignOut" });
+      lastNativeSyncedSessionKey = "__signed_out__";
+    }
+    return;
+  }
+
+  const sessionKey = `${accessToken}:${refreshToken}`;
+  if (lastNativeSyncedSessionKey === sessionKey) {
+    return;
+  }
+
+  postNativeMessage({
+    type: "authSession",
+    accessToken,
+    refreshToken,
+  });
+  lastNativeSyncedSessionKey = sessionKey;
 }
 
 function updateDisplayUnitLabels() {
@@ -978,7 +1106,7 @@ function renderPrivacyFilter(snapshot = lastSnapshot) {
 }
 
 async function setPrivacyFilterMode(mode) {
-  const response = await post("/v1/app/privacy-filter/mode", { mode });
+  const response = await post(ROUTES.privacyFilterMode, { mode });
   render(response);
   return response;
 }
@@ -1225,8 +1353,11 @@ function clearPendingOAuthProvider() {
 }
 
 async function syncNativePendingOAuthCallback() {
+  if (!ROUTES.authPending) {
+    return;
+  }
   try {
-    const response = await fetch("teale://localhost/auth/pending", { cache: "no-store" });
+    const response = await fetch(ROUTES.authPending, { cache: "no-store" });
     if (!response.ok) {
       return;
     }
@@ -2474,13 +2605,27 @@ function renderChat(snapshot = lastSnapshot) {
 }
 
 async function streamChatCompletion(payload) {
-  const response = await fetch(apiUrl("/v1/app/chat/completions"), {
+  const body = CHAT_TRANSPORT === "openai"
+    ? {
+        model: payload.model,
+        messages: payload.messages,
+        temperature: payload.temperature,
+        max_tokens: payload.max_tokens,
+        stream: payload.stream,
+        stream_options: {
+          include_usage: true,
+          ...(payload.stream_options || {}),
+        },
+      }
+    : payload;
+
+  const response = await apiFetch(ROUTES.chatCompletions, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -2804,7 +2949,7 @@ async function post(path, body = null) {
   if (body) {
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(apiUrl(path), init);
+  const res = await apiFetch(path, init);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || `Request failed: ${res.status}`);
@@ -2813,7 +2958,7 @@ async function post(path, body = null) {
 }
 
 async function getJson(path) {
-  const res = await fetch(apiUrl(path));
+  const res = await apiFetch(path);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || `Request failed: ${res.status}`);
@@ -2822,7 +2967,7 @@ async function getJson(path) {
 }
 
 async function getJsonMaybeMissing(path) {
-  const res = await fetch(apiUrl(path));
+  const res = await apiFetch(path);
   if (res.status === 404) {
     return null;
   }
@@ -2998,7 +3143,7 @@ function updateRecommendedAction(snapshot, recommended) {
       try {
         pendingModelAction = { kind: "load", modelId: recommended.id };
         render(lastSnapshot);
-        await post("/v1/app/models/load", { model: recommended.id });
+        await post(ROUTES.modelLoad, { model: recommended.id });
         await refresh();
       } catch (error) {
         clearBusyAction();
@@ -3015,7 +3160,7 @@ function updateRecommendedAction(snapshot, recommended) {
   els.recommendedAction.disabled = Boolean(activeTransfer);
   els.recommendedAction.onclick = async () => {
     try {
-      await post("/v1/app/models/download", { model: recommended.id });
+      await post(ROUTES.modelDownload, { model: recommended.id });
       await refresh();
     } catch (error) {
       alert(error.message);
@@ -3121,7 +3266,7 @@ function renderModels(snapshot) {
         try {
           pendingModelAction = { kind: "load", modelId: model.id };
           render(lastSnapshot);
-          await post("/v1/app/models/load", { model: model.id });
+          await post(ROUTES.modelLoad, { model: model.id });
           await refresh();
         } catch (error) {
           clearBusyAction();
@@ -3133,7 +3278,7 @@ function renderModels(snapshot) {
       action.textContent = model.last_error ? t("model.action.retry") : t("model.action.download");
       action.onclick = async () => {
         try {
-          await post("/v1/app/models/download", { model: model.id });
+          await post(ROUTES.modelDownload, { model: model.id });
           await refresh();
         } catch (error) {
           alert(error.message);
@@ -3619,7 +3764,7 @@ function renderAccountDevices() {
     sweep.disabled = !authUser || !device.sweepEnabled;
     sweep.addEventListener("click", async () => {
       try {
-        const result = await post("/v1/app/account/sweep", { deviceID: device.deviceId });
+        const result = await post(ROUTES.accountSweep, { deviceID: device.deviceId });
         accountSummary = result.account || accountSummary;
         await refresh();
         await refreshAccountState();
@@ -3639,7 +3784,7 @@ function renderAccountDevices() {
           return;
         }
         try {
-          await post("/v1/app/account/devices/remove", { deviceID: device.deviceId });
+          await post(ROUTES.accountDevicesRemove, { deviceID: device.deviceId });
           await markSupabaseDeviceInactive(device.deviceId);
           await refreshAccountState();
           renderAccountDevices();
@@ -3795,6 +3940,7 @@ async function ensureAuthClient(authConfig) {
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     authSession = session;
     authUser = session?.user || null;
+    postNativeSessionSync(session);
     if (authUser) {
       clearAuthErrorState();
     }
@@ -3816,8 +3962,12 @@ async function ensureAuthClient(authConfig) {
   if (!session) {
     session = await restorePersistedSupabaseSession();
   }
+  if (!session) {
+    session = await applyPendingNativeSessionIfNeeded();
+  }
   authSession = session;
   authUser = session?.user || null;
+  postNativeSessionSync(authSession);
   await consumePendingOAuthCallback();
   if (!authSession) {
     authSession = await restorePersistedSupabaseSession();
@@ -3834,11 +3984,11 @@ async function ensureAuthClient(authConfig) {
 }
 
 async function refreshAccountState() {
-  const summaryPromise = getJsonMaybeMissing("/v1/app/account").catch((error) => {
+  const summaryPromise = getJsonMaybeMissing(ROUTES.accountSummary).catch((error) => {
     console.warn("account summary fetch failed", error);
     return null;
   });
-  const apiKeysPromise = getJsonMaybeMissing("/v1/app/account/api-keys").catch((error) => {
+  const apiKeysPromise = getJsonMaybeMissing(ROUTES.accountApiKeys).catch((error) => {
     console.warn("account api key fetch failed", error);
     return null;
   });
@@ -3899,12 +4049,12 @@ async function createAccountApiKey() {
   createdAccountApiKeyToken = null;
   renderAccountApiKeys();
   try {
-    const response = await post("/v1/app/account/api-keys", {
+    const response = await post(ROUTES.accountApiKeys, {
       label: els.accountApiKeyLabel.value.trim() || null,
     });
     createdAccountApiKeyToken = response?.token || null;
     accountApiKeyStatus = "Created a direct gateway API key for this human account.";
-    const refreshed = await getJsonMaybeMissing("/v1/app/account/api-keys");
+    const refreshed = await getJsonMaybeMissing(ROUTES.accountApiKeys);
     accountApiKeys = refreshed?.keys || [];
     els.accountApiKeyLabel.value = "";
   } catch (error) {
@@ -3925,8 +4075,8 @@ async function revokeAccountApiKey(keyId) {
   accountApiKeyStatusIsError = false;
   renderAccountApiKeys();
   try {
-    await post("/v1/app/account/api-keys/revoke", { keyID: keyId });
-    const refreshed = await getJsonMaybeMissing("/v1/app/account/api-keys");
+    await post(ROUTES.accountApiKeysRevoke, { keyID: keyId });
+    const refreshed = await getJsonMaybeMissing(ROUTES.accountApiKeys);
     accountApiKeys = refreshed?.keys || [];
     accountApiKeyStatus = "Revoked the direct gateway API key.";
   } catch (error) {
@@ -3946,7 +4096,7 @@ async function refreshAuthoritativeAuthState(reason, { throwOnError = false } = 
   }
 
   try {
-    const sessionState = await post("/v1/app/auth/session", {
+    const sessionState = await post(ROUTES.authSession, {
       accessToken: authSession.access_token,
     });
     const identities = sessionState?.identities || sessionState?.user?.identities || [];
@@ -4148,7 +4298,7 @@ async function ensureSupabaseIdentity() {
 
   const device = lastSnapshot.device || {};
   const hardware = device.hardware || {};
-  const deviceName = device.display_name || "Windows device";
+  const deviceName = device.display_name || DESKTOP_DEVICE_LABEL;
   const ramGb = hardwareRamGB(hardware);
   const chipName = hardware.chipName || hardware.chip_name || hardware.cpu_name || hardware.chipFamily || null;
 
@@ -4175,7 +4325,7 @@ async function ensureSupabaseIdentity() {
       .select("id,wan_node_id")
       .eq("user_id", authUser.id)
       .eq("device_name", deviceName)
-      .eq("platform", "windows")
+      .eq("platform", DESKTOP_PLATFORM)
       .eq("is_active", true)
       .order("last_seen", { ascending: false })
       .limit(1);
@@ -4192,7 +4342,7 @@ async function ensureSupabaseIdentity() {
   const payload = {
     user_id: authUser.id,
     device_name: deviceName,
-    platform: "windows",
+    platform: DESKTOP_PLATFORM,
     chip_name: chipName,
     ram_gb: typeof ramGb === "number" ? Math.round(ramGb) : null,
     wan_node_id: currentDeviceId,
@@ -4254,7 +4404,7 @@ async function ensureGatewayAccountLink() {
   };
 
   try {
-    accountSummary = await post("/v1/app/account/link", payload);
+    accountSummary = await post(ROUTES.accountLink, payload);
     authTrace(
       `gateway account link success providers=${authIdentities.map((identity) => identity.provider).join(",") || "none"} github=${payload.githubUsername || "none"}`
     );
@@ -4348,7 +4498,7 @@ async function refreshNetworkModels(force = false) {
     return;
   }
   try {
-    const models = await getJson("/v1/app/network/models");
+    const models = await getJson(ROUTES.networkModels);
     networkModels = models.map((model) => ({
       id: model.id,
       context: model.context_length,
@@ -4380,7 +4530,7 @@ async function refreshNetworkStats(force = false) {
     return;
   }
   try {
-    networkStats = await getJson("/v1/app/network/stats");
+    networkStats = await getJson(ROUTES.networkStats);
     networkStatsFetchedAt = now;
     renderHomeNetworkStats();
   } catch (error) {
@@ -4509,7 +4659,7 @@ function render(snapshot) {
 }
 
 async function refresh() {
-  const res = await fetch(apiUrl("/v1/app"));
+  const res = await apiFetch(ROUTES.snapshot);
   if (!res.ok) {
     throw new Error(`Teale status failed: ${res.status}`);
   }
@@ -4575,7 +4725,7 @@ els.unloadButton.addEventListener("click", async () => {
   try {
     pendingModelAction = { kind: "unload" };
     render(lastSnapshot);
-    await post("/v1/app/models/unload");
+    await post(ROUTES.modelUnload);
     await refresh();
   } catch (error) {
     clearBusyAction();
@@ -4648,6 +4798,7 @@ els.authSignoutButton.addEventListener("click", async () => {
   els.authSignoutButton.disabled = true;
   clearPersistedSupabaseSession();
   resetAccountAuthState();
+  postNativeSessionSync(null);
   render(lastSnapshot);
   const signOutTask = supabaseClient.auth
     .signOut({ scope: "local" })
@@ -4757,7 +4908,7 @@ els.headerRefresh.addEventListener("click", async () => {
   walletRefreshInFlight = true;
   render(lastSnapshot);
   try {
-    lastSnapshot = await post("/v1/app/wallet/refresh", {});
+    lastSnapshot = await post(ROUTES.walletRefresh, {});
     await refreshAccountState();
     render(lastSnapshot);
   } catch (error) {
@@ -4805,7 +4956,7 @@ els.sendSubmit.addEventListener("click", async () => {
   walletSendStatus = "";
   updateSendControls();
   try {
-    lastSnapshot = await post("/v1/app/wallet/send", {
+    lastSnapshot = await post(ROUTES.walletSend, {
       asset: els.sendAsset.value,
       recipient: els.sendRecipient.value.trim(),
       amount,
@@ -4836,7 +4987,7 @@ els.accountSendSubmit.addEventListener("click", async () => {
   accountSendStatus = "";
   updateSendControls();
   try {
-    accountSummary = await post("/v1/app/account/send", {
+    accountSummary = await post(ROUTES.accountSend, {
       asset: els.accountSendAsset.value,
       recipient: els.accountSendRecipient.value.trim(),
       amount,
@@ -4910,6 +5061,30 @@ window.__tealeHandleOAuthCallback = async (url) => {
     window.localStorage.setItem(OAUTH_CALLBACK_STORAGE_KEY, url);
   } catch (_error) {}
   await consumePendingOAuthCallback();
+  await refreshAccountState();
+  await ensureGatewayAccountLink();
+  await refreshAccountState();
+  renderAccountWallet();
+  renderAccountApiKeys();
+  renderAuthState();
+  renderAccountDevices();
+  renderHome(lastSnapshot);
+};
+window.__tealeSetLocalApiKey = (key) => {
+  localApiKey = key || null;
+};
+window.__tealeHydrateNativeSession = async (session) => {
+  pendingNativeSession = normalizeNativeSession(session);
+  if (!pendingNativeSession || !supabaseClient) {
+    return;
+  }
+  const hydrated = await applyPendingNativeSessionIfNeeded();
+  if (!hydrated) {
+    return;
+  }
+  authSession = hydrated;
+  authUser = hydrated.user || null;
+  await ensureSupabaseIdentity();
   await refreshAccountState();
   await ensureGatewayAccountLink();
   await refreshAccountState();

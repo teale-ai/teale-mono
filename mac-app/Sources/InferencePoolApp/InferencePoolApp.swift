@@ -27,8 +27,7 @@ struct TealeApp: App {
     }
 
     private func handleIncomingURL(_ url: URL) {
-        // Windows-parity: only the teale://auth/callback OAuth flow is wired.
-        Task { await appState.authManager?.handleOAuthCallback(url: url) }
+        DesktopCompanionBridge.shared.handleIncomingURL(url)
     }
 
     private static func patchAppMenuTitle(_ name: String) {
@@ -84,7 +83,7 @@ struct TealeApp: App {
     var body: some Scene {
         // Windows-parity 5-view companion window.
         Window("Teale", id: "main") {
-            CompanionRootView()
+            DesktopCompanionRootView()
                 .environment(appState)
                 .frame(minWidth: 820, minHeight: 620)
                 .onOpenURL { url in
@@ -92,19 +91,6 @@ struct TealeApp: App {
                 }
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
-                }
-                .onChange(of: appState.showSignIn) { _, shouldShow in
-                    if shouldShow, let authManager = appState.authManager {
-                        LoginWindowController.shared.show(authManager: authManager, appState: appState)
-                    } else {
-                        LoginWindowController.shared.close()
-                    }
-                }
-                .onChange(of: appState.authManager?.authState.isAuthenticated ?? false) { _, isAuthenticated in
-                    if isAuthenticated {
-                        appState.showSignIn = false
-                        LoginWindowController.shared.close()
-                    }
                 }
         }
         .defaultSize(width: 1040, height: 780)

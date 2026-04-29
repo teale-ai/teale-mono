@@ -1,10 +1,10 @@
 # Frequently Asked Questions
 
-Common questions about the released macOS and Windows apps.
+Common questions about the released macOS, Windows, and Linux apps.
 
 ## What do these docs cover?
 
-Only the currently released Teale desktop apps on macOS and Windows, plus the API surfaces they expose locally.
+Only the currently released Teale desktop apps on macOS, Windows, and Linux, plus the API surfaces they expose locally.
 
 Older docs about protocol internals, PTNs, SDKs, self-hosting, and broader platform support were intentionally removed from this docs site.
 

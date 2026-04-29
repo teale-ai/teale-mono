@@ -19,9 +19,9 @@ The released macOS app publishes:
 
 That makes the local macOS `/v1/models` route useful as a "what can I use right now?" surface rather than a raw download catalog.
 
-## Windows behavior
+## Windows and Linux behavior
 
-For Windows, use:
+For Windows and Linux, use:
 
 - the local model server's `/v1/models` for the currently loaded local model
 - `GET /v1/app/network/models` on the companion API for the live Teale Network table shown in Demand
