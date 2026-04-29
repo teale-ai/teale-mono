@@ -2652,6 +2652,14 @@ pub fn reconcile_availability_sessions(
 
     for recipient in recipients {
         tx.execute(
+            "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+            params![recipient.device_id.as_str(), now, now],
+        )?;
+        tx.execute(
+            "UPDATE devices SET last_seen = ? WHERE device_id = ?",
+            params![now, recipient.device_id.as_str()],
+        )?;
+        tx.execute(
             "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
             [recipient.device_id.as_str()],
         )?;
@@ -3465,6 +3473,29 @@ mod tests {
             .note
             .as_deref()
             .is_some_and(|note| note.contains("mistralai/mistral-small-3.2-24b-instruct")));
+    }
+
+    #[test]
+    fn drip_credits_creates_missing_device_rows() {
+        let pool = open_in_memory().unwrap();
+
+        reconcile_availability_sessions(
+            &pool,
+            &[DripRecipient {
+                device_id: "fresh-device".into(),
+                credits: 1,
+                model_id: Some("nousresearch/hermes-3-llama-3.1-8b".into()),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, "fresh-device").balance_credits, 1);
+
+        reconcile_availability_sessions(&pool, &[]).unwrap();
+        let entries = list_transactions(&pool, "fresh-device", 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].type_, "AVAILABILITY_SESSION");
+        assert_eq!(entries[0].amount, 1);
     }
 
     #[test]
