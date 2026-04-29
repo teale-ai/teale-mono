@@ -264,8 +264,7 @@ pub async fn spawn(
 
                         // register ourselves
                         let register_payload = make_register_payload(&identity, &display_name);
-                        if let Err(e) = local_outbox_tx.send(Message::Text(register_payload))
-                        {
+                        if let Err(e) = local_outbox_tx.send(Message::Text(register_payload)) {
                             warn!("send register: {}", e);
                         }
 
