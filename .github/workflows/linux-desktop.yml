@@ -55,10 +55,30 @@ jobs:
       - name: Download llama-server (CPU build)
         run: |
           mkdir -p .build/linux-downloads
-          LLAMA_RELEASE="$(python3 -c 'import json,urllib.request; print(json.load(urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"))["tag_name"])')"
-          LLAMA_ARCHIVE="llama-${LLAMA_RELEASE}-bin-ubuntu-x64.tar.gz"
-          curl -fsSL \
-            "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_RELEASE}/${LLAMA_ARCHIVE}" \
+          eval "$(
+            python3 - <<'PY'
+import json
+import shlex
+import sys
+import urllib.request
+
+releases = json.load(
+    urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases")
+)
+for release in releases:
+    for asset in release.get("assets", []):
+        name = asset.get("name", "")
+        if name.startswith("llama-") and name.endswith("-bin-ubuntu-x64.tar.gz"):
+            print(f"LLAMA_RELEASE={shlex.quote(release['tag_name'])}")
+            print(f"LLAMA_ARCHIVE={shlex.quote(name)}")
+            print(f"LLAMA_URL={shlex.quote(asset['browser_download_url'])}")
+            raise SystemExit(0)
+
+raise SystemExit("No suitable llama.cpp Ubuntu x64 archive found in recent releases")
+PY
+          )"
+          curl --retry 6 --retry-all-errors --retry-delay 5 -fsSL \
+            "${LLAMA_URL}" \
             -o .build/linux-downloads/llama.tar.gz
           tar -xzf .build/linux-downloads/llama.tar.gz -C .build/linux-downloads
           LLAMA_SERVER_PATH="$(find .build/linux-downloads -type f -name llama-server -print -quit)"

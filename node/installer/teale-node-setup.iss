@@ -19,7 +19,7 @@
 
 ; Timestamp-style version to match mac-app's CFBundleShortVersionString
 ; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.04.29.1136"
+#define AppVer "2026.04.29.1144"
 
 [Setup]
 AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
