@@ -55,9 +55,15 @@ jobs:
       - name: Download llama-server (CPU build)
         run: |
           mkdir -p .build/linux-downloads
+          LLAMA_RELEASE="$(python3 -c 'import json,urllib.request; print(json.load(urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"))["tag_name"])')"
+          LLAMA_ARCHIVE="llama-${LLAMA_RELEASE}-bin-ubuntu-x64.tar.gz"
           curl -fsSL \
-            https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-server-linux-x64 \
-            -o .build/linux-downloads/llama-server
+            "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_RELEASE}/${LLAMA_ARCHIVE}" \
+            -o .build/linux-downloads/llama.tar.gz
+          tar -xzf .build/linux-downloads/llama.tar.gz -C .build/linux-downloads
+          LLAMA_SERVER_PATH="$(find .build/linux-downloads -type f -name llama-server -print -quit)"
+          test -n "${LLAMA_SERVER_PATH}"
+          cp "${LLAMA_SERVER_PATH}" .build/linux-downloads/llama-server
           chmod +x .build/linux-downloads/llama-server
 
       - name: Assemble Linux desktop bundle

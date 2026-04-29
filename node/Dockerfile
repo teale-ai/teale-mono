@@ -19,10 +19,18 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pre-built llama-server from llama.cpp releases
-# Users can override this by mounting their own binary
-RUN curl -L https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-server-linux-cuda12-x64 \
-    -o /usr/local/bin/llama-server && \
+# Install pre-built llama-server from llama.cpp releases.
+# The latest releases no longer publish a dedicated Linux CUDA tarball, so we
+# stage the generic Ubuntu x64 build here unless the caller mounts their own
+# CUDA-enabled binary.
+RUN set -eux; \
+    release="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"; \
+    archive="llama-${release}-bin-ubuntu-x64.tar.gz"; \
+    curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${release}/${archive}" -o /tmp/llama.tar.gz; \
+    tar -xzf /tmp/llama.tar.gz -C /tmp; \
+    server="$(find /tmp -type f -name llama-server -print -quit)"; \
+    test -n "${server}"; \
+    cp "${server}" /usr/local/bin/llama-server; \
     chmod +x /usr/local/bin/llama-server || \
     echo "WARNING: Could not download llama-server. Mount your own binary at /usr/local/bin/llama-server"
 
