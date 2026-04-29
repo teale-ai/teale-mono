@@ -20,7 +20,7 @@ curl http://127.0.0.1:11435/v1/chat/completions \
 
 ```bash
 curl https://gateway.teale.com/v1/chat/completions \
-  -H "Authorization: Bearer $TEALE_BEARER" \
+  -H "Authorization: Bearer $TEALE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen/qwen3.6-35b-a3b",
@@ -35,5 +35,5 @@ curl https://gateway.teale.com/v1/chat/completions \
 
 - `teale-auto` lets the macOS app choose the best currently available route.
 - If you pick a specific model in the app UI, the same model ID can be sent here.
-- In-app network chat already uses the device bearer automatically. You only need to supply the bearer for external clients.
+- In-app network chat already uses the device bearer automatically. For external clients, prefer a revocable human-account API key instead of the rotating device bearer.
 - Streaming responses are sent as SSE with `data: ...` lines followed by `data: [DONE]`.

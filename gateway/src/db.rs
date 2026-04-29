@@ -218,6 +218,23 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
     );
     "#,
+    // 008_account_api_keys.sql — revocable account-scoped API keys for
+    // direct demand traffic that should not depend on a Teale device bearer.
+    r#"
+    CREATE TABLE IF NOT EXISTS account_api_keys (
+        key_id TEXT PRIMARY KEY,
+        token TEXT NOT NULL UNIQUE,
+        account_user_id TEXT NOT NULL,
+        label TEXT,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER,
+        FOREIGN KEY (account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_api_keys_account_created
+        ON account_api_keys(account_user_id, created_at DESC);
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

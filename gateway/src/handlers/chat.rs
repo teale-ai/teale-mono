@@ -146,12 +146,27 @@ pub async fn chat_completions(
                     pool_remaining
                 } else {
                     let issuer_balance =
-                        ledger::get_balance(pool, consumer_p.paying_device_id()).balance_credits;
+                        ledger::get_balance(
+                            pool,
+                            consumer_p
+                                .paying_device_id()
+                                .expect("share principal has issuer device"),
+                        )
+                        .balance_credits;
                     pool_remaining.min(issuer_balance)
                 }
             }
+            ledger::ConsumerPrincipal::Account { account_user_id } => {
+                ledger::account_balance_credits(pool, account_user_id)
+            }
             ledger::ConsumerPrincipal::Device(_) => {
-                ledger::get_balance(pool, consumer_p.paying_device_id()).balance_credits
+                ledger::get_balance(
+                    pool,
+                    consumer_p
+                        .paying_device_id()
+                        .expect("device principal has device id"),
+                )
+                .balance_credits
             }
         };
 
@@ -397,6 +412,11 @@ fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::ConsumerPrinc
         return Some(ledger::ConsumerPrincipal::Share {
             issuer_device_id: issuer.to_string(),
             key_id: key_id.to_string(),
+        });
+    }
+    if let Some(account_user_id) = principal.account_user_id() {
+        return Some(ledger::ConsumerPrincipal::Account {
+            account_user_id: account_user_id.to_string(),
         });
     }
     principal
@@ -790,7 +810,7 @@ async fn run_streaming(
                 let request_id = Uuid::new_v4().to_string();
                 match ledger::settle_request(pool, consumer_p, Some(provider.as_str()), &online, cost, &request_id, &model_id) {
                     Ok(()) => info!(
-                        consumer=%consumer_p.paying_device_id(),
+                        consumer=%consumer_p.ledger_actor_id(),
                         provider=%provider,
                         tokens_in=%prompt_tokens,
                         tokens_out=%final_tokens_out,

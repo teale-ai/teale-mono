@@ -186,6 +186,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/account/sweep", post(handlers::account::sweep_device))
         .route("/v1/account/send", post(handlers::account::send))
         .route(
+            "/v1/account/api-keys",
+            get(handlers::account::list_api_keys).post(handlers::account::create_api_key),
+        )
+        .route(
+            "/v1/account/api-keys/:key_id",
+            axum::routing::delete(handlers::account::revoke_api_key),
+        )
+        .route(
             "/v1/account/devices/remove",
             post(handlers::account::remove_device),
         )

@@ -28,6 +28,8 @@ The `demand` block is useful for external clients because it exposes:
 - `network_base_url`
 - `network_bearer_token`
 
+`network_bearer_token` is the app's rotating device bearer. It is useful for the app's own transport and short-lived debugging, but persistent direct gateway clients should use a revocable human-account API key from **Account > direct gateway api keys** instead.
+
 ## Windows
 
 Request:
