@@ -111,7 +111,7 @@ pub async fn link_account(
 
     ledger::link_device_to_account(
         pool,
-        &requester_device_id,
+        requester_device_id,
         req.account_user_id.trim(),
         &AccountLinkMetadata {
             device_name: req.device_name,
@@ -124,7 +124,7 @@ pub async fn link_account(
     )
     .map_err(GatewayError::Other)?;
 
-    let summary = ledger::account_summary_for_device(pool, &requester_device_id)
+    let summary = ledger::account_summary_for_device(pool, requester_device_id)
         .map_err(GatewayError::Other)?;
     Ok(Json(summary))
 }
@@ -165,7 +165,7 @@ pub async fn sweep_device(
     if req.device_id.trim().is_empty() {
         return Err(GatewayError::BadRequest("deviceID is required".into()));
     }
-    let result = ledger::sweep_device_to_account(pool, &requester_device_id, req.device_id.trim())
+    let result = ledger::sweep_device_to_account(pool, requester_device_id, req.device_id.trim())
         .map_err(GatewayError::Other)?;
     Ok(Json(result))
 }
@@ -181,7 +181,7 @@ pub async fn remove_device(
         return Err(GatewayError::BadRequest("deviceID is required".into()));
     }
     let summary =
-        ledger::remove_device_from_account(pool, &requester_device_id, req.device_id.trim())
+        ledger::remove_device_from_account(pool, requester_device_id, req.device_id.trim())
             .map_err(GatewayError::Other)?;
     Ok(Json(summary))
 }
