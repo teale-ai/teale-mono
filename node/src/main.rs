@@ -441,6 +441,7 @@ async fn run_relay_session(
         swap.is_ready().await && state.can_supply() && !state.shutting_down.load(Ordering::Relaxed);
     initial_capabilities.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
     relay.register(identity, display_name, &initial_capabilities)?;
+    tray_status.mark_relay_connected(true);
 
     // Periodic re-register: keeps relay's capability cache fresh for the gateway's
     // `discover` poll. Cheap (few hundred bytes per interval) and simpler than
@@ -455,6 +456,7 @@ async fn run_relay_session(
         let interval = config.node.heartbeat_interval_seconds;
         let state = state.clone();
         let swap = swap.clone();
+        let tray_status = tray_status.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(interval));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -479,9 +481,11 @@ async fn run_relay_session(
                     &snapshot,
                     &signature,
                 ) {
+                    tray_status.mark_relay_connected(false);
                     tracing::warn!("heartbeat re-register failed: {}", e);
-                    break;
+                    continue;
                 }
+                tray_status.mark_relay_connected(true);
                 tracing::trace!(
                     "heartbeat tick: queue_depth={}, is_generating={}, ewma_tps={:?}",
                     state.queue_depth.load(Ordering::Relaxed),
@@ -498,14 +502,17 @@ async fn run_relay_session(
         tokio::select! {
             _ = shutdown_signal.notified() => {
                 info!("Shutdown signal received inside relay loop");
+                tray_status.mark_relay_connected(false);
                 tray_status.clear_last_error().await;
                 break Ok(());
             }
             msg_opt = incoming.recv() => {
                 let Some(msg) = msg_opt else {
+                    tray_status.mark_relay_connected(false);
                     tray_status.set_last_error("Relay connection lost").await;
                     break Err(anyhow::anyhow!("Relay connection lost"));
                 };
+                tray_status.mark_relay_connected(true);
                 tray_status.clear_last_error().await;
                 dispatch(&relay, msg, swap, state, device_info).await;
             }
@@ -513,6 +520,7 @@ async fn run_relay_session(
     };
 
     heartbeat_task.abort();
+    tray_status.mark_relay_connected(false);
     result
 }
 

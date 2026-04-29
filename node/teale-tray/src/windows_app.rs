@@ -431,10 +431,12 @@ fn initialization_script() -> String {
     let payload = serde_json::json!({
         "apiBase": "http://127.0.0.1:11437",
         "platform": "windows",
+        "shellMode": true,
         "deviceLabel": "Windows device",
         "chatTransport": "app-proxy",
         "routes": {
-            "authPending": "teale://localhost/auth/pending"
+            "authPending": "teale://localhost/auth/pending",
+            "bundledApp": "teale://localhost/"
         }
     });
     format!("window.__TEALE_DESKTOP_CONFIG__ = {payload};")
@@ -476,6 +478,7 @@ fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
 
     let headline = match snapshot.service_state.as_str() {
         "serving" => "Teale — Serving",
+        "offline" => "Teale — Offline",
         "downloading" => "Teale — Downloading",
         "loading" => "Teale — Loading",
         "paused_user" => "Teale — Paused",
@@ -494,6 +497,12 @@ fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
             ),
             _ => transfer.model_id.clone(),
         }
+    } else if snapshot.service_state == "offline" {
+        snapshot
+            .state_reason
+            .clone()
+            .or_else(|| snapshot.loaded_model_id.clone())
+            .unwrap_or_else(|| "Open Teale to manage supply.".to_string())
     } else if let Some(model_id) = &snapshot.loaded_model_id {
         model_id.clone()
     } else {

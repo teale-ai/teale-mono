@@ -20,6 +20,7 @@ const ROUTES = {
   walletRefresh: "/v1/app/wallet/refresh",
   walletSend: "/v1/app/wallet/send",
   authPending: "teale://localhost/auth/pending",
+  bundledApp: null,
   localApiKey: null,
   ...DESKTOP_CONFIG.routes,
 };
@@ -27,6 +28,7 @@ const DESKTOP_PLATFORM = DESKTOP_CONFIG.platform || "windows";
 const CHAT_TRANSPORT = DESKTOP_CONFIG.chatTransport || "app-proxy";
 const DESKTOP_DEVICE_LABEL = DESKTOP_CONFIG.deviceLabel
   || `${DESKTOP_PLATFORM.charAt(0).toUpperCase()}${DESKTOP_PLATFORM.slice(1)} device`;
+const SHELL_MODE = DESKTOP_CONFIG.shellMode === true;
 
 const els = {
   headerLine: document.getElementById("header-line"),
@@ -871,6 +873,7 @@ let networkModels = [];
 let networkModelsFetchedAt = 0;
 let networkStats = null;
 let networkStatsFetchedAt = 0;
+let networkStatsError = null;
 let selectedNetworkModelId = null;
 let demandSort = { key: "devices", dir: "desc" };
 let pendingModelAction = null;
@@ -893,6 +896,8 @@ let chatRuntime = {
 };
 let localApiKey = DESKTOP_CONFIG.localApiKey || null;
 let localApiKeyPromise = null;
+let consecutiveSnapshotFailures = 0;
+let bundledFallbackAttempted = false;
 
 function normalizeNativeSession(session) {
   if (!session?.accessToken || !session?.refreshToken) {
@@ -1544,6 +1549,8 @@ function labelForState(state) {
   switch (state) {
     case "serving":
       return "Serving";
+    case "offline":
+      return "Offline";
     case "downloading":
       return "Downloading";
     case "loading":
@@ -2845,14 +2852,15 @@ async function sendChatMessage() {
 
 function renderHomeNetworkStats() {
   if (!networkStats) {
-    els.homeNetworkDevices.textContent = "Loading...";
-    els.homeNetworkRam.textContent = "Loading...";
-    els.homeNetworkModels.textContent = "Loading...";
-    els.homeNetworkTtft.textContent = "Loading...";
-    els.homeNetworkTps.textContent = "Loading...";
-    els.homeNetworkEarned.textContent = "Loading...";
-    els.homeNetworkSpent.textContent = "Loading...";
-    els.homeNetworkUsdc.textContent = "Loading...";
+    const placeholder = networkStatsError ? "Unavailable" : "Loading...";
+    els.homeNetworkDevices.textContent = placeholder;
+    els.homeNetworkRam.textContent = placeholder;
+    els.homeNetworkModels.textContent = placeholder;
+    els.homeNetworkTtft.textContent = placeholder;
+    els.homeNetworkTps.textContent = placeholder;
+    els.homeNetworkEarned.textContent = placeholder;
+    els.homeNetworkSpent.textContent = placeholder;
+    els.homeNetworkUsdc.textContent = placeholder;
     return;
   }
 
@@ -3037,6 +3045,7 @@ function normalizeSupabaseTimestamp(value) {
 }
 
 function setDisconnected(error) {
+  maybeFallbackToBundledApp(error);
   els.statusChip.textContent = "Offline";
   els.statusLine.textContent = friendlyError(error);
   els.deviceName.textContent = "-";
@@ -3058,7 +3067,7 @@ function setDisconnected(error) {
   els.homeModel.textContent = t("common.noModelLoaded");
   els.homeBalance.textContent = t("common.waitingLocalService");
   els.homeAccount.textContent = userLabel(authUser);
-  networkStats = null;
+  networkStatsError = friendlyError(error);
   renderHomeNetworkStats();
 
   els.supplyEarningRate.textContent = "Waiting for a loaded model...";
@@ -3112,8 +3121,10 @@ function updateRecommendedAction(snapshot, recommended) {
   els.recommendedError.textContent = summarizeModelError(recommended.last_error);
   els.recommendedError.hidden = !recommended.last_error;
 
-  if (recommended.loaded && snapshot.service_state === "serving") {
-    els.recommendedAction.textContent = t("model.action.servingNow");
+  if (recommended.loaded) {
+    els.recommendedAction.textContent = snapshot.service_state === "serving"
+      ? t("model.action.servingNow")
+      : t("model.action.loaded");
     els.recommendedAction.disabled = true;
     els.recommendedAction.onclick = null;
     return;
@@ -4531,13 +4542,34 @@ async function refreshNetworkStats(force = false) {
   }
   try {
     networkStats = await getJson(ROUTES.networkStats);
+    networkStatsError = null;
     networkStatsFetchedAt = now;
     renderHomeNetworkStats();
   } catch (error) {
     console.error("network stats refresh failed", error);
-    networkStats = null;
+    networkStatsError = error.message || friendlyError(error);
     renderHomeNetworkStats();
   }
+}
+
+function maybeFallbackToBundledApp(error) {
+  if (!SHELL_MODE || bundledFallbackAttempted) {
+    return;
+  }
+  if (!ROUTES.bundledApp || !window.location.protocol.startsWith("http")) {
+    return;
+  }
+  const message = friendlyError(error).toLowerCase();
+  const looksLikeLocalBridgeFailure = message.includes("failed to fetch")
+    || message.includes("networkerror")
+    || message.includes("load failed")
+    || message.includes("blocked")
+    || message.includes("status failed");
+  if (!looksLikeLocalBridgeFailure || consecutiveSnapshotFailures < 3) {
+    return;
+  }
+  bundledFallbackAttempted = true;
+  window.location.replace(ROUTES.bundledApp);
 }
 
 function renderHome(snapshot) {
@@ -4664,6 +4696,7 @@ async function refresh() {
     throw new Error(`Teale status failed: ${res.status}`);
   }
   const snapshot = await res.json();
+  consecutiveSnapshotFailures = 0;
   reconcilePendingAction(snapshot);
   lastSnapshot = snapshot;
   await ensureAuthClient(snapshot.auth);
@@ -4690,7 +4723,10 @@ function startPolling() {
   }
   const everyMs = document.hidden ? 5000 : 1000;
   intervalHandle = setInterval(() => {
-    refresh().catch((error) => setDisconnected(error));
+    refresh().catch((error) => {
+      consecutiveSnapshotFailures += 1;
+      setDisconnected(error);
+    });
   }, everyMs);
 }
 
@@ -5098,5 +5134,8 @@ window.__tealeHydrateNativeSession = async (session) => {
 applyTranslations();
 setActiveView("home");
 loadStoredOAuthCallback();
-refresh().catch((error) => setDisconnected(error));
+refresh().catch((error) => {
+  consecutiveSnapshotFailures += 1;
+  setDisconnected(error);
+});
 startPolling();
