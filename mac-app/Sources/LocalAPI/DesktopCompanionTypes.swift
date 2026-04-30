@@ -265,6 +265,52 @@ public struct DesktopCompanionNetworkStatsSnapshot: Codable, Sendable {
     public var total_credits_earned: Int64
     public var total_credits_spent: Int64
     public var total_usdc_distributed_cents: Int64
+
+    // Gateway emits camelCase keys; the JS companion (and every other
+    // route on the local server) expects snake_case. Decode the gateway
+    // shape explicitly and let the synthesized encoder emit snake_case.
+    private enum GatewayKeys: String, CodingKey {
+        case totalDevices
+        case totalRamGB
+        case totalModels
+        case avgTtftMs
+        case avgTps
+        case totalCreditsEarned
+        case totalCreditsSpent
+        case totalUsdcDistributedCents
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: GatewayKeys.self)
+        self.total_devices = try c.decode(Int.self, forKey: .totalDevices)
+        self.total_ram_gb = try c.decode(Double.self, forKey: .totalRamGB)
+        self.total_models = try c.decode(Int.self, forKey: .totalModels)
+        self.avg_ttft_ms = try c.decodeIfPresent(UInt32.self, forKey: .avgTtftMs)
+        self.avg_tps = try c.decodeIfPresent(Float.self, forKey: .avgTps)
+        self.total_credits_earned = try c.decode(Int64.self, forKey: .totalCreditsEarned)
+        self.total_credits_spent = try c.decode(Int64.self, forKey: .totalCreditsSpent)
+        self.total_usdc_distributed_cents = try c.decode(Int64.self, forKey: .totalUsdcDistributedCents)
+    }
+
+    public init(
+        total_devices: Int,
+        total_ram_gb: Double,
+        total_models: Int,
+        avg_ttft_ms: UInt32?,
+        avg_tps: Float?,
+        total_credits_earned: Int64,
+        total_credits_spent: Int64,
+        total_usdc_distributed_cents: Int64
+    ) {
+        self.total_devices = total_devices
+        self.total_ram_gb = total_ram_gb
+        self.total_models = total_models
+        self.avg_ttft_ms = avg_ttft_ms
+        self.avg_tps = avg_tps
+        self.total_credits_earned = total_credits_earned
+        self.total_credits_spent = total_credits_spent
+        self.total_usdc_distributed_cents = total_usdc_distributed_cents
+    }
 }
 
 public struct DesktopCompanionAccountLinkRequest: Codable, Sendable {
