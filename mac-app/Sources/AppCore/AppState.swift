@@ -971,6 +971,16 @@ public final class AppState {
     public func loadLocalModel(_ localModel: LocalModelInfo) async {
         let descriptor = localModel.toDescriptor()
         do {
+            // Local filesystem safetensors should always run through the MLX backend.
+            // If the user previously persisted Exo or llama.cpp, switch the serving
+            // engine back before loading so the local API and model listing reflect
+            // the model we just loaded.
+            if inferenceBackend != .localMLX {
+                UserDefaults.standard.set(InferenceBackend.localMLX.rawValue, forKey: Self.inferenceBackendKey)
+                inferenceBackend = .localMLX
+                await applyInferenceBackendSelection()
+            }
+
             if case .ready = engineStatus {
                 await engine.unloadModel()
             }
@@ -991,13 +1001,12 @@ public final class AppState {
             loadingProgress = nil
             engineStatus = .ready(descriptor)
             UserDefaults.standard.set(descriptor.id, forKey: Preferences.lastLoadedModelID)
-            if wanEnabled {
-                await wanManager.updateLocalLoadedModels(descriptor.advertisedId.map { [$0] } ?? [])
-            }
+            syncAdvertisedLoadedModels()
         } catch {
             loadingPhase = ""
             loadingProgress = nil
             engineStatus = .error(error.localizedDescription)
+            syncAdvertisedLoadedModels()
         }
     }
 
@@ -1194,24 +1203,7 @@ public final class AppState {
     }
 
     private func syncAdvertisedLoadedModels() {
-        let loadedModels: [String]
-        switch engineStatus {
-        case .ready(let descriptor):
-            // Advertise the canonical OpenRouter slug when we have one so
-            // the gateway's catalog + per-model fleet floor match this
-            // device correctly. Skip advertisement for unrecognized
-            // models rather than leaking a filesystem path or a
-            // non-canonical HF repo id that no OpenRouter client will
-            // match.
-            if let advertised = descriptor.advertisedId {
-                loadedModels = [advertised]
-            } else {
-                Self.wanLog("syncAdvertised: descriptor \(descriptor.id) has no openrouterId; skipping advertisement")
-                loadedModels = []
-            }
-        default:
-            loadedModels = []
-        }
+        let loadedModels = advertisedLoadedModels(for: engineStatus)
 
         // On the exo backend, a Teale instance is a thin proxy to a cluster
         // that may be hosting multiple models simultaneously. Advertise ALL
@@ -1353,6 +1345,66 @@ public final class AppState {
         wanManager.lanPeerNodeIDs = lanIDs
     }
 
+    private func canonicalAdvertisedID(for descriptor: ModelDescriptor) -> String? {
+        if let advertised = descriptor.advertisedId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !advertised.isEmpty {
+            return advertised
+        }
+
+        let candidates = [
+            descriptor.huggingFaceRepo,
+            URL(fileURLWithPath: descriptor.huggingFaceRepo).lastPathComponent,
+            descriptor.id,
+            descriptor.name,
+        ]
+
+        for candidate in candidates {
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            if let known = ModelCatalog.allModels.first(where: { $0.matchesIdentifier(trimmed) }),
+               let advertised = known.openrouterId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !advertised.isEmpty {
+                return advertised
+            }
+
+            if let advertised = ModelCatalog.openrouterIdForFilename(trimmed)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !advertised.isEmpty {
+                return advertised
+            }
+
+            if let advertised = OpenRouterIdResolver.resolve(filename: trimmed)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !advertised.isEmpty {
+                return advertised
+            }
+        }
+
+        return nil
+    }
+
+    private func advertisedLoadedModels(for status: EngineStatus) -> [String] {
+        let descriptor: ModelDescriptor?
+        switch status {
+        case .ready(let model), .generating(let model, _):
+            descriptor = model
+        default:
+            descriptor = nil
+        }
+
+        guard let descriptor else { return [] }
+        if let advertised = canonicalAdvertisedID(for: descriptor) {
+            if descriptor.openrouterId != advertised {
+                Self.wanLog("Recovered WAN advertised id \(advertised) for descriptor \(descriptor.id)")
+            }
+            return [advertised]
+        }
+
+        Self.wanLog("syncAdvertised: descriptor \(descriptor.id) has no recoverable openrouterId; skipping advertisement")
+        return []
+    }
+
     // MARK: - WAN P2P
 
     private func toggleWAN() {
@@ -1377,7 +1429,9 @@ public final class AppState {
         // Capture values needed off the main actor to avoid blocking it during network ops.
         let hw = hardware
         let hostName = ProcessInfo.processInfo.hostName
-        let loadedModels = selectedModel.map { [$0.huggingFaceRepo] } ?? []
+        let loadedModels = selectedModel.flatMap { descriptor in
+            canonicalAdvertisedID(for: descriptor).map { [$0] }
+        } ?? []
 
         // Run network-heavy work off the main actor so API endpoints remain responsive.
         Task.detached { [weak self] in
@@ -1420,12 +1474,8 @@ public final class AppState {
                 // Sync loaded models to WAN now that it's enabled
                 // (model may have loaded before WAN was turned on)
                 let currentEngineStatus = await MainActor.run(body: { String(describing: self.engineStatus) })
-                let loadedModels: [String]
-                if case .ready(let descriptor) = await MainActor.run(body: { self.engineStatus }),
-                   let advertised = descriptor.advertisedId {
-                    loadedModels = [advertised]
-                } else {
-                    loadedModels = []
+                let loadedModels = await MainActor.run {
+                    self.advertisedLoadedModels(for: self.engineStatus)
                 }
                 AppState.wanLog("Syncing loaded models after WAN enable: engineStatus=\(currentEngineStatus) loadedModels=\(loadedModels)")
                 await self.wanManager.updateLocalLoadedModels(loadedModels)

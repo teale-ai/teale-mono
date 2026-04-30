@@ -145,6 +145,7 @@ public enum OpenRouterIdResolver {
         ("llama-3-1-70b-instruct", "meta-llama/llama-3.1-70b-instruct"),
         ("llama-3-1-8b-instruct", "meta-llama/llama-3.1-8b-instruct"),
         ("deepseek-v3-2", "deepseek/deepseek-v3.2"),
+        ("minimax-m2-7", "minimax/minimax-m2.7"),
         ("qwen3-6-27b", "qwen/qwen3.6-27b"),
         ("qwen3-6-35b-a3b", "qwen/qwen3.6-35b-a3b"),
         ("qwen3-30b-a3b", "qwen/qwen3-30b-a3b-instruct-2507"),

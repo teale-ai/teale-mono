@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import AppCore
+import ModelManager
 
 struct Serve: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -26,6 +27,7 @@ struct Serve: AsyncParsableCommand {
         printErr("Starting Teale node...")
 
         let appState = await MainActor.run { AppState(autoStart: false) }
+        let originalPersistedWAN = UserDefaults.standard.bool(forKey: "teale.wanEnabled")
 
         // Apply CLI flags
         await MainActor.run {
@@ -33,22 +35,32 @@ struct Serve: AsyncParsableCommand {
             if cluster { appState.clusterEnabled = true }
         }
 
+        if wan {
+            UserDefaults.standard.set(false, forKey: "teale.wanEnabled")
+        }
+
         // Start server and initialize
         await appState.startServer()
         await appState.initializeAsync()
 
-        // Enable WAN after initialization (needs identity)
-        // Only set if not already enabled from persisted defaults (avoids double toggleWAN)
+        // Auto-load the local model before WAN bootstrap so the first relay
+        // registration advertises the canonical slug instead of an empty
+        // loaded-model set during MLX warmup.
+        if let modelID = model {
+            await autoLoadModel(modelID, appState: appState)
+        }
+
+        // Enable WAN after initialization and any requested auto-load
+        // (needs identity). Only set if not already enabled from persisted
+        // defaults to avoid double toggleWAN.
         if wan {
+            UserDefaults.standard.set(true, forKey: "teale.wanEnabled")
             let alreadyEnabled = await MainActor.run { appState.wanEnabled }
             if !alreadyEnabled {
                 await MainActor.run { appState.wanEnabled = true }
             }
-        }
-
-        // Auto-load model if specified
-        if let modelID = model {
-            await autoLoadModel(modelID, appState: appState)
+        } else if originalPersistedWAN {
+            UserDefaults.standard.set(true, forKey: "teale.wanEnabled")
         }
 
         printErr("Teale node running on port \(port)")
@@ -62,9 +74,32 @@ struct Serve: AsyncParsableCommand {
     }
 
     private func autoLoadModel(_ modelID: String, appState: AppState) async {
+        let localModel = await MainActor.run { () -> LocalModelInfo? in
+            appState.scanLocalModels()
+            return appState.scannedLocalModels.first(where: {
+                let descriptor = $0.toDescriptor()
+                return descriptor.id == modelID
+                    || descriptor.huggingFaceRepo == modelID
+                    || $0.path.path == modelID
+                    || $0.path.lastPathComponent == modelID
+                    || $0.name == modelID
+            })
+        }
+        if let localModel {
+            printErr("Loading local MLX model \(localModel.name)...")
+            await appState.loadLocalModel(localModel)
+            let status = await MainActor.run { appState.engineStatus }
+            if case .ready = status {
+                printErr("Local model loaded: \(localModel.name)")
+            } else if case .error(let message) = status {
+                printErr("Local model failed to load: \(message)")
+            }
+            return
+        }
+
         let models = await appState.modelManager.compatibleModels
         guard let descriptor = models.first(where: { $0.id == modelID || $0.huggingFaceRepo == modelID }) else {
-            printErr("Warning: Model '\(modelID)' not found in catalog. Skipping auto-load.")
+            printErr("Warning: Model '\(modelID)' not found in catalog or scanned local models. Skipping auto-load.")
             return
         }
 
@@ -76,6 +111,11 @@ struct Serve: AsyncParsableCommand {
 
         printErr("Loading \(descriptor.name)...")
         await appState.loadModel(descriptor)
-        printErr("Model loaded: \(descriptor.name)")
+        let status = await MainActor.run { appState.engineStatus }
+        if case .ready = status {
+            printErr("Model loaded: \(descriptor.name)")
+        } else if case .error(let message) = status {
+            printErr("Model failed to load: \(message)")
+        }
     }
 }

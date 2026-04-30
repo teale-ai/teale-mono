@@ -296,6 +296,9 @@ impl Registry {
             .iter()
             .filter_map(|r| {
                 let st = r.value();
+                if st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds) {
+                    return None;
+                }
                 match st.is_eligible_for(model_id, self.reliability.quarantine_seconds as u32 * 100)
                 {
                     Eligibility::Loaded | Eligibility::Swappable => Some(st.clone()),
@@ -466,5 +469,23 @@ mod tests {
         registry.quarantine("node-b", 60);
 
         assert_eq!(registry.supplying_device_count(), 1);
+    }
+
+    #[test]
+    fn eligible_devices_excludes_stale_heartbeat_nodes() {
+        let mut reliability = ReliabilityConfig::default();
+        reliability.heartbeat_stale_seconds = 0;
+        let registry = Registry::new(reliability);
+        registry.upsert_device(
+            "node-a".to_string(),
+            "A".to_string(),
+            caps(vec!["teale/auto"], true),
+        );
+        {
+            let mut dev = registry.devices.get_mut("node-a").expect("device present");
+            dev.last_heartbeat = Instant::now() - std::time::Duration::from_secs(1);
+        }
+
+        assert!(registry.eligible_devices("teale/auto").is_empty());
     }
 }

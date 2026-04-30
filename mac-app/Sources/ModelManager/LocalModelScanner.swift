@@ -16,6 +16,7 @@ public struct LocalModelInfo: Identifiable, Sendable {
         case huggingFaceCache      // ~/.cache/huggingface/hub/
         case lmStudio              // ~/.cache/lm-studio/models/
         case tealeCache            // ~/Library/Application Support/Teale/huggingface/
+        case exoCache              // ~/.exo/models/
         case custom                // User-selected folder
     }
 
@@ -99,8 +100,14 @@ public struct LocalModelScanner: Sendable {
     /// Scan all known model directories and return found models.
     public func scanAll() -> [LocalModelInfo] {
         var results: [LocalModelInfo] = []
+        var seenRealPaths = Set<String>()
         for (searchDir, source) in knownDirectories() {
-            results.append(contentsOf: scanDirectory(searchDir, source: source))
+            for model in scanDirectory(searchDir, source: source) {
+                let realPath = model.path.resolvingSymlinksInPath().standardizedFileURL.path
+                guard !seenRealPaths.contains(realPath) else { continue }
+                seenRealPaths.insert(realPath)
+                results.append(model)
+            }
         }
         return results
     }
@@ -139,6 +146,12 @@ public struct LocalModelScanner: Sendable {
         let tealeCache = appSupport.appendingPathComponent("Teale/huggingface/models")
         if fm.fileExists(atPath: tealeCache.path) {
             dirs.append((tealeCache, .tealeCache))
+        }
+
+        // EXO-downloaded MLX models
+        let exoCache = home.appendingPathComponent(".exo/models")
+        if fm.fileExists(atPath: exoCache.path) {
+            dirs.append((exoCache, .exoCache))
         }
 
         return dirs

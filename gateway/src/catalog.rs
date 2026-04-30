@@ -6,6 +6,11 @@
 use serde::Deserialize;
 use teale_protocol::openai::{ModelEntry, Pricing};
 
+pub const LIVE_MODEL_DEFAULT_PROMPT_PRICE: &str = "0.00000030";
+pub const LIVE_MODEL_DEFAULT_COMPLETION_PRICE: &str = "0.00000120";
+pub const LIVE_MODEL_DEFAULT_CONTEXT_LENGTH: u32 = 32_768;
+pub const LIVE_MODEL_DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct CatalogFile {
     pub models: Vec<CatalogModel>,
@@ -128,6 +133,51 @@ pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {
     Ok(file.models)
 }
 
+pub fn synthesize_live_model(model_id: &str, effective_context: Option<u32>) -> CatalogModel {
+    let context_length = effective_context.unwrap_or(LIVE_MODEL_DEFAULT_CONTEXT_LENGTH);
+    let max_output_tokens = (context_length / 4)
+        .clamp(1_024, LIVE_MODEL_DEFAULT_MAX_OUTPUT_TOKENS.max(1_024));
+    let display_name = model_id
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(model_id)
+        .replace(['-', '_'], " ");
+    let owned_by = model_id
+        .split('/')
+        .next()
+        .filter(|owner| !owner.is_empty())
+        .unwrap_or("teale")
+        .to_string();
+
+    CatalogModel {
+        id: model_id.to_string(),
+        display_name,
+        owned_by,
+        context_length,
+        max_output_tokens,
+        params_b: 1.0,
+        pricing_prompt: LIVE_MODEL_DEFAULT_PROMPT_PRICE.to_string(),
+        pricing_completion: LIVE_MODEL_DEFAULT_COMPLETION_PRICE.to_string(),
+        quantization: None,
+        supported_parameters: vec![
+            "temperature".into(),
+            "top_p".into(),
+            "max_tokens".into(),
+            "stop".into(),
+            "stream".into(),
+            "seed".into(),
+        ],
+        description: Some(
+            "Live Teale network model discovered from active supply. Gateway default pricing applies."
+                .into(),
+        ),
+        aliases: vec![],
+        is_virtual: false,
+        routing_tags: vec![],
+    }
+}
+
 /// Floor-category for per-model availability gating.
 pub fn is_large(params_b: f64) -> bool {
     params_b >= 50.0
@@ -168,13 +218,15 @@ pub fn resolve_auto(
     floor_small: u32,
     floor_large: u32,
 ) -> Option<&CatalogModel> {
-    let mut candidates: Vec<&CatalogModel> = catalog
+    let build_candidates = |prefer_agent_harness: bool| -> Vec<&CatalogModel> {
+        catalog
         .iter()
         .filter(|m| !m.is_virtual)
         .filter(|m| m.context_length >= required_ctx)
-        .filter(|m| match profile {
-            AutoRouteProfile::Generic => true,
-            AutoRouteProfile::AgentHarness => m.has_routing_tag("agent-harness"),
+        .filter(|m| match (profile, prefer_agent_harness) {
+            (AutoRouteProfile::Generic, _) => true,
+            (AutoRouteProfile::AgentHarness, true) => m.has_routing_tag("agent-harness"),
+            (AutoRouteProfile::AgentHarness, false) => true,
         })
         .filter(|m| {
             let required = if is_large(m.params_b) {
@@ -184,13 +236,21 @@ pub fn resolve_auto(
             };
             eligible_count(&m.id, required_ctx) >= required
         })
-        .collect();
+        .collect()
+    };
+
+    let mut candidates = build_candidates(true);
+    if matches!(profile, AutoRouteProfile::AgentHarness) && candidates.is_empty() {
+        candidates = build_candidates(false);
+    }
 
     candidates.sort_by(|a, b| {
         match profile {
             // For agent harnesses, stay inside a curated set of models we have
-            // explicitly marked as suitable for coding/tool-heavy workflows, then
-            // still prefer the smallest fit to conserve larger supply.
+            // explicitly marked as suitable for coding/tool-heavy workflows when
+            // that supply exists. If the curated lane is unavailable, we
+            // gracefully fall back to the generic pool rather than 503ing a
+            // simple OpenClaw turn that Hermes can satisfy.
             AutoRouteProfile::AgentHarness => a
                 .params_b
                 .partial_cmp(&b.params_b)
@@ -264,6 +324,24 @@ mod tests {
         )
         .expect("should resolve");
         assert_eq!(picked.id, "agentic");
+    }
+
+    #[test]
+    fn agent_harness_auto_falls_back_to_generic_when_tagged_lane_missing() {
+        let catalog = vec![
+            model("small", 8.0, 32768, &[]),
+            model("agentic", 27.0, 262144, &["agent-harness"]),
+        ];
+        let picked = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::AgentHarness,
+            |id, _| u32::from(id == "small"),
+            1,
+            1,
+        )
+        .expect("should resolve");
+        assert_eq!(picked.id, "small");
     }
 
     #[test]

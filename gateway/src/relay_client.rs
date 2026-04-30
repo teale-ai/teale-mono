@@ -60,8 +60,13 @@ pub struct RelayHandle {
     node_id: String,
     sessions: Arc<DashMap<String, PendingSession>>,
     /// Waiters registered before `relayReady` arrives (by session_id).
-    ready_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    ready_waiters: Arc<Mutex<HashMap<String, ReadyWaiter>>>,
     outbox: mpsc::UnboundedSender<Message>,
+}
+
+struct ReadyWaiter {
+    target_node_id: String,
+    tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
 impl RelayHandle {
@@ -77,8 +82,14 @@ impl RelayHandle {
         timeout: Duration,
     ) -> anyhow::Result<String> {
         let session_id = Uuid::new_v4().to_string();
-        let (tx, rx) = oneshot::channel::<()>();
-        self.ready_waiters.lock().insert(session_id.clone(), tx);
+        let (tx, rx) = oneshot::channel::<anyhow::Result<()>>();
+        self.ready_waiters.lock().insert(
+            session_id.clone(),
+            ReadyWaiter {
+                target_node_id: target_node_id.to_string(),
+                tx,
+            },
+        );
 
         let payload = serde_json::json!({
             "relayOpen": {
@@ -87,10 +98,14 @@ impl RelayHandle {
                 "sessionID": session_id,
             }
         });
-        self.send_json(&payload)?;
+        if let Err(err) = self.send_json(&payload) {
+            self.ready_waiters.lock().remove(&session_id);
+            return Err(err);
+        }
 
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(())) => Ok(session_id),
+            Ok(Ok(Ok(()))) => Ok(session_id),
+            Ok(Ok(Err(err))) => Err(err),
             Ok(Err(_)) => anyhow::bail!("session ready waiter dropped"),
             Err(_) => {
                 self.ready_waiters.lock().remove(&session_id);
@@ -174,7 +189,7 @@ impl RelayHandle {
         self.ready_waiters
             .lock()
             .remove(session_id)
-            .map(|tx| tx.send(()).is_ok())
+            .map(|waiter| waiter.tx.send(Ok(())).is_ok())
             .unwrap_or(false)
     }
 }
@@ -190,7 +205,7 @@ pub async fn spawn(
 
     let (outbox_tx, mut outbox_rx) = mpsc::unbounded_channel::<Message>();
     let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
-    let ready_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>> =
+    let ready_waiters: Arc<Mutex<HashMap<String, ReadyWaiter>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     let handle = RelayHandle {
@@ -208,7 +223,7 @@ pub async fn spawn(
         let sessions = sessions.clone();
         let ready_waiters = ready_waiters.clone();
         let outbox_tx = outbox_tx.clone();
-        let _reliability = config.reliability.clone();
+        let reliability = config.reliability.clone();
 
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
@@ -282,6 +297,7 @@ pub async fn spawn(
                                         &registry,
                                         &sessions,
                                         &ready_waiters,
+                                        reliability.quarantine_seconds,
                                         &outbox_tx,
                                         &node_id,
                                         &mut sent_discover_after_ack,
@@ -296,6 +312,7 @@ pub async fn spawn(
                                                 &registry,
                                                 &sessions,
                                                 &ready_waiters,
+                                                reliability.quarantine_seconds,
                                                 &outbox_tx,
                                                 &node_id,
                                                 &mut sent_discover_after_ack,
@@ -377,7 +394,8 @@ async fn handle_incoming(
     msg: IncomingRelayMessage,
     registry: &Arc<Registry>,
     sessions: &Arc<DashMap<String, PendingSession>>,
-    ready_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    ready_waiters: &Arc<Mutex<HashMap<String, ReadyWaiter>>>,
+    quarantine_seconds: u64,
     _outbox_tx: &mpsc::UnboundedSender<Message>,
     _self_node_id: &str,
     sent_discover_after_ack: &mut bool,
@@ -431,8 +449,8 @@ async fn handle_incoming(
             update_eligible_gauges(registry);
         }
         IncomingRelayMessage::RelayReady(s) => {
-            if let Some(tx) = ready_waiters.lock().remove(&s.session_id) {
-                let _ = tx.send(());
+            if let Some(waiter) = ready_waiters.lock().remove(&s.session_id) {
+                let _ = waiter.tx.send(Ok(()));
             }
         }
         IncomingRelayMessage::RelayData(d) => {
@@ -455,12 +473,84 @@ async fn handle_incoming(
         }
         IncomingRelayMessage::Error(e) => {
             warn!("relay error: {} — {}", e.code, e.message);
+            if e.code == "peer_not_found" {
+                if let Some(peer_node_id) = extract_peer_node_id(&e.message) {
+                    registry.quarantine(peer_node_id, quarantine_seconds);
+                    fail_ready_waiters_for_target(
+                        ready_waiters,
+                        peer_node_id,
+                        &format!("peer not connected: {}", peer_node_id),
+                    );
+                    fail_sessions_for_target(
+                        sessions,
+                        peer_node_id,
+                        &format!("peer not connected: {}", peer_node_id),
+                    );
+                    update_eligible_gauges(registry);
+                }
+            }
         }
         IncomingRelayMessage::Unknown(k) => {
             debug!("unknown relay msg: {}", k);
         }
         _ => {}
     }
+}
+
+fn extract_peer_node_id(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("Peer ")?;
+    let (peer_node_id, suffix) = rest.split_once(' ')?;
+    if suffix == "is not connected" {
+        Some(peer_node_id)
+    } else {
+        None
+    }
+}
+
+fn fail_ready_waiters_for_target(
+    ready_waiters: &Arc<Mutex<HashMap<String, ReadyWaiter>>>,
+    target_node_id: &str,
+    message: &str,
+) -> usize {
+    let session_ids: Vec<String> = ready_waiters
+        .lock()
+        .iter()
+        .filter_map(|(session_id, waiter)| {
+            (waiter.target_node_id == target_node_id).then_some(session_id.clone())
+        })
+        .collect();
+    let mut failed = 0usize;
+    let mut waiters = ready_waiters.lock();
+    for session_id in session_ids {
+        if let Some(waiter) = waiters.remove(&session_id) {
+            failed += 1;
+            let _ = waiter.tx.send(Err(anyhow::anyhow!(message.to_string())));
+        }
+    }
+    failed
+}
+
+fn fail_sessions_for_target(
+    sessions: &Arc<DashMap<String, PendingSession>>,
+    target_node_id: &str,
+    message: &str,
+) -> usize {
+    let session_ids: Vec<String> = sessions
+        .iter()
+        .filter_map(|entry| {
+            (entry.device_node_id == target_node_id).then_some(entry.session_id.clone())
+        })
+        .collect();
+    let mut failed = 0usize;
+    for session_id in session_ids {
+        if let Some((_, pending)) = sessions.remove(&session_id) {
+            failed += 1;
+            let _ = pending
+                .chunks_tx
+                .try_send(SessionEvent::Disconnect(message.to_string()));
+        }
+    }
+    failed
 }
 
 async fn dispatch_cluster(
@@ -499,6 +589,106 @@ async fn dispatch_cluster(
         _ => {
             debug!("dispatch: unhandled ClusterMessage");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ReliabilityConfig;
+
+    fn caps(loaded_models: &[&str]) -> NodeCapabilities {
+        NodeCapabilities {
+            hardware: HardwareCapability {
+                chip_family: "m3".to_string(),
+                chip_name: "Apple M3".to_string(),
+                total_ram_gb: 64.0,
+                gpu_core_count: 40,
+                memory_bandwidth_gbs: 300.0,
+                tier: 1,
+                gpu_backend: Some("metal".to_string()),
+                platform: Some("macOS".to_string()),
+                gpu_vram_gb: None,
+            },
+            loaded_models: loaded_models.iter().map(|m| m.to_string()).collect(),
+            max_model_size_gb: 128.0,
+            is_available: true,
+            ptn_ids: None,
+            swappable_models: Vec::new(),
+            max_concurrent_requests: Some(2),
+            effective_context: Some(131072),
+            on_ac_power: Some(true),
+        }
+    }
+
+    #[test]
+    fn extract_peer_node_id_parses_peer_not_found_message() {
+        assert_eq!(
+            extract_peer_node_id("Peer abc123 is not connected"),
+            Some("abc123")
+        );
+        assert_eq!(extract_peer_node_id("something else"), None);
+    }
+
+    #[tokio::test]
+    async fn peer_not_found_fails_waiters_and_inflight_sessions() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        registry.upsert_device("node-a".to_string(), "A".to_string(), caps(&["teale/auto"]));
+
+        let (waiter_tx, waiter_rx) = oneshot::channel();
+        let ready_waiters = Arc::new(Mutex::new(HashMap::from([(
+            "session-open".to_string(),
+            ReadyWaiter {
+                target_node_id: "node-a".to_string(),
+                tx: waiter_tx,
+            },
+        )])));
+
+        let (chunks_tx, mut chunks_rx) = mpsc::channel(8);
+        let sessions = Arc::new(DashMap::new());
+        sessions.insert(
+            "session-active".to_string(),
+            PendingSession {
+                request_id: "req-1".to_string(),
+                device_node_id: "node-a".to_string(),
+                session_id: "session-active".to_string(),
+                chunks_tx,
+            },
+        );
+
+        let (outbox_tx, _outbox_rx) = mpsc::unbounded_channel();
+        let mut sent_discover_after_ack = false;
+        handle_incoming(
+            IncomingRelayMessage::Error(teale_protocol::RelayErrorPayload {
+                code: "peer_not_found".to_string(),
+                message: "Peer node-a is not connected".to_string(),
+            }),
+            &registry,
+            &sessions,
+            &ready_waiters,
+            60,
+            &outbox_tx,
+            "gateway-node",
+            &mut sent_discover_after_ack,
+        )
+        .await;
+
+        let waiter_err = waiter_rx.await.expect("waiter should resolve");
+        assert!(waiter_err.is_err());
+        match chunks_rx.recv().await {
+            Some(SessionEvent::Disconnect(reason)) => {
+                assert!(reason.contains("peer not connected: node-a"));
+            }
+            other => panic!("expected disconnect, got {:?}", other),
+        }
+        assert!(ready_waiters.lock().is_empty());
+        assert!(sessions.is_empty());
+        let dev = registry
+            .snapshot_devices()
+            .into_iter()
+            .find(|d| d.node_id == "node-a")
+            .expect("device still tracked");
+        assert!(dev.is_quarantined());
     }
 }
 

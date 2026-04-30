@@ -13,6 +13,18 @@
 //! scheduler from over-selecting the fastest-prior device under rapid
 //! dispatch, where the ≥10s-stale heartbeat queue reads 0 for every
 //! node regardless of how many requests the gateway just sent.
+//!
+//! Selection policy:
+//!   1. Least in-flight still wins first.
+//!   2. Among tied least-loaded devices, prefer already-loaded weights.
+//!   3. Among the remaining ties, drop clear laggards whose score is far
+//!      below the best tied score, then randomize inside that "fast lane".
+//!
+//! This preserves spread under steady load, but avoids treating a known-fast
+//! node and a badly underperforming node as equivalent just because both
+//! currently report `in_flight = 0`.
+
+const FAST_LANE_SCORE_RATIO: f64 = 0.8;
 
 use crate::config::SchedulerConfig;
 use crate::registry::{DeviceState, Eligibility, Registry};
@@ -92,9 +104,8 @@ impl Scheduler {
             return None;
         }
 
-        // Least in-flight wins; score is informational only (we no longer
-        // use it to tiebreak, since the TPS-prior delta dominated the small
-        // headroom penalty and killed spread at low RPS).
+        // Least in-flight wins first so we still spread work as concurrency
+        // rises, but inside a tie we no longer treat every node as equal.
         let min_inflight = viable.iter().map(|(n, _, _, _)| *n).min()?;
         // Among the tied set, prefer loaded over swappable — pulling weights
         // off disk is a multi-second hit, whereas random-picking a swap device
@@ -106,17 +117,28 @@ impl Scheduler {
         let tied: Vec<_> = viable
             .into_iter()
             .filter(|(n, loaded, _, _)| *n == min_inflight && (!any_loaded || *loaded))
-            .map(|(_, _, _, d)| d)
             .collect();
 
         if tied.len() == 1 {
-            return Some(tied[0]);
+            return Some(tied[0].3);
         }
-        // Randomize among equivalent picks so back-to-back requests at
-        // steady state fan out across eligible devices.
+
+        let best_score = tied
+            .iter()
+            .map(|(_, _, score, _)| *score)
+            .fold(0.0, f64::max);
+        let cutoff = best_score * FAST_LANE_SCORE_RATIO;
+        let fast_lane: Vec<_> = tied
+            .into_iter()
+            .filter(|(_, _, score, _)| *score >= cutoff)
+            .collect();
+
+        // Randomize only among "near-best" tied devices so back-to-back
+        // requests still fan out, but obviously slower nodes do not drag
+        // down p95 TTFT on the fast lane.
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
-        tied.choose(&mut rng).copied()
+        fast_lane.choose(&mut rng).map(|(_, _, _, d)| *d)
     }
 
     fn score(&self, d: &DeviceState, loaded: bool, in_flight: u32) -> f64 {

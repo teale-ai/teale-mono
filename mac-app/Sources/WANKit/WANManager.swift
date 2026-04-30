@@ -145,6 +145,8 @@ public final class WANManager: @unchecked Sendable {
     public private(set) var isEnabled: Bool = false
     /// Diagnostic log from the last enable() call
     public private(set) var enableDiagnostics: [String] = []
+    private var lastPublicEndpoint: NATMapping?
+    private var lastNATType: NATType = .unknown
 
     // Configuration
     private var config: WANConfig?
@@ -211,7 +213,9 @@ public final class WANManager: @unchecked Sendable {
         )
 
         // Mark as enabled early so the UI updates
-        isEnabled = true
+        await MainActor.run {
+            self.isEnabled = true
+        }
         var diag: [String] = []
 
         wanLog("Node ID: \(config.identity.nodeID)")
@@ -299,13 +303,17 @@ public final class WANManager: @unchecked Sendable {
         startHeartbeatLoop()
         startHealthCheckLoop()
 
-        self.enableDiagnostics = diag
+        await MainActor.run {
+            self.enableDiagnostics = diag
+        }
         updateState(mapping: mapping, natType: natType)
     }
 
     public func disable() async {
         guard isEnabled else { return }
-        isEnabled = false
+        await MainActor.run {
+            self.isEnabled = false
+        }
 
         // Cancel all tasks
         heartbeatTask?.cancel()
@@ -378,7 +386,7 @@ public final class WANManager: @unchecked Sendable {
             throw error
         }
 
-        updateState(mapping: state.publicEndpoint, natType: state.natType)
+        updateState()
     }
 
     /// Disconnect from a WAN peer
@@ -386,7 +394,7 @@ public final class WANManager: @unchecked Sendable {
         if let peer = connectedPeers.removeValue(forKey: nodeID) {
             await peer.connection.cancel()
         }
-        updateState(mapping: state.publicEndpoint, natType: state.natType)
+        updateState()
     }
 
     /// Connect to a discovered peer by node ID.
@@ -509,7 +517,7 @@ public final class WANManager: @unchecked Sendable {
         let capabilities = currentCapabilities()
         try await discoveryService?.updateCapabilities(capabilities)
         try await discoveryService?.refresh()
-        updateState(mapping: state.publicEndpoint, natType: state.natType)
+        updateState()
     }
 
     /// Update the relay/discovery view of which models this node currently has loaded.
@@ -538,7 +546,7 @@ public final class WANManager: @unchecked Sendable {
             guard let self else { return }
             let nodeID = peer.peerInfo.nodeID
             self.connectedPeers.removeValue(forKey: nodeID)
-            self.updateState(mapping: self.state.publicEndpoint, natType: self.state.natType)
+            self.updateState()
 
             // Try to reconnect if WAN is still enabled
             guard self.isEnabled else { return }
@@ -604,7 +612,7 @@ public final class WANManager: @unchecked Sendable {
                 timestamp: Date()
             )
             try? await peer.connection.send(.heartbeatAck(ack))
-            updateState(mapping: state.publicEndpoint, natType: state.natType)
+            updateState()
 
         case .heartbeatAck:
             connectedPeers[peer.peerInfo.nodeID]?.lastHeartbeat = Date()
@@ -650,7 +658,7 @@ public final class WANManager: @unchecked Sendable {
                     connectedPeers[peer.nodeID]?.peerInfo.capabilities.isAvailable = peer.capabilities.isAvailable
                     connectedPeers[peer.nodeID]?.peerInfo.wgPublicKey = peer.wgPublicKey
                     connectedPeers[peer.nodeID]?.peerInfo.organizationID = peer.organizationID
-                    updateState(mapping: state.publicEndpoint, natType: state.natType)
+                    updateState()
                 } else {
                     wanLog("  -> skip: already connected (heartbeat \(Int(staleness))s ago)")
                 }
@@ -858,7 +866,7 @@ public final class WANManager: @unchecked Sendable {
         )
         connectedPeers[peerInfo.nodeID] = connected
         startListening(to: connected)
-        updateState(mapping: state.publicEndpoint, natType: state.natType)
+        updateState()
     }
 
     // MARK: - Heartbeat Loop
@@ -938,7 +946,7 @@ public final class WANManager: @unchecked Sendable {
                 }
 
                 if !disconnected.isEmpty {
-                    self.updateState(mapping: self.state.publicEndpoint, natType: self.state.natType)
+                    self.updateState()
                 }
 
                 // Prune stale discovered peers
@@ -950,25 +958,21 @@ public final class WANManager: @unchecked Sendable {
     // MARK: - State Updates
 
     private func updateState() {
-        updateState(mapping: state.publicEndpoint, natType: state.natType)
+        updateState(mapping: lastPublicEndpoint, natType: lastNATType)
     }
 
     private func updateState(mapping: NATMapping?, natType: NATType) {
+        lastPublicEndpoint = mapping
+        lastNATType = natType
         let summaries = connectedPeerSummaries
         let connectedPeerIDs = Set(summaries.map(\.id))
+        let enabled = isEnabled
+        let diagnostics = enableDiagnostics
 
-        state = WANState(
-            isEnabled: isEnabled,
-            connectedPeers: summaries,
-            discoveredPeers: [],
-            relayStatus: .disconnected,  // Updated async below
-            publicEndpoint: mapping,
-            natType: natType,
-            discoveredPeerCount: 0,  // Updated async below
-            diagnostics: enableDiagnostics
-        )
-
-        // Update relay status and discovered count asynchronously
+        // All @Observable state mutation must be serialized onto the main actor.
+        // WAN callbacks arrive from background cooperative tasks and Network
+        // queues; mutating `state` directly from there causes Observation/
+        // refcount crashes while WANPeerInfo arrays are being replaced.
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             let relayStatus = await self.relayClient?.relayStatus ?? .disconnected
@@ -978,9 +982,16 @@ public final class WANManager: @unchecked Sendable {
                 .sorted { lhs, rhs in
                     lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
                 }
-            self.state.relayStatus = relayStatus
-            self.state.discoveredPeers = discoveredPeers
-            self.state.discoveredPeerCount = allDiscoveredPeers.count
+            self.state = WANState(
+                isEnabled: enabled,
+                connectedPeers: summaries,
+                discoveredPeers: discoveredPeers,
+                relayStatus: relayStatus,
+                publicEndpoint: mapping,
+                natType: natType,
+                discoveredPeerCount: allDiscoveredPeers.count,
+                diagnostics: diagnostics
+            )
         }
     }
 
@@ -1003,7 +1014,7 @@ public final class WANManager: @unchecked Sendable {
     }
 
     private func refreshStateSnapshot() {
-        updateState(mapping: state.publicEndpoint, natType: state.natType)
+        updateState()
     }
 
     // MARK: - Diagnostics

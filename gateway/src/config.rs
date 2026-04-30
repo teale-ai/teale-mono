@@ -83,6 +83,8 @@ pub struct ReliabilityConfig {
     pub request_timeout_seconds: u64,
     #[serde(default = "default_ttft_deadline")]
     pub ttft_deadline_seconds: u64,
+    #[serde(default = "default_small_ttft_deadline")]
+    pub small_ttft_deadline_seconds: u64,
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
     #[serde(default = "default_heartbeat_stale")]
@@ -98,6 +100,7 @@ impl Default for ReliabilityConfig {
         Self {
             request_timeout_seconds: default_request_timeout(),
             ttft_deadline_seconds: default_ttft_deadline(),
+            small_ttft_deadline_seconds: default_small_ttft_deadline(),
             max_retries: default_max_retries(),
             heartbeat_stale_seconds: default_heartbeat_stale(),
             quarantine_seconds: default_quarantine(),
@@ -161,6 +164,9 @@ fn default_request_timeout() -> u64 {
 }
 fn default_ttft_deadline() -> u64 {
     10
+}
+fn default_small_ttft_deadline() -> u64 {
+    8
 }
 fn default_max_retries() -> u32 {
     1
