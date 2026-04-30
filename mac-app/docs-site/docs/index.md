@@ -5,7 +5,7 @@ title: Teale Docs
 
 # Teale
 
-Teale ships today as desktop apps for macOS and Windows. These docs only cover the functionality that is in the currently released apps.
+Teale ships today as desktop apps for macOS, Windows, and Linux. These docs only cover the functionality that is in the currently released apps.
 
 ---
 
@@ -22,6 +22,7 @@ Teale ships today as desktop apps for macOS and Windows. These docs only cover t
 
 - [Install on Mac](getting-started/install-mac.md)
 - [Install on Windows](getting-started/install-windows.md)
+- [Install on Linux](getting-started/install-linux.md)
 
 ## Start here
 

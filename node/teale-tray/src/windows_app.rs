@@ -18,10 +18,17 @@ use wry::{
     WebViewBuilder,
 };
 
-const INDEX_HTML: &str = include_str!("../assets/index.html");
-const APP_CSS: &[u8] = include_bytes!("../assets/app.css");
-const APP_JS: &[u8] = include_bytes!("../assets/app.js");
+const INDEX_HTML: &str = include_str!(
+    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/index.html"
+);
+const APP_CSS: &[u8] = include_bytes!(
+    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/app.css"
+);
+const APP_JS: &[u8] = include_bytes!(
+    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/app.js"
+);
 const IPC_PORT: u16 = 11438;
+const REMOTE_DESKTOP_URL: &str = "https://teale.com/docs/desktop-companion/index.html";
 static PENDING_OAUTH_CALLBACK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -119,8 +126,10 @@ pub fn run() -> anyhow::Result<()> {
         .build(&event_loop)
         .context("build Teale companion window")?;
 
+    let initial_url = initial_desktop_url();
     let webview = WebViewBuilder::new(&window)
         .with_custom_protocol("teale".into(), protocol_handler)
+        .with_initialization_script(&initialization_script())
         .with_ipc_handler(|payload| {
             if let Ok(message) = serde_json::from_str::<NativeMessage>(payload.body()) {
                 if message.kind == "openExternal" {
@@ -134,7 +143,7 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
         })
-        .with_url("teale://localhost")
+        .with_url(&initial_url)
         .build()
         .context("build Teale companion webview")?;
 
@@ -266,6 +275,13 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
 
     Response::builder()
         .header(CONTENT_TYPE, mime)
+        .header("Access-Control-Allow-Origin", "*")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Accept, Authorization",
+        )
+        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        .header("Access-Control-Allow-Private-Network", "true")
         .status(status)
         .body(Cow::Owned(body))
         .expect("custom protocol response")
@@ -411,6 +427,41 @@ fn post(url: &str) {
     let _ = ureq::post(url).timeout(Duration::from_secs(3)).call();
 }
 
+fn initialization_script() -> String {
+    let payload = serde_json::json!({
+        "apiBase": "http://127.0.0.1:11437",
+        "platform": "windows",
+        "shellMode": true,
+        "deviceLabel": "Windows device",
+        "chatTransport": "app-proxy",
+        "routes": {
+            "authPending": "teale://localhost/auth/pending",
+            "bundledApp": "teale://localhost/"
+        }
+    });
+    format!("window.__TEALE_DESKTOP_CONFIG__ = {payload};")
+}
+
+fn initial_desktop_url() -> String {
+    let remote_url = std::env::var("TEALE_DESKTOP_WEB_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| REMOTE_DESKTOP_URL.to_string());
+    if remote_desktop_available(&remote_url) {
+        remote_url
+    } else {
+        "teale://localhost".to_string()
+    }
+}
+
+fn remote_desktop_available(url: &str) -> bool {
+    ureq::get(url)
+        .timeout(Duration::from_secs(2))
+        .call()
+        .map(|response| response.status() >= 200 && response.status() < 300)
+        .unwrap_or(false)
+}
+
 fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
     let Some(snapshot) = snapshot else {
         return (
@@ -427,6 +478,7 @@ fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
 
     let headline = match snapshot.service_state.as_str() {
         "serving" => "Teale — Serving",
+        "offline" => "Teale — Offline",
         "downloading" => "Teale — Downloading",
         "loading" => "Teale — Loading",
         "paused_user" => "Teale — Paused",
@@ -445,6 +497,12 @@ fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
             ),
             _ => transfer.model_id.clone(),
         }
+    } else if snapshot.service_state == "offline" {
+        snapshot
+            .state_reason
+            .clone()
+            .or_else(|| snapshot.loaded_model_id.clone())
+            .unwrap_or_else(|| "Open Teale to manage supply.".to_string())
     } else if let Some(model_id) = &snapshot.loaded_model_id {
         model_id.clone()
     } else {

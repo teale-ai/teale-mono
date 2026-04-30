@@ -19,6 +19,7 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.12"),
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.0.0"),
         .package(url: "https://github.com/supabase/supabase-swift", from: "2.0.0"),
         .package(url: "https://github.com/p2p-org/solana-swift", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -187,6 +188,7 @@ let package = Package(
                 "SharedTypes",
                 "InferenceEngine",
                 "PrivacyFilterKit",
+                .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "Hummingbird", package: "hummingbird"),
             ]
         ),
@@ -212,6 +214,7 @@ let package = Package(
                 "AuthKit",
                 "ChatKit",
                 "CompilerKit",
+                "GatewayKit",
             ]
         ),
 
@@ -251,7 +254,10 @@ let package = Package(
                 "GatewayKit",
             ],
             path: "Sources/InferencePoolApp",
-            exclude: ["Info.plist", "InferencePool.entitlements"]
+            exclude: ["Info.plist", "InferencePool.entitlements"],
+            resources: [
+                .process("Resources"),
+            ]
         ),
 
         // MARK: - TealeCompanion (iOS)
@@ -345,6 +351,10 @@ let package = Package(
         .testTarget(
             name: "TealeSDKTests",
             dependencies: ["TealeSDK"]
+        ),
+        .testTarget(
+            name: "TealeTests",
+            dependencies: ["Teale", "AppCore", "GatewayKit", "WANKit"]
         ),
     ]
 )

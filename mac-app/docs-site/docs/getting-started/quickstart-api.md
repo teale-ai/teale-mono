@@ -8,6 +8,7 @@ Use the released apps as OpenAI-compatible local clients and as a gateway entry 
 
 - [Install on Mac](install-mac.md)
 - [Install on Windows](install-windows.md)
+- [Install on Linux](install-linux.md)
 
 Teale must be running with a local model loaded if you want local inference.
 
@@ -15,6 +16,7 @@ Teale must be running with a local model loaded if you want local inference.
 
 - macOS app: `http://127.0.0.1:11435/v1`
 - Windows local model server: use the **Demand** tab or `GET /v1/app` on `http://127.0.0.1:11437`
+- Linux local model server: use the **Demand** tab or `GET /v1/app` on `http://127.0.0.1:11437`
 
 ## Local curl
 
@@ -32,11 +34,11 @@ curl http://127.0.0.1:11435/v1/chat/completions \
 
 ## Network curl
 
-Copy the network bearer from **Demand > teale network** if you want an external client to hit the gateway directly. The app uses this bearer automatically for in-app network chat, so you only need to copy it for your own scripts or tools.
+For direct demand clients, create a revocable API key from **Account > direct gateway api keys** and use that key against the gateway. The app still uses its device bearer automatically for in-app network chat, but that device token rotates and is not the recommended long-lived credential for external scripts or tools.
 
 ```bash
 curl https://gateway.teale.com/v1/chat/completions \
-  -H "Authorization: Bearer $TEALE_BEARER" \
+  -H "Authorization: Bearer $TEALE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "moonshotai/kimi-k2.6",
@@ -76,7 +78,7 @@ To hit the gateway directly instead of your local node:
 ```python
 gateway = OpenAI(
     base_url="https://gateway.teale.com/v1",
-    api_key="<copied bearer token>",
+    api_key="<account api key>",
 )
 
 response = gateway.chat.completions.create(
@@ -89,17 +91,18 @@ response = gateway.chat.completions.create(
 
 - macOS app state and demand metadata: `GET http://127.0.0.1:11435/v1/app`
 - Windows companion state and demand metadata: `GET http://127.0.0.1:11437/v1/app`
+- Linux companion state and demand metadata: `GET http://127.0.0.1:11437/v1/app`
 
 The demand snapshot includes:
 
 - `local_base_url`
 - `local_model_id`
 - `network_base_url`
-- `network_bearer_token`
+- `network_bearer_token` for the app's rotating device-bearer transport, not for persistent external demand clients
 
 ## What is documented here
 
-The released docs only cover the surfaces that ship in the macOS and Windows apps:
+The released docs only cover the surfaces that ship in the macOS, Windows, and Linux apps:
 
 - `GET /health`
 - `GET /v1/models`

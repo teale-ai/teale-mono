@@ -38,6 +38,9 @@ extension Wallet {
             print("  Balance:       $\(String(format: "%.6f", w.balance)) USDC")
             print("  Total earned:  $\(String(format: "%.6f", w.totalEarned)) USDC")
             print("  Total spent:   $\(String(format: "%.6f", w.totalSpent)) USDC")
+            if let error = w.error, !error.isEmpty {
+                print("  Gateway:       \(error)")
+            }
         }
     }
 
@@ -74,9 +77,9 @@ extension Wallet {
             formatter.unitsStyle = .abbreviated
 
             for tx in txns {
-                let sign = ["earned", "bonus", "transfer"].contains(where: { tx.type.contains($0) }) ? "+" : "-"
+                let sign = tx.amount >= 0 ? "+" : "-"
                 let age = formatter.localizedString(for: tx.timestamp, relativeTo: Date())
-                print("  \(sign)$\(String(format: "%.6f", tx.amount))  \(tx.type)  \(age)")
+                print("  \(sign)$\(String(format: "%.6f", abs(tx.amount)))  \(tx.type)  \(age)")
                 print("    \(tx.description)")
             }
         }

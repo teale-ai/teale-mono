@@ -1,6 +1,6 @@
 //! Bearer-token auth middleware.
 //!
-//! Two token paths are supported in parallel:
+//! Three token paths are supported in parallel:
 //!
 //! 1. **Static tokens** from env (`GATEWAY_TOKENS`), loaded at startup. Format
 //!    is comma-separated `token:scope` pairs, e.g.
@@ -12,6 +12,10 @@
 //!    misses. Valid device tokens are also bound to a `deviceID` which we
 //!    stash in a request extension so downstream handlers can attribute
 //!    spend / earn.
+//!
+//! 3. **Account API keys** minted for linked human accounts and persisted in
+//!    SQLite. These authorize direct demand traffic without requiring a Teale
+//!    device bearer on every request.
 //!
 //! On success, the middleware attaches an `AuthPrincipal` request extension.
 
@@ -48,6 +52,11 @@ pub enum PrincipalKind {
     Static { scope: String },
     /// Device-bound token issued by /v1/auth/device/exchange
     Device { device_id: String },
+    /// Human-account-scoped API key for direct demand traffic.
+    Account {
+        account_user_id: String,
+        key_id: String,
+    },
     /// Temporary share key minted by a device for community previews.
     /// Spending debits the key's funded pool and ticks the key's
     /// `consumed_credits`; exhaustion/expiry/revoke is enforced in middleware.
@@ -63,6 +72,15 @@ impl AuthPrincipal {
     pub fn device_id(&self) -> Option<&str> {
         match &self.kind {
             PrincipalKind::Device { device_id } => Some(device_id),
+            _ => None,
+        }
+    }
+
+    pub fn account_user_id(&self) -> Option<&str> {
+        match &self.kind {
+            PrincipalKind::Account {
+                account_user_id, ..
+            } => Some(account_user_id),
             _ => None,
         }
     }
@@ -150,7 +168,21 @@ pub async fn require_bearer(
         }
     }
 
-    // 2b) Share-key match — temporary scoped bearers minted by a device.
+    // 2b) Account API key match (via DB). These are human-account-scoped,
+    // revocable direct-demand credentials.
+    if let Some(pool) = state.db.as_ref() {
+        if let Ok(Some(resolved)) = ledger::resolve_account_api_key(pool, token) {
+            req.extensions_mut().insert(AuthPrincipal {
+                kind: PrincipalKind::Account {
+                    account_user_id: resolved.account_user_id,
+                    key_id: resolved.key_id,
+                },
+            });
+            return Ok(next.run(req).await);
+        }
+    }
+
+    // 2c) Share-key match — temporary scoped bearers minted by a device.
     //     Rejection reasons (expired/revoked/exhausted) short-circuit here
     //     with the right status; a miss falls through.
     if let Some(pool) = state.db.as_ref() {

@@ -19,10 +19,15 @@ public final class GatewayIdentity: @unchecked Sendable {
     public var deviceID: String { hexLower(privateKey.publicKey.rawRepresentation) }
 
     public var publicKey: Data { privateKey.publicKey.rawRepresentation }
+    public var privateKeyRawRepresentation: Data { privateKey.rawRepresentation }
 
     /// Signs arbitrary bytes and returns the raw 64-byte Ed25519 signature.
     public func sign(_ bytes: Data) -> Data {
         (try? privateKey.signature(for: bytes)) ?? Data()
+    }
+
+    public init(seedData: Data) throws {
+        self.privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedData)
     }
 
     private init() {

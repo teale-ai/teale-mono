@@ -1,6 +1,6 @@
 # App Overview
 
-The released macOS and Windows apps share the same top-level structure:
+The released macOS, Windows, and Linux apps share the same top-level structure:
 
 - `teale`
 - `supply`
@@ -59,9 +59,9 @@ Demand exposes both local and network inference:
 
 - **local inference** shows the local base URL and a ready-to-copy curl request
 - **teale network models** shows live loaded network models with context, device count, TTFT, TPS, and pricing
-- **teale network** shows the gateway base URL, bearer token, and a ready-to-copy network curl request
+- **teale network** shows the gateway base URL, the app's short-lived device bearer, and a ready-to-copy network curl request
 
-Inside the app, Teale uses the device bearer automatically for network chat.
+Inside the app, Teale uses the device bearer automatically for network chat. For persistent external demand clients, create a revocable API key from **Account > direct gateway api keys**.
 
 ## wallet
 
@@ -86,4 +86,4 @@ After sign-in, the released apps show:
 - account identifiers
 - linked devices
 
-The Windows app also exposes account-wallet controls and linked-device actions in this tab.
+The Windows and Linux desktop companions also expose account-wallet controls, direct gateway API-key management, and linked-device actions in this tab.

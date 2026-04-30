@@ -12,7 +12,7 @@ jobs:
       run:
         working-directory: mac-app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -46,9 +46,11 @@ jobs:
           API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
         run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "$API_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8
-          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8
+          api_key_dir="$HOME/.appstoreconnect/private_keys"
+          api_key_path="$api_key_dir/AuthKey_${API_KEY_ID}.p8"
+          mkdir -p "$api_key_dir"
+          printf '%s\n' "$API_KEY_P8" > "$api_key_path"
+          chmod 600 "$api_key_path"
 
       - name: Archive, export, and upload to TestFlight
         env:

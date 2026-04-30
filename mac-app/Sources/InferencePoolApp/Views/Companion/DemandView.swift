@@ -86,10 +86,9 @@ struct CompanionDemandView: View {
     private var gatewayBase: String { companionGatewayAPIBaseURL(for: appState.gatewayFallbackURL).absoluteString }
 
     private var networkCurlSnippet: String {
-        let token = gatewayState.bearerToken.isEmpty ? "$GATEWAY_TOKEN" : gatewayState.bearerToken
         return """
         curl \(gatewayBase)/chat/completions \\
-          -H "Authorization: Bearer \(token)" \\
+          -H "Authorization: Bearer $TEALE_API_KEY" \\
           -H "Content-Type: application/json" \\
           -d '{
             "model": "\(gatewayState.selectedNetworkModelID)",
@@ -108,7 +107,7 @@ struct CompanionDemandView: View {
             TealeCodeBlock(text: networkCurlSnippet)
                 .padding(.top, 10)
             HStack(spacing: 10) {
-                TealeActionButton(title: appState.companionText("demand.copyBearer", fallback: "Copy bearer token")) {
+                TealeActionButton(title: appState.companionText("demand.copyBearer", fallback: "Copy device bearer")) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(gatewayState.bearerToken, forType: .string)
                 }
@@ -123,7 +122,7 @@ struct CompanionDemandView: View {
 
     private var bearerRow: some View {
         HStack(alignment: .top, spacing: 20) {
-            Text(appState.companionText("demand.bearer", fallback: "Bearer").uppercased())
+            Text(appState.companionText("demand.bearer", fallback: "Device bearer").uppercased())
                 .font(TealeDesign.monoSmall)
                 .tracking(0.9)
                 .foregroundStyle(TealeDesign.muted)
@@ -162,7 +161,7 @@ struct CompanionDemandView: View {
         }
         return appState.companionText(
             "demand.requestsSpend",
-            fallback: "Your requests spend {{unit}} using this device's bearer automatically.",
+            fallback: "This rotating device bearer is for Teale app transport and debugging. Use a human-account API key from Account for persistent direct gateway clients.",
             replacements: ["unit": appState.companionDisplaySpendUnitLabel]
         )
     }

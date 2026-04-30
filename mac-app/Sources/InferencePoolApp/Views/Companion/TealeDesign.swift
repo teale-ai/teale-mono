@@ -1,7 +1,7 @@
 import SwiftUI
 
 // Windows-companion visual language ported to SwiftUI.
-// Keep color + typography values in lockstep with node/teale-tray/assets/app.css.
+// Keep color + typography values in lockstep with the shared desktop web app CSS.
 
 enum TealeDesign {
     static let bgStart = Color(red: 0x06/255, green: 0x25/255, blue: 0x28/255)

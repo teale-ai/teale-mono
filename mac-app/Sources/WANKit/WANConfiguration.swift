@@ -115,9 +115,9 @@ public struct WANNodeIdentity: Sendable {
 
     // MARK: - File-based persistence (~/Library/Application Support/Teale/)
 
-    private static let identityFileName = "wan-identity.key"
+    public static let identityFileName = "wan-identity.key"
 
-    private static var identityFileURL: URL {
+    public static var identityFileURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("Teale", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -136,7 +136,10 @@ public struct WANNodeIdentity: Sendable {
 
     /// Load the private key from file
     public static func loadFromFile() throws -> WANNodeIdentity {
-        let url = identityFileURL
+        try loadFromFile(at: identityFileURL)
+    }
+
+    public static func loadFromFile(at url: URL) throws -> WANNodeIdentity {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw WANError.identityLoadFailed
         }
@@ -146,8 +149,15 @@ public struct WANNodeIdentity: Sendable {
 
     /// Save the private key to file (owner-only permissions)
     public static func saveToFile(_ identity: WANNodeIdentity) throws {
+        try saveToFile(identity, at: identityFileURL)
+    }
+
+    public static func saveToFile(_ identity: WANNodeIdentity, at url: URL) throws {
         let data = identity.privateKey.rawRepresentation
-        let url = identityFileURL
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try data.write(to: url, options: [.atomic])
         // Restrict to owner read/write (0600)
         try FileManager.default.setAttributes(

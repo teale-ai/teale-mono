@@ -12,6 +12,7 @@ struct CompanionWalletView: View {
     @State private var gatewayBalance: GatewayWalletBalanceSnapshot?
     @State private var gatewayTransactions: [GatewayWalletTransaction] = []
     @State private var gatewayWalletLoaded = false
+    @State private var gatewayWalletError: String?
     @State private var isSending = false
     @State private var sendStatus = ""
     @State private var sendStatusIsError = false
@@ -23,6 +24,9 @@ struct CompanionWalletView: View {
             balancesSection
             sendSection
             ledgerSection
+            if !appState.wallet.recentTransactions.isEmpty {
+                localActivitySection
+            }
         }
         .task(id: deviceID) {
             await refreshGatewayWallet()
@@ -39,7 +43,7 @@ struct CompanionWalletView: View {
                 TealeStatRow(
                     label: appState.companionDisplayUnitTitle,
                     value: appState.companionDisplayAmountString(credits: displayedBalanceCredits),
-                    note: appState.companionText("wallet.balanceNote", fallback: "Balance goes up while supply is on.")
+                    note: appState.companionSupplyIdentityStatus.walletBalanceNote
                 )
                 TealeStatRow(
                     label: appState.companionText("wallet.usdc", fallback: "USDC"),
@@ -48,7 +52,7 @@ struct CompanionWalletView: View {
                 TealeStatRow(
                     label: appState.companionText("wallet.session", fallback: "Session"),
                     value: "\(appState.totalTokensGenerated) tokens served",
-                    note: appState.companionText("wallet.sessionNote", fallback: "Availability earnings begin once a compatible model is loaded and serving.")
+                    note: appState.companionSupplyIdentityStatus.sessionNote
                 )
                 TealeStatRow(
                     label: appState.companionText("wallet.lifetimeEarned", fallback: "Lifetime earned"),
@@ -66,6 +70,16 @@ struct CompanionWalletView: View {
                     label: appState.companionText("common.state", fallback: "State"),
                     value: appState.companionState.displayText,
                     valueColor: appState.companionState.chipColor
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.gatewayEligibility", fallback: "Gateway eligibility"),
+                    value: appState.companionSupplyIdentityStatus.eligibilityLabel,
+                    note: appState.companionSupplyIdentityStatus.summary
+                )
+                TealeStatRow(
+                    label: appState.companionText("wallet.relay", fallback: "Relay"),
+                    value: appState.companionSupplyIdentityStatus.relayLabel,
+                    note: "WAN node \(companionTruncatedIdentifier(appState.companionSupplyIdentityStatus.wanNodeID)) · identity \(appState.companionSupplyIdentityStatus.identityLabel)"
                 )
                 deviceIDRow
             }
@@ -155,7 +169,7 @@ struct CompanionWalletView: View {
                     Spacer()
                     TealeActionButton(
                         title: appState.companionText("wallet.exportCSV", fallback: "export csv"),
-                        disabled: displayedTransactions.isEmpty
+                        disabled: !gatewayWalletLoaded || displayedTransactions.isEmpty
                     ) {
                         exportLedgerCSV()
                     }
@@ -167,7 +181,15 @@ struct CompanionWalletView: View {
                         .foregroundStyle(TealeDesign.muted)
                 }
 
-                if displayedTransactions.isEmpty {
+                if let gatewayWalletError, !gatewayWalletError.isEmpty {
+                    Text(gatewayWalletError)
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(TealeDesign.fail)
+                } else if !gatewayWalletLoaded {
+                    Text(appState.companionText("wallet.loadingGateway", fallback: "Loading the gateway-backed device wallet..."))
+                        .font(TealeDesign.monoSmall)
+                        .foregroundStyle(TealeDesign.muted)
+                } else if displayedTransactions.isEmpty {
                     Text(appState.companionText("wallet.noTransactions", fallback: "No transactions yet. Supply a model to start earning."))
                         .font(TealeDesign.monoSmall)
                         .foregroundStyle(TealeDesign.muted)
@@ -180,6 +202,25 @@ struct CompanionWalletView: View {
                                 LedgerRow(transaction: localTransaction)
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    private var localActivitySection: some View {
+        TealeSection(prompt: appState.companionText("wallet.localActivity", fallback: "local / lan activity")) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(appState.companionText(
+                    "wallet.localActivityNote",
+                    fallback: "These are device-local ledger events such as LAN transfers and local adjustments. They are shown separately from the gateway-backed Teale device wallet above."
+                ))
+                .font(TealeDesign.monoSmall)
+                .foregroundStyle(TealeDesign.muted)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(appState.wallet.recentTransactions.prefix(10)) { transaction in
+                        LedgerRow(transaction: transaction)
                     }
                 }
             }
@@ -205,15 +246,15 @@ struct CompanionWalletView: View {
     }
 
     private var displayedBalanceCredits: Int64 {
-        gatewayBalance?.balanceCredits ?? Int64((appState.wallet.balance.value * 1_000_000).rounded())
+        gatewayBalance?.balanceCredits ?? 0
     }
 
     private var displayedEarnedCredits: Int64 {
-        gatewayBalance?.totalEarnedCredits ?? Int64((appState.wallet.totalEarned.value * 1_000_000).rounded())
+        gatewayBalance?.totalEarnedCredits ?? 0
     }
 
     private var displayedSpentCredits: Int64 {
-        gatewayBalance?.totalSpentCredits ?? Int64((appState.wallet.totalSpent.value * 1_000_000).rounded())
+        gatewayBalance?.totalSpentCredits ?? 0
     }
 
     private var displayedUSDCBalance: String {
@@ -221,10 +262,7 @@ struct CompanionWalletView: View {
     }
 
     private var displayedTransactions: [WalletDisplayTransaction] {
-        if gatewayWalletLoaded {
-            return gatewayTransactions.prefix(25).map { WalletDisplayTransaction(gateway: $0) }
-        }
-        return appState.wallet.recentTransactions.prefix(25).map { WalletDisplayTransaction(local: $0) }
+        gatewayTransactions.prefix(25).map { WalletDisplayTransaction(gateway: $0) }
     }
 
     private var truncatedDeviceID: String {
@@ -395,6 +433,7 @@ struct CompanionWalletView: View {
             }
             gatewayBalance = balance
             gatewayWalletLoaded = true
+            gatewayWalletError = nil
 
             do {
                 gatewayTransactions = try await gatewayWalletTransactions(
@@ -405,9 +444,10 @@ struct CompanionWalletView: View {
                 gatewayTransactions = []
             }
         } catch {
-            if !gatewayWalletLoaded {
-                gatewayWalletLoaded = false
-            }
+            gatewayWalletLoaded = false
+            gatewayBalance = nil
+            gatewayTransactions = []
+            gatewayWalletError = errorMessage(error)
         }
     }
 

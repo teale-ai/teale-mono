@@ -1,4 +1,34 @@
-const API_BASE = "http://127.0.0.1:11437";
+const DESKTOP_CONFIG = window.__TEALE_DESKTOP_CONFIG__ || {};
+const API_BASE = DESKTOP_CONFIG.apiBase || "http://127.0.0.1:11437";
+const ROUTES = {
+  snapshot: "/v1/app",
+  privacyFilterMode: "/v1/app/privacy-filter/mode",
+  chatCompletions: "/v1/app/chat/completions",
+  modelLoad: "/v1/app/models/load",
+  modelDownload: "/v1/app/models/download",
+  modelUnload: "/v1/app/models/unload",
+  authSession: "/v1/app/auth/session",
+  accountSummary: "/v1/app/account",
+  accountApiKeys: "/v1/app/account/api-keys",
+  accountApiKeysRevoke: "/v1/app/account/api-keys/revoke",
+  accountLink: "/v1/app/account/link",
+  accountSweep: "/v1/app/account/sweep",
+  accountSend: "/v1/app/account/send",
+  accountDevicesRemove: "/v1/app/account/devices/remove",
+  networkModels: "/v1/app/network/models",
+  networkStats: "/v1/app/network/stats",
+  walletRefresh: "/v1/app/wallet/refresh",
+  walletSend: "/v1/app/wallet/send",
+  authPending: "teale://localhost/auth/pending",
+  bundledApp: null,
+  localApiKey: null,
+  ...DESKTOP_CONFIG.routes,
+};
+const DESKTOP_PLATFORM = DESKTOP_CONFIG.platform || "windows";
+const CHAT_TRANSPORT = DESKTOP_CONFIG.chatTransport || "app-proxy";
+const DESKTOP_DEVICE_LABEL = DESKTOP_CONFIG.deviceLabel
+  || `${DESKTOP_PLATFORM.charAt(0).toUpperCase()}${DESKTOP_PLATFORM.slice(1)} device`;
+const SHELL_MODE = DESKTOP_CONFIG.shellMode === true;
 
 const els = {
   headerLine: document.getElementById("header-line"),
@@ -112,6 +142,15 @@ const els = {
   accountWalletBalance: document.getElementById("account-wallet-balance"),
   accountWalletUsdc: document.getElementById("account-wallet-usdc"),
   accountWalletNote: document.getElementById("account-wallet-note"),
+  accountApiKeyNote: document.getElementById("account-api-key-note"),
+  accountApiKeyLabel: document.getElementById("account-api-key-label"),
+  accountApiKeyCreate: document.getElementById("account-api-key-create"),
+  accountApiKeyCreatedWrap: document.getElementById("account-api-key-created-wrap"),
+  accountApiKeyCreated: document.getElementById("account-api-key-created"),
+  accountApiKeyCreatedCopy: document.getElementById("account-api-key-created-copy"),
+  accountApiKeysList: document.getElementById("account-api-keys-list"),
+  accountApiKeysEmpty: document.getElementById("account-api-keys-empty"),
+  accountApiKeyStatus: document.getElementById("account-api-key-status"),
   accountIdentities: document.getElementById("account-identities"),
   accountDevices: document.getElementById("account-devices"),
   accountDevicesEmpty: document.getElementById("account-devices-empty"),
@@ -816,9 +855,12 @@ let supabaseClient = null;
 let supabaseAuthKey = null;
 let authSession = null;
 let authUser = null;
+let pendingNativeSession = normalizeNativeSession(DESKTOP_CONFIG.nativeSession || null);
 let authIdentities = [];
 let accountDevices = [];
 let accountSummary = null;
+let accountApiKeys = [];
+let createdAccountApiKeyToken = null;
 let supabaseAccountDevices = [];
 let linkedSupabaseUserId = null;
 let linkedGatewayAccountStateKey = null;
@@ -831,24 +873,130 @@ let networkModels = [];
 let networkModelsFetchedAt = 0;
 let networkStats = null;
 let networkStatsFetchedAt = 0;
+let networkStatsError = null;
 let selectedNetworkModelId = null;
 let demandSort = { key: "devices", dir: "desc" };
 let pendingModelAction = null;
 let walletRefreshInFlight = false;
 let walletSendInFlight = false;
 let accountSendInFlight = false;
+let accountApiKeyCreateInFlight = false;
+let accountApiKeyRevokeInFlight = null;
 let walletSendStatus = "";
 let accountSendStatus = "";
+let accountApiKeyStatus = "";
+let accountApiKeyStatusIsError = false;
 let chatState = loadChatState();
+let lastNativeSyncedSessionKey = null;
 let chatRuntime = {
   inFlight: null,
   interruptedDrafts: {},
   infoMessage: "",
   errorMessage: "",
 };
+let localApiKey = DESKTOP_CONFIG.localApiKey || null;
+let localApiKeyPromise = null;
+let consecutiveSnapshotFailures = 0;
+let bundledFallbackAttempted = false;
+
+function normalizeNativeSession(session) {
+  if (!session?.accessToken || !session?.refreshToken) {
+    return null;
+  }
+  return {
+    accessToken: session.accessToken,
+    refreshToken: session.refreshToken,
+  };
+}
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
+}
+
+async function ensureLocalApiKey() {
+  if (localApiKey || !ROUTES.localApiKey) {
+    return localApiKey;
+  }
+  if (!localApiKeyPromise) {
+    localApiKeyPromise = (async () => {
+      const response = await fetch(ROUTES.localApiKey, { cache: "no-store" }).catch(() => null);
+      if (!response?.ok) {
+        return null;
+      }
+      const payload = await response.json().catch(() => null);
+      localApiKey = payload?.key || null;
+      return localApiKey;
+    })().finally(() => {
+      localApiKeyPromise = null;
+    });
+  }
+  return localApiKeyPromise;
+}
+
+async function applyPendingNativeSessionIfNeeded() {
+  if (!supabaseClient || !pendingNativeSession) {
+    return null;
+  }
+
+  try {
+    const current = await supabaseClient.auth.getSession();
+    if (current?.data?.session) {
+      return current.data.session;
+    }
+  } catch (_error) {}
+
+  try {
+    authTrace("hydrating supabase session from native shell");
+    const { data, error } = await supabaseClient.auth.setSession({
+      access_token: pendingNativeSession.accessToken,
+      refresh_token: pendingNativeSession.refreshToken,
+    });
+    if (error) {
+      authTrace(`native session hydrate failed ${error.message}`);
+      return null;
+    }
+    if (data?.session) {
+      authTrace(`native session hydrate success user=${data.session.user?.id || "none"}`);
+      return data.session;
+    }
+  } catch (error) {
+    authTrace(`native session hydrate threw ${friendlyError(error)}`);
+  }
+  return null;
+}
+
+async function apiFetch(path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  const key = await ensureLocalApiKey();
+  if (key) {
+    headers.set("Authorization", `Bearer ${key}`);
+  }
+  return fetch(apiUrl(path), { ...init, headers });
+}
+
+function postNativeSessionSync(session) {
+  const accessToken = session?.access_token;
+  const refreshToken = session?.refresh_token;
+
+  if (!accessToken || !refreshToken) {
+    if (lastNativeSyncedSessionKey !== "__signed_out__") {
+      postNativeMessage({ type: "authSignOut" });
+      lastNativeSyncedSessionKey = "__signed_out__";
+    }
+    return;
+  }
+
+  const sessionKey = `${accessToken}:${refreshToken}`;
+  if (lastNativeSyncedSessionKey === sessionKey) {
+    return;
+  }
+
+  postNativeMessage({
+    type: "authSession",
+    accessToken,
+    refreshToken,
+  });
+  lastNativeSyncedSessionKey = sessionKey;
 }
 
 function updateDisplayUnitLabels() {
@@ -904,6 +1052,7 @@ function setLanguage(language) {
     renderChat(lastSnapshot);
     renderAuthState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAccountDevices();
   }
 }
@@ -924,6 +1073,7 @@ function setDisplayUnit(nextValue) {
     renderHomeNetworkStats();
     renderAuthState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAccountDevices();
     updateSendControls();
     renderChat(lastSnapshot);
@@ -961,7 +1111,7 @@ function renderPrivacyFilter(snapshot = lastSnapshot) {
 }
 
 async function setPrivacyFilterMode(mode) {
-  const response = await post("/v1/app/privacy-filter/mode", { mode });
+  const response = await post(ROUTES.privacyFilterMode, { mode });
   render(response);
   return response;
 }
@@ -1112,6 +1262,10 @@ function resetAccountAuthState() {
   linkedGatewayAccountStateKey = null;
   accountDevices = [];
   accountSummary = null;
+  accountApiKeys = [];
+  createdAccountApiKeyToken = null;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
   supabaseAccountDevices = [];
   clearAuthErrorState();
   clearPendingOAuthProvider();
@@ -1119,6 +1273,7 @@ function resetAccountAuthState() {
   els.authPhoneInput.value = "";
   els.authPhoneCodeInput.value = "";
   renderAccountWallet();
+  renderAccountApiKeys();
   renderAuthState();
   renderAccountDevices();
   renderHome(lastSnapshot);
@@ -1203,8 +1358,11 @@ function clearPendingOAuthProvider() {
 }
 
 async function syncNativePendingOAuthCallback() {
+  if (!ROUTES.authPending) {
+    return;
+  }
   try {
-    const response = await fetch("teale://localhost/auth/pending", { cache: "no-store" });
+    const response = await fetch(ROUTES.authPending, { cache: "no-store" });
     if (!response.ok) {
       return;
     }
@@ -1391,6 +1549,8 @@ function labelForState(state) {
   switch (state) {
     case "serving":
       return "Serving";
+    case "offline":
+      return "Offline";
     case "downloading":
       return "Downloading";
     case "loading":
@@ -2452,13 +2612,27 @@ function renderChat(snapshot = lastSnapshot) {
 }
 
 async function streamChatCompletion(payload) {
-  const response = await fetch(apiUrl("/v1/app/chat/completions"), {
+  const body = CHAT_TRANSPORT === "openai"
+    ? {
+        model: payload.model,
+        messages: payload.messages,
+        temperature: payload.temperature,
+        max_tokens: payload.max_tokens,
+        stream: payload.stream,
+        stream_options: {
+          include_usage: true,
+          ...(payload.stream_options || {}),
+        },
+      }
+    : payload;
+
+  const response = await apiFetch(ROUTES.chatCompletions, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -2678,14 +2852,15 @@ async function sendChatMessage() {
 
 function renderHomeNetworkStats() {
   if (!networkStats) {
-    els.homeNetworkDevices.textContent = "Loading...";
-    els.homeNetworkRam.textContent = "Loading...";
-    els.homeNetworkModels.textContent = "Loading...";
-    els.homeNetworkTtft.textContent = "Loading...";
-    els.homeNetworkTps.textContent = "Loading...";
-    els.homeNetworkEarned.textContent = "Loading...";
-    els.homeNetworkSpent.textContent = "Loading...";
-    els.homeNetworkUsdc.textContent = "Loading...";
+    const placeholder = networkStatsError ? "Unavailable" : "Loading...";
+    els.homeNetworkDevices.textContent = placeholder;
+    els.homeNetworkRam.textContent = placeholder;
+    els.homeNetworkModels.textContent = placeholder;
+    els.homeNetworkTtft.textContent = placeholder;
+    els.homeNetworkTps.textContent = placeholder;
+    els.homeNetworkEarned.textContent = placeholder;
+    els.homeNetworkSpent.textContent = placeholder;
+    els.homeNetworkUsdc.textContent = placeholder;
     return;
   }
 
@@ -2711,15 +2886,15 @@ function buildLocalCurl(demand) {
 }
 
 function buildNetworkCurl(demand, model) {
-  if (!demand?.network_base_url || !demand?.network_bearer_token) {
-    return "Waiting for a network bearer token...";
+  if (!demand?.network_base_url) {
+    return "Waiting for the gateway base URL...";
   }
   if (!model?.id) {
     return "Waiting for gateway models...";
   }
   return [
     `curl ${demand.network_base_url}/chat/completions \\`,
-    `  -H "Authorization: Bearer ${demand.network_bearer_token}" \\`,
+    `  -H "Authorization: Bearer $TEALE_API_KEY" \\`,
     `  -H "Content-Type: application/json" \\`,
     `  -d '{"model":"${model.id}","messages":[{"role":"user","content":"hi"}]}'`,
   ].join("\n");
@@ -2782,7 +2957,7 @@ async function post(path, body = null) {
   if (body) {
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(apiUrl(path), init);
+  const res = await apiFetch(path, init);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || `Request failed: ${res.status}`);
@@ -2791,7 +2966,7 @@ async function post(path, body = null) {
 }
 
 async function getJson(path) {
-  const res = await fetch(apiUrl(path));
+  const res = await apiFetch(path);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || `Request failed: ${res.status}`);
@@ -2800,7 +2975,7 @@ async function getJson(path) {
 }
 
 async function getJsonMaybeMissing(path) {
-  const res = await fetch(apiUrl(path));
+  const res = await apiFetch(path);
   if (res.status === 404) {
     return null;
   }
@@ -2870,6 +3045,7 @@ function normalizeSupabaseTimestamp(value) {
 }
 
 function setDisconnected(error) {
+  maybeFallbackToBundledApp(error);
   els.statusChip.textContent = "Offline";
   els.statusLine.textContent = friendlyError(error);
   els.deviceName.textContent = "-";
@@ -2891,7 +3067,7 @@ function setDisconnected(error) {
   els.homeModel.textContent = t("common.noModelLoaded");
   els.homeBalance.textContent = t("common.waitingLocalService");
   els.homeAccount.textContent = userLabel(authUser);
-  networkStats = null;
+  networkStatsError = friendlyError(error);
   renderHomeNetworkStats();
 
   els.supplyEarningRate.textContent = "Waiting for a loaded model...";
@@ -2903,10 +3079,12 @@ function setDisconnected(error) {
   els.localCurl.textContent = "Waiting for a local model...";
   els.networkBaseUrl.textContent = "-";
   els.networkToken.textContent = t("common.syncing");
-  els.networkToken.title = "Copy bearer token";
+  els.networkToken.title = "Copy device bearer";
   els.networkToken.disabled = true;
+  els.networkTokenCopy.textContent = "Copy device bearer";
   els.networkSelectedModel.textContent = "Waiting for gateway models...";
-  els.networkCurl.textContent = "Waiting for a network bearer token...";
+  els.networkTokenNote.textContent = "The rotating device bearer is for app transport and debugging. Use a human-account API key for persistent direct gateway clients.";
+  els.networkCurl.textContent = "Waiting for gateway models...";
   els.networkModelTableBody.innerHTML = "";
   els.networkModelEmpty.textContent = "The network model table appears once Teale responds locally.";
 
@@ -2943,8 +3121,10 @@ function updateRecommendedAction(snapshot, recommended) {
   els.recommendedError.textContent = summarizeModelError(recommended.last_error);
   els.recommendedError.hidden = !recommended.last_error;
 
-  if (recommended.loaded && snapshot.service_state === "serving") {
-    els.recommendedAction.textContent = t("model.action.servingNow");
+  if (recommended.loaded) {
+    els.recommendedAction.textContent = snapshot.service_state === "serving"
+      ? t("model.action.servingNow")
+      : t("model.action.loaded");
     els.recommendedAction.disabled = true;
     els.recommendedAction.onclick = null;
     return;
@@ -2974,7 +3154,7 @@ function updateRecommendedAction(snapshot, recommended) {
       try {
         pendingModelAction = { kind: "load", modelId: recommended.id };
         render(lastSnapshot);
-        await post("/v1/app/models/load", { model: recommended.id });
+        await post(ROUTES.modelLoad, { model: recommended.id });
         await refresh();
       } catch (error) {
         clearBusyAction();
@@ -2991,7 +3171,7 @@ function updateRecommendedAction(snapshot, recommended) {
   els.recommendedAction.disabled = Boolean(activeTransfer);
   els.recommendedAction.onclick = async () => {
     try {
-      await post("/v1/app/models/download", { model: recommended.id });
+      await post(ROUTES.modelDownload, { model: recommended.id });
       await refresh();
     } catch (error) {
       alert(error.message);
@@ -3097,7 +3277,7 @@ function renderModels(snapshot) {
         try {
           pendingModelAction = { kind: "load", modelId: model.id };
           render(lastSnapshot);
-          await post("/v1/app/models/load", { model: model.id });
+          await post(ROUTES.modelLoad, { model: model.id });
           await refresh();
         } catch (error) {
           clearBusyAction();
@@ -3109,7 +3289,7 @@ function renderModels(snapshot) {
       action.textContent = model.last_error ? t("model.action.retry") : t("model.action.download");
       action.onclick = async () => {
         try {
-          await post("/v1/app/models/download", { model: model.id });
+          await post(ROUTES.modelDownload, { model: model.id });
           await refresh();
         } catch (error) {
           alert(error.message);
@@ -3249,6 +3429,84 @@ function renderAccountWallet() {
   els.accountWalletBalance.textContent = "-";
   els.accountWalletUsdc.textContent = "0.00";
   els.accountWalletNote.textContent = t("account.wallet.note.signedOut");
+}
+
+function renderAccountApiKeys() {
+  const signedIn = Boolean(authUser);
+  const linked = Boolean(accountSummary?.account_user_id);
+
+  els.accountApiKeyNote.textContent = "Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them.";
+  els.accountApiKeyLabel.disabled = !signedIn || !linked || accountApiKeyCreateInFlight;
+  els.accountApiKeyCreate.disabled = !signedIn || !linked || accountApiKeyCreateInFlight;
+  if (accountApiKeyCreateInFlight) {
+    setBusyButton(els.accountApiKeyCreate, "Create API key");
+  } else {
+    els.accountApiKeyCreate.textContent = "Create API key";
+  }
+
+  els.accountApiKeyCreatedWrap.hidden = !createdAccountApiKeyToken;
+  els.accountApiKeyCreated.textContent = createdAccountApiKeyToken || "";
+
+  els.accountApiKeysList.innerHTML = "";
+  els.accountApiKeysEmpty.hidden = true;
+
+  if (!signedIn) {
+    els.accountApiKeysEmpty.hidden = false;
+    els.accountApiKeysEmpty.textContent = "Sign in to manage direct gateway API keys.";
+  } else if (!linked) {
+    els.accountApiKeysEmpty.hidden = false;
+    els.accountApiKeysEmpty.textContent = "Account API keys appear after this signed-in device is linked to the gateway account wallet.";
+  } else if (!accountApiKeys.length) {
+    els.accountApiKeysEmpty.hidden = false;
+    els.accountApiKeysEmpty.textContent = "No direct gateway API keys created yet.";
+  } else {
+    for (const key of accountApiKeys) {
+      const row = document.createElement("article");
+      row.className = "ledger-row";
+
+      const info = document.createElement("div");
+      const title = document.createElement("h3");
+      title.textContent = key.label || "Unnamed API key";
+      const meta = document.createElement("p");
+      meta.className = "ledger-meta";
+      const parts = [
+        key.tokenPreview || "-",
+        `created ${formatTimestamp(key.createdAt)}`,
+        key.lastUsedAt ? `last used ${formatTimestamp(key.lastUsedAt)}` : "never used",
+      ];
+      meta.textContent = parts.join(" // ");
+      info.append(title, meta);
+
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "actions actions-tight";
+      if (key.revokedAt) {
+        const revoked = document.createElement("div");
+        revoked.className = "amount-negative";
+        revoked.textContent = "revoked";
+        actionWrap.append(revoked);
+      } else {
+        const revoke = document.createElement("button");
+        revoke.className = "action";
+        revoke.type = "button";
+        revoke.disabled = accountApiKeyRevokeInFlight === key.keyID;
+        if (accountApiKeyRevokeInFlight === key.keyID) {
+          setBusyButton(revoke, "Revoke");
+        } else {
+          revoke.textContent = "Revoke";
+        }
+        revoke.addEventListener("click", () => {
+          revokeAccountApiKey(key.keyID).catch(() => {});
+        });
+        actionWrap.append(revoke);
+      }
+
+      row.append(info, actionWrap);
+      els.accountApiKeysList.appendChild(row);
+    }
+  }
+
+  els.accountApiKeyStatus.textContent = accountApiKeyStatus || "";
+  els.accountApiKeyStatus.className = accountApiKeyStatusIsError ? "error-note" : "muted";
 }
 
 function defaultDeviceSendNote() {
@@ -3517,7 +3775,7 @@ function renderAccountDevices() {
     sweep.disabled = !authUser || !device.sweepEnabled;
     sweep.addEventListener("click", async () => {
       try {
-        const result = await post("/v1/app/account/sweep", { deviceID: device.deviceId });
+        const result = await post(ROUTES.accountSweep, { deviceID: device.deviceId });
         accountSummary = result.account || accountSummary;
         await refresh();
         await refreshAccountState();
@@ -3537,7 +3795,7 @@ function renderAccountDevices() {
           return;
         }
         try {
-          await post("/v1/app/account/devices/remove", { deviceID: device.deviceId });
+          await post(ROUTES.accountDevicesRemove, { deviceID: device.deviceId });
           await markSupabaseDeviceInactive(device.deviceId);
           await refreshAccountState();
           renderAccountDevices();
@@ -3656,9 +3914,15 @@ async function ensureAuthClient(authConfig) {
     linkedGatewayAccountStateKey = null;
     accountDevices = [];
     accountSummary = null;
+    accountApiKeys = [];
+    createdAccountApiKeyToken = null;
+    accountApiKeyStatus = "";
+    accountApiKeyStatusIsError = false;
     supabaseAccountDevices = [];
     clearAuthErrorState();
+    renderAccountWallet();
     renderAuthState();
+    renderAccountApiKeys();
     renderAccountDevices();
     return;
   }
@@ -3687,6 +3951,7 @@ async function ensureAuthClient(authConfig) {
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     authSession = session;
     authUser = session?.user || null;
+    postNativeSessionSync(session);
     if (authUser) {
       clearAuthErrorState();
     }
@@ -3697,6 +3962,7 @@ async function ensureAuthClient(authConfig) {
     await ensureGatewayAccountLink();
     await refreshAccountState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAuthState();
     renderAccountDevices();
     renderHome(lastSnapshot);
@@ -3707,8 +3973,12 @@ async function ensureAuthClient(authConfig) {
   if (!session) {
     session = await restorePersistedSupabaseSession();
   }
+  if (!session) {
+    session = await applyPendingNativeSessionIfNeeded();
+  }
   authSession = session;
   authUser = session?.user || null;
+  postNativeSessionSync(authSession);
   await consumePendingOAuthCallback();
   if (!authSession) {
     authSession = await restorePersistedSupabaseSession();
@@ -3719,13 +3989,18 @@ async function ensureAuthClient(authConfig) {
   await ensureGatewayAccountLink();
   await refreshAccountState();
   renderAccountWallet();
+  renderAccountApiKeys();
   renderAuthState();
   renderAccountDevices();
 }
 
 async function refreshAccountState() {
-  const summaryPromise = getJsonMaybeMissing("/v1/app/account").catch((error) => {
+  const summaryPromise = getJsonMaybeMissing(ROUTES.accountSummary).catch((error) => {
     console.warn("account summary fetch failed", error);
+    return null;
+  });
+  const apiKeysPromise = getJsonMaybeMissing(ROUTES.accountApiKeys).catch((error) => {
+    console.warn("account api key fetch failed", error);
     return null;
   });
 
@@ -3734,13 +4009,15 @@ async function refreshAccountState() {
     supabaseAccountDevices = [];
     accountSummary = await summaryPromise;
     accountDevices = accountSummary?.devices || [];
+    accountApiKeys = [];
     authTrace(`account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=0 auth=none`);
     return;
   }
 
-  const [sessionState, summary, directSupabaseDevices] = await Promise.all([
+  const [sessionState, summary, apiKeysResponse, directSupabaseDevices] = await Promise.all([
     refreshAuthoritativeAuthState("refreshAccountState"),
     summaryPromise,
+    apiKeysPromise,
     supabaseClient
       .from("devices")
       .select("id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active")
@@ -3762,14 +4039,65 @@ async function refreshAccountState() {
 
   accountSummary = summary;
   accountDevices = summary?.devices || [];
+  accountApiKeys = apiKeysResponse?.keys || [];
   supabaseAccountDevices = mergeSupabaseDeviceLists(
     supabaseAccountDevices,
     sessionState?.devices || [],
     directSupabaseDevices || []
   );
   authTrace(
-    `account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=${supabaseAccountDevices.length}`
+    `account state refreshed summaryDevices=${accountDevices.length} apiKeys=${accountApiKeys.length} supabaseDevices=${supabaseAccountDevices.length}`
   );
+}
+
+async function createAccountApiKey() {
+  if (!authUser || !accountSummary?.account_user_id || accountApiKeyCreateInFlight) {
+    return;
+  }
+  accountApiKeyCreateInFlight = true;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
+  createdAccountApiKeyToken = null;
+  renderAccountApiKeys();
+  try {
+    const response = await post(ROUTES.accountApiKeys, {
+      label: els.accountApiKeyLabel.value.trim() || null,
+    });
+    createdAccountApiKeyToken = response?.token || null;
+    accountApiKeyStatus = "Created a direct gateway API key for this human account.";
+    const refreshed = await getJsonMaybeMissing(ROUTES.accountApiKeys);
+    accountApiKeys = refreshed?.keys || [];
+    els.accountApiKeyLabel.value = "";
+  } catch (error) {
+    accountApiKeyStatus = error.message;
+    accountApiKeyStatusIsError = true;
+  } finally {
+    accountApiKeyCreateInFlight = false;
+    renderAccountApiKeys();
+  }
+}
+
+async function revokeAccountApiKey(keyId) {
+  if (!keyId || accountApiKeyRevokeInFlight === keyId) {
+    return;
+  }
+  accountApiKeyRevokeInFlight = keyId;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
+  renderAccountApiKeys();
+  try {
+    await post(ROUTES.accountApiKeysRevoke, { keyID: keyId });
+    const refreshed = await getJsonMaybeMissing(ROUTES.accountApiKeys);
+    accountApiKeys = refreshed?.keys || [];
+    accountApiKeyStatus = "Revoked the direct gateway API key.";
+  } catch (error) {
+    accountApiKeyStatus = error.message;
+    accountApiKeyStatusIsError = true;
+    throw error;
+  } finally {
+    accountApiKeyRevokeInFlight = null;
+    renderAccountApiKeys();
+  }
 }
 
 async function refreshAuthoritativeAuthState(reason, { throwOnError = false } = {}) {
@@ -3779,7 +4107,7 @@ async function refreshAuthoritativeAuthState(reason, { throwOnError = false } = 
   }
 
   try {
-    const sessionState = await post("/v1/app/auth/session", {
+    const sessionState = await post(ROUTES.authSession, {
       accessToken: authSession.access_token,
     });
     const identities = sessionState?.identities || sessionState?.user?.identities || [];
@@ -3981,7 +4309,7 @@ async function ensureSupabaseIdentity() {
 
   const device = lastSnapshot.device || {};
   const hardware = device.hardware || {};
-  const deviceName = device.display_name || "Windows device";
+  const deviceName = device.display_name || DESKTOP_DEVICE_LABEL;
   const ramGb = hardwareRamGB(hardware);
   const chipName = hardware.chipName || hardware.chip_name || hardware.cpu_name || hardware.chipFamily || null;
 
@@ -4008,7 +4336,7 @@ async function ensureSupabaseIdentity() {
       .select("id,wan_node_id")
       .eq("user_id", authUser.id)
       .eq("device_name", deviceName)
-      .eq("platform", "windows")
+      .eq("platform", DESKTOP_PLATFORM)
       .eq("is_active", true)
       .order("last_seen", { ascending: false })
       .limit(1);
@@ -4025,7 +4353,7 @@ async function ensureSupabaseIdentity() {
   const payload = {
     user_id: authUser.id,
     device_name: deviceName,
-    platform: "windows",
+    platform: DESKTOP_PLATFORM,
     chip_name: chipName,
     ram_gb: typeof ramGb === "number" ? Math.round(ramGb) : null,
     wan_node_id: currentDeviceId,
@@ -4087,7 +4415,7 @@ async function ensureGatewayAccountLink() {
   };
 
   try {
-    accountSummary = await post("/v1/app/account/link", payload);
+    accountSummary = await post(ROUTES.accountLink, payload);
     authTrace(
       `gateway account link success providers=${authIdentities.map((identity) => identity.provider).join(",") || "none"} github=${payload.githubUsername || "none"}`
     );
@@ -4181,7 +4509,7 @@ async function refreshNetworkModels(force = false) {
     return;
   }
   try {
-    const models = await getJson("/v1/app/network/models");
+    const models = await getJson(ROUTES.networkModels);
     networkModels = models.map((model) => ({
       id: model.id,
       context: model.context_length,
@@ -4213,14 +4541,35 @@ async function refreshNetworkStats(force = false) {
     return;
   }
   try {
-    networkStats = await getJson("/v1/app/network/stats");
+    networkStats = await getJson(ROUTES.networkStats);
+    networkStatsError = null;
     networkStatsFetchedAt = now;
     renderHomeNetworkStats();
   } catch (error) {
     console.error("network stats refresh failed", error);
-    networkStats = null;
+    networkStatsError = error.message || friendlyError(error);
     renderHomeNetworkStats();
   }
+}
+
+function maybeFallbackToBundledApp(error) {
+  if (!SHELL_MODE || bundledFallbackAttempted) {
+    return;
+  }
+  if (!ROUTES.bundledApp || !window.location.protocol.startsWith("http")) {
+    return;
+  }
+  const message = friendlyError(error).toLowerCase();
+  const looksLikeLocalBridgeFailure = message.includes("failed to fetch")
+    || message.includes("networkerror")
+    || message.includes("load failed")
+    || message.includes("blocked")
+    || message.includes("status failed");
+  if (!looksLikeLocalBridgeFailure || consecutiveSnapshotFailures < 3) {
+    return;
+  }
+  bundledFallbackAttempted = true;
+  window.location.replace(ROUTES.bundledApp);
 }
 
 function renderHome(snapshot) {
@@ -4284,11 +4633,12 @@ function renderDemand(snapshot) {
   els.networkBaseUrl.textContent = demand.network_base_url || "-";
   els.networkToken.textContent = maskToken(demand.network_bearer_token);
   els.networkToken.title = demand.network_bearer_token
-    ? "Click to copy bearer token"
-    : "Copy bearer token";
+    ? "Click to copy device bearer"
+    : "Copy device bearer";
   els.networkToken.disabled = !demand.network_bearer_token;
+  els.networkTokenCopy.textContent = t("demand.action.copyDeviceBearer", { fallback: "Copy device bearer" });
   els.networkTokenNote.textContent = demand.network_bearer_token
-      ? `Use this bearer against gateway.teale.com. Requests spend from ${displayUnit === "usd" ? "USD" : "Teale credits"}.`
+      ? "This rotating device bearer is for Teale app transport and debugging. Use a human-account API key from Account for persistent direct gateway clients."
       : "Waiting for the device bearer token from the gateway wallet sync.";
   els.networkSelectedModel.textContent = selected ? selected.id : t("demand.selected.waiting", { fallback: "Waiting for gateway models..." });
   els.networkCurl.textContent = buildNetworkCurl(demand, selected);
@@ -4334,17 +4684,19 @@ function render(snapshot) {
   renderChat(snapshot);
   renderWallet(snapshot);
   renderAccountWallet();
+  renderAccountApiKeys();
   updateSendControls();
   renderAuthState();
   renderAccountDevices();
 }
 
 async function refresh() {
-  const res = await fetch(apiUrl("/v1/app"));
+  const res = await apiFetch(ROUTES.snapshot);
   if (!res.ok) {
     throw new Error(`Teale status failed: ${res.status}`);
   }
   const snapshot = await res.json();
+  consecutiveSnapshotFailures = 0;
   reconcilePendingAction(snapshot);
   lastSnapshot = snapshot;
   await ensureAuthClient(snapshot.auth);
@@ -4371,7 +4723,10 @@ function startPolling() {
   }
   const everyMs = document.hidden ? 5000 : 1000;
   intervalHandle = setInterval(() => {
-    refresh().catch((error) => setDisconnected(error));
+    refresh().catch((error) => {
+      consecutiveSnapshotFailures += 1;
+      setDisconnected(error);
+    });
   }, everyMs);
 }
 
@@ -4406,7 +4761,7 @@ els.unloadButton.addEventListener("click", async () => {
   try {
     pendingModelAction = { kind: "unload" };
     render(lastSnapshot);
-    await post("/v1/app/models/unload");
+    await post(ROUTES.modelUnload);
     await refresh();
   } catch (error) {
     clearBusyAction();
@@ -4462,6 +4817,7 @@ els.authPhoneVerifyButton.addEventListener("click", async () => {
     await ensureGatewayAccountLink();
     await refreshAccountState();
     renderAccountWallet();
+    renderAccountApiKeys();
     renderAuthState();
     renderAccountDevices();
     renderHome(lastSnapshot);
@@ -4478,6 +4834,7 @@ els.authSignoutButton.addEventListener("click", async () => {
   els.authSignoutButton.disabled = true;
   clearPersistedSupabaseSession();
   resetAccountAuthState();
+  postNativeSessionSync(null);
   render(lastSnapshot);
   const signOutTask = supabaseClient.auth
     .signOut({ scope: "local" })
@@ -4517,20 +4874,28 @@ els.localCurlCopy.addEventListener("click", async () => {
 });
 
 els.networkTokenCopy.addEventListener("click", async () => {
-  await copyText(lastSnapshot?.demand?.network_bearer_token || "", "Bearer token");
+  await copyText(lastSnapshot?.demand?.network_bearer_token || "", "Device bearer");
 });
 
 els.networkToken.addEventListener("click", async () => {
   await copyValueWithFlash(
     els.networkToken,
     lastSnapshot?.demand?.network_bearer_token || "",
-    "Bearer token",
+    "Device bearer",
     (value) => maskToken(value)
   );
 });
 
 els.networkCurlCopy.addEventListener("click", async () => {
   await copyText(els.networkCurl.textContent, "Network curl");
+});
+
+els.accountApiKeyCreate.addEventListener("click", async () => {
+  await createAccountApiKey();
+});
+
+els.accountApiKeyCreatedCopy.addEventListener("click", async () => {
+  await copyText(createdAccountApiKeyToken || "", "API key");
 });
 
 els.chatModelSelect.addEventListener("change", () => {
@@ -4579,7 +4944,7 @@ els.headerRefresh.addEventListener("click", async () => {
   walletRefreshInFlight = true;
   render(lastSnapshot);
   try {
-    lastSnapshot = await post("/v1/app/wallet/refresh", {});
+    lastSnapshot = await post(ROUTES.walletRefresh, {});
     await refreshAccountState();
     render(lastSnapshot);
   } catch (error) {
@@ -4627,7 +4992,7 @@ els.sendSubmit.addEventListener("click", async () => {
   walletSendStatus = "";
   updateSendControls();
   try {
-    lastSnapshot = await post("/v1/app/wallet/send", {
+    lastSnapshot = await post(ROUTES.walletSend, {
       asset: els.sendAsset.value,
       recipient: els.sendRecipient.value.trim(),
       amount,
@@ -4658,7 +5023,7 @@ els.accountSendSubmit.addEventListener("click", async () => {
   accountSendStatus = "";
   updateSendControls();
   try {
-    accountSummary = await post("/v1/app/account/send", {
+    accountSummary = await post(ROUTES.accountSend, {
       asset: els.accountSendAsset.value,
       recipient: els.accountSendRecipient.value.trim(),
       amount,
@@ -4736,6 +5101,31 @@ window.__tealeHandleOAuthCallback = async (url) => {
   await ensureGatewayAccountLink();
   await refreshAccountState();
   renderAccountWallet();
+  renderAccountApiKeys();
+  renderAuthState();
+  renderAccountDevices();
+  renderHome(lastSnapshot);
+};
+window.__tealeSetLocalApiKey = (key) => {
+  localApiKey = key || null;
+};
+window.__tealeHydrateNativeSession = async (session) => {
+  pendingNativeSession = normalizeNativeSession(session);
+  if (!pendingNativeSession || !supabaseClient) {
+    return;
+  }
+  const hydrated = await applyPendingNativeSessionIfNeeded();
+  if (!hydrated) {
+    return;
+  }
+  authSession = hydrated;
+  authUser = hydrated.user || null;
+  await ensureSupabaseIdentity();
+  await refreshAccountState();
+  await ensureGatewayAccountLink();
+  await refreshAccountState();
+  renderAccountWallet();
+  renderAccountApiKeys();
   renderAuthState();
   renderAccountDevices();
   renderHome(lastSnapshot);
@@ -4744,5 +5134,8 @@ window.__tealeHandleOAuthCallback = async (url) => {
 applyTranslations();
 setActiveView("home");
 loadStoredOAuthCallback();
-refresh().catch((error) => setDisconnected(error));
+refresh().catch((error) => {
+  consecutiveSnapshotFailures += 1;
+  setDisconnected(error);
+});
 startPolling();
