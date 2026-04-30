@@ -29,7 +29,9 @@ public enum ConnectionQuality: String, Codable, Sendable {
         }
     }
 
-    /// Whether this connection is fast enough for tensor parallelism
+    /// Whether this connection is fast enough to attempt tensor parallelism.
+    /// Thunderbolt is the intended path; 10 GbE may still work for fit-driven
+    /// sharding, but expect materially worse TTFT under interactive load.
     public var supportsTensorParallelism: Bool {
         switch self {
         case .thunderbolt, .tenGigabit: return true

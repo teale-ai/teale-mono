@@ -114,12 +114,14 @@ public actor MLXProvider: InferenceProvider {
             await unloadModel()
         }
 
+        let resolvedDirectory = directory.resolvingSymlinksInPath()
+
         _status = .loadingModel(descriptor)
         onProgress?(LoadProgress(phase: .loadingWeights, fractionCompleted: 0))
 
         do {
             let container = try await LLMModelFactory.shared.loadContainer(
-                from: directory,
+                from: resolvedDirectory,
                 using: HFTokenizerLoader()
             )
 
@@ -202,13 +204,13 @@ public actor MLXProvider: InferenceProvider {
                 let parameters = GenerateParameters(temperature: temperature)
                 let stream = try await container.generate(input: lmInput, parameters: parameters)
 
-                for await generation in stream {
+                generationLoop: for await generation in stream {
                     if Task.isCancelled { break }
                     switch generation {
                     case .chunk(let text):
                         tokenCount += 1
                         continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
-                        if tokenCount >= maxTokens { break }
+                        if tokenCount >= maxTokens { break generationLoop }
                     case .info:
                         break
                     case .toolCall:

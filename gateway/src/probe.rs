@@ -24,6 +24,20 @@ const PROBE_PROMPT: &str = "Reply with exactly one word: pong";
 struct ProbeTarget {
     node_id: String,
     model_id: String,
+    is_large: bool,
+}
+
+fn ttft_deadline_seconds_for_model_size(
+    reliability: &crate::config::ReliabilityConfig,
+    is_large: bool,
+) -> u64 {
+    if is_large {
+        reliability.ttft_deadline_seconds
+    } else {
+        reliability
+            .small_ttft_deadline_seconds
+            .min(reliability.ttft_deadline_seconds)
+    }
 }
 
 pub fn spawn_synthetic_probe_loop(state: AppState) {
@@ -71,6 +85,9 @@ pub fn spawn_synthetic_probe_loop(state: AppState) {
 
                 if let Err(err) = probe_target(&state, &target, cfg.max_tokens).await {
                     last_probed_at.insert(target.clone(), Instant::now());
+                    state
+                        .registry
+                        .quarantine(&target.node_id, state.config.reliability.quarantine_seconds);
                     warn!(
                         model = %target.model_id,
                         node = %target.node_id,
@@ -113,6 +130,7 @@ fn collect_probe_targets(
                 targets.push(ProbeTarget {
                     node_id: key.0,
                     model_id: key.1,
+                    is_large: crate::catalog::is_large(model.params_b),
                 });
             }
         }
@@ -133,9 +151,11 @@ async fn probe_target(
 ) -> anyhow::Result<()> {
     state.registry.inc_in_flight(&target.node_id);
 
-    let open_timeout = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
+    let ttft_deadline_seconds =
+        ttft_deadline_seconds_for_model_size(&state.config.reliability, target.is_large);
+    let open_timeout = Duration::from_secs(ttft_deadline_seconds.min(4));
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
-    let ttft_deadline = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
+    let ttft_deadline = Duration::from_secs(ttft_deadline_seconds);
 
     let session_id = match state
         .relay
@@ -358,6 +378,7 @@ mod tests {
             vec![ProbeTarget {
                 node_id: "idle-kimi".into(),
                 model_id: "moonshotai/kimi-k2.6".into(),
+                is_large: true,
             }]
         );
     }

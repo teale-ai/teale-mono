@@ -10,10 +10,10 @@
 #
 # Prerequisites on the head Mac only:
 #   - `pip install exo` (https://github.com/exo-explore/exo)
-#   - Model GGUFs on shared storage, mounted on both Macs
+#   - Model artifacts on shared storage or in a shared exo cache location
 #
 # Usage:
-#   HEAD_IP=10.0.0.10 LEAF_IP=10.0.0.11 bash scripts/cluster-runner.sh kimi-k2
+#   HEAD_IP=10.0.0.10 LEAF_IP=10.0.0.11 bash scripts/cluster-runner.sh moonshotai/kimi-k2
 #
 # The script:
 #   1. Verifies SSH to leaf

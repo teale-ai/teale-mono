@@ -306,6 +306,7 @@ public actor RelayClient {
     private var reconnectTask: Task<Void, Never>?
     private var currentBackoff: TimeInterval = 1.0
     private var relayedConnections: [String: RelayPeerConnection] = [:]
+    private var pendingRelayedData: [String: [Data]] = [:]
     private var relayReadyWaiters: [String: CheckedContinuation<Void, Error>] = [:]
     /// Relay sessions suspended during WebSocket disconnect — re-established on reconnect.
     private var suspendedRelaySessions: [(sessionID: String, connection: RelayPeerConnection, remoteNodeID: String)] = []
@@ -534,6 +535,11 @@ public actor RelayClient {
             relayClient: self
         )
         relayedConnections[sessionID] = connection
+        if let pendingPackets = pendingRelayedData.removeValue(forKey: sessionID) {
+            for packet in pendingPackets {
+                Task { await connection.receiveRelayedClusterMessage(packet) }
+            }
+        }
         return connection
     }
 
@@ -653,12 +659,14 @@ public actor RelayClient {
 
         case .relayData(let payload):
             guard let connection = relayedConnections[payload.sessionID] else {
+                pendingRelayedData[payload.sessionID, default: []].append(payload.data)
                 FileHandle.standardError.write(Data("[WAN] relayData: no connection for session \(payload.sessionID.prefix(8))... (known sessions: \(relayedConnections.keys.map { String($0.prefix(8)) }))\n".utf8))
                 return
             }
             await connection.receiveRelayedClusterMessage(payload.data)
 
         case .relayClose(let payload):
+            pendingRelayedData.removeValue(forKey: payload.sessionID)
             guard let connection = relayedConnections.removeValue(forKey: payload.sessionID) else { return }
             await connection.finishLocally()
 
@@ -687,6 +695,7 @@ public actor RelayClient {
     private func failActiveRelaySessions(with error: Error) {
         let relayed = Array(relayedConnections.values)
         relayedConnections.removeAll()
+        pendingRelayedData.removeAll()
         suspendedRelaySessions.removeAll()
 
         let waiters = relayReadyWaiters.values
@@ -712,6 +721,7 @@ public actor RelayClient {
             ))
         }
         relayedConnections.removeAll()
+        pendingRelayedData.removeAll()
 
         // Fail pending waiters — they can retry after reconnect
         let waiters = relayReadyWaiters.values

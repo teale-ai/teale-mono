@@ -33,7 +33,11 @@ request_timeout_seconds = 300
 # in up to 57 s when nothing's been hot). Tighten back to 15 s once the
 # large-model cluster has warm-keeping and the scheduler avoids sending
 # first traffic to a fully-cold instance.
-ttft_deadline_seconds = 60
+ttft_deadline_seconds = 18
+# Small Hermes-class prompts should fail over fast when a WAN supplier is
+# cold or degraded; larger coding/tool-harness requests still inherit the
+# broader ceiling above.
+small_ttft_deadline_seconds = 8
 max_retries = 1
 # Teale's supply-side WAN stack has no direct node→relay heartbeat — it
 # only re-registers every 240 s (WANDiscovery.startReregistration), and in
@@ -44,7 +48,7 @@ max_retries = 1
 # one successful initial register keeps a device eligible for an hour —
 # better than flapping every supplier out of the catalog every 30 s.
 heartbeat_stale_seconds = 3600
-quarantine_seconds = 30
+quarantine_seconds = 120
 discover_interval_seconds = 10
 
 [synthetic_probes]

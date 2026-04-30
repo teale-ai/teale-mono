@@ -283,6 +283,7 @@ public struct ModelCatalog: Sendable {
             ("hermes-3-llama-3.1-70b", "nousresearch/hermes-3-llama-3.1-70b"),
             ("llama-3.3-70b-instruct", "meta-llama/llama-3.3-70b-instruct"),
             ("llama-3.1-70b-instruct", "meta-llama/llama-3.1-70b-instruct"),
+            ("minimax-m2-7", "minimax/minimax-m2.7"),
             ("qwen3-30b-a3b", "qwen/qwen3-30b-a3b-instruct-2507"),
             ("gpt-oss-120b", "openai/gpt-oss-120b"),
             ("gpt-oss-20b", "openai/gpt-oss-20b"),

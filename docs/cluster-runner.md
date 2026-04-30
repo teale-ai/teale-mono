@@ -1,7 +1,8 @@
 # Cluster runner — paired Mac Studio Ultra 1 TB setup
 
 Phase C1: serve models that don't fit on a single Mac (Kimi K2 1T, DeepSeek
-V3/R1 at Q8, Llama 405B at Q8) across two M3 Ultra 512 GB Studios paired
+V3/R1 at Q8, Llama 405B at Q8, and DeepSeek V4 Pro once runtime support is
+real) across two M3 Ultra 512 GB Studios paired
 via `exo` or `llama.cpp` RPC. From the gateway's perspective the pair
 looks like a single very-large supply node.
 
@@ -15,10 +16,13 @@ they're all in the "Tier 5 — cluster only" row.
 ## Hardware prerequisites
 
 - Two Mac Studio M3 Ultra, each with 512 GB unified memory.
-- Thunderbolt Bridge or 10GbE between them. **Wi-Fi is not acceptable** —
-  exo transfers hidden-state tensors on every token; Wi-Fi latency/loss
-  cripples throughput.
-- Shared storage holding the GGUFs, mounted on both machines. Either:
+- Thunderbolt Bridge or 10GbE between them. **Thunderbolt 5 RDMA is the
+  intended tensor-parallel path.** 10GbE is acceptable for capacity-driven
+  sharding, but expect worse TTFT and weaker scaling. **Wi-Fi is not
+  acceptable** — exo transfers hidden-state tensors on every token; Wi-Fi
+  latency/loss cripples throughput.
+- Shared storage holding the model artifacts or a shared exo cache, mounted on
+  both machines. Either:
   - NFS from a NAS on the same LAN, or
   - Thunderbolt-attached external SSD mounted on the head, re-shared
     via SMB to the leaf.
@@ -42,7 +46,7 @@ On the head Mac:
 ```bash
 export HEAD_IP=10.0.0.10        # this Mac
 export LEAF_IP=10.0.0.11        # the other Mac
-bash scripts/cluster-runner.sh moonshotai/kimi-k2
+bash node/scripts/cluster-runner.sh moonshotai/kimi-k2
 ```
 
 The script:
@@ -85,9 +89,28 @@ From the gateway's `/v1/models` the cluster appears as a single entry
 aliases such as `kimi2.6` are resolved by the gateway catalog, not by the
 cluster runner.
 
+## DeepSeek V4 matrix
+
+For the 2× 512 GB setup, benchmark `DeepSeek-V4-Flash` and `DeepSeek-V4-Pro`
+as separate deployment shapes instead of treating "fits in cluster RAM" as the
+only question:
+
+- `DeepSeek-V4-Flash` single-node — baseline on one 512 GB Ultra. This is the
+  control case because Flash should fit on one node without tensor parallelism.
+- `DeepSeek-V4-Flash` 2-node tensor parallel — only worth promoting if it beats
+  the single-node baseline on warm TTFT and sustained decode after paying the
+  inter-node communication tax.
+- `DeepSeek-V4-Pro` 2-node tensor parallel — capacity-only candidate. Do not
+  promote it unless the current `exo + MLX` stack proves it can load
+  `model_type=deepseek_v4` cleanly.
+
+Use [docs/deepseek-v4-exo-benchmarks.md](./deepseek-v4-exo-benchmarks.md) for
+the exact benchmark matrix and [scripts/bench-deepseek-v4-exo.sh](../scripts/bench-deepseek-v4-exo.sh)
+to capture TTFT/TPS summaries from any OpenAI-compatible endpoint.
+
 ## Running as a daemon
 
-`scripts/cluster-runner.sh` is foreground by design (easy to stop).
+`node/scripts/cluster-runner.sh` is foreground by design (easy to stop).
 For production, wrap it in a launchd plist so it starts at boot:
 
 ```xml
@@ -99,7 +122,7 @@ For production, wrap it in a launchd plist so it starts at boot:
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/bash</string>
-    <string>/Users/teale/teale-node/scripts/cluster-runner.sh</string>
+    <string>/Users/teale/teale-node/node/scripts/cluster-runner.sh</string>
     <string>moonshotai/kimi-k2</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -161,7 +184,8 @@ sharding; expect worse throughput but more predictable behavior.
 ## Adding more models to the cluster
 
 Once one Kimi K2 cluster is healthy, add a second paired cluster for
-DeepSeek V3 Q8 (~713 GB) — same recipe, different `--models` flag. Each
-pair presents as its own teale-node to the relay. The gateway's
-per-model fleet floor then lifts DeepSeek from "degraded" to "healthy"
-once two independent clusters are online.
+DeepSeek V3 Q8 (~713 GB) or later DeepSeek V4 Pro if runtime support lands —
+same recipe, different `--models` flag. Each pair presents as its own
+teale-node to the relay. The gateway's per-model fleet floor then lifts the
+clustered model from "degraded" to "healthy" once two independent clusters are
+online.

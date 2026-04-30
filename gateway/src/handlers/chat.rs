@@ -30,12 +30,92 @@ use uuid::Uuid;
 use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
 use crate::auth::AuthPrincipal;
-use crate::catalog::{is_large, resolve_auto, AutoRouteProfile, CatalogModel};
+use crate::catalog::{is_large, resolve_auto, synthesize_live_model, AutoRouteProfile, CatalogModel};
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::metrics;
 use crate::relay_client::{PendingSession, SessionEvent};
 use crate::state::AppState;
+
+fn ttft_deadline_seconds_for_model(
+    reliability: &crate::config::ReliabilityConfig,
+    catalog_model: &CatalogModel,
+) -> u64 {
+    if is_large(catalog_model.params_b) {
+        reliability.ttft_deadline_seconds
+    } else {
+        reliability
+            .small_ttft_deadline_seconds
+            .min(reliability.ttft_deadline_seconds)
+    }
+}
+
+fn is_transient_warmup_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("loading model")
+        || (lower.contains("unavailable_error") && lower.contains("503"))
+}
+
+fn single_supplier_large_cold_start_grace(
+    state: &AppState,
+    catalog_model: &CatalogModel,
+) -> bool {
+    if !is_large(catalog_model.params_b) {
+        return false;
+    }
+    let loaded = state.registry.loaded_count(&catalog_model.id);
+    let candidate_count = if loaded > 0 {
+        loaded as usize
+    } else {
+        state.registry.eligible_devices(&catalog_model.id).len()
+    };
+    candidate_count <= 1
+}
+
+fn pre_first_token_deadline(state: &AppState, catalog_model: &CatalogModel) -> Duration {
+    if single_supplier_large_cold_start_grace(state, catalog_model) {
+        Duration::from_secs(state.config.reliability.request_timeout_seconds)
+    } else {
+        Duration::from_secs(ttft_deadline_seconds_for_model(
+            &state.config.reliability,
+            catalog_model,
+        ))
+    }
+}
+
+fn resolve_requested_model(state: &AppState, requested_model: &str) -> Option<CatalogModel> {
+    if let Some(model) = state
+        .catalog
+        .iter()
+        .find(|m| m.matches(requested_model))
+        .cloned()
+    {
+        return Some(model);
+    }
+
+    let live_devices: Vec<_> = state
+        .registry
+        .snapshot_devices()
+        .into_iter()
+        .filter(|device| {
+            !device.is_quarantined()
+                && device.capabilities.is_available
+                && !device.heartbeat_is_stale(state.config.reliability.heartbeat_stale_seconds)
+                && crate::registry::model_matches_any(
+                    requested_model,
+                    &device.capabilities.loaded_models,
+                )
+        })
+        .collect();
+    if live_devices.is_empty() {
+        return None;
+    }
+    let effective_context = live_devices
+        .iter()
+        .filter_map(|device| device.capabilities.effective_context)
+        .max();
+    Some(synthesize_live_model(requested_model, effective_context))
+}
 
 pub async fn chat_completions(
     State(state): State<AppState>,
@@ -51,11 +131,7 @@ pub async fn chat_completions(
     };
 
     // Catalog lookup.
-    let mut catalog_model = state
-        .catalog
-        .iter()
-        .find(|m| m.matches(&requested_model))
-        .cloned()
+    let mut catalog_model = resolve_requested_model(&state, &requested_model)
         .ok_or_else(|| GatewayError::ModelNotFound(requested_model.clone()))?;
 
     let floor = &state.config.scheduler.per_model_floor;
@@ -324,7 +400,7 @@ fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) ->
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if [
+    let has_agent_user_agent = [
         "openclaw",
         "hermes",
         "codex",
@@ -334,10 +410,7 @@ fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) ->
         "aider",
     ]
     .iter()
-    .any(|needle| user_agent.contains(needle))
-    {
-        return AutoRouteProfile::AgentHarness;
-    }
+    .any(|needle| user_agent.contains(needle));
 
     let prompt_chars: usize = req
         .messages
@@ -369,6 +442,7 @@ fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) ->
         || req.tools.is_some()
         || req.tool_choice.is_some()
         || (prompt_chars >= 12_000 && req.max_tokens.unwrap_or(4096) >= 4096)
+        || (has_agent_user_agent && prompt_chars >= 4_000)
     {
         AutoRouteProfile::AgentHarness
     } else {
@@ -413,11 +487,6 @@ fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::ConsumerPrinc
             key_id: key_id.to_string(),
         });
     }
-    if let Some(account_user_id) = principal.account_user_id() {
-        return Some(ledger::ConsumerPrincipal::Account {
-            account_user_id: account_user_id.to_string(),
-        });
-    }
     principal
         .device_id()
         .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
@@ -444,7 +513,16 @@ async fn pick_and_dispatch(
 
     let mut excluded: Vec<String> = exclude.to_vec();
     let mut last_dispatch_error: Option<String> = None;
-    let open_timeout = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
+    let cold_start_grace = single_supplier_large_cold_start_grace(state, catalog_model);
+    let max_dispatch_grace_retries = (state.config.reliability.request_timeout_seconds / 5)
+        .max(1) as u32;
+    let mut dispatch_grace_failures = 0u32;
+    // Relay open should succeed almost immediately for a connected peer.
+    // Keep this much tighter than the TTFT budget so a dead/stuck node
+    // doesn't consume the entire request before we even hand off inference.
+    let ttft_deadline_seconds =
+        ttft_deadline_seconds_for_model(&state.config.reliability, catalog_model);
+    let open_timeout = Duration::from_secs(ttft_deadline_seconds.min(4));
 
     loop {
         let candidates = state.registry.eligible_devices(&catalog_model.id);
@@ -483,6 +561,20 @@ async fn pick_and_dispatch(
                     "dispatch failed before session hand-off: {}",
                     message
                 );
+                if cold_start_grace && dispatch_grace_failures < max_dispatch_grace_retries {
+                    dispatch_grace_failures += 1;
+                    last_dispatch_error = Some(message);
+                    info!(
+                        device = %target_node,
+                        attempt = dispatch_grace_failures,
+                        "retrying same device after large-model cold-start dispatch failure"
+                    );
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    metrics::RETRIES_TOTAL
+                        .with_label_values(&["single_supplier_dispatch_grace_retry"])
+                        .inc();
+                    continue;
+                }
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -516,6 +608,20 @@ async fn pick_and_dispatch(
                 message
             );
             state.relay.close_session(&target_node, &session_id);
+            if cold_start_grace && dispatch_grace_failures < max_dispatch_grace_retries {
+                dispatch_grace_failures += 1;
+                last_dispatch_error = Some(message);
+                info!(
+                    device = %target_node,
+                    attempt = dispatch_grace_failures,
+                    "retrying same device after large-model cold-start dispatch failure"
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                metrics::RETRIES_TOTAL
+                    .with_label_values(&["single_supplier_dispatch_grace_retry"])
+                    .inc();
+                continue;
+            }
             state
                 .registry
                 .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -570,8 +676,6 @@ async fn run_streaming(
 
     let max_retries = state.config.reliability.max_retries;
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
-    let ttft_deadline = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
-
     let stream = async_stream::stream! {
         let mut excluded: Vec<String> = Vec::new();
         let mut first_token_at: Option<Instant> = None;
@@ -588,6 +692,8 @@ async fn run_streaming(
 
         loop {
             tried += 1;
+            let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
+            let ttft_deadline = pre_first_token_deadline(&state, &catalog_model);
             let dispatch = pick_and_dispatch(
                 &state,
                 &catalog_model,
@@ -739,12 +845,30 @@ async fn run_streaming(
             state.relay.close_session(&target_node, &session_id);
             state.registry.dec_in_flight(&target_node);
 
+            if !completed && !got_first_token && !cold_start_grace {
+                state
+                    .registry
+                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            }
+
             if completed {
                 served_by = Some(target_node);
                 break;
             }
             if !retriable_failure {
                 break;
+            }
+
+            if cold_start_grace {
+                info!(
+                    device = %target_node,
+                    "retrying same device after large-model cold-start grace"
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                metrics::RETRIES_TOTAL
+                    .with_label_values(&["single_supplier_cold_start_retry"])
+                    .inc();
+                continue;
             }
 
             info!(
@@ -871,8 +995,6 @@ async fn run_buffered(
 
     let max_retries = state.config.reliability.max_retries;
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
-    let ttft_deadline = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
-
     let mut excluded: Vec<String> = Vec::new();
     let mut tried = 0u32;
     let mut accumulated_text = String::new();
@@ -883,6 +1005,8 @@ async fn run_buffered(
 
     loop {
         tried += 1;
+        let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
+        let ttft_deadline = pre_first_token_deadline(&state, &catalog_model);
         let (mut rx, target_node, session_id) = pick_and_dispatch(
             &state,
             &catalog_model,
@@ -968,6 +1092,20 @@ async fn run_buffered(
         state.relay.close_session(&target_node, &session_id);
         state.registry.dec_in_flight(&target_node);
 
+        let single_supplier = single_supplier_large_cold_start_grace(&state, &catalog_model)
+            || state.registry.eligible_devices(&model_id).len() <= 1;
+        let warmup_retry = !got_first
+            && single_supplier
+            && err_message
+                .as_deref()
+                .is_some_and(is_transient_warmup_error);
+
+        if !completed && !got_first && !warmup_retry && !cold_start_grace {
+            state
+                .registry
+                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+        }
+
         if completed {
             metrics::REQUESTS_TOTAL
                 .with_label_values(&[&model_id, "ok"])
@@ -1029,6 +1167,26 @@ async fn run_buffered(
         }
 
         if retriable {
+            if warmup_retry || cold_start_grace {
+                info!(
+                    device = %target_node,
+                    "retrying same device after {}",
+                    if warmup_retry {
+                        "transient warmup failure"
+                    } else {
+                        "large-model cold-start grace"
+                    }
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                metrics::RETRIES_TOTAL
+                    .with_label_values(&[if warmup_retry {
+                        "buffered_warmup_retry"
+                    } else {
+                        "single_supplier_cold_start_retry"
+                    }])
+                    .inc();
+                continue;
+            }
             info!(device = %target_node, "retrying (buffered) on next-best device");
             state
                 .registry
@@ -1287,6 +1445,7 @@ quantization: null
             reliability: ReliabilityConfig {
                 request_timeout_seconds: 60,
                 ttft_deadline_seconds,
+                small_ttft_deadline_seconds: ttft_deadline_seconds,
                 max_retries: 1,
                 heartbeat_stale_seconds: 3600,
                 quarantine_seconds: 30,
@@ -1320,7 +1479,7 @@ quantization: null
         }
     }
 
-    fn dispatch_test_state(config: Config, catalog_model: &CatalogModel) -> AppState {
+    fn dispatch_test_state_with_catalog(config: Config, catalog: Vec<CatalogModel>) -> AppState {
         let registry = Registry::new(config.reliability.clone());
         let scheduler = Arc::new(Scheduler::new(config.scheduler.clone()));
         let relay = crate::relay_client::RelayHandle::test_handle();
@@ -1331,12 +1490,38 @@ quantization: null
             registry,
             scheduler,
             relay,
-            catalog: Arc::new(vec![catalog_model.clone()]),
+            catalog: Arc::new(catalog),
             db: None,
             group_tx,
             model_metrics: Arc::new(ModelMetricsTracker::new()),
             share_key_issuers: ShareKeyIssuers::default(),
         }
+    }
+
+    fn dispatch_test_state(config: Config, catalog_model: &CatalogModel) -> AppState {
+        dispatch_test_state_with_catalog(config, vec![catalog_model.clone()])
+    }
+
+    #[tokio::test]
+    async fn resolves_live_uncataloged_model_by_exact_id() {
+        let config = dispatch_test_config(15);
+        let state = dispatch_test_state_with_catalog(config, vec![]);
+        state.registry.upsert_device(
+            "node-live".into(),
+            "Tailor 512g1".into(),
+            dispatch_caps(&["acme/live-model"], &[]),
+        );
+
+        let resolved =
+            resolve_requested_model(&state, "acme/live-model").expect("live model should resolve");
+        assert_eq!(resolved.id, "acme/live-model");
+        assert_eq!(resolved.context_length, 32768);
+        assert_eq!(resolved.max_output_tokens, 8192);
+        assert_eq!(resolved.pricing_prompt, crate::catalog::LIVE_MODEL_DEFAULT_PROMPT_PRICE);
+        assert_eq!(
+            resolved.pricing_completion,
+            crate::catalog::LIVE_MODEL_DEFAULT_COMPLETION_PRICE
+        );
     }
 
     #[test]
@@ -1434,10 +1619,21 @@ quantization: null
     }
 
     #[test]
-    fn auto_profile_detects_openclaw_user_agent() {
+    fn auto_profile_keeps_tiny_openclaw_run_generic() {
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("OpenClaw/1.0"));
         let req = req_with("hi", Some(128));
+        assert_eq!(
+            infer_auto_route_profile(&headers, &req),
+            AutoRouteProfile::Generic
+        );
+    }
+
+    #[test]
+    fn auto_profile_detects_large_openclaw_prompt() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("OpenClaw/1.0"));
+        let req = req_with(&"x".repeat(4_500), Some(4096));
         assert_eq!(
             infer_auto_route_profile(&headers, &req),
             AutoRouteProfile::AgentHarness
@@ -1457,9 +1653,70 @@ quantization: null
         );
     }
 
+    #[test]
+    fn transient_warmup_error_detects_loading_model() {
+        assert!(is_transient_warmup_error(
+            "backend returned 503 Service Unavailable: {\"error\":{\"message\":\"Loading model\",\"type\":\"unavailable_error\",\"code\":503}}"
+        ));
+        assert!(!is_transient_warmup_error("ttft timeout"));
+    }
+
+    #[tokio::test]
+    async fn large_single_supplier_uses_request_timeout_for_first_token_deadline() {
+        let model = kimi_like();
+        let state = dispatch_test_state(dispatch_test_config(18), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        assert!(single_supplier_large_cold_start_grace(&state, &model));
+        assert_eq!(
+            pre_first_token_deadline(&state, &model),
+            Duration::from_secs(state.config.reliability.request_timeout_seconds)
+        );
+    }
+
+    #[tokio::test]
+    async fn small_single_supplier_keeps_normal_first_token_deadline() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(18), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        assert!(!single_supplier_large_cold_start_grace(&state, &model));
+        assert_eq!(pre_first_token_deadline(&state, &model), Duration::from_secs(18));
+    }
+
+    #[tokio::test]
+    async fn large_loaded_supplier_keeps_grace_even_with_extra_swappable_node() {
+        let model = kimi_like();
+        let state = dispatch_test_state(dispatch_test_config(18), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-b".into(),
+            "Node B".into(),
+            dispatch_caps(&[], &[&model.id]),
+        );
+
+        assert!(single_supplier_large_cold_start_grace(&state, &model));
+        assert_eq!(
+            pre_first_token_deadline(&state, &model),
+            Duration::from_secs(state.config.reliability.request_timeout_seconds)
+        );
+    }
+
     #[tokio::test]
     async fn pick_and_dispatch_quarantines_failed_open_and_tries_next_device() {
-        let model = kimi_like();
+        let model = free_like();
         let state = dispatch_test_state(dispatch_test_config(1), &model);
         state.registry.upsert_device(
             "node-a".into(),
@@ -1511,5 +1768,55 @@ quantization: null
         assert_eq!(eligible_ids, vec!["node-b"]);
         assert_eq!(state.registry.in_flight("node-a"), 0);
         assert_eq!(state.registry.in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn pick_and_dispatch_single_large_supplier_retries_same_node_before_quarantine() {
+        let model = kimi_like();
+        let state = dispatch_test_state(dispatch_test_config(10), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        let relay = state.relay.clone();
+        let signal_second_ready = tokio::spawn(async move {
+            let mut seen = std::collections::HashSet::new();
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                for session_id in relay.test_ready_waiter_ids() {
+                    if seen.insert(session_id.clone()) && seen.len() == 2 {
+                        assert!(relay.test_signal_ready(&session_id));
+                        return;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for second relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+        )
+        .await
+        .expect("dispatch should retry same node during cold-start grace");
+        drop(rx);
+
+        signal_second_ready
+            .await
+            .expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "node-a");
+        let eligible = state.registry.eligible_devices(&model.id);
+        let eligible_ids: Vec<_> = eligible.iter().map(|d| d.node_id.as_str()).collect();
+        assert_eq!(eligible_ids, vec!["node-a"]);
+        assert_eq!(state.registry.in_flight("node-a"), 1);
     }
 }

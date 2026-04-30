@@ -87,6 +87,20 @@ models:
     routing_tags: [agent-harness]
     aliases: [gpt-oss-120b]
 
+  - id: minimax/minimax-m2.7
+    display_name: MiniMax M2.7
+    owned_by: minimax
+    context_length: 196608
+    max_output_tokens: 32768
+    params_b: 229
+    pricing_prompt: "0.00000030"
+    pricing_completion: "0.00000120"
+    quantization: "8bit"
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Large agentic MiniMax model for coding, long-context reasoning, and multi-step workflows."
+    routing_tags: [agent-harness]
+    aliases: [minimax-m2.7, minimax-m27, m2.7]
+
   - id: google/gemma-3-27b-it
     display_name: Gemma 3 27B Instruct (multimodal)
     owned_by: google
@@ -138,6 +152,7 @@ models:
     quantization: "bf16"
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
     description: "Multimodal Qwen model for vision, reasoning, and tool use."
+    routing_tags: [agent-harness]
     aliases: [qwen3.6-35b-a3b, qwen3-6-35b-a3b, qwen3.6-35b]
 
   - id: qwen/qwen3.6-27b

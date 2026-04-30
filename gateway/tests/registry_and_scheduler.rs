@@ -13,6 +13,7 @@ fn reliability() -> ReliabilityConfig {
     ReliabilityConfig {
         request_timeout_seconds: 60,
         ttft_deadline_seconds: 5,
+        small_ttft_deadline_seconds: 5,
         max_retries: 1,
         heartbeat_stale_seconds: 30,
         quarantine_seconds: 30,
@@ -128,6 +129,60 @@ fn scheduler_excludes_failed_device() {
         first.node_id, retry.node_id,
         "retry should pick a different device"
     );
+}
+
+#[test]
+fn scheduler_drops_clear_tie_laggards() {
+    let r = Registry::new(reliability());
+    r.upsert_device(
+        "node-fast".into(),
+        "Fast".into(),
+        caps(&["nousresearch/hermes-3-llama-3.1-8b"], &[], "m3Ultra", 128.0),
+    );
+    r.upsert_device(
+        "node-slow".into(),
+        "Slow".into(),
+        caps(&["nousresearch/hermes-3-llama-3.1-8b"], &[], "m4Pro", 64.0),
+    );
+
+    r.apply_heartbeat(
+        "node-fast",
+        &HeartbeatPayload {
+            device_id: "node-fast".into(),
+            timestamp: 0.0,
+            thermal_level: ThermalLevel::Nominal,
+            throttle_level: 100,
+            loaded_models: vec!["nousresearch/hermes-3-llama-3.1-8b".into()],
+            is_generating: false,
+            queue_depth: 0,
+            ewma_tokens_per_second: Some(120.0),
+        },
+    );
+    r.apply_heartbeat(
+        "node-slow",
+        &HeartbeatPayload {
+            device_id: "node-slow".into(),
+            timestamp: 0.0,
+            thermal_level: ThermalLevel::Nominal,
+            throttle_level: 100,
+            loaded_models: vec!["nousresearch/hermes-3-llama-3.1-8b".into()],
+            is_generating: false,
+            queue_depth: 0,
+            ewma_tokens_per_second: Some(10.0),
+        },
+    );
+
+    let els = r.eligible_devices("nousresearch/hermes-3-llama-3.1-8b");
+    let sched = scheduler();
+    for _ in 0..32 {
+        let picked = sched
+            .pick(&els, "nousresearch/hermes-3-llama-3.1-8b", &[], &r, None)
+            .expect("device");
+        assert_eq!(
+            picked.node_id, "node-fast",
+            "clear score laggard should not stay in the fast-lane tie pool"
+        );
+    }
 }
 
 #[test]
@@ -252,6 +307,25 @@ fn catalog_contains_kimi_conductor_alias() {
     );
     assert!(kimi.matches("moonshotai/kimi-k2"));
     assert!(kimi.matches("kimi2.6"));
+}
+
+#[test]
+fn catalog_contains_minimax_m2_7_entry() {
+    let path = env_models_yaml();
+    let models = catalog::load(&path).expect("load models.yaml");
+    let minimax = models
+        .iter()
+        .find(|m| m.id == "minimax/minimax-m2.7")
+        .expect("minimax m2.7 present");
+    assert_eq!(minimax.context_length, 196608);
+    assert_eq!(minimax.max_output_tokens, 32768);
+    assert_eq!(minimax.quantization.as_deref(), Some("8bit"));
+    assert!(
+        minimax.aliases.iter().any(|a| a == "minimax-m2.7"),
+        "minimax catalog entry must keep a stable shorthand alias"
+    );
+    assert!(minimax.matches("minimax/minimax-m2.7"));
+    assert!(minimax.matches("minimax-m2.7"));
 }
 
 fn env_models_yaml() -> String {

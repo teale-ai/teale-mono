@@ -2,6 +2,7 @@ import Foundation
 import SharedTypes
 import LocalAPI
 import LlamaCppKit
+import ModelManager
 import TealeNetKit
 import AgentKit
 import AuthKit
@@ -23,6 +24,7 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
 
     func remoteSnapshot() async -> RemoteAppSnapshot {
         await appState.refreshDownloadedModels()
+        appState.scanLocalModels()
 
         let loadedModel = await appState.engine.loadedModel
         let privacyStatus = await DesktopPrivacyFilter.shared.status(for: appState.privacyFilterMode)
@@ -30,7 +32,7 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         let downloaded = appState.downloadedModelIDs
         let downloading = appState.modelManager.downloadingModels
 
-        let models = compatibleModels.map { model in
+        var models = compatibleModels.map { model in
             RemoteModelSnapshot(
                 id: model.id,
                 name: model.name,
@@ -40,6 +42,22 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
                 downloadingProgress: downloading[model.id]
             )
         }
+
+        let seenModelIDs = Set(models.map(\.id))
+        let localModels = appState.scannedLocalModels
+            .filter { !seenModelIDs.contains($0.toDescriptor().id) }
+            .map { localModel in
+                let descriptor = localModel.toDescriptor()
+                return RemoteModelSnapshot(
+                    id: descriptor.id,
+                    name: descriptor.name,
+                    huggingFaceRepo: descriptor.huggingFaceRepo,
+                    downloaded: true,
+                    loaded: loadedModel?.id == descriptor.id,
+                    downloadingProgress: nil
+                )
+            }
+        models.append(contentsOf: localModels)
 
         return RemoteAppSnapshot(
             appVersion: appVersion(),
@@ -125,6 +143,11 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         // Check if this is a GGUF model request
         if let ggufModel = resolveGGUFModel(request.model) {
             await appState.loadGGUFModel(ggufModel)
+            return await remoteSnapshot()
+        }
+
+        if let localModel = resolveLocalMLXModel(request.model) {
+            await appState.loadLocalModel(localModel)
             return await remoteSnapshot()
         }
 
@@ -260,6 +283,18 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             || "gguf-\($0.filename)" == value
             || $0.path.path == value
             || $0.path.lastPathComponent == value
+        })
+    }
+
+    private func resolveLocalMLXModel(_ value: String) -> LocalModelInfo? {
+        appState.scanLocalModels()
+        return appState.scannedLocalModels.first(where: { localModel in
+            let descriptor = localModel.toDescriptor()
+            return descriptor.id == value
+                || descriptor.huggingFaceRepo == value
+                || localModel.path.path == value
+                || localModel.path.lastPathComponent == value
+                || localModel.name == value
         })
     }
 
