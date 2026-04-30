@@ -5,10 +5,13 @@ import AppCore
 import AuthKit
 
 private enum DesktopCompanionConfig {
-    static let remoteDesktopURL = URL(
-        string: ProcessInfo.processInfo.environment["TEALE_DESKTOP_WEB_URL"]
-            ?? "https://teale.com/docs/desktop-companion/index.html"
-    )
+    // Remote desktop UI is a dev-only override. The bundled assets under
+    // Resources/DesktopCompanionWeb/ are the source of truth for shipped
+    // builds — no public web fallback is deployed today, so an unset env
+    // var means "use the bundled page only" (matches the Windows/Linux
+    // tray behavior, which embeds the same assets at compile time).
+    static let remoteDesktopURL: URL? = ProcessInfo.processInfo.environment["TEALE_DESKTOP_WEB_URL"]
+        .flatMap { URL(string: $0) }
 
     static let routes: [String: String] = [
         "snapshot": "/v1/desktop/app",
@@ -289,11 +292,11 @@ private final class DesktopCompanionSchemeHandler: NSObject, WKURLSchemeHandler 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {}
 
     private func resource(named name: String, mimeType: String) -> (Data, String, Int)? {
-        guard let url = Bundle.module.url(
-            forResource: name,
-            withExtension: nil,
-            subdirectory: "DesktopCompanionWeb"
-        ), let data = try? Data(contentsOf: url) else {
+        // Package.swift uses .process("Resources"), which flattens
+        // DesktopCompanionWeb/* into the bundle root — so look up by
+        // bare filename, not by subdirectory.
+        guard let url = Bundle.module.url(forResource: name, withExtension: nil),
+              let data = try? Data(contentsOf: url) else {
             return nil
         }
         return (data, mimeType, 200)
