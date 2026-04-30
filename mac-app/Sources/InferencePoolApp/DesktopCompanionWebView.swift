@@ -333,6 +333,12 @@ private struct DesktopCompanionWebContainer: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator.navigationDelegate
         webView.setValue(false, forKey: "drawsBackground")
+        // Allow Safari → Develop → <hostname> → Teale to attach a Web
+        // Inspector to the bundled UI. Required for diagnosing rendering
+        // and JS-state issues against shipped builds.
+        if #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
         DesktopCompanionBridge.shared.attach(webView: webView, authManager: appState.authManager, appState: appState)
         webView.load(URLRequest(url: URL(string: "teale://localhost/")!))
         context.coordinator.maybeLoadRemoteDesktop(into: webView)

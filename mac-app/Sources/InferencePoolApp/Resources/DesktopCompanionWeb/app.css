@@ -544,6 +544,9 @@ footer,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-decoration: none;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .device-id-button:hover {
