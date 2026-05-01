@@ -8,6 +8,10 @@
 
 use serde_json::Value;
 use std::process::Stdio;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -35,6 +39,7 @@ pub struct InferenceProxy {
     advertised_model_id: String,
     backend_model_id: String,
     client: reqwest::Client,
+    ready: Arc<AtomicBool>,
 }
 
 impl InferenceProxy {
@@ -47,34 +52,51 @@ impl InferenceProxy {
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("reqwest client build failed"),
+            ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn loaded_models(&self) -> Vec<String> {
-        vec![self.advertised_model_id.clone()]
+        if self.is_ready() {
+            vec![self.advertised_model_id.clone()]
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+
+    fn set_ready(&self, ready: bool) {
+        self.ready.store(ready, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub fn mark_ready_for_tests(&self, ready: bool) {
+        self.set_ready(ready);
     }
 
     /// Wait for backend to become healthy (up to timeout_secs).
     pub async fn wait_for_health(&self, timeout_secs: u64) -> anyhow::Result<()> {
-        let health_urls = [
-            format!("{}/health", self.base_url),
-            format!("{}/v1/models", self.base_url),
-            format!("{}/ollama/api/ps", self.base_url),
-        ];
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
 
         loop {
             if tokio::time::Instant::now() > deadline {
+                self.set_ready(false);
                 anyhow::bail!("backend health check timed out after {}s", timeout_secs);
             }
-            for health_url in &health_urls {
-                match self.client.get(health_url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        info!("backend is healthy at {} via {}", self.base_url, health_url);
-                        return Ok(());
-                    }
-                    _ => {}
+            match self.backend_model_is_ready().await {
+                Ok(true) => {
+                    self.set_ready(true);
+                    info!(
+                        "backend is healthy at {} with model {}",
+                        self.base_url, self.backend_model_id
+                    );
+                    return Ok(());
                 }
+                Ok(false) => {}
+                Err(err) => debug!("backend health probe failed: {}", err),
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
@@ -98,15 +120,20 @@ impl InferenceProxy {
             .json(&body)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("backend request failed: {}", e))?;
+            .map_err(|e| {
+                self.set_ready(false);
+                anyhow::anyhow!("backend request failed: {}", e)
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             anyhow::bail!("backend returned {}: {}", status, text);
         }
+        self.set_ready(true);
 
         let (tx, rx) = mpsc::channel::<Value>(CHUNK_CHANNEL_CAPACITY);
+        let ready = self.ready.clone();
 
         tokio::spawn(async move {
             let mut stream = response.bytes_stream();
@@ -139,6 +166,7 @@ impl InferenceProxy {
                         }
                     }
                     Err(e) => {
+                        ready.store(false, Ordering::Relaxed);
                         error!("SSE stream error: {}", e);
                         break;
                     }
@@ -148,6 +176,92 @@ impl InferenceProxy {
 
         Ok(rx)
     }
+
+    async fn backend_model_is_ready(&self) -> anyhow::Result<bool> {
+        if let Some(loaded) = self.backend_model_ready_via_ollama_ps().await? {
+            return Ok(loaded);
+        }
+        if let Some(loaded) = self.backend_model_ready_via_openai_models().await? {
+            return Ok(loaded);
+        }
+        if let Some(healthy) = self.backend_healthy_via_health().await? {
+            return Ok(healthy);
+        }
+        Ok(false)
+    }
+
+    async fn backend_model_ready_via_ollama_ps(&self) -> anyhow::Result<Option<bool>> {
+        let url = format!("{}/ollama/api/ps", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => Ok(None),
+            status if !status.is_success() => Ok(Some(false)),
+            _ => {
+                let payload = response.json::<Value>().await?;
+                Ok(Some(model_id_in_ollama_ps(
+                    &payload,
+                    &self.backend_model_id,
+                )))
+            }
+        }
+    }
+
+    async fn backend_model_ready_via_openai_models(&self) -> anyhow::Result<Option<bool>> {
+        let url = format!("{}/v1/models", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => Ok(None),
+            status if !status.is_success() => Ok(Some(false)),
+            _ => {
+                let payload = response.json::<Value>().await?;
+                Ok(Some(model_id_in_openai_models(
+                    &payload,
+                    &[
+                        self.backend_model_id.as_str(),
+                        self.advertised_model_id.as_str(),
+                    ],
+                )))
+            }
+        }
+    }
+
+    async fn backend_healthy_via_health(&self) -> anyhow::Result<Option<bool>> {
+        let url = format!("{}/health", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => Ok(None),
+            status => Ok(Some(status.is_success())),
+        }
+    }
+}
+
+fn model_id_in_ollama_ps(payload: &Value, expected_model_id: &str) -> bool {
+    payload
+        .get("models")
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|model| {
+            model
+                .get("model")
+                .or_else(|| model.get("name"))
+                .and_then(Value::as_str)
+        })
+        .any(|model_id| model_id == expected_model_id)
+}
+
+fn model_id_in_openai_models(payload: &Value, expected_model_ids: &[&str]) -> bool {
+    payload
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|model| model.get("id").and_then(Value::as_str))
+        .any(|model_id| expected_model_ids.contains(&model_id))
 }
 
 /// Build the `Command` for llama-server (does not spawn).
@@ -253,4 +367,49 @@ pub fn spawn_mnn_server(config: &MnnConfig) -> anyhow::Result<Child> {
     }
 
     Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{model_id_in_ollama_ps, model_id_in_openai_models, InferenceProxy};
+
+    #[test]
+    fn loaded_models_require_ready_backend() {
+        let proxy = InferenceProxy::new(11436, "moonshotai/kimi-k2.6", "unsloth/Kimi-K2.6");
+        assert!(proxy.loaded_models().is_empty());
+
+        proxy.mark_ready_for_tests(true);
+        assert_eq!(
+            proxy.loaded_models(),
+            vec!["moonshotai/kimi-k2.6".to_string()]
+        );
+        assert!(proxy.is_ready());
+    }
+
+    #[test]
+    fn ollama_ps_probe_requires_expected_backend_model() {
+        let payload = serde_json::json!({
+            "models": [
+                { "model": "unsloth/Kimi-K2.6" },
+                { "model": "other/model" }
+            ]
+        });
+        assert!(model_id_in_ollama_ps(&payload, "unsloth/Kimi-K2.6"));
+        assert!(!model_id_in_ollama_ps(&payload, "moonshotai/kimi-k2.6"));
+    }
+
+    #[test]
+    fn openai_models_probe_matches_backend_or_advertised_model() {
+        let payload = serde_json::json!({
+            "data": [
+                { "id": "moonshotai/kimi-k2.6" },
+                { "id": "qwen/qwen3.6-35b-a3b" }
+            ]
+        });
+        assert!(model_id_in_openai_models(
+            &payload,
+            &["unsloth/Kimi-K2.6", "moonshotai/kimi-k2.6"]
+        ));
+        assert!(!model_id_in_openai_models(&payload, &["unsloth/Kimi-K2.6"]));
+    }
 }

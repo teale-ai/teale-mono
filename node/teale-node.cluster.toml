@@ -20,18 +20,18 @@ url = "wss://relay.teale.com/ws"
 # Leave `binary` blank and pass `--no-backend` so teale-node doesn't try to
 # launch it (the cluster-runner is managed by launchd / systemd separately).
 binary = "/bin/true"
-model = "unsloth/Kimi-K2.6"    # local exo model id; not launched in --no-backend mode
-backend_model_id = "unsloth/Kimi-K2.6"
+model = "teale/Kimi-K2.6-32k"  # local exo alias with a lower runtime context for headroom
+backend_model_id = "teale/Kimi-K2.6-32k"
 model_id = "moonshotai/kimi-k2.6"
 port = 52415                   # exo's default OpenAI-compat port
 gpu_layers = 999
-context_size = 131072
+context_size = 32768           # advertised/runtime target; lower than upstream for stability
 # extra_args unused (backend not spawned by teale-node)
 
 [node]
 display_name = "Ultra Studio cluster (2x M3 Ultra 512GB)"
 gpu_backend = "metal"
-max_concurrent_requests = 4
+max_concurrent_requests = 1    # deliberate headroom; Kimi is a dedicated pair
 # No swappable_models — cluster is pinned to its flagship model;
 # swapping a 1TB MoE is not feasible in under 30s.
 heartbeat_interval_seconds = 40

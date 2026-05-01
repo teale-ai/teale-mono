@@ -30,7 +30,9 @@ use uuid::Uuid;
 use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
 use crate::auth::AuthPrincipal;
-use crate::catalog::{is_large, resolve_auto, synthesize_live_model, AutoRouteProfile, CatalogModel};
+use crate::catalog::{
+    is_large, resolve_auto, synthesize_live_model, AutoRouteProfile, CatalogModel,
+};
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::metrics;
@@ -56,10 +58,7 @@ fn is_transient_warmup_error(message: &str) -> bool {
         || (lower.contains("unavailable_error") && lower.contains("503"))
 }
 
-fn single_supplier_large_cold_start_grace(
-    state: &AppState,
-    catalog_model: &CatalogModel,
-) -> bool {
+fn single_supplier_large_cold_start_grace(state: &AppState, catalog_model: &CatalogModel) -> bool {
     if !is_large(catalog_model.params_b) {
         return false;
     }
@@ -514,8 +513,8 @@ async fn pick_and_dispatch(
     let mut excluded: Vec<String> = exclude.to_vec();
     let mut last_dispatch_error: Option<String> = None;
     let cold_start_grace = single_supplier_large_cold_start_grace(state, catalog_model);
-    let max_dispatch_grace_retries = (state.config.reliability.request_timeout_seconds / 5)
-        .max(1) as u32;
+    let max_dispatch_grace_retries =
+        (state.config.reliability.request_timeout_seconds / 5).max(1) as u32;
     let mut dispatch_grace_failures = 0u32;
     // Relay open should succeed almost immediately for a connected peer.
     // Keep this much tighter than the TTFT budget so a dead/stuck node
@@ -1517,7 +1516,10 @@ quantization: null
         assert_eq!(resolved.id, "acme/live-model");
         assert_eq!(resolved.context_length, 32768);
         assert_eq!(resolved.max_output_tokens, 8192);
-        assert_eq!(resolved.pricing_prompt, crate::catalog::LIVE_MODEL_DEFAULT_PROMPT_PRICE);
+        assert_eq!(
+            resolved.pricing_prompt,
+            crate::catalog::LIVE_MODEL_DEFAULT_PROMPT_PRICE
+        );
         assert_eq!(
             resolved.pricing_completion,
             crate::catalog::LIVE_MODEL_DEFAULT_COMPLETION_PRICE
@@ -1689,7 +1691,10 @@ quantization: null
         );
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
-        assert_eq!(pre_first_token_deadline(&state, &model), Duration::from_secs(18));
+        assert_eq!(
+            pre_first_token_deadline(&state, &model),
+            Duration::from_secs(18)
+        );
     }
 
     #[tokio::test]

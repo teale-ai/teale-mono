@@ -2583,12 +2583,14 @@ mod tests {
         let registry_store = RegistryStore::new(tmp.join("model-registry.json"));
         let node_state = Arc::new(NodeRuntimeState::new(1));
         let advertised_model_id = model_id.to_string();
+        let proxy = crate::inference::InferenceProxy::new(
+            11436,
+            &advertised_model_id,
+            &advertised_model_id,
+        );
+        proxy.mark_ready_for_tests(true);
         let swap = SwapManager::new(
-            Backend::Http(crate::inference::InferenceProxy::new(
-                11436,
-                &advertised_model_id,
-                &advertised_model_id,
-            )),
+            Backend::Http(proxy),
             None,
             advertised_model_id.clone(),
             None,

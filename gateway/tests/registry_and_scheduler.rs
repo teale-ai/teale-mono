@@ -137,7 +137,12 @@ fn scheduler_drops_clear_tie_laggards() {
     r.upsert_device(
         "node-fast".into(),
         "Fast".into(),
-        caps(&["nousresearch/hermes-3-llama-3.1-8b"], &[], "m3Ultra", 128.0),
+        caps(
+            &["nousresearch/hermes-3-llama-3.1-8b"],
+            &[],
+            "m3Ultra",
+            128.0,
+        ),
     );
     r.upsert_device(
         "node-slow".into(),
