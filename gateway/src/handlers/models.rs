@@ -4,8 +4,8 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use std::collections::HashMap;
 use std::cmp::Reverse;
+use std::collections::HashMap;
 use teale_protocol::openai::ModelsResponse;
 
 use crate::catalog::{is_large, synthesize_live_model};
@@ -266,7 +266,10 @@ mod tests {
         assert_eq!(model.loaded_device_count, Some(1));
         assert_eq!(model.context_length, Some(65_536));
         assert_eq!(
-            model.pricing.as_ref().map(|pricing| pricing.prompt.as_str()),
+            model
+                .pricing
+                .as_ref()
+                .map(|pricing| pricing.prompt.as_str()),
             Some(crate::catalog::LIVE_MODEL_DEFAULT_PROMPT_PRICE)
         );
     }

@@ -135,8 +135,8 @@ pub fn load(path: &str) -> anyhow::Result<Vec<CatalogModel>> {
 
 pub fn synthesize_live_model(model_id: &str, effective_context: Option<u32>) -> CatalogModel {
     let context_length = effective_context.unwrap_or(LIVE_MODEL_DEFAULT_CONTEXT_LENGTH);
-    let max_output_tokens = (context_length / 4)
-        .clamp(1_024, LIVE_MODEL_DEFAULT_MAX_OUTPUT_TOKENS.max(1_024));
+    let max_output_tokens =
+        (context_length / 4).clamp(1_024, LIVE_MODEL_DEFAULT_MAX_OUTPUT_TOKENS.max(1_024));
     let display_name = model_id
         .rsplit('/')
         .next()
@@ -220,23 +220,23 @@ pub fn resolve_auto(
 ) -> Option<&CatalogModel> {
     let build_candidates = |prefer_agent_harness: bool| -> Vec<&CatalogModel> {
         catalog
-        .iter()
-        .filter(|m| !m.is_virtual)
-        .filter(|m| m.context_length >= required_ctx)
-        .filter(|m| match (profile, prefer_agent_harness) {
-            (AutoRouteProfile::Generic, _) => true,
-            (AutoRouteProfile::AgentHarness, true) => m.has_routing_tag("agent-harness"),
-            (AutoRouteProfile::AgentHarness, false) => true,
-        })
-        .filter(|m| {
-            let required = if is_large(m.params_b) {
-                floor_large
-            } else {
-                floor_small
-            };
-            eligible_count(&m.id, required_ctx) >= required
-        })
-        .collect()
+            .iter()
+            .filter(|m| !m.is_virtual)
+            .filter(|m| m.context_length >= required_ctx)
+            .filter(|m| match (profile, prefer_agent_harness) {
+                (AutoRouteProfile::Generic, _) => true,
+                (AutoRouteProfile::AgentHarness, true) => m.has_routing_tag("agent-harness"),
+                (AutoRouteProfile::AgentHarness, false) => true,
+            })
+            .filter(|m| {
+                let required = if is_large(m.params_b) {
+                    floor_large
+                } else {
+                    floor_small
+                };
+                eligible_count(&m.id, required_ctx) >= required
+            })
+            .collect()
     };
 
     let mut candidates = build_candidates(true);
