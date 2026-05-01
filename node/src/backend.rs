@@ -30,7 +30,11 @@ impl Backend {
     }
 
     pub fn is_ready(&self) -> bool {
-        !matches!(self, Backend::Unavailable)
+        match self {
+            Backend::Http(proxy) => proxy.is_ready(),
+            Backend::LiteRt(_) => true,
+            Backend::Unavailable => false,
+        }
     }
 
     pub async fn stream_completion(

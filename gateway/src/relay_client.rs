@@ -30,6 +30,9 @@ use crate::identity::GatewayIdentity;
 use crate::metrics;
 use crate::registry::Registry;
 
+fn relay_idle_timeout(discover_interval_seconds: u64) -> Duration {
+    Duration::from_secs((discover_interval_seconds.saturating_mul(6)).max(30))
+}
 /// One in-flight session waiting for its upstream response.
 pub struct PendingSession {
     pub request_id: String,
@@ -224,6 +227,7 @@ pub async fn spawn(
         let ready_waiters = ready_waiters.clone();
         let outbox_tx = outbox_tx.clone();
         let reliability = config.reliability.clone();
+        let idle_timeout = relay_idle_timeout(config.reliability.discover_interval_seconds);
 
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);
@@ -277,7 +281,20 @@ pub async fn spawn(
                         let mut reader = read;
                         let mut sent_discover_after_ack = false;
                         loop {
-                            let result = reader.next().await;
+                            let result =
+                                match tokio::time::timeout(idle_timeout, reader.next()).await {
+                                    Ok(result) => result,
+                                    Err(_) => {
+                                        warn!(
+                                            "relay idle timeout after {:?} without inbound traffic",
+                                            idle_timeout
+                                        );
+                                        metrics::WS_RECONNECTS_TOTAL
+                                            .with_label_values(&["idle_timeout"])
+                                            .inc();
+                                        break;
+                                    }
+                                };
                             let Some(result) = result else {
                                 warn!("relay connection closed by peer");
                                 metrics::WS_RECONNECTS_TOTAL
@@ -596,6 +613,13 @@ async fn dispatch_cluster(
 mod tests {
     use super::*;
     use crate::config::ReliabilityConfig;
+
+    #[test]
+    fn relay_idle_timeout_has_reasonable_floor_and_scale() {
+        assert_eq!(relay_idle_timeout(1), Duration::from_secs(30));
+        assert_eq!(relay_idle_timeout(5), Duration::from_secs(30));
+        assert_eq!(relay_idle_timeout(10), Duration::from_secs(60));
+    }
 
     fn caps(loaded_models: &[&str]) -> NodeCapabilities {
         NodeCapabilities {
