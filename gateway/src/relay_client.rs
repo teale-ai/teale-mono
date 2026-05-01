@@ -315,8 +315,6 @@ pub async fn spawn(
                                         &sessions,
                                         &ready_waiters,
                                         reliability.quarantine_seconds,
-                                        &outbox_tx,
-                                        &node_id,
                                         &mut sent_discover_after_ack,
                                     )
                                     .await;
@@ -330,8 +328,6 @@ pub async fn spawn(
                                                 &sessions,
                                                 &ready_waiters,
                                                 reliability.quarantine_seconds,
-                                                &outbox_tx,
-                                                &node_id,
                                                 &mut sent_discover_after_ack,
                                             )
                                             .await;
@@ -413,8 +409,6 @@ async fn handle_incoming(
     sessions: &Arc<DashMap<String, PendingSession>>,
     ready_waiters: &Arc<Mutex<HashMap<String, ReadyWaiter>>>,
     quarantine_seconds: u64,
-    _outbox_tx: &mpsc::UnboundedSender<Message>,
-    _self_node_id: &str,
     sent_discover_after_ack: &mut bool,
 ) {
     match msg {
@@ -609,6 +603,57 @@ async fn dispatch_cluster(
     }
 }
 
+fn update_eligible_gauges(registry: &Arc<Registry>) {
+    // Rebuild once a full discover lands. Clear then re-emit.
+    metrics::DEVICES_ELIGIBLE.reset();
+    let mut per_model: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for dev in registry.snapshot_devices() {
+        for m in &dev.capabilities.loaded_models {
+            *per_model.entry(m.clone()).or_insert(0) += 1;
+        }
+    }
+    for (m, n) in per_model {
+        metrics::DEVICES_ELIGIBLE
+            .with_label_values(&[&m])
+            .set(n as f64);
+    }
+}
+
+fn make_register_payload(identity: &Arc<GatewayIdentity>, display_name: &str) -> String {
+    let caps = NodeCapabilities {
+        hardware: HardwareCapability {
+            chip_family: "gatewayVirtual".into(),
+            chip_name: "gateway.teale.com".into(),
+            total_ram_gb: 0.0,
+            gpu_core_count: 0,
+            memory_bandwidth_gbs: 0.0,
+            tier: 0,
+            gpu_backend: Some(format!("{:?}", GpuBackend::Cpu).to_lowercase()),
+            platform: Some("gateway".into()),
+            gpu_vram_gb: None,
+        },
+        loaded_models: vec![],
+        max_model_size_gb: 0.0,
+        is_available: true,
+        ptn_ids: None,
+        swappable_models: vec![],
+        max_concurrent_requests: Some(0),
+        effective_context: None,
+        on_ac_power: None,
+    };
+    let signature = identity.sign_node_id();
+    serde_json::json!({
+        "register": {
+            "nodeID": identity.node_id(),
+            "publicKey": identity.public_key_hex(),
+            "displayName": display_name,
+            "capabilities": caps,
+            "signature": signature,
+        }
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,7 +725,6 @@ mod tests {
             },
         );
 
-        let (outbox_tx, _outbox_rx) = mpsc::unbounded_channel();
         let mut sent_discover_after_ack = false;
         handle_incoming(
             IncomingRelayMessage::Error(teale_protocol::RelayErrorPayload {
@@ -691,8 +735,6 @@ mod tests {
             &sessions,
             &ready_waiters,
             60,
-            &outbox_tx,
-            "gateway-node",
             &mut sent_discover_after_ack,
         )
         .await;
@@ -714,55 +756,4 @@ mod tests {
             .expect("device still tracked");
         assert!(dev.is_quarantined());
     }
-}
-
-fn update_eligible_gauges(registry: &Arc<Registry>) {
-    // Rebuild once a full discover lands. Clear then re-emit.
-    metrics::DEVICES_ELIGIBLE.reset();
-    let mut per_model: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    for dev in registry.snapshot_devices() {
-        for m in &dev.capabilities.loaded_models {
-            *per_model.entry(m.clone()).or_insert(0) += 1;
-        }
-    }
-    for (m, n) in per_model {
-        metrics::DEVICES_ELIGIBLE
-            .with_label_values(&[&m])
-            .set(n as f64);
-    }
-}
-
-fn make_register_payload(identity: &Arc<GatewayIdentity>, display_name: &str) -> String {
-    let caps = NodeCapabilities {
-        hardware: HardwareCapability {
-            chip_family: "gatewayVirtual".into(),
-            chip_name: "gateway.teale.com".into(),
-            total_ram_gb: 0.0,
-            gpu_core_count: 0,
-            memory_bandwidth_gbs: 0.0,
-            tier: 0,
-            gpu_backend: Some(format!("{:?}", GpuBackend::Cpu).to_lowercase()),
-            platform: Some("gateway".into()),
-            gpu_vram_gb: None,
-        },
-        loaded_models: vec![],
-        max_model_size_gb: 0.0,
-        is_available: true,
-        ptn_ids: None,
-        swappable_models: vec![],
-        max_concurrent_requests: Some(0),
-        effective_context: None,
-        on_ac_power: None,
-    };
-    let signature = identity.sign_node_id();
-    serde_json::json!({
-        "register": {
-            "nodeID": identity.node_id(),
-            "publicKey": identity.public_key_hex(),
-            "displayName": display_name,
-            "capabilities": caps,
-            "signature": signature,
-        }
-    })
-    .to_string()
 }

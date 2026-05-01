@@ -261,11 +261,7 @@ fn model_id_in_openai_models(payload: &Value, expected_model_ids: &[&str]) -> bo
         .flatten()
         .filter_map(Value::as_object)
         .filter_map(|model| model.get("id").and_then(Value::as_str))
-        .any(|model_id| {
-            expected_model_ids
-                .iter()
-                .any(|expected| model_id == *expected)
-        })
+        .any(|model_id| expected_model_ids.contains(&model_id))
 }
 
 /// Build the `Command` for llama-server (does not spawn).

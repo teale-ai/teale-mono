@@ -473,8 +473,10 @@ mod tests {
 
     #[test]
     fn eligible_devices_excludes_stale_heartbeat_nodes() {
-        let mut reliability = ReliabilityConfig::default();
-        reliability.heartbeat_stale_seconds = 0;
+        let reliability = ReliabilityConfig {
+            heartbeat_stale_seconds: 0,
+            ..ReliabilityConfig::default()
+        };
         let registry = Registry::new(reliability);
         registry.upsert_device(
             "node-a".to_string(),
