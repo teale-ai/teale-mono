@@ -189,9 +189,22 @@ pub(crate) fn prepare_chat_request(
             required_ctx,
             auto_profile,
             |id, need_ctx| {
+                // Match the post-resolution floor check (`loaded_count` below):
+                // count only devices that have the model loaded right now, not
+                // ones whose only claim is `Swappable`. Otherwise resolve_auto
+                // can pick a model with theoretical-only supply (weights on
+                // disk, RAM available) and the floor check then 503s the
+                // request even though a different model with actual loaded
+                // supply would have served it.
                 registry
                     .eligible_devices(id)
                     .into_iter()
+                    .filter(|device| {
+                        crate::registry::model_matches_any(
+                            id,
+                            &device.capabilities.loaded_models,
+                        )
+                    })
                     .filter(|device| {
                         device
                             .capabilities
@@ -1608,6 +1621,79 @@ quantization: null
 
     fn dispatch_test_state(config: Config, catalog_model: &CatalogModel) -> AppState {
         dispatch_test_state_with_catalog(config, vec![catalog_model.clone()])
+    }
+
+    fn virtual_auto() -> CatalogModel {
+        serde_yaml::from_str(
+            r#"
+id: teale/auto
+display_name: Teale Auto
+owned_by: teale
+context_length: 262144
+max_output_tokens: 32768
+params_b: 0
+pricing_prompt: "0.00000010"
+pricing_completion: "0.00000020"
+virtual: true
+aliases: [teale-auto]
+"#,
+        )
+        .unwrap()
+    }
+
+    fn concrete(id: &str, params_b: f64, ctx: u32) -> CatalogModel {
+        serde_yaml::from_str(&format!(
+            r#"
+id: {id}
+display_name: {id}
+owned_by: test
+context_length: {ctx}
+max_output_tokens: 8192
+params_b: {params_b}
+pricing_prompt: "0.00000010"
+pricing_completion: "0.00000020"
+"#
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn teale_auto_skips_models_only_swappable_no_loaded_supply() {
+        // Regression: when a smaller-params_b model has no loaded supply but
+        // some device claims it as `swappable`, resolve_auto used to count
+        // that device — picking the smaller model and then 503ing because
+        // the post-resolution `loaded_count` floor check rejects swappable.
+        // After the fix, resolve_auto's supply closure mirrors `loaded_count`
+        // and falls through to the next-larger model that actually has
+        // loaded supply.
+        use crate::auth::{AuthPrincipal, PrincipalKind};
+        use axum::http::HeaderMap;
+
+        let config = dispatch_test_config(15);
+        let small = concrete("test/small", 8.0, 32768);
+        let big = concrete("test/big", 35.0, 262144);
+        let state =
+            dispatch_test_state_with_catalog(config, vec![virtual_auto(), small.clone(), big.clone()]);
+
+        // One device has `big` actually loaded, and claims `small` as swappable.
+        // Pre-fix: resolve_auto picks `small` (smaller params_b) since the
+        // closure counts swappable. Post-fix: skips `small` (zero loaded) and
+        // picks `big`.
+        state.registry.upsert_device(
+            "node-A".into(),
+            "Tailor 64".into(),
+            dispatch_caps(&[&big.id], &[&small.id]),
+        );
+
+        let req = serde_json::to_value(req_with_system("system", Some(64))).unwrap();
+        let principal = AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: "internal".into(),
+            },
+        };
+        let prepared = prepare_chat_request(&state, &HeaderMap::new(), &principal, req)
+            .expect("should resolve to the actually-loaded model");
+        assert_eq!(prepared.catalog_model.id, big.id);
     }
 
     #[tokio::test]

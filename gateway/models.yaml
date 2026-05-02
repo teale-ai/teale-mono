@@ -20,6 +20,19 @@ models:
     description: "General-purpose assistant model for chat, extraction, and lightweight coding."
     aliases: [llama-3.1-8b-instruct, llama3.1-8b]
 
+  - id: qwen/qwen3.5-9b
+    display_name: Qwen 3.5 9B
+    owned_by: qwen
+    context_length: 131072
+    max_output_tokens: 16384
+    params_b: 9
+    pricing_prompt: "0.00000010"
+    pricing_completion: "0.00000020"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    description: "Recommended starter for 16GB Apple Silicon — Qwen3.5 hybrid (Gated Delta + sparse MoE), 201 languages."
+    aliases: [qwen3.5-9b]
+
   - id: qwen/qwen3-8b
     display_name: Qwen 3 8B
     owned_by: qwen
