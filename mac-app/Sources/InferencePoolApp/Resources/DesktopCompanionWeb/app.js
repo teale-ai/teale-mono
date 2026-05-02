@@ -3435,7 +3435,7 @@ function renderAccountApiKeys() {
   const signedIn = Boolean(authUser);
   const linked = Boolean(accountSummary?.account_user_id);
 
-  els.accountApiKeyNote.textContent = "Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them.";
+  els.accountApiKeyNote.textContent = "Create revocable API keys for direct demand traffic to gateway.teale.com, including Claude Desktop 3P and Claude Code gateway mode. These keys belong to your human account and stay valid until you revoke them.";
   els.accountApiKeyLabel.disabled = !signedIn || !linked || accountApiKeyCreateInFlight;
   els.accountApiKeyCreate.disabled = !signedIn || !linked || accountApiKeyCreateInFlight;
   if (accountApiKeyCreateInFlight) {

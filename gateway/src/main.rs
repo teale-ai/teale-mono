@@ -179,6 +179,11 @@ async fn main() -> anyhow::Result<()> {
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
         )
+        .route("/v1/messages", post(handlers::messages::messages))
+        .route(
+            "/v1/messages/count_tokens",
+            post(handlers::messages::count_tokens),
+        )
         .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/network", get(handlers::network::network))
         .route("/v1/account/link", post(handlers::account::link_account))

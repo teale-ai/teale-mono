@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceRequestPayload};
 
-use crate::auth::AuthPrincipal;
+use crate::auth::{AuthPrincipal, PrincipalKind};
 use crate::catalog::{
     is_large, resolve_auto, synthesize_live_model, AutoRouteProfile, CatalogModel,
 };
@@ -120,17 +120,58 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthPrincipal>,
-    Json(mut req): Json<Value>,
+    Json(req): Json<Value>,
 ) -> Result<Response, GatewayError> {
+    let prepared = prepare_chat_request(&state, &headers, &principal, req)?;
+    if prepared.streaming {
+        let stream = run_streaming(
+            state,
+            prepared.catalog_model,
+            prepared.req_body,
+            prepared.consumer,
+            prepared.required_ctx,
+            prepared.preferred_node_ids,
+        )
+        .await?;
+        Ok(stream.into_response())
+    } else {
+        let json = run_buffered(
+            state,
+            prepared.catalog_model,
+            prepared.req_body,
+            prepared.consumer,
+            prepared.required_ctx,
+            prepared.preferred_node_ids,
+        )
+        .await?;
+        Ok(json.into_response())
+    }
+}
+
+pub(crate) struct PreparedChatRequest {
+    pub catalog_model: CatalogModel,
+    pub req_body: Value,
+    pub consumer: Option<ledger::ConsumerPrincipal>,
+    pub required_ctx: u32,
+    pub preferred_node_ids: Vec<String>,
+    pub streaming: bool,
+}
+
+pub(crate) fn prepare_chat_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    principal: &AuthPrincipal,
+    mut req: Value,
+) -> Result<PreparedChatRequest, GatewayError> {
     // Parse the inbound request loosely so we can copy pass-through fields.
-    let parsed: ChatCompletionRequest = serde_json::from_value(req.clone())
+    let mut parsed: ChatCompletionRequest = serde_json::from_value(req.clone())
         .map_err(|e| GatewayError::BadRequest(format!("invalid request body: {}", e)))?;
     let Some(requested_model) = parsed.model.clone() else {
         return Err(GatewayError::BadRequest("`model` is required".into()));
     };
 
     // Catalog lookup.
-    let mut catalog_model = resolve_requested_model(&state, &requested_model)
+    let mut catalog_model = resolve_requested_model(state, &requested_model)
         .ok_or_else(|| GatewayError::ModelNotFound(requested_model.clone()))?;
 
     let floor = &state.config.scheduler.per_model_floor;
@@ -141,7 +182,7 @@ pub async fn chat_completions(
     // is strict per project policy — no silent downgrade; on miss we 503.
     if catalog_model.is_virtual {
         let required_ctx = estimate_required_context(&parsed);
-        let auto_profile = infer_auto_route_profile(&headers, &parsed);
+        let auto_profile = infer_auto_route_profile(headers, &parsed);
         let registry = state.registry.clone();
         let resolved = resolve_auto(
             &state.catalog,
@@ -200,7 +241,7 @@ pub async fn chat_completions(
     }
 
     let streaming = parsed.stream.unwrap_or(false);
-    let consumer = consumer_principal(&principal);
+    let consumer = consumer_principal(principal);
 
     // Pre-flight budget clamp — ledger must never go negative. Instead of
     // rejecting when the paying device (or share-key) can't cover a full
@@ -254,6 +295,7 @@ pub async fn chat_completions(
                         Value::Number(serde_json::Number::from(decision.effective_max)),
                     );
                 }
+                parsed.max_tokens = Some(decision.effective_max as u32);
                 if decision.clamped {
                     debug!(
                         model = %catalog_model.id,
@@ -276,14 +318,16 @@ pub async fn chat_completions(
     // Compute context budget once; scheduler uses it to filter out nodes
     // whose effective_context can't cover the request.
     let required_ctx = estimate_required_context(&parsed);
+    let preferred_node_ids = preferred_linked_node_ids(state, headers, principal);
 
-    if streaming {
-        let stream = run_streaming(state, catalog_model, req, consumer, required_ctx).await?;
-        Ok(stream.into_response())
-    } else {
-        let json = run_buffered(state, catalog_model, req, consumer, required_ctx).await?;
-        Ok(json.into_response())
-    }
+    Ok(PreparedChatRequest {
+        catalog_model,
+        req_body: req,
+        consumer,
+        required_ctx,
+        preferred_node_ids,
+        streaming,
+    })
 }
 
 /// Outcome of the pre-flight budget clamp. Public so unit tests can pin the
@@ -379,7 +423,7 @@ fn affordable_out_tokens(model: &CatalogModel, remaining_after_prompt: i64) -> u
 /// for CJK and under-estimates for code. We don't pad with a safety margin
 /// because that pushes otherwise-legal requests (e.g. exactly 16k prompt
 /// + completion on a 16k-catalog model) past the ceiling and forces a 503.
-fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
+pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
     let prompt_chars: usize = req
         .messages
         .iter()
@@ -449,6 +493,31 @@ fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) ->
     }
 }
 
+fn preferred_linked_node_ids(
+    state: &AppState,
+    headers: &HeaderMap,
+    principal: &AuthPrincipal,
+) -> Vec<String> {
+    let enabled = headers
+        .get("x-teale-prefer-linked-device")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if !enabled {
+        return Vec::new();
+    }
+    let PrincipalKind::Account {
+        account_user_id, ..
+    } = &principal.kind
+    else {
+        return Vec::new();
+    };
+    let Some(pool) = state.db.as_ref() else {
+        return Vec::new();
+    };
+    ledger::account_device_ids(pool, account_user_id).unwrap_or_default()
+}
+
 /// Remaining credits on a share-key (budget - consumed), or None if the key
 /// can't be looked up — in that case we fall through and let the auth layer
 /// handle rejection.
@@ -479,24 +548,33 @@ fn share_key_is_funded(pool: &crate::db::DbPool, key_id: &str) -> bool {
 /// Build the ledger-facing consumer from an authenticated principal.
 /// Static tokens don't settle (they pre-date the credit system), so we
 /// return `None` for them.
-fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::ConsumerPrincipal> {
+pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::ConsumerPrincipal> {
     if let Some((issuer, key_id)) = principal.share_key() {
         return Some(ledger::ConsumerPrincipal::Share {
             issuer_device_id: issuer.to_string(),
             key_id: key_id.to_string(),
         });
     }
-    principal
-        .device_id()
-        .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
+    match &principal.kind {
+        PrincipalKind::Device { device_id } => {
+            Some(ledger::ConsumerPrincipal::Device(device_id.to_string()))
+        }
+        PrincipalKind::Account {
+            account_user_id, ..
+        } => Some(ledger::ConsumerPrincipal::Account {
+            account_user_id: account_user_id.to_string(),
+        }),
+        PrincipalKind::Share { .. } | PrincipalKind::Static { .. } => None,
+    }
 }
 
-async fn pick_and_dispatch(
+pub(crate) async fn pick_and_dispatch(
     state: &AppState,
     catalog_model: &CatalogModel,
     req_body: &Value,
     exclude: &[String],
     min_context: Option<u32>,
+    preferred_node_ids: &[String],
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String), GatewayError> {
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
@@ -525,14 +603,38 @@ async fn pick_and_dispatch(
 
     loop {
         let candidates = state.registry.eligible_devices(&catalog_model.id);
-        let selected = match state.scheduler.pick(
-            &candidates,
-            &catalog_model.id,
-            &excluded,
-            &state.registry,
-            min_context,
-        ) {
-            Some(selected) => selected,
+        let preferred_candidates: Vec<_> = if preferred_node_ids.is_empty() {
+            Vec::new()
+        } else {
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    preferred_node_ids
+                        .iter()
+                        .any(|node_id| node_id == &candidate.node_id)
+                })
+                .cloned()
+                .collect()
+        };
+        let target_node = match state
+            .scheduler
+            .pick(
+                &preferred_candidates,
+                &catalog_model.id,
+                &excluded,
+                &state.registry,
+                min_context,
+            )
+            .or_else(|| {
+                state.scheduler.pick(
+                    &candidates,
+                    &catalog_model.id,
+                    &excluded,
+                    &state.registry,
+                    min_context,
+                )
+            }) {
+            Some(selected) => selected.node_id.clone(),
             None => {
                 return Err(match last_dispatch_error {
                     Some(message) => GatewayError::AllUpstreamsFailed(message),
@@ -541,7 +643,6 @@ async fn pick_and_dispatch(
             }
         };
 
-        let target_node = selected.node_id.clone();
         // Bump live in-flight counter so the next pick_and_dispatch sees this
         // node as busier. Use a scope guard so the counter rolls back if
         // any of the dispatch steps below fail before we successfully hand
@@ -669,6 +770,7 @@ async fn run_streaming(
     req_body: Value,
     consumer: Option<ledger::ConsumerPrincipal>,
     required_ctx: u32,
+    preferred_node_ids: Vec<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -699,6 +801,7 @@ async fn run_streaming(
                 &req_body,
                 &excluded,
                 Some(required_ctx),
+                &preferred_node_ids,
             )
             .await;
 
@@ -983,6 +1086,7 @@ async fn run_buffered(
     req_body: Value,
     consumer: Option<ledger::ConsumerPrincipal>,
     required_ctx: u32,
+    preferred_node_ids: Vec<String>,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
     let model_id = catalog_model.id.clone();
@@ -1007,6 +1111,7 @@ async fn run_buffered(
             &req_body,
             &excluded,
             Some(required_ctx),
+            &preferred_node_ids,
         )
         .await?;
 
@@ -1278,7 +1383,7 @@ fn done_event() -> Event {
     Event::default().data("[DONE]")
 }
 
-fn error_to_status_label(err: &GatewayError) -> &'static str {
+pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
     match err {
         GatewayError::NoEligibleDevice(_) => "no_supply",
         GatewayError::ModelNotFound(_) => "model_not_found",
@@ -1762,6 +1867,7 @@ quantization: null
             &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
             &[],
             None,
+            &[],
         )
         .await
         .expect("dispatch should retry on relay-open failure");
@@ -1776,6 +1882,53 @@ quantization: null
         let eligible_ids: Vec<_> = eligible.iter().map(|d| d.node_id.as_str()).collect();
         assert_eq!(eligible_ids, vec!["node-b"]);
         assert_eq!(state.registry.in_flight("node-a"), 0);
+        assert_eq!(state.registry.in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn pick_and_dispatch_prefers_requested_linked_node() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(2), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-b".into(),
+            "Node B".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &["node-b".to_string()],
+        )
+        .await
+        .expect("dispatch should choose preferred node");
+        drop(rx);
+
+        signal_ready.await.expect("ready waiter task should finish");
+        assert_eq!(target_node, "node-b");
         assert_eq!(state.registry.in_flight("node-b"), 1);
     }
 
@@ -1813,6 +1966,7 @@ quantization: null
             &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
             &[],
             None,
+            &[],
         )
         .await
         .expect("dispatch should retry same node during cold-start grace");

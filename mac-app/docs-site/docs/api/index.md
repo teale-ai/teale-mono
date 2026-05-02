@@ -19,15 +19,16 @@ This reference only documents the HTTP surfaces that ship in the currently relea
 - Teale Network gateway requests should use a revocable human-account API key from **Account > direct gateway api keys**.
 - In-app network chat already uses the bearer automatically.
 
-## OpenAI-compatible endpoints
+## Gateway endpoints
 
-These are the main endpoints most external clients need:
+Teale's gateway speaks both Anthropic Messages and OpenAI Chat Completions on the same base URL — pick whichever your client uses.
 
 - [GET /health](health.md)
 - [GET /v1/models](models.md)
-- [POST /v1/chat/completions](chat-completions.md)
+- [POST /v1/messages](messages.md) — Anthropic Messages API for Claude Desktop Cowork on 3P, Claude Code, and the Anthropic SDK
+- [POST /v1/chat/completions](chat-completions.md) — OpenAI-compatible endpoint for the OpenAI SDK and most other clients
 
-`teale-auto` is supported on the macOS app and lets Teale pick the best currently available route.
+`teale-auto` lets Teale pick the best currently available route on either endpoint.
 
 ## App endpoints in the released apps
 

@@ -207,6 +207,9 @@
   <div class="catalog" id="catalog" role="list"></div>
   <div class="catalog-empty" id="catalogEmpty">no models match your search.</div>
 
+  <div class="prompt"><span class="arrow">&gt;</span> use any model via Anthropic Messages API</div>
+  <pre class="curl" id="curlAnthropic"></pre>
+
   <div class="prompt"><span class="arrow">&gt;</span> use any model via OpenAI-compatible API</div>
   <pre class="curl" id="curl"></pre>
 
@@ -388,8 +391,16 @@
     });
 
     const sample = allModels.find(m => m.metrics && m.metrics.sample_count > 0) || allModels[0];
-    const curl = document.getElementById("curl");
     const id = sample ? sample.id : "<model-id>";
+    const curlAnthropic = document.getElementById("curlAnthropic");
+    curlAnthropic.innerHTML =
+      `curl <span class="c">\\</span>\n` +
+      `  https://gateway.teale.com/v1/messages <span class="c">\\</span>\n` +
+      `  -H <span class="c">"Authorization: Bearer &lt;your-token&gt;"</span> <span class="c">\\</span>\n` +
+      `  -H <span class="c">"anthropic-version: 2023-06-01"</span> <span class="c">\\</span>\n` +
+      `  -H <span class="c">"Content-Type: application/json"</span> <span class="c">\\</span>\n` +
+      `  -d <span class="c">'{"model":"${id}","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'</span>`;
+    const curl = document.getElementById("curl");
     curl.innerHTML =
       `curl <span class="c">\\</span>\n` +
       `  https://gateway.teale.com/v1/chat/completions <span class="c">\\</span>\n` +

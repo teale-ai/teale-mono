@@ -2015,6 +2015,18 @@ pub fn account_summary_for_device(
     account_summary(pool, &account_user_id)
 }
 
+pub fn account_device_ids(pool: &DbPool, account_user_id: &str) -> anyhow::Result<Vec<String>> {
+    let conn = pool.lock();
+    let mut stmt = conn.prepare(
+        "SELECT device_id
+         FROM account_devices
+         WHERE account_user_id = ?
+         ORDER BY last_seen DESC, device_id ASC",
+    )?;
+    let rows = stmt.query_map([account_user_id], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
+}
+
 pub fn account_summary(
     pool: &DbPool,
     account_user_id: &str,

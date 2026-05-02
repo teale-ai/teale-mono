@@ -30,6 +30,7 @@ module.exports = {
         'api/index',
         'api/health',
         'api/models',
+        'api/messages',
         'api/chat-completions',
         'api/app-snapshot',
         'api/app-models',
