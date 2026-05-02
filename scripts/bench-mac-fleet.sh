@@ -20,14 +20,21 @@ REQUESTS_PER_CASE="${REQUESTS_PER_CASE:-3}"
 MAX_TOKENS="${MAX_TOKENS:-96}"
 REQ_TIMEOUT="${REQ_TIMEOUT:-90}"
 
-TARGETS=(
+DEFAULT_TARGETS=(
   tailor16s-mac-mini
   tailor64
   tailor96s-mac-studio
   tailor512g1
   tailor512g8
   tailor8s-macbook-air
+  christinatep8s-macbook-air
 )
+# Override with: BENCH_HOSTS="tailor64 tailor96s-mac-studio ..." ./scripts/bench-mac-fleet.sh
+if [ -n "${BENCH_HOSTS:-}" ]; then
+  read -r -a TARGETS <<< "$BENCH_HOSTS"
+else
+  TARGETS=("${DEFAULT_TARGETS[@]}")
+fi
 
 TS=$(date '+%Y%m%dT%H%M%S')
 OUT="runs/bench-mac-${TS}"
@@ -140,9 +147,13 @@ PY
 
 # Discover locally-loaded model ID on each host (first non-teale-auto entry).
 # macOS bash 3.2 lacks associative arrays; we use a pipe-delimited list instead.
+# An offline host yields an empty model and is still benchmarked for the
+# gateway cases (gateway-auto / gateway-kimi don't need SSH to the host —
+# but in practice they do run remotely; we leave it to per-iter SSH failures
+# below to mark them as "ssh failed" rather than abort the whole run.)
 LOCAL_MODEL_LIST=""
 for h in "${TARGETS[@]}"; do
-  m=$(ssh -o ConnectTimeout=10 "$h" 'curl -s -m 8 http://127.0.0.1:11435/v1/models 2>/dev/null' \
+  m=$(ssh -o ConnectTimeout=5 "$h" 'curl -s -m 8 http://127.0.0.1:11435/v1/models 2>/dev/null' 2>/dev/null \
       | python3 -c '
 import sys, json
 try:
@@ -158,7 +169,7 @@ try:
         else: cand_slug = cand_slug or mid
     print(cand_slug or cand_path or "")
 except Exception:
-    print("")' 2>/dev/null)
+    print("")' 2>/dev/null) || m=""
   LOCAL_MODEL_LIST="${LOCAL_MODEL_LIST}${h}=${m}"$'\n'
   echo "  discovered local model on $h: ${m:-<none>}"
 done

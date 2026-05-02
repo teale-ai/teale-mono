@@ -59,6 +59,19 @@ public struct ModelCatalog: Sendable {
 
         // Medium models — 16GB+ RAM
         ModelDescriptor(
+            id: "qwen3.5-9b-4bit",
+            name: "Qwen 3.5 9B",
+            huggingFaceRepo: "mlx-community/Qwen3.5-9B-MLX-4bit",
+            parameterCount: "9B",
+            quantization: .q4,
+            estimatedSizeGB: 5.2,
+            requiredRAMGB: 11.0,
+            family: "Qwen",
+            description: "Recommended starter for 16GB Macs — Qwen3.5 hybrid (Gated Delta + sparse MoE), 201 languages",
+            popularityRank: 1,
+            openrouterId: "qwen/qwen3.5-9b"
+        ),
+        ModelDescriptor(
             id: "hermes-3-llama-3.1-8b-4bit",
             name: "Hermes 3 8B",
             huggingFaceRepo: "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
@@ -67,8 +80,8 @@ public struct ModelCatalog: Sendable {
             estimatedSizeGB: 4.6,
             requiredRAMGB: 10.0,
             family: "Llama",
-            description: "Highest-demand Hermes option for OpenClaw-compatible traffic",
-            popularityRank: 1,
+            description: "OpenClaw-compatible Hermes; fallback for hosts that can't fit Qwen3.5-9B",
+            popularityRank: 2,
             openrouterId: "nousresearch/hermes-3-llama-3.1-8b"
         ),
         ModelDescriptor(
@@ -81,7 +94,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 10.0,
             family: "Llama",
             description: "Strong general-purpose model",
-            popularityRank: 2,
+            popularityRank: 3,
             openrouterId: "meta-llama/llama-3.1-8b-instruct"
         ),
         ModelDescriptor(
@@ -93,8 +106,8 @@ public struct ModelCatalog: Sendable {
             estimatedSizeGB: 4.5,
             requiredRAMGB: 10.0,
             family: "Qwen",
-            description: "Latest Qwen with thinking and non-thinking modes",
-            popularityRank: 3,
+            description: "Predecessor to Qwen3.5; kept for hosts already running it",
+            popularityRank: 4,
             openrouterId: "qwen/qwen3-8b"
         ),
         ModelDescriptor(
