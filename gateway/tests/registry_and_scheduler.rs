@@ -355,6 +355,8 @@ fn catalog_aliases_match() {
         aliases: vec!["llama-3.1-8b-instruct".into(), "llama3.1-8b".into()],
         is_virtual: false,
         routing_tags: vec![],
+        estimated_ttft_ms: None,
+        estimated_tps: None,
     };
     assert!(m.matches("meta-llama/llama-3.1-8b-instruct"));
     assert!(m.matches("llama-3.1-8b-instruct"));

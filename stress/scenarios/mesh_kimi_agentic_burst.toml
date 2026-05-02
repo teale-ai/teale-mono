@@ -1,0 +1,25 @@
+name = "mesh_kimi_agentic_burst"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 300
+rps = 0.50
+warmup_seconds = 20
+concurrency_cap = 4
+
+# Burst tolerance gate from the evaluation plan:
+#   - concurrency 4
+#   - no sustained TTFT spiral
+#   - same file should be re-run with and without the 16 GB participants
+
+[[requests]]
+model = "moonshotai/kimi-k2"
+weight = 1
+prompt_tokens_mean = 2048
+prompt_tokens_stddev = 256
+max_tokens = 384
+streaming = true
+user_agent = "OpenClaw/1.0"
+message_profile = "agentic_coding"
+tool_profile = "repo_probe"
+tool_choice = "auto"
+system_prompt = "You are a coding agent under burst load. Inspect first, then answer concretely."

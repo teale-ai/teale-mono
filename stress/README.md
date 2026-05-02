@@ -27,6 +27,20 @@ The run creates `runs/<scenario>_<uuid>/` containing:
 | `records.jsonl`| One JSON record per request (see `record.rs`)|
 | `summary.json` | Aggregate: success rate, TTFT/latency percentiles, pass flag |
 
+## Scenario fields
+
+Each `[[requests]]` entry can now shape more agent-like traffic:
+
+- `user_agent = "OpenClaw/1.0"` to exercise gateway auto-routing heuristics
+- `message_profile = "plain" | "agentic_coding" | "agentic_long_context"`
+- `tool_profile = "none" | "repo_probe"` to send OpenAI-style tool schemas
+- `tool_choice = "auto"` (or another OpenAI-compatible string) when the
+  request should explicitly include a `tool_choice`
+
+The new mesh evaluation scenarios under `stress/scenarios/mesh_*` use these
+fields to drive tool-bearing, multi-turn, longer-context requests through the
+same `/v1/chat/completions` path as the existing readiness tests.
+
 ## Pass criteria (per scenario)
 
 | Scenario           | Must hit                                                          |

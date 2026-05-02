@@ -646,6 +646,15 @@ fn swap_manager_loaded_models_from_registry(
 }
 
 fn initial_on_ac_power() -> bool {
+    if let Ok(value) = std::env::var("TEALE_FORCE_ON_AC_POWER") {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "1" | "true" | "on" | "yes" => return true,
+            "0" | "false" | "off" | "no" => return false,
+            _ => {}
+        }
+    }
+
     #[cfg(windows)]
     {
         power_win::initial_ac_state()

@@ -1,0 +1,27 @@
+name = "mesh_kimi_fault_participant"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 180
+rps = 0.20
+warmup_seconds = 15
+concurrency_cap = 2
+
+# Replace the SSH target before running.
+# This validates "drop one non-head / 16 GB participant before first token".
+
+[[requests]]
+model = "moonshotai/kimi-k2"
+weight = 1
+prompt_tokens_mean = 2048
+prompt_tokens_stddev = 256
+max_tokens = 256
+streaming = true
+user_agent = "OpenClaw/1.0"
+message_profile = "agentic_coding"
+tool_profile = "repo_probe"
+tool_choice = "auto"
+
+[[faults]]
+kind = "kill_backend"
+at_seconds = 30
+target = "REPLACE_WITH_PARTICIPANT_SSH_HOST"

@@ -93,10 +93,14 @@ pub struct ModelEntry {
 
 /// Per-model serving stats surfaced on `/v1/models` entries and the
 /// `/try/:token` landing pages so clients can compare latency/throughput.
-/// Averages and percentiles are computed over a sliding window of recent successful
-/// completions (size controlled by the gateway).
+/// Averages and percentiles are computed over a sliding window of recent
+/// successful completions (size controlled by the gateway). Gateways may return
+/// conservative estimates until the first real request-backed sample arrives.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelMetrics {
+    /// `actual` for real request-backed samples, `estimate` for catalog hints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// Time-to-first-token in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_ms_avg: Option<u32>,
@@ -104,13 +108,18 @@ pub struct ModelMetrics {
     pub ttft_ms_p50: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttft_ms_p95: Option<u32>,
-    /// Tokens per second during the generation phase (first token → last token).
+    /// Output units per second measured end-to-end from request arrival to last
+    /// delivered chunk. This intentionally includes TTFT so catalog values match
+    /// user-perceived throughput instead of backend burst speed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tps_avg: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tps_p50: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tps_p95: Option<f32>,
+    /// Measurement basis for `tps_*`; currently `end_to_end`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps_basis: Option<String>,
     /// Samples contributing to the rolling stats above.
     pub sample_count: u32,
     /// Age of the freshest sample in seconds — lets clients detect stale data.

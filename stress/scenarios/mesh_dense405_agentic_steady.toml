@@ -1,0 +1,29 @@
+name = "mesh_dense405_agentic_steady_15min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 900
+rps = 0.10
+warmup_seconds = 30
+concurrency_cap = 2
+
+# Primary dense target: `nousresearch/hermes-4-405b`
+# Fallback dense target if Hermes 405B is not loaded on the mesh:
+#   `meta-llama/llama-3.1-405b-instruct`
+#
+# The same pass/fail logic applies:
+#   - success_rate >= 0.995
+#   - no long queue stalls
+#   - with-16GB topology must not degrade p95 TTFT by >15%
+
+[[requests]]
+model = "nousresearch/hermes-4-405b"
+weight = 1
+prompt_tokens_mean = 3072
+prompt_tokens_stddev = 512
+max_tokens = 384
+streaming = true
+user_agent = "OpenClaw/1.0"
+message_profile = "agentic_long_context"
+tool_profile = "repo_probe"
+tool_choice = "auto"
+system_prompt = "You are evaluating a dense multi-machine backend for agentic traffic. Prefer operational detail over generic explanation."

@@ -16,6 +16,9 @@
 //! prompt_tokens_stddev = 64
 //! max_tokens = 256
 //! streaming = true
+//! user_agent = "OpenClaw/1.0"
+//! message_profile = "agentic_coding"
+//! tool_profile = "repo_probe"
 //!
 //! [[requests]]
 //! model = "meta-llama/llama-3.3-70b-instruct"
@@ -57,6 +60,14 @@ pub struct RequestMix {
     pub streaming: bool,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub message_profile: MessageProfile,
+    #[serde(default)]
+    pub tool_profile: ToolProfile,
+    #[serde(default)]
+    pub tool_choice: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -82,6 +93,23 @@ pub enum FaultKind {
     PauseHeartbeat,
     /// Return malformed chunk JSON (requires the fault-injection proxy).
     MalformedChunk,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageProfile {
+    #[default]
+    Plain,
+    AgenticCoding,
+    AgenticLongContext,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolProfile {
+    #[default]
+    None,
+    RepoProbe,
 }
 
 fn default_weight() -> u32 {

@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::record::{now_ms, RecordWriter, RequestRecord};
-use crate::scenario::{RequestMix, Scenario};
+use crate::scenario::{MessageProfile, RequestMix, Scenario, ToolProfile};
 
 pub async fn run(scenario: Scenario, writer: Arc<RecordWriter>) -> anyhow::Result<Stats> {
     info!(
@@ -109,25 +109,20 @@ async fn run_one(
     run_id: &str,
     stats: &Arc<parking_lot::Mutex<Stats>>,
 ) {
-    let messages = build_messages(mix, prompt_tokens);
-    let body = json!({
-        "model": mix.model,
-        "messages": messages,
-        "max_tokens": mix.max_tokens,
-        "stream": mix.streaming,
-        "temperature": 0.7,
-    });
+    let body = build_request_body(mix, prompt_tokens);
 
     let started = Instant::now();
-    let resp = client
+    let mut req = client
         .post(format!(
             "{}/v1/chat/completions",
             gateway_url.trim_end_matches('/')
         ))
         .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await;
+        .json(&body);
+    if let Some(user_agent) = &mix.user_agent {
+        req = req.header(reqwest::header::USER_AGENT, user_agent);
+    }
+    let resp = req.send().await;
 
     let resp = match resp {
         Ok(r) => r,
@@ -147,6 +142,8 @@ async fn run_one(
                     ttft_ms: None,
                     total_ms: started.elapsed().as_millis() as u64,
                     tokens_out: None,
+                    tool_calls_seen: None,
+                    finish_reason: None,
                     chosen_device: None,
                     error: Some(e.to_string()),
                 },
@@ -179,6 +176,8 @@ async fn run_one(
                 ttft_ms: None,
                 total_ms: started.elapsed().as_millis() as u64,
                 tokens_out: None,
+                tool_calls_seen: None,
+                finish_reason: None,
                 chosen_device,
                 error: Some(txt),
             },
@@ -188,7 +187,7 @@ async fn run_one(
 
     if !mix.streaming {
         let text = resp.text().await.unwrap_or_default();
-        let tokens_out = try_count_tokens(&text);
+        let (tokens_out, tool_calls_seen, finish_reason) = parse_non_stream_response(&text);
         record_and_stat(
             writer,
             stats,
@@ -204,6 +203,8 @@ async fn run_one(
                 ttft_ms: None,
                 total_ms: started.elapsed().as_millis() as u64,
                 tokens_out,
+                tool_calls_seen,
+                finish_reason,
                 chosen_device,
                 error: None,
             },
@@ -215,6 +216,8 @@ async fn run_one(
     let mut stream = resp.bytes_stream();
     let mut ttft: Option<u64> = None;
     let mut tokens: u32 = 0;
+    let mut tool_calls_seen: u32 = 0;
+    let mut finish_reason: Option<String> = None;
     let mut first_saw_data = false;
     let mut buf = String::new();
     let mut errored: Option<String> = None;
@@ -238,12 +241,20 @@ async fn run_one(
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
                                 if v.get("error").is_some() {
                                     errored = Some(data.to_string());
-                                } else if v
-                                    .pointer("/choices/0/delta/content")
-                                    .and_then(|x| x.as_str())
-                                    .is_some()
-                                {
-                                    tokens += 1;
+                                } else {
+                                    if v.pointer("/choices/0/delta/content")
+                                        .and_then(|x| x.as_str())
+                                        .is_some()
+                                    {
+                                        tokens += 1;
+                                    }
+                                    tool_calls_seen += count_stream_tool_calls(&v);
+                                    if finish_reason.is_none() {
+                                        finish_reason = v
+                                            .pointer("/choices/0/finish_reason")
+                                            .and_then(|x| x.as_str())
+                                            .map(ToOwned::to_owned);
+                                    }
                                 }
                             }
                         }
@@ -277,6 +288,8 @@ async fn run_one(
             ttft_ms: ttft,
             total_ms: started.elapsed().as_millis() as u64,
             tokens_out: Some(tokens),
+            tool_calls_seen: Some(tool_calls_seen),
+            finish_reason,
             chosen_device,
             error: errored,
         },
@@ -310,13 +323,94 @@ fn build_messages(mix: &RequestMix, prompt_tokens: u32) -> serde_json::Value {
     let filler = "Describe the following research log in detail. ".repeat((approx_chars / 48) + 1);
     let user = &filler[..filler.len().min(approx_chars.max(32))];
 
-    if let Some(sys) = &mix.system_prompt {
-        json!([
-            {"role": "system", "content": sys},
-            {"role": "user", "content": user},
-        ])
-    } else {
-        json!([{ "role": "user", "content": user }])
+    match mix.message_profile {
+        MessageProfile::Plain => {
+            if let Some(sys) = &mix.system_prompt {
+                json!([
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": user},
+                ])
+            } else {
+                json!([{ "role": "user", "content": user }])
+            }
+        }
+        MessageProfile::AgenticCoding => {
+            let system = mix.system_prompt.clone().unwrap_or_else(|| {
+                "You are a coding agent. Be concrete, prefer inspection before action, and call tools when they would materially reduce uncertainty.".to_string()
+            });
+            let repo_excerpt = format!(
+                "Workspace excerpt:\n{}\n\nTask: inspect the repository shape, decide whether a tool call is warranted, and then explain the next concrete implementation step.",
+                user
+            );
+            json!([
+                {"role": "system", "content": system},
+                {"role": "user", "content": "We are evaluating a gateway-backed cluster for agentic traffic. Stay grounded in the supplied workspace context and prefer short, operational answers."},
+                {"role": "assistant", "content": "I will inspect the context, use tools if needed, and keep the answer operational."},
+                {"role": "user", "content": repo_excerpt},
+            ])
+        }
+        MessageProfile::AgenticLongContext => {
+            let system = mix.system_prompt.clone().unwrap_or_else(|| {
+                "You are a senior coding agent evaluating backend topology for reliability-sensitive traffic. Use tools when appropriate and preserve concrete operational handles.".to_string()
+            });
+            let context_blob = format!(
+                "Long context blob:\n{}\n\nFollow-up: compare the current topology against a clustered backend, identify one likely bottleneck, and propose the next verification step.",
+                user
+            );
+            json!([
+                {"role": "system", "content": system},
+                {"role": "user", "content": "Previous turn: we agreed the public API must remain gateway.teale.com and the backend can change underneath it."},
+                {"role": "assistant", "content": "Understood. I will evaluate the backend shape while preserving the gateway contract."},
+                {"role": "user", "content": context_blob},
+            ])
+        }
+    }
+}
+
+fn build_request_body(mix: &RequestMix, prompt_tokens: u32) -> serde_json::Value {
+    let mut body = json!({
+        "model": mix.model,
+        "messages": build_messages(mix, prompt_tokens),
+        "max_tokens": mix.max_tokens,
+        "stream": mix.streaming,
+        "temperature": 0.7,
+    });
+
+    if let Some(tools) = build_tools(mix.tool_profile) {
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+    if let Some(tool_choice) = &mix.tool_choice {
+        body["tool_choice"] = serde_json::Value::String(tool_choice.clone());
+    }
+
+    body
+}
+
+fn build_tools(profile: ToolProfile) -> Option<Vec<serde_json::Value>> {
+    match profile {
+        ToolProfile::None => None,
+        ToolProfile::RepoProbe => Some(vec![json!({
+            "type": "function",
+            "function": {
+                "name": "repo_probe",
+                "description": "Inspect a repository path and summarize what matters for the task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Repository-relative path to inspect"
+                        },
+                        "question": {
+                            "type": "string",
+                            "description": "What to learn from that path"
+                        }
+                    },
+                    "required": ["path", "question"],
+                    "additionalProperties": false
+                }
+            }
+        })]),
     }
 }
 
@@ -329,12 +423,31 @@ fn sample_normal_u32<R: Rng>(rng: &mut R, mean: u32, stddev: u32) -> u32 {
     v.max(1.0).round() as u32
 }
 
-fn try_count_tokens(text: &str) -> Option<u32> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    v.get("usage")?
-        .get("completion_tokens")?
-        .as_u64()
-        .map(|x| x as u32)
+fn parse_non_stream_response(text: &str) -> (Option<u32>, Option<u32>, Option<String>) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return (None, None, None);
+    };
+    let tokens_out = v
+        .get("usage")
+        .and_then(|usage| usage.get("completion_tokens"))
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32);
+    let tool_calls_seen = v
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|x| x.as_array())
+        .map(|x| x.len() as u32);
+    let finish_reason = v
+        .pointer("/choices/0/finish_reason")
+        .and_then(|x| x.as_str())
+        .map(ToOwned::to_owned);
+    (tokens_out, tool_calls_seen, finish_reason)
+}
+
+fn count_stream_tool_calls(v: &serde_json::Value) -> u32 {
+    v.pointer("/choices/0/delta/tool_calls")
+        .and_then(|x| x.as_array())
+        .map(|x| x.len() as u32)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -345,4 +458,69 @@ pub struct Stats {
     pub dropped: u64,
     pub ttft_samples: Vec<u64>,
     pub total_latency_ms: Vec<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mix() -> RequestMix {
+        RequestMix {
+            model: "moonshotai/kimi-k2".into(),
+            weight: 1,
+            prompt_tokens_mean: 1024,
+            prompt_tokens_stddev: 0,
+            max_tokens: 256,
+            streaming: true,
+            system_prompt: None,
+            user_agent: Some("OpenClaw/1.0".into()),
+            message_profile: MessageProfile::AgenticCoding,
+            tool_profile: ToolProfile::RepoProbe,
+            tool_choice: Some("auto".into()),
+        }
+    }
+
+    #[test]
+    fn request_body_includes_tools_and_tool_choice_for_agentic_profile() {
+        let body = build_request_body(&mix(), 1024);
+        assert_eq!(body["model"], "moonshotai/kimi-k2");
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["tools"][0]["function"]["name"], "repo_probe");
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(4));
+    }
+
+    #[test]
+    fn parse_non_stream_response_extracts_tool_calls_and_finish_reason() {
+        let body = r#"{
+          "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+              "role": "assistant",
+              "tool_calls": [
+                {"id":"call_1","type":"function","function":{"name":"repo_probe","arguments":"{}"}}
+              ]
+            }
+          }],
+          "usage": {"completion_tokens": 17}
+        }"#;
+        let (tokens_out, tool_calls_seen, finish_reason) = parse_non_stream_response(body);
+        assert_eq!(tokens_out, Some(17));
+        assert_eq!(tool_calls_seen, Some(1));
+        assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn count_stream_tool_calls_detects_delta_array() {
+        let value = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        {"index": 0, "id": "call_1"},
+                        {"index": 1, "id": "call_2"}
+                    ]
+                }
+            }]
+        });
+        assert_eq!(count_stream_tool_calls(&value), 2);
+    }
 }
