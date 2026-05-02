@@ -109,11 +109,45 @@ impl SwapManager {
 
     /// Current loaded model ids. Source of truth for the heartbeat.
     pub async fn loaded_models(&self) -> Vec<String> {
-        self.inner.read().await.backend.loaded_models()
+        let proxy = {
+            let inner = self.inner.read().await;
+            match &inner.backend {
+                Backend::Http(proxy) => {
+                    if proxy.is_ready() {
+                        return proxy.loaded_models();
+                    }
+                    Some(proxy.clone())
+                }
+                Backend::LiteRt(engine) => return engine.loaded_models(),
+                Backend::Unavailable => return vec![],
+            }
+        };
+
+        match proxy {
+            Some(proxy) if proxy.refresh_ready().await => proxy.loaded_models(),
+            _ => vec![],
+        }
     }
 
     pub async fn is_ready(&self) -> bool {
-        self.inner.read().await.backend.is_ready()
+        let proxy = {
+            let inner = self.inner.read().await;
+            match &inner.backend {
+                Backend::Http(proxy) => {
+                    if proxy.is_ready() {
+                        return true;
+                    }
+                    Some(proxy.clone())
+                }
+                Backend::LiteRt(_) => return true,
+                Backend::Unavailable => return false,
+            }
+        };
+
+        match proxy {
+            Some(proxy) => proxy.refresh_ready().await,
+            None => false,
+        }
     }
 
     pub async fn current_model_id(&self) -> Option<String> {

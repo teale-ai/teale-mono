@@ -102,6 +102,30 @@ impl InferenceProxy {
         }
     }
 
+    pub async fn refresh_ready(&self) -> bool {
+        if self.is_ready() {
+            return true;
+        }
+
+        match self.backend_model_is_ready().await {
+            Ok(ready) => {
+                self.set_ready(ready);
+                if ready {
+                    info!(
+                        "backend recovered at {} with model {}",
+                        self.base_url, self.backend_model_id
+                    );
+                }
+                ready
+            }
+            Err(err) => {
+                debug!("backend readiness refresh failed: {}", err);
+                self.set_ready(false);
+                false
+            }
+        }
+    }
+
     /// Stream a chat completion. Returns a **bounded** receiver — back-pressure
     /// propagates to the SSE reader task when the consumer is slow.
     pub async fn stream_completion(
@@ -372,6 +396,8 @@ pub fn spawn_mnn_server(config: &MnnConfig) -> anyhow::Result<Child> {
 #[cfg(test)]
 mod tests {
     use super::{model_id_in_ollama_ps, model_id_in_openai_models, InferenceProxy};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn loaded_models_require_ready_backend() {
@@ -411,5 +437,45 @@ mod tests {
             &["unsloth/Kimi-K2.6", "moonshotai/kimi-k2.6"]
         ));
         assert!(!model_id_in_openai_models(&payload, &["unsloth/Kimi-K2.6"]));
+    }
+
+    #[tokio::test]
+    async fn refresh_ready_recovers_from_models_probe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0u8; 1024];
+                let read = stream.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let response = if request.starts_with("GET /ollama/api/ps ") {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_string()
+                } else if request.starts_with("GET /v1/models ") {
+                    let body = serde_json::json!({
+                        "data": [{ "id": "moonshotai/kimi-k2.6" }]
+                    })
+                    .to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                } else {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_string()
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let proxy = InferenceProxy::new(port, "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.6");
+        assert!(!proxy.is_ready());
+        assert!(proxy.refresh_ready().await);
+        assert!(proxy.is_ready());
+        assert_eq!(
+            proxy.loaded_models(),
+            vec!["moonshotai/kimi-k2.6".to_string()]
+        );
     }
 }
