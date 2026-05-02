@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -139,19 +139,14 @@ pub async fn require_bearer(
     mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let header_val = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let token = header_val.strip_prefix("Bearer ").unwrap_or("").trim();
+    let token = token_from_headers(req.headers());
 
     if token.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     // 1) Static-token match
-    if let Some(scope) = state.tokens.lookup_static(token) {
+    if let Some(scope) = state.tokens.lookup_static(&token) {
         req.extensions_mut().insert(AuthPrincipal {
             kind: PrincipalKind::Static { scope },
         });
@@ -160,7 +155,7 @@ pub async fn require_bearer(
 
     // 2) Device-token match (via DB)
     if let Some(pool) = state.db.as_ref() {
-        if let Some(device_id) = ledger::resolve_token(pool, token) {
+        if let Some(device_id) = ledger::resolve_token(pool, &token) {
             req.extensions_mut().insert(AuthPrincipal {
                 kind: PrincipalKind::Device { device_id },
             });
@@ -171,7 +166,7 @@ pub async fn require_bearer(
     // 2b) Account API key match (via DB). These are human-account-scoped,
     // revocable direct-demand credentials.
     if let Some(pool) = state.db.as_ref() {
-        if let Ok(Some(resolved)) = ledger::resolve_account_api_key(pool, token) {
+        if let Ok(Some(resolved)) = ledger::resolve_account_api_key(pool, &token) {
             req.extensions_mut().insert(AuthPrincipal {
                 kind: PrincipalKind::Account {
                     account_user_id: resolved.account_user_id,
@@ -186,7 +181,7 @@ pub async fn require_bearer(
     //     Rejection reasons (expired/revoked/exhausted) short-circuit here
     //     with the right status; a miss falls through.
     if let Some(pool) = state.db.as_ref() {
-        match ledger::resolve_share_key(pool, token) {
+        match ledger::resolve_share_key(pool, &token) {
             Ok(Some(resolved)) => {
                 let budget_remaining = resolved.remaining();
                 req.extensions_mut().insert(AuthPrincipal {
@@ -221,4 +216,40 @@ pub async fn require_bearer(
     }
 
     Err(StatusCode::UNAUTHORIZED)
+}
+
+fn token_from_headers(headers: &HeaderMap) -> String {
+    let header_val = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let bearer_token = header_val.strip_prefix("Bearer ").unwrap_or("").trim();
+    if !bearer_token.is_empty() {
+        return bearer_token.to_string();
+    }
+    headers
+        .get("x-api-key")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn token_from_headers_accepts_x_api_key_and_prefers_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("anthropic-key"));
+        assert_eq!(token_from_headers(&headers), "anthropic-key");
+
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer bearer-key"),
+        );
+        assert_eq!(token_from_headers(&headers), "bearer-key");
+    }
 }

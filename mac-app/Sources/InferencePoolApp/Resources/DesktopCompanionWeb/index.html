@@ -464,6 +464,15 @@
             <p class="muted" id="account-api-key-note">
               Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them.
             </p>
+            <pre class="code-block">Claude Desktop:
+inferenceProvider = gateway
+inferenceGatewayBaseUrl = https://gateway.teale.com
+inferenceGatewayAuthScheme = bearer
+inferenceGatewayHeaders = ["X-Teale-Prefer-Linked-Device: true"]
+disabledBuiltinTools = ["WebSearch"]
+
+Claude Code:
+ANTHROPIC_BASE_URL=https://gateway.teale.com</pre>
             <div class="form-grid">
               <label class="field field-wide">
                 <span>Label</span>

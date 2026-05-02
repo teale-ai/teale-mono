@@ -43,10 +43,22 @@ struct CompanionAccountView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(appState.companionText(
                         "account.apiKeysNote",
-                        fallback: "Create revocable API keys for direct demand traffic to gateway.teale.com. These keys belong to your human account and stay valid until you revoke them."
+                        fallback: "Create revocable API keys for direct demand traffic to gateway.teale.com, including Claude Desktop 3P and Claude Code gateway mode. These keys belong to your human account and stay valid until you revoke them."
                     ))
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
+
+                    TealeCodeBlock(text: """
+                    Claude Desktop:
+                    inferenceProvider = gateway
+                    inferenceGatewayBaseUrl = https://gateway.teale.com
+                    inferenceGatewayAuthScheme = bearer
+                    inferenceGatewayHeaders = ["X-Teale-Prefer-Linked-Device: true"]
+                    disabledBuiltinTools = ["WebSearch"]
+
+                    Claude Code:
+                    ANTHROPIC_BASE_URL=https://gateway.teale.com
+                    """)
 
                     HStack(alignment: .bottom, spacing: 12) {
                         AccountFormField(title: appState.companionText("account.apiKeyLabel", fallback: "Label")) {
