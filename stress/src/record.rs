@@ -21,6 +21,10 @@ pub struct RequestRecord {
     pub ttft_ms: Option<u64>,
     pub total_ms: u64,
     pub tokens_out: Option<u32>,
+    #[serde(default)]
+    pub tool_calls_seen: Option<u32>,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
     pub chosen_device: Option<String>,
     #[serde(default)]
     pub error: Option<String>,

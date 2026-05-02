@@ -1,0 +1,51 @@
+# teale-node config for a mesh-llm-backed supplier cluster presenting as ONE node.
+#
+# Use this on the cluster head only. `mesh-llm` runs separately and exposes
+# a local OpenAI-compatible API on port 52415. teale-node stays on the relay
+# and proxies gateway requests to that local mesh endpoint.
+#
+# This preserves the frontend contract:
+#   client -> gateway.teale.com -> teale-node head -> mesh-llm local API
+#
+# See docs/mesh-llm-backend-evaluation.md for the runner, inventory, and
+# stress-test workflow.
+
+backend = "llama"   # reuses the local HTTP proxy codepath
+
+[relay]
+url = "wss://relay.teale.com/ws"
+
+[llama]
+# Not actually llama-server — this points at the local mesh-llm API.
+# Leave `binary` inert and pass `--no-backend` so teale-node does not try to
+# launch anything. The mesh runtime is managed separately.
+binary = "/bin/true"
+model = "moonshotai/kimi-k2"
+backend_model_id = "moonshotai/kimi-k2"
+model_id = "moonshotai/kimi-k2"
+port = 52415
+gpu_layers = 999
+context_size = 131072
+
+[node]
+display_name = "Mesh head (gateway-backed cluster)"
+gpu_backend = "metal"
+max_concurrent_requests = 4
+heartbeat_interval_seconds = 40
+shutdown_timeout_seconds = 60
+
+# Adjust these fields for other pilot targets:
+#   backend_model_id = "nousresearch/hermes-4-405b"
+#   model_id         = "nousresearch/hermes-4-405b"
+#
+# Dense fallback if Hermes 405B is not loaded:
+#   backend_model_id = "meta-llama/llama-3.1-405b-instruct"
+#   model_id         = "meta-llama/llama-3.1-405b-instruct"
+#
+# Startup recipe:
+#   1. Start mesh-llm on the head:
+#        scripts/mesh-llm-cluster-runner.sh head --model moonshotai/kimi-k2 --log logs/head.jsonl
+#   2. Join the other participants with the emitted invite token.
+#   3. Wait for health: `curl -s http://127.0.0.1:52415/v1/models`
+#   4. Start teale-node with --no-backend:
+#        teale-node --config node/teale-node.mesh.toml --no-backend

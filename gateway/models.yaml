@@ -222,6 +222,8 @@ models:
     quantization: INT4
     supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice, reasoning]
     description: "Flagship Moonshot model for deep reasoning, coding, and multimodal work."
+    estimated_ttft_ms: 17000
+    estimated_tps: 4.0
     routing_tags: [agent-harness]
     aliases: [kimi-k2.6, kimi-k26, k2.6, kimi]
 

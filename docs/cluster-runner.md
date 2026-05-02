@@ -5,6 +5,10 @@ Phase C1: serve models that do not fit on a single Mac across two M3 Ultra
 target is `moonshotai/kimi-k2.6`, presented to the gateway as one dedicated
 very-large supply node.
 
+If you are evaluating `mesh-llm` specifically as the backend instead of the
+older exo / llama.cpp RPC path, use
+[docs/mesh-llm-backend-evaluation.md](mesh-llm-backend-evaluation.md).
+
 ## Why this matters
 
 These models have almost no supply on OpenRouter today. Being one of the

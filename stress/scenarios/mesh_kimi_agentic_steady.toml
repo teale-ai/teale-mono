@@ -1,0 +1,30 @@
+name = "mesh_kimi_agentic_steady_15min"
+gateway_url = "https://gateway.teale.com"
+token = "$GATEWAY_DEV_TOKEN"
+duration_seconds = 900
+rps = 0.20
+warmup_seconds = 30
+concurrency_cap = 2
+
+# Reuse this exact scenario for the three A/B paths:
+#   1. current non-mesh supplier path
+#   2. mesh without 16 GB participants
+#   3. same mesh with 16 GB participants admitted
+#
+# Success criteria from the mesh-llm evaluation plan:
+#   - success_rate >= 0.995
+#   - no manual restarts
+#   - no runaway TTFT / queue spiral
+
+[[requests]]
+model = "moonshotai/kimi-k2"
+weight = 1
+prompt_tokens_mean = 4096
+prompt_tokens_stddev = 512
+max_tokens = 512
+streaming = true
+user_agent = "OpenClaw/1.0"
+message_profile = "agentic_long_context"
+tool_profile = "repo_probe"
+tool_choice = "auto"
+system_prompt = "You are evaluating a gateway-fronted backend mesh for coding-agent traffic. Stay concrete and prefer tool use when it materially reduces uncertainty."

@@ -954,25 +954,20 @@ async fn run_streaming(
         if let Some(ft) = first_token_at {
             let ttft_ms = ft.duration_since(started).as_millis();
             let total_ms = started.elapsed().as_millis();
-            let gen_ms = total_ms.saturating_sub(ttft_ms);
             debug!(
                 "request complete: model={} ttft_ms={} total_ms={} tokens_out={}",
                 model_id, ttft_ms, total_ms, tokens_out
             );
             // Record a rolling sample for /v1/models percentile reporting.
             // Only record successful streams so bad attempts don't poison the
-            // advertised serving speed. Use the supplier-reported token count
-            // when available, falling back to the chunk count.
+            // advertised serving speed. Use gateway-observed output chunks so a
+            // bad supplier usage report cannot inflate catalog TPS.
             if final_status == "ok" {
-                let completion_tokens = reported_tokens
-                    .map(|t| t as u64)
-                    .unwrap_or(tokens_out)
-                    .max(1);
                 state.model_metrics.record(
                     &model_id,
                     ttft_ms as u32,
-                    Some(completion_tokens),
-                    gen_ms as u64,
+                    Some(tokens_out.max(1)),
+                    total_ms as u64,
                 );
             }
         }
@@ -1118,10 +1113,9 @@ async fn run_buffered(
             if let Some(ft) = first_token_at {
                 let ttft_ms = ft.duration_since(started).as_millis() as u32;
                 let total_ms = started.elapsed().as_millis() as u64;
-                let gen_ms = total_ms.saturating_sub(ttft_ms as u64);
                 state
                     .model_metrics
-                    .record(&model_id, ttft_ms, Some(tokens_out.max(1)), gen_ms);
+                    .record(&model_id, ttft_ms, Some(tokens_out.max(1)), total_ms);
             }
 
             // Settle Teale Credit ledger.
@@ -1163,6 +1157,16 @@ async fn run_buffered(
                 tokens_out,
             );
             return Ok(Json(reply));
+        }
+
+        if let Some(message) = err_message.as_ref() {
+            warn!(
+                device = %target_node,
+                retriable,
+                got_first,
+                "buffered upstream ended: {}",
+                message
+            );
         }
 
         if retriable {

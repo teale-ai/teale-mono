@@ -23,8 +23,8 @@ const SAMPLE_MAX_AGE: Duration = Duration::from_secs(3600);
 struct Sample {
     at: Instant,
     ttft_ms: u32,
-    /// Tokens per second during generation (first-token → last-token).
-    /// `None` when completion_tokens wasn't reported by the supplier.
+    /// Output units per second end-to-end (request arrival → last chunk).
+    /// `None` when completion tokens were unavailable or duration was zero.
     tps: Option<f32>,
 }
 
@@ -39,17 +39,20 @@ impl ModelMetricsTracker {
         Self::default()
     }
 
-    /// Record one successful completion.
-    /// `gen_duration_ms` is the elapsed time from first token to last token;
-    /// pass 0 (or completion_tokens=None) to skip the TPS side of the sample.
+    /// Record one successful real client completion.
+    ///
+    /// `total_duration_ms` is measured from gateway request arrival to the final
+    /// delivered chunk. Using end-to-end duration keeps `/v1/models` numbers
+    /// aligned with user-perceived throughput instead of advertising burst speed
+    /// after a long TTFT.
     pub fn record(
         &self,
         model_id: &str,
         ttft_ms: u32,
         completion_tokens: Option<u64>,
-        gen_duration_ms: u64,
+        total_duration_ms: u64,
     ) {
-        let tps = match (completion_tokens, gen_duration_ms) {
+        let tps = match (completion_tokens, total_duration_ms) {
             (Some(t), d) if t > 0 && d > 0 => Some((t as f64 * 1000.0 / d as f64) as f32),
             _ => None,
         };
@@ -100,12 +103,14 @@ impl ModelMetricsTracker {
             .min();
 
         Some(ModelMetrics {
+            source: Some("actual".to_string()),
             ttft_ms_avg,
             ttft_ms_p50: percentile_u32(&ttfts, 0.5),
             ttft_ms_p95: percentile_u32(&ttfts, 0.95),
             tps_avg,
             tps_p50: percentile_f32(&tpss, 0.5),
             tps_p95: percentile_f32(&tpss, 0.95),
+            tps_basis: Some("end_to_end".to_string()),
             sample_count: fresh.len() as u32,
             last_sample_age_seconds: last_age,
             window_seconds: SAMPLE_MAX_AGE.as_secs() as u32,
@@ -145,6 +150,8 @@ mod tests {
         assert_eq!(s.ttft_ms_p50, Some(200));
         assert_eq!(s.tps_avg, Some(100.0));
         assert_eq!(s.tps_p50, Some(100.0));
+        assert_eq!(s.source.as_deref(), Some("actual"));
+        assert_eq!(s.tps_basis.as_deref(), Some("end_to_end"));
     }
 
     #[test]

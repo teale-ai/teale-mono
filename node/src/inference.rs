@@ -26,6 +26,36 @@ use crate::config::{LlamaConfig, MnnConfig};
 /// enough that a stalled consumer observable backpressure within ~100ms.
 pub const CHUNK_CHANNEL_CAPACITY: usize = 64;
 
+fn http_backend_streaming_enabled() -> bool {
+    match std::env::var("TEALE_HTTP_BACKEND_STREAMING") {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "0" | "false" | "off" | "no")
+        }
+        Err(_) => true,
+    }
+}
+
+fn assistant_text_from_completion(response: &Value) -> String {
+    let Some(choice) = response.get("choices").and_then(|choices| choices.get(0)) else {
+        return String::new();
+    };
+
+    if let Some(text) = choice
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+    {
+        return text.to_string();
+    }
+
+    if let Some(text) = choice.get("text").and_then(|content| content.as_str()) {
+        return text.to_string();
+    }
+
+    String::new()
+}
+
 fn is_mobile_environment() -> bool {
     cfg!(target_os = "android")
         || std::env::var("ANDROID_ROOT").is_ok()
@@ -136,7 +166,16 @@ impl InferenceProxy {
 
         let mut body = serde_json::to_value(request)?;
         body["model"] = Value::String(self.backend_model_id.clone());
-        body["stream"] = Value::Bool(true);
+        let streaming_enabled = http_backend_streaming_enabled();
+        if streaming_enabled {
+            body["stream"] = Value::Bool(true);
+        } else {
+            let object = body
+                .as_object_mut()
+                .expect("chat completion request must serialize to object");
+            object.remove("stream");
+            object.remove("stream_options");
+        }
 
         let response = self
             .client
@@ -158,6 +197,39 @@ impl InferenceProxy {
 
         let (tx, rx) = mpsc::channel::<Value>(CHUNK_CHANNEL_CAPACITY);
         let ready = self.ready.clone();
+
+        if !streaming_enabled {
+            let advertised_model_id = self.advertised_model_id.clone();
+            tokio::spawn(async move {
+                let response_json = match response.json::<Value>().await {
+                    Ok(value) => value,
+                    Err(e) => {
+                        error!("non-stream completion decode failed: {}", e);
+                        return;
+                    }
+                };
+
+                let content = assistant_text_from_completion(&response_json);
+                let chunk = serde_json::json!({
+                    "id": response_json.get("id").cloned().unwrap_or(Value::Null),
+                    "object": "chat.completion.chunk",
+                    "created": response_json.get("created").cloned().unwrap_or(Value::Null),
+                    "model": advertised_model_id,
+                    "choices": [{
+                        "index": 0,
+                        "delta": { "content": content },
+                        "finish_reason": Value::Null
+                    }],
+                    "usage": response_json.get("usage").cloned().unwrap_or(Value::Null)
+                });
+
+                if tx.send(chunk).await.is_err() {
+                    debug!("chunk receiver dropped before synthesized chunk");
+                }
+            });
+
+            return Ok(rx);
+        }
 
         tokio::spawn(async move {
             let mut stream = response.bytes_stream();

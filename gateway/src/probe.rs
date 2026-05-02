@@ -241,20 +241,12 @@ async fn probe_target(
                 };
                 let completion_tokens = tokens_out.map(|v| v as u64).unwrap_or(chunk_count).max(1);
                 let ttft_ms = first_token_at.duration_since(started).as_millis() as u32;
-                let total_ms = started.elapsed().as_millis() as u64;
-                let gen_ms = total_ms.saturating_sub(ttft_ms as u64);
-                state.model_metrics.record(
-                    &target.model_id,
-                    ttft_ms,
-                    Some(completion_tokens),
-                    gen_ms,
-                );
                 debug!(
                     model = %target.model_id,
                     node = %target.node_id,
                     ttft_ms,
                     completion_tokens,
-                    "synthetic probe recorded sample"
+                    "synthetic probe succeeded"
                 );
                 break Ok(());
             }
@@ -310,6 +302,8 @@ mod tests {
             aliases: vec!["kimi".into()],
             is_virtual: false,
             routing_tags: vec![],
+            estimated_ttft_ms: None,
+            estimated_tps: None,
         }];
 
         let mk_device = |node_id: &str,

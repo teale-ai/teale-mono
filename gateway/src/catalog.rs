@@ -4,7 +4,7 @@
 //! by live device availability before appearing in `/v1/models`.
 
 use serde::Deserialize;
-use teale_protocol::openai::{ModelEntry, Pricing};
+use teale_protocol::openai::{ModelEntry, ModelMetrics, Pricing};
 
 pub const LIVE_MODEL_DEFAULT_PROMPT_PRICE: &str = "0.00000030";
 pub const LIVE_MODEL_DEFAULT_COMPLETION_PRICE: &str = "0.00000120";
@@ -46,6 +46,12 @@ pub struct CatalogModel {
     /// request classes that need stricter model selection than "smallest that fits".
     #[serde(default)]
     pub routing_tags: Vec<String>,
+    /// Conservative catalog hint shown until real request-backed metrics exist.
+    #[serde(default)]
+    pub estimated_ttft_ms: Option<u32>,
+    /// Conservative end-to-end output units/sec shown until actual samples exist.
+    #[serde(default)]
+    pub estimated_tps: Option<f32>,
 }
 
 impl CatalogModel {
@@ -55,9 +61,10 @@ impl CatalogModel {
 
     pub fn to_entry_with_live_state(
         &self,
-        metrics: Option<teale_protocol::openai::ModelMetrics>,
+        metrics: Option<ModelMetrics>,
         loaded_device_count: u32,
     ) -> ModelEntry {
+        let metrics = metrics.or_else(|| self.estimated_metrics());
         ModelEntry {
             id: self.id.clone(),
             object: "model".to_string(),
@@ -83,6 +90,25 @@ impl CatalogModel {
             loaded_device_count: Some(loaded_device_count),
             metrics,
         }
+    }
+
+    fn estimated_metrics(&self) -> Option<ModelMetrics> {
+        if self.estimated_ttft_ms.is_none() && self.estimated_tps.is_none() {
+            return None;
+        }
+        Some(ModelMetrics {
+            source: Some("estimate".to_string()),
+            ttft_ms_avg: self.estimated_ttft_ms,
+            ttft_ms_p50: None,
+            ttft_ms_p95: None,
+            tps_avg: self.estimated_tps,
+            tps_p50: None,
+            tps_p95: None,
+            tps_basis: Some("end_to_end".to_string()),
+            sample_count: 0,
+            last_sample_age_seconds: None,
+            window_seconds: 0,
+        })
     }
 
     pub fn matches(&self, id: &str) -> bool {
@@ -175,6 +201,8 @@ pub fn synthesize_live_model(model_id: &str, effective_context: Option<u32>) -> 
         aliases: vec![],
         is_virtual: false,
         routing_tags: vec![],
+        estimated_ttft_ms: None,
+        estimated_tps: None,
     }
 }
 
@@ -287,7 +315,43 @@ mod tests {
             aliases: vec![],
             is_virtual: false,
             routing_tags: tags.iter().map(|s| s.to_string()).collect(),
+            estimated_ttft_ms: None,
+            estimated_tps: None,
         }
+    }
+
+    #[test]
+    fn estimated_metrics_are_replaced_by_actual_samples() {
+        let mut m = model("kimi", 1000.0, 262_144, &["agent-harness"]);
+        m.estimated_ttft_ms = Some(17_000);
+        m.estimated_tps = Some(4.0);
+
+        let estimated = m.to_entry_with_live_state(None, 1).metrics.unwrap();
+        assert_eq!(estimated.source.as_deref(), Some("estimate"));
+        assert_eq!(estimated.sample_count, 0);
+        assert_eq!(estimated.ttft_ms_avg, Some(17_000));
+        assert_eq!(estimated.tps_avg, Some(4.0));
+
+        let actual = ModelMetrics {
+            source: Some("actual".to_string()),
+            ttft_ms_avg: Some(2_000),
+            ttft_ms_p50: Some(2_000),
+            ttft_ms_p95: Some(2_000),
+            tps_avg: Some(12.0),
+            tps_p50: Some(12.0),
+            tps_p95: Some(12.0),
+            tps_basis: Some("end_to_end".to_string()),
+            sample_count: 1,
+            last_sample_age_seconds: Some(0),
+            window_seconds: 3600,
+        };
+
+        let entry = m.to_entry_with_live_state(Some(actual), 1);
+        let metrics = entry.metrics.unwrap();
+        assert_eq!(metrics.source.as_deref(), Some("actual"));
+        assert_eq!(metrics.sample_count, 1);
+        assert_eq!(metrics.ttft_ms_avg, Some(2_000));
+        assert_eq!(metrics.tps_avg, Some(12.0));
     }
 
     #[test]
