@@ -187,11 +187,7 @@ pub async fn chat_completions(
 /// the just-failed model excluded. Only fires for virtual-model requests
 /// (`teale/auto` etc.) — concrete-model requests bubble the original error to
 /// the caller so they can decide what to do.
-pub(crate) fn should_cascade(
-    err: &GatewayError,
-    was_virtual: bool,
-    excluded: &[String],
-) -> bool {
+pub(crate) fn should_cascade(err: &GatewayError, was_virtual: bool, excluded: &[String]) -> bool {
     if !was_virtual || excluded.len() >= MAX_AUTO_CASCADE_RETRIES {
         return false;
     }

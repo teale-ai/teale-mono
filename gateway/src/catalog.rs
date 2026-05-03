@@ -443,9 +443,16 @@ mod tests {
         ];
         let always_one = |_: &str, _: u32| 1u32;
 
-        let first =
-            resolve_auto(&catalog, 20_000, AutoRouteProfile::Generic, always_one, 1, 1, &[])
-                .expect("first pass picks smallest");
+        let first = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::Generic,
+            always_one,
+            1,
+            1,
+            &[],
+        )
+        .expect("first pass picks smallest");
         assert_eq!(first.id, "a-small");
 
         let second = resolve_auto(
