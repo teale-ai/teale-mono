@@ -235,6 +235,91 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_account_api_keys_account_created
         ON account_api_keys(account_user_id, created_at DESC);
     "#,
+    // 009_providers.sql — centralized 3rd-party inference vendors that join
+    // the Teale marketplace. Mirrors OpenRouter's onboarding shape: each
+    // provider declares a model menu with USD-string pricing and exposes an
+    // OpenAI-compatible (or Anthropic-compatible) inference endpoint. Earnings
+    // accrue to provider_wallets via the 95/5 settlement path.
+    r#"
+    CREATE TABLE IF NOT EXISTS providers (
+        provider_id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        wire_format TEXT NOT NULL DEFAULT 'openai',
+        auth_header_name TEXT NOT NULL DEFAULT 'Authorization',
+        auth_secret_ref TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled','probation')),
+        data_collection TEXT NOT NULL DEFAULT 'allow' CHECK(data_collection IN ('allow','deny')),
+        zdr INTEGER NOT NULL DEFAULT 0,
+        quantization TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_models (
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        pricing_prompt_usd TEXT NOT NULL,
+        pricing_completion_usd TEXT NOT NULL,
+        pricing_request_usd TEXT,
+        min_context INTEGER,
+        context_length INTEGER NOT NULL,
+        max_output_tokens INTEGER,
+        supported_features TEXT,
+        input_modalities TEXT,
+        deprecation_date TEXT,
+        PRIMARY KEY (provider_id, model_id),
+        FOREIGN KEY (provider_id) REFERENCES providers(provider_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_provider_models_model
+        ON provider_models(model_id);
+
+    CREATE TABLE IF NOT EXISTS provider_health (
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        window_started_at INTEGER NOT NULL,
+        success_count INTEGER NOT NULL DEFAULT 0,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        ttft_p50_ms INTEGER,
+        ttft_p90_ms INTEGER,
+        ttft_p99_ms INTEGER,
+        tps_p50 INTEGER,
+        tps_p90 INTEGER,
+        tps_p99 INTEGER,
+        last_outage_at INTEGER,
+        PRIMARY KEY (provider_id, model_id),
+        FOREIGN KEY (provider_id) REFERENCES providers(provider_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_wallets (
+        provider_id TEXT PRIMARY KEY,
+        balance_credits INTEGER NOT NULL DEFAULT 0,
+        total_earned INTEGER NOT NULL DEFAULT 0,
+        total_paid_out INTEGER NOT NULL DEFAULT 0,
+        usdc_cents INTEGER NOT NULL DEFAULT 0,
+        payout_threshold INTEGER NOT NULL DEFAULT 0,
+        payout_destination TEXT,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (provider_id) REFERENCES providers(provider_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        ref_request_id TEXT,
+        model_id TEXT,
+        note TEXT,
+        FOREIGN KEY (provider_id) REFERENCES providers(provider_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_provider_ledger_provider_ts
+        ON provider_ledger(provider_id, timestamp DESC);
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

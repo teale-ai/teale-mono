@@ -166,6 +166,7 @@ mod tests {
             group_tx: broadcast::channel(8).0,
             model_metrics: Arc::new(ModelMetricsTracker::new()),
             share_key_issuers: ShareKeyIssuers::from_env("TEALE_ADMIN_TEST_ISSUERS"),
+            providers: crate::providers::ProvidersHandle::empty_for_test(),
         }
     }
 

@@ -316,6 +316,7 @@ mod tests {
             group_tx: broadcast::channel(8).0,
             model_metrics: Arc::new(ModelMetricsTracker::new()),
             share_key_issuers,
+            providers: crate::providers::ProvidersHandle::empty_for_test(),
         }
     }
 

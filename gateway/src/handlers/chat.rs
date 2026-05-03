@@ -120,8 +120,25 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthPrincipal>,
-    Json(req): Json<Value>,
+    Json(mut req): Json<Value>,
 ) -> Result<Response, GatewayError> {
+    // Try the centralized 3rd-party provider path first. Returns None when
+    // the request isn't centralized-routable (no provider serves the model,
+    // or user preferences point at the local fleet); in that case we fall
+    // through to the existing relay/scheduler cascade with `req` left
+    // untouched except for the consumed `provider` field and any
+    // `:nitro`/`:floor` slug suffix being stripped.
+    if let Some(outcome) = crate::handlers::centralized::try_centralized_dispatch(
+        &state,
+        &headers,
+        &principal,
+        &mut req,
+    )
+    .await
+    {
+        return outcome;
+    }
+
     let mut excluded: Vec<String> = Vec::new();
     loop {
         let prepared =
@@ -1680,6 +1697,7 @@ quantization: null
             group_tx,
             model_metrics: Arc::new(ModelMetricsTracker::new()),
             share_key_issuers: ShareKeyIssuers::default(),
+            providers: crate::providers::ProvidersHandle::empty_for_test(),
         }
     }
 
