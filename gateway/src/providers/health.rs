@@ -91,9 +91,7 @@ impl Bucket {
             tps_p50: percentile_f64(&tpss, 0.50),
             tps_p90: percentile_f64(&tpss, 0.90),
             tps_p99: percentile_f64(&tpss, 0.99),
-            seconds_since_outage: self
-                .last_outage
-                .map(|at| now.duration_since(at).as_secs()),
+            seconds_since_outage: self.last_outage.map(|at| now.duration_since(at).as_secs()),
         }
     }
 }

@@ -2832,7 +2832,9 @@ pub fn record_provider_payout(
         );
     }
 
-    let note = destination.map(|d| format!("dest={}", d)).unwrap_or_default();
+    let note = destination
+        .map(|d| format!("dest={}", d))
+        .unwrap_or_default();
     tx.execute(
         "INSERT INTO provider_ledger (provider_id, type, amount, timestamp, note)
          VALUES (?, 'PROVIDER_PAYOUT', ?, ?, ?)",

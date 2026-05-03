@@ -119,11 +119,9 @@ pub async fn try_centralized_dispatch(
     let mut last_err: Option<ProviderError> = None;
     for pc in tried {
         let attempt = if stream {
-            dispatch_streaming(state, body.clone(), pc.clone(), consumer.clone())
-                .await
+            dispatch_streaming(state, body.clone(), pc.clone(), consumer.clone()).await
         } else {
-            dispatch_buffered(state, body.clone(), pc.clone(), consumer.clone())
-                .await
+            dispatch_buffered(state, body.clone(), pc.clone(), consumer.clone()).await
         };
         match attempt {
             Ok(resp) => return Some(Ok(resp)),
@@ -167,10 +165,7 @@ pub async fn try_centralized_dispatch(
 fn features_from_body(body: &Value) -> Vec<String> {
     let mut features = Vec::new();
     if body.get("tools").map(|v| !v.is_null()).unwrap_or(false)
-        || body
-            .get("functions")
-            .map(|v| !v.is_null())
-            .unwrap_or(false)
+        || body.get("functions").map(|v| !v.is_null()).unwrap_or(false)
     {
         features.push("tools".to_string());
     }
@@ -392,9 +387,8 @@ async fn dispatch_streaming(
         }
         let _ = dispatch_task.await;
     };
-    let pinned: std::pin::Pin<
-        Box<dyn Stream<Item = Result<Event, Infallible>> + Send>,
-    > = Box::pin(stream);
+    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(stream);
     Ok(Sse::new(pinned).into_response())
 }
 

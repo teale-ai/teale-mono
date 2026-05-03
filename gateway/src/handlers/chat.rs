@@ -129,10 +129,7 @@ pub async fn chat_completions(
     // untouched except for the consumed `provider` field and any
     // `:nitro`/`:floor` slug suffix being stripped.
     if let Some(outcome) = crate::handlers::centralized::try_centralized_dispatch(
-        &state,
-        &headers,
-        &principal,
-        &mut req,
+        &state, &headers, &principal, &mut req,
     )
     .await
     {

@@ -147,8 +147,7 @@ pub async fn dispatch_streaming(
     use futures_util::StreamExt;
     while let Some(chunk) = byte_stream.next().await {
         let chunk = chunk.map_err(|e| ProviderError::MidStream(e.to_string()))?;
-        let s = std::str::from_utf8(&chunk)
-            .map_err(|e| ProviderError::Invalid(e.to_string()))?;
+        let s = std::str::from_utf8(&chunk).map_err(|e| ProviderError::Invalid(e.to_string()))?;
         buffer.push_str(s);
         // SSE events are `\n\n`-delimited; process whole events.
         while let Some(idx) = buffer.find("\n\n") {
@@ -164,8 +163,7 @@ pub async fn dispatch_streaming(
                         // formatter can close cleanly.
                         let _ = sink.send("data: [DONE]\n\n".to_string()).await;
                         let total_ms = started.elapsed().as_millis() as u64;
-                        let ttft_ms = first_token_at
-                            .map(|t| (t - started).as_millis() as u64);
+                        let ttft_ms = first_token_at.map(|t| (t - started).as_millis() as u64);
                         return Ok(UsageReport {
                             prompt_tokens,
                             completion_tokens,
@@ -176,9 +174,7 @@ pub async fn dispatch_streaming(
                     // Try to scrape usage on the final delta (OpenAI streams
                     // a chunk with `usage` populated when include_usage=true).
                     if let Ok(parsed) = serde_json::from_str::<Value>(rest) {
-                        if first_token_at.is_none()
-                            && has_content(&parsed)
-                        {
+                        if first_token_at.is_none() && has_content(&parsed) {
                             first_token_at = Some(Instant::now());
                         }
                         let (p, c) = scrape_usage(&parsed);
@@ -196,8 +192,7 @@ pub async fn dispatch_streaming(
                         return Ok(UsageReport {
                             prompt_tokens,
                             completion_tokens,
-                            ttft_ms: first_token_at
-                                .map(|t| (t - started).as_millis() as u64),
+                            ttft_ms: first_token_at.map(|t| (t - started).as_millis() as u64),
                             total_ms: Some(total_ms),
                         });
                     }
@@ -270,7 +265,10 @@ mod tests {
 
     #[test]
     fn auth_header_bearer_only_when_authorization() {
-        assert_eq!(render_auth_value("Authorization", "sk-abc"), "Bearer sk-abc");
+        assert_eq!(
+            render_auth_value("Authorization", "sk-abc"),
+            "Bearer sk-abc"
+        );
         assert_eq!(render_auth_value("X-Api-Key", "sk-abc"), "sk-abc");
         // Don't double-prefix if the secret already contains Bearer.
         assert_eq!(
@@ -281,10 +279,9 @@ mod tests {
 
     #[test]
     fn scrape_usage_reads_openai_shape() {
-        let v: Value = serde_json::from_str(
-            r#"{"usage":{"prompt_tokens":10,"completion_tokens":42}}"#,
-        )
-        .unwrap();
+        let v: Value =
+            serde_json::from_str(r#"{"usage":{"prompt_tokens":10,"completion_tokens":42}}"#)
+                .unwrap();
         assert_eq!(scrape_usage(&v), (10, 42));
     }
 }

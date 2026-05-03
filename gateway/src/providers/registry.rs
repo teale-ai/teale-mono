@@ -234,10 +234,7 @@ impl ProviderRegistry {
             })?;
             for r in rows {
                 let row = r?;
-                by_model
-                    .entry(row.model_id.clone())
-                    .or_default()
-                    .push(row);
+                by_model.entry(row.model_id.clone()).or_default().push(row);
             }
         }
 

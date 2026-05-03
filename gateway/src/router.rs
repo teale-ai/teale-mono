@@ -274,9 +274,15 @@ pub fn rank_provider_candidates(
             continue;
         }
         if prefs.require_parameters && !request_features.is_empty() {
-            let supported: HashSet<&str> =
-                model.supported_features.iter().map(|s| s.as_str()).collect();
-            if !request_features.iter().all(|f| supported.contains(f.as_str())) {
+            let supported: HashSet<&str> = model
+                .supported_features
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            if !request_features
+                .iter()
+                .all(|f| supported.contains(f.as_str()))
+            {
                 continue;
             }
         }
@@ -386,15 +392,11 @@ pub fn order_candidates(
             }),
             SortKey::Latency => all.sort_by(|a, b| {
                 let av = match a {
-                    Candidate::CentralizedProvider(c) => {
-                        c.health.ttft_p50_ms.unwrap_or(u64::MAX)
-                    }
+                    Candidate::CentralizedProvider(c) => c.health.ttft_p50_ms.unwrap_or(u64::MAX),
                     Candidate::LocalDistributed(_) => u64::MAX,
                 };
                 let bv = match b {
-                    Candidate::CentralizedProvider(c) => {
-                        c.health.ttft_p50_ms.unwrap_or(u64::MAX)
-                    }
+                    Candidate::CentralizedProvider(c) => c.health.ttft_p50_ms.unwrap_or(u64::MAX),
                     Candidate::LocalDistributed(_) => u64::MAX,
                 };
                 av.cmp(&bv)
@@ -431,9 +433,7 @@ fn meets_min_throughput(h: &HealthSnapshot, p: &PercentilePref) -> bool {
             (None, Some(_)) => false,
         }
     };
-    check(h.tps_p50, p.p50)
-        && check(h.tps_p90, p.p90)
-        && check(h.tps_p99, p.p99)
+    check(h.tps_p50, p.p50) && check(h.tps_p90, p.p90) && check(h.tps_p99, p.p99)
 }
 
 fn meets_max_latency(h: &HealthSnapshot, p: &PercentilePref) -> bool {
@@ -444,9 +444,7 @@ fn meets_max_latency(h: &HealthSnapshot, p: &PercentilePref) -> bool {
             (None, Some(_)) => false,
         }
     };
-    check(h.ttft_p50_ms, p.p50)
-        && check(h.ttft_p90_ms, p.p90)
-        && check(h.ttft_p99_ms, p.p99)
+    check(h.ttft_p50_ms, p.p50) && check(h.ttft_p90_ms, p.p90) && check(h.ttft_p99_ms, p.p99)
 }
 
 #[cfg(test)]
@@ -543,14 +541,8 @@ mod tests {
             ignore: Some(vec!["acme".into()]),
             ..Default::default()
         };
-        let cands = rank_provider_candidates(
-            "openai/gpt-oss-120b",
-            0,
-            &[],
-            &prefs,
-            &h,
-            rows.clone(),
-        );
+        let cands =
+            rank_provider_candidates("openai/gpt-oss-120b", 0, &[], &prefs, &h, rows.clone());
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].slug(), "globex");
 
@@ -558,14 +550,7 @@ mod tests {
             only: Some(vec!["acme".into()]),
             ..Default::default()
         };
-        let cands = rank_provider_candidates(
-            "openai/gpt-oss-120b",
-            0,
-            &[],
-            &prefs_only,
-            &h,
-            rows,
-        );
+        let cands = rank_provider_candidates("openai/gpt-oss-120b", 0, &[], &prefs_only, &h, rows);
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].slug(), "acme");
     }
@@ -585,14 +570,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let cands = rank_provider_candidates(
-            "openai/gpt-oss-120b",
-            0,
-            &[],
-            &prefs,
-            &h,
-            rows,
-        );
+        let cands = rank_provider_candidates("openai/gpt-oss-120b", 0, &[], &prefs, &h, rows);
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].slug(), "cheap");
     }
@@ -633,14 +611,7 @@ mod tests {
             sort: Some(SortPref::Simple(SortKey::Price)),
             ..Default::default()
         };
-        let cands = rank_provider_candidates(
-            "openai/gpt-oss-120b",
-            0,
-            &[],
-            &prefs,
-            &h,
-            rows,
-        );
+        let cands = rank_provider_candidates("openai/gpt-oss-120b", 0, &[], &prefs, &h, rows);
         let ordered = order_candidates(cands, None, &prefs);
         assert_eq!(ordered.first().unwrap().slug(), "cheap");
     }
