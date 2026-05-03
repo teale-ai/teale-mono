@@ -165,7 +165,7 @@ impl HealthSnapshot {
     /// the OpenRouter "recently-unstable" filter applied before default load
     /// balancing.
     pub fn recently_unstable(&self) -> bool {
-        self.seconds_since_outage.map_or(false, |s| s < 30)
+        self.seconds_since_outage.is_some_and(|s| s < 30)
     }
 }
 

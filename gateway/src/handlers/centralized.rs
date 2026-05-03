@@ -93,7 +93,7 @@ pub async fn try_centralized_dispatch(
     let mut tried: Vec<ProviderCandidate> = Vec::new();
     for cand in ordered {
         match cand {
-            Candidate::CentralizedProvider(p) => tried.push(p),
+            Candidate::CentralizedProvider(p) => tried.push(*p),
             Candidate::LocalDistributed(_) => {
                 // The user's ordering bubbled local up; let the existing flow
                 // handle it. Anything below that point is also fall-through

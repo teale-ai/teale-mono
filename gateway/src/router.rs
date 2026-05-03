@@ -176,7 +176,7 @@ impl Default for LocalDistributedCandidate {
 #[derive(Debug, Clone)]
 pub enum Candidate {
     LocalDistributed(LocalDistributedCandidate),
-    CentralizedProvider(ProviderCandidate),
+    CentralizedProvider(Box<ProviderCandidate>),
 }
 
 impl Candidate {
@@ -355,7 +355,7 @@ pub fn order_candidates(
 
     let mut all: Vec<Candidate> = providers
         .into_iter()
-        .map(Candidate::CentralizedProvider)
+        .map(|p| Candidate::CentralizedProvider(Box::new(p)))
         .collect();
     if let Some(l) = local {
         all.push(Candidate::LocalDistributed(l));
