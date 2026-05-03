@@ -21,7 +21,7 @@ use crate::auth::AuthPrincipal;
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
 use crate::handlers::chat::{
-    error_to_status_label, pick_and_dispatch, prepare_chat_request, PreparedChatRequest,
+    error_to_status_label, pick_and_dispatch, PreparedChatRequest,
 };
 use crate::ledger;
 use crate::metrics;
@@ -66,14 +66,44 @@ pub async fn messages(
         .map_err(|e| GatewayError::BadRequest(format!("invalid Anthropic request body: {e}")))?;
     let input_tokens = estimate_anthropic_tokens(&anthropic);
     let openai_body = anthropic_to_openai(&anthropic)?;
-    let prepared = prepare_chat_request(&state, &headers, &principal, openai_body)?;
 
-    if prepared.streaming {
-        let stream = run_anthropic_streaming(state, prepared, input_tokens).await?;
-        Ok(stream.into_response())
-    } else {
-        let json = run_anthropic_buffered(state, prepared, input_tokens).await?;
-        Ok(json.into_response())
+    let mut excluded: Vec<String> = Vec::new();
+    loop {
+        let prepared = crate::handlers::chat::prepare_chat_request_excluding(
+            &state,
+            &headers,
+            &principal,
+            openai_body.clone(),
+            &excluded,
+        )?;
+        let was_virtual = prepared.was_virtual_resolution;
+        let attempted_model = prepared.catalog_model.id.clone();
+
+        let result: Result<Response, GatewayError> = if prepared.streaming {
+            run_anthropic_streaming(state.clone(), prepared, input_tokens)
+                .await
+                .map(IntoResponse::into_response)
+        } else {
+            run_anthropic_buffered(state.clone(), prepared, input_tokens)
+                .await
+                .map(IntoResponse::into_response)
+        };
+
+        match result {
+            Ok(response) => return Ok(response),
+            Err(err)
+                if crate::handlers::chat::should_cascade(&err, was_virtual, &excluded) =>
+            {
+                tracing::warn!(
+                    failed_model = %attempted_model,
+                    attempt = excluded.len() + 1,
+                    "teale/auto cascade (Anthropic): re-resolving with failed model excluded"
+                );
+                excluded.push(attempted_model);
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
     }
 }
 
