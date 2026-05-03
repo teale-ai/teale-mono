@@ -276,10 +276,7 @@ pub(crate) fn prepare_chat_request_excluding(
                     .eligible_devices(id)
                     .into_iter()
                     .filter(|device| {
-                        crate::registry::model_matches_any(
-                            id,
-                            &device.capabilities.loaded_models,
-                        )
+                        crate::registry::model_matches_any(id, &device.capabilities.loaded_models)
                     })
                     .filter(|device| {
                         device
@@ -1751,8 +1748,10 @@ pricing_completion: "0.00000020"
         let config = dispatch_test_config(15);
         let small = concrete("test/small", 8.0, 32768);
         let big = concrete("test/big", 35.0, 262144);
-        let state =
-            dispatch_test_state_with_catalog(config, vec![virtual_auto(), small.clone(), big.clone()]);
+        let state = dispatch_test_state_with_catalog(
+            config,
+            vec![virtual_auto(), small.clone(), big.clone()],
+        );
 
         // One device has `big` actually loaded, and claims `small` as swappable.
         // Pre-fix: resolve_auto picks `small` (smaller params_b) since the
