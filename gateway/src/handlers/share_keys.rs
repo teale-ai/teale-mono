@@ -34,13 +34,10 @@ use crate::state::AppState;
 fn require_device(principal: &AuthPrincipal) -> Result<&str, GatewayError> {
     match &principal.kind {
         PrincipalKind::Device { device_id } => Ok(device_id.as_str()),
-        PrincipalKind::Account { .. } => Err(GatewayError::Unauthorized(
-            "account API keys cannot call device-only share-key endpoints".into(),
-        )),
         PrincipalKind::Share { .. } => Err(GatewayError::Unauthorized(
             "share keys cannot call device-only share-key endpoints".into(),
         )),
-        PrincipalKind::Static { .. } => {
+        PrincipalKind::Static { .. } | PrincipalKind::ApiKey { .. } => {
             Err(GatewayError::Unauthorized("device bearer required".into()))
         }
     }

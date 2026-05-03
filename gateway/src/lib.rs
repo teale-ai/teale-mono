@@ -1,6 +1,7 @@
 //! Re-exports so integration tests in gateway/tests/ can reach
 //! internal modules. The binary entry-point is still main.rs.
 
+pub mod api_keys;
 pub mod auth;
 pub mod catalog;
 pub mod config;
@@ -17,4 +18,5 @@ pub mod registry;
 pub mod relay_client;
 pub mod router;
 pub mod scheduler;
+pub mod solana;
 pub mod state;

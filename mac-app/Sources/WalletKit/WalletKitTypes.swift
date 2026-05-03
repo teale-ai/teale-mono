@@ -11,7 +11,7 @@ public struct WalletKitConfig: Sendable {
     public init(
         rpcEndpoint: URL,
         usdcMint: String,
-        creditsPerUSDC: Double = 10_000,
+        creditsPerUSDC: Double = 1_000_000,
         pollIntervalSeconds: TimeInterval = 30
     ) {
         self.rpcEndpoint = rpcEndpoint
@@ -23,14 +23,14 @@ public struct WalletKitConfig: Sendable {
     public static let mainnet = WalletKitConfig(
         rpcEndpoint: URL(string: "https://api.mainnet-beta.solana.com")!,
         usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        creditsPerUSDC: 10_000,
+        creditsPerUSDC: 1_000_000,
         pollIntervalSeconds: 30
     )
 
     public static let devnet = WalletKitConfig(
         rpcEndpoint: URL(string: "https://api.devnet.solana.com")!,
         usdcMint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-        creditsPerUSDC: 10_000,
+        creditsPerUSDC: 1_000_000,
         pollIntervalSeconds: 15
     )
 

@@ -25,9 +25,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::{unix_now, DbPool};
 
-pub const WELCOME_BONUS_CREDITS: i64 = 1_000;
+pub const WELCOME_BONUS_CREDITS: i64 = 100_000;
 pub const CHALLENGE_TTL_SECONDS: i64 = 300;
 pub const TOKEN_TTL_SECONDS: i64 = 86_400;
+pub const CREDITS_PER_USDC: i64 = 1_000_000;
+pub const CREDITS_PER_USDC_CENT: i64 = CREDITS_PER_USDC / 100;
+pub const REFERRAL_BONUS_CREDITS: i64 = 1_000_000;
 
 /// Share-key bounds. Enforced by `mint_share_key`.
 pub const SHARE_KEY_MIN_EXPIRES_IN: i64 = 60; // 1 minute
@@ -128,16 +131,19 @@ pub struct LedgerEntry {
 /// Who is being charged for an inference request. Device spenders are
 /// ordinary device-bound tokens; Share spenders are holders of a temporary
 /// share key minted by a device — in that case the ledger attributes spend to
-/// the issuer while debiting the share key's funded pool.
+/// the issuer while debiting the share key's funded pool. Account spenders
+/// arrive via a programmatic API key — spend debits the account_wallet's
+/// credit balance and is attributed back to the key for usage rollups.
 #[derive(Debug, Clone)]
 pub enum ConsumerPrincipal {
     Device(String),
-    Account {
-        account_user_id: String,
-    },
     Share {
         issuer_device_id: String,
         key_id: String,
+    },
+    Account {
+        account_user_id: String,
+        api_key_id: Option<String>,
     },
 }
 
@@ -146,22 +152,42 @@ impl ConsumerPrincipal {
     pub fn ledger_actor_id(&self) -> &str {
         match self {
             Self::Device(d) => d,
-            Self::Account { account_user_id } => account_user_id,
             Self::Share {
                 issuer_device_id, ..
             } => issuer_device_id,
+            Self::Account {
+                account_user_id, ..
+            } => account_user_id,
         }
     }
 
-    /// Device ID whose balance is debited for this spend, when the spender is
-    /// still device-backed.
+    /// Device ID whose balance is debited for this spend, when the spend is
+    /// device-rooted. Account-rooted spend (API keys) returns `None`.
     pub fn paying_device_id(&self) -> Option<&str> {
         match self {
             Self::Device(d) => Some(d),
-            Self::Account { .. } => None,
             Self::Share {
                 issuer_device_id, ..
             } => Some(issuer_device_id),
+            Self::Account { .. } => None,
+        }
+    }
+
+    /// Stable string label for tracing/logs across all variants.
+    pub fn debug_label(&self) -> String {
+        match self {
+            Self::Device(d) => format!("device:{d}"),
+            Self::Share {
+                issuer_device_id,
+                key_id,
+            } => format!("share:{key_id}@{issuer_device_id}"),
+            Self::Account {
+                account_user_id,
+                api_key_id,
+            } => match api_key_id {
+                Some(k) => format!("account:{account_user_id} via key:{k}"),
+                None => format!("account:{account_user_id}"),
+            },
         }
     }
 }
@@ -227,40 +253,6 @@ pub struct ShareKeyPublic {
     pub created_at: i64,
     #[serde(rename = "revokedAt", skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<i64>,
-}
-
-/// Returned when an account-scoped API key is created. The raw token is only
-/// exposed once at mint time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccountApiKeyMinted {
-    #[serde(rename = "keyID")]
-    pub key_id: String,
-    pub token: String,
-    pub label: Option<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: i64,
-}
-
-/// Account-visible API key metadata; never includes the raw token after mint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccountApiKeyPublic {
-    #[serde(rename = "keyID")]
-    pub key_id: String,
-    #[serde(rename = "tokenPreview")]
-    pub token_preview: String,
-    pub label: Option<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: i64,
-    #[serde(rename = "lastUsedAt", skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<i64>,
-    #[serde(rename = "revokedAt", skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResolvedAccountApiKey {
-    pub key_id: String,
-    pub account_user_id: String,
 }
 
 /// Payload served by the public preview endpoint; no auth required.
@@ -405,6 +397,18 @@ pub struct AccountWalletSnapshot {
     pub account_user_id: String,
     pub balance_credits: i64,
     pub usdc_cents: i64,
+    #[serde(rename = "solanaAddress")]
+    pub solana_address: Option<String>,
+    #[serde(rename = "solanaEnabled")]
+    pub solana_enabled: bool,
+    #[serde(rename = "depositedUsdcCentsTotal")]
+    pub deposited_usdc_cents_total: i64,
+    #[serde(rename = "withdrawnUsdcCentsTotal")]
+    pub withdrawn_usdc_cents_total: i64,
+    #[serde(rename = "redeemableUsdcCents")]
+    pub redeemable_usdc_cents: i64,
+    #[serde(rename = "withdrawableCredits")]
+    pub withdrawable_credits: i64,
     pub display_name: Option<String>,
     pub phone: Option<String>,
     pub email: Option<String>,
@@ -418,6 +422,96 @@ pub struct AccountSweepResult {
     pub swept_credits: i64,
     pub swept_usdc_cents: i64,
     pub account: AccountWalletSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountOnchainSnapshot {
+    pub account_user_id: String,
+    pub balance_credits: i64,
+    pub usdc_cents: i64,
+    #[serde(rename = "solanaAddress")]
+    pub solana_address: Option<String>,
+    #[serde(rename = "solanaEnabled")]
+    pub solana_enabled: bool,
+    #[serde(rename = "depositedUsdcCentsTotal")]
+    pub deposited_usdc_cents_total: i64,
+    #[serde(rename = "withdrawnUsdcCentsTotal")]
+    pub withdrawn_usdc_cents_total: i64,
+    #[serde(rename = "redeemableUsdcCents")]
+    pub redeemable_usdc_cents: i64,
+    #[serde(rename = "withdrawableCredits")]
+    pub withdrawable_credits: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferralCodeSnapshot {
+    pub code: String,
+    #[serde(rename = "ownerKind")]
+    pub owner_kind: String,
+    #[serde(rename = "ownerID")]
+    pub owner_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceJoinRewards {
+    #[serde(rename = "welcomeBonusCredits")]
+    pub welcome_bonus_credits: i64,
+    #[serde(rename = "referralBonusCredits")]
+    pub referral_bonus_credits: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccountJoinRewards {
+    #[serde(rename = "welcomeBonusCredits")]
+    pub welcome_bonus_credits: i64,
+    #[serde(rename = "referralBonusCredits")]
+    pub referral_bonus_credits: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountOnchainDepositIntent {
+    #[serde(rename = "solanaAddress")]
+    pub solana_address: Option<String>,
+    #[serde(rename = "txSignature")]
+    pub tx_signature: Option<String>,
+    #[serde(rename = "sourceAddress")]
+    pub source_address: Option<String>,
+    #[serde(rename = "amountUsdcCents")]
+    pub amount_usdc_cents: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountWithdrawalRequest {
+    #[serde(rename = "requestID")]
+    pub request_id: String,
+    #[serde(rename = "destinationAddress")]
+    pub destination_address: String,
+    #[serde(rename = "amountUsdcCents")]
+    pub amount_usdc_cents: i64,
+    #[serde(rename = "txSignature")]
+    pub tx_signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountWithdrawalRecord {
+    #[serde(rename = "withdrawalID")]
+    pub withdrawal_id: String,
+    #[serde(rename = "requestID")]
+    pub request_id: String,
+    pub account_user_id: String,
+    #[serde(rename = "destinationAddress")]
+    pub destination_address: String,
+    #[serde(rename = "amountUsdcCents")]
+    pub amount_usdc_cents: i64,
+    #[serde(rename = "amountCredits")]
+    pub amount_credits: i64,
+    pub status: String,
+    #[serde(rename = "txSignature")]
+    pub tx_signature: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    #[serde(rename = "completedAt")]
+    pub completed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -467,10 +561,534 @@ pub enum TransferError {
     Other(#[from] anyhow::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum AccountOnchainError {
+    #[error("requesting device is not linked to an account")]
+    AccountNotLinked,
+    #[error("solanaAddress is required when enabling on-chain wallet support")]
+    SolanaAddressRequired,
+    #[error("solanaAddress does not match the existing account wallet address")]
+    SolanaAddressMismatch,
+    #[error("solana wallet is not enabled for this account")]
+    SolanaWalletNotEnabled,
+    #[error("amountUsdcCents must be greater than zero")]
+    InvalidUsdcAmount,
+    #[error("amountUsdcCents is required when txSignature is provided")]
+    DepositAmountRequired,
+    #[error("requestID is required")]
+    MissingRequestId,
+    #[error("destinationAddress is required")]
+    MissingDestinationAddress,
+    #[error("deposit txSignature is already recorded for a different deposit")]
+    DepositConflict,
+    #[error("withdrawal requestID is already recorded with different details")]
+    WithdrawalConflict,
+    #[error("withdrawal txSignature is already recorded for a different request")]
+    WithdrawalSignatureConflict,
+    #[error(
+        "insufficient withdrawable credits: balance {balance}, redeemable {redeemable_credits}, need {required}"
+    )]
+    InsufficientWithdrawable {
+        balance: i64,
+        redeemable_credits: i64,
+        required: i64,
+    },
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReferralError {
+    #[error("requesting device is not linked to an account")]
+    AccountNotLinked,
+    #[error("invalid referral code")]
+    InvalidCode,
+    #[error("cannot refer yourself")]
+    SelfReferral,
+    #[error("device already claimed a referral bonus")]
+    DeviceAlreadyClaimed,
+    #[error("account already claimed a referral bonus")]
+    AccountAlreadyClaimed,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReferralOwner {
+    Device(String),
+    Account(String),
+}
+
 impl From<rusqlite::Error> for TransferError {
     fn from(err: rusqlite::Error) -> Self {
         Self::Other(err.into())
     }
+}
+
+impl From<rusqlite::Error> for AccountOnchainError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
+impl From<rusqlite::Error> for ReferralError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
+fn credits_from_usdc_cents(usdc_cents: i64) -> anyhow::Result<i64> {
+    usdc_cents
+        .checked_mul(CREDITS_PER_USDC_CENT)
+        .ok_or_else(|| anyhow::anyhow!("usdc cents overflow while converting to credits"))
+}
+
+fn redeemable_usdc_cents(deposited_usdc_cents_total: i64, withdrawn_usdc_cents_total: i64) -> i64 {
+    (deposited_usdc_cents_total - withdrawn_usdc_cents_total).max(0)
+}
+
+fn withdrawable_credits(
+    balance_credits: i64,
+    deposited_usdc_cents_total: i64,
+    withdrawn_usdc_cents_total: i64,
+) -> i64 {
+    let redeemable_credits = credits_from_usdc_cents(redeemable_usdc_cents(
+        deposited_usdc_cents_total,
+        withdrawn_usdc_cents_total,
+    ))
+    .unwrap_or(i64::MAX);
+    balance_credits.min(redeemable_credits).max(0)
+}
+
+fn normalized_optional_string(value: Option<&str>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then_some(trimmed.to_string())
+    })
+}
+
+fn referral_code_for_owner_locked(
+    conn: &rusqlite::Connection,
+    owner: &ReferralOwner,
+) -> anyhow::Result<Option<ReferralCodeSnapshot>> {
+    let result = match owner {
+        ReferralOwner::Device(device_id) => conn
+            .query_row(
+                "SELECT code, owner_kind, owner_device_id FROM referral_codes
+                 WHERE owner_device_id = ?",
+                [device_id.as_str()],
+                |r| {
+                    Ok(ReferralCodeSnapshot {
+                        code: r.get(0)?,
+                        owner_kind: r.get(1)?,
+                        owner_id: r.get(2)?,
+                    })
+                },
+            )
+            .ok(),
+        ReferralOwner::Account(account_user_id) => conn
+            .query_row(
+                "SELECT code, owner_kind, owner_account_user_id FROM referral_codes
+                 WHERE owner_account_user_id = ?",
+                [account_user_id.as_str()],
+                |r| {
+                    Ok(ReferralCodeSnapshot {
+                        code: r.get(0)?,
+                        owner_kind: r.get(1)?,
+                        owner_id: r.get(2)?,
+                    })
+                },
+            )
+            .ok(),
+    };
+    Ok(result)
+}
+
+fn ensure_referral_code_tx(
+    tx: &rusqlite::Transaction<'_>,
+    owner: &ReferralOwner,
+    now: i64,
+) -> anyhow::Result<ReferralCodeSnapshot> {
+    if let Some(existing) = referral_code_for_owner_locked(tx, owner)? {
+        return Ok(existing);
+    }
+
+    let code = new_referral_code();
+    match owner {
+        ReferralOwner::Device(device_id) => {
+            tx.execute(
+                "INSERT INTO referral_codes
+                    (code, owner_kind, owner_device_id, owner_account_user_id, created_at)
+                 VALUES (?, 'device', ?, NULL, ?)",
+                params![code, device_id.as_str(), now],
+            )?;
+            Ok(ReferralCodeSnapshot {
+                code,
+                owner_kind: "device".to_string(),
+                owner_id: device_id.clone(),
+            })
+        }
+        ReferralOwner::Account(account_user_id) => {
+            tx.execute(
+                "INSERT INTO referral_codes
+                    (code, owner_kind, owner_device_id, owner_account_user_id, created_at)
+                 VALUES (?, 'account', NULL, ?, ?)",
+                params![code, account_user_id.as_str(), now],
+            )?;
+            Ok(ReferralCodeSnapshot {
+                code,
+                owner_kind: "account".to_string(),
+                owner_id: account_user_id.clone(),
+            })
+        }
+    }
+}
+
+pub fn referral_code_for_device(
+    pool: &DbPool,
+    requester_device_id: &str,
+) -> anyhow::Result<ReferralCodeSnapshot> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+        params![requester_device_id, now, now],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [requester_device_id],
+    )?;
+    let owner = match account_user_id_for_device_locked(&tx, requester_device_id) {
+        Some(account_user_id) => ReferralOwner::Account(account_user_id),
+        None => ReferralOwner::Device(requester_device_id.to_string()),
+    };
+    let snapshot = ensure_referral_code_tx(&tx, &owner, now)?;
+    tx.commit()?;
+    Ok(snapshot)
+}
+
+fn referral_claim_exists_for_device_locked(
+    conn: &rusqlite::Connection,
+    device_id: &str,
+) -> anyhow::Result<bool> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM referral_claims WHERE referred_device_id = ? LIMIT 1",
+            [device_id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(exists.is_some())
+}
+
+fn referral_claim_exists_for_account_locked(
+    conn: &rusqlite::Connection,
+    account_user_id: &str,
+) -> anyhow::Result<bool> {
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM referral_claims WHERE referred_account_user_id = ? LIMIT 1",
+            [account_user_id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(exists.is_some())
+}
+
+fn apply_referral_for_device_tx(
+    tx: &rusqlite::Transaction<'_>,
+    device_id: &str,
+    referral_code: &str,
+    now: i64,
+) -> Result<i64, ReferralError> {
+    if referral_claim_exists_for_device_locked(tx, device_id)? {
+        return Err(ReferralError::DeviceAlreadyClaimed);
+    }
+
+    let owner: Option<(String, Option<String>, Option<String>)> = tx
+        .query_row(
+            "SELECT owner_kind, owner_device_id, owner_account_user_id
+             FROM referral_codes WHERE code = ?",
+            [referral_code],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let Some((owner_kind, owner_device_id, owner_account_user_id)) = owner else {
+        return Err(ReferralError::InvalidCode);
+    };
+    let referrer_id = owner_account_user_id
+        .as_deref()
+        .or(owner_device_id.as_deref())
+        .ok_or(ReferralError::InvalidCode)?
+        .to_string();
+
+    if owner_device_id.as_deref() == Some(device_id) {
+        return Err(ReferralError::SelfReferral);
+    }
+
+    let claim_id = new_referral_claim_id();
+    match owner_kind.as_str() {
+        "device" => {
+            let referrer_device_id = owner_device_id
+                .as_deref()
+                .ok_or(ReferralError::InvalidCode)?
+                .to_string();
+            credit_device_wallet_tx(
+                tx,
+                referrer_device_id.as_str(),
+                REFERRAL_BONUS_CREDITS,
+                "REFERRAL_BONUS",
+                &format!("referral bonus for device {device_id}"),
+                now,
+            )?;
+        }
+        "account" => {
+            let referrer_account_user_id = owner_account_user_id
+                .as_deref()
+                .ok_or(ReferralError::InvalidCode)?
+                .to_string();
+            let linked_account = account_user_id_for_device_locked(tx, device_id);
+            if linked_account.as_deref() == Some(referrer_account_user_id.as_str()) {
+                return Err(ReferralError::SelfReferral);
+            }
+            credit_account_wallet_tx(
+                tx,
+                &referrer_account_user_id,
+                REFERRAL_BONUS_CREDITS,
+                "REFERRAL_BONUS",
+                Some(device_id),
+                &format!("referral bonus for device {device_id}"),
+                now,
+            )?;
+        }
+        _ => return Err(ReferralError::InvalidCode),
+    }
+
+    credit_device_wallet_tx(
+        tx,
+        device_id,
+        REFERRAL_BONUS_CREDITS,
+        "REFERRAL_BONUS",
+        &format!("joined with referral code {referral_code}"),
+        now,
+    )?;
+    tx.execute(
+        "INSERT INTO referral_claims
+            (claim_id, code, referrer_kind, referrer_id, referred_kind,
+             referred_device_id, referred_account_user_id, referrer_bonus_credits,
+             referred_bonus_credits, created_at)
+         VALUES (?, ?, ?, ?, 'device', ?, NULL, ?, ?, ?)",
+        params![
+            claim_id,
+            referral_code,
+            owner_kind,
+            referrer_id,
+            device_id,
+            REFERRAL_BONUS_CREDITS,
+            REFERRAL_BONUS_CREDITS,
+            now,
+        ],
+    )?;
+
+    Ok(REFERRAL_BONUS_CREDITS)
+}
+
+fn apply_referral_for_account_tx(
+    tx: &rusqlite::Transaction<'_>,
+    requester_device_id: &str,
+    account_user_id: &str,
+    referral_code: &str,
+    now: i64,
+) -> Result<i64, ReferralError> {
+    if referral_claim_exists_for_account_locked(tx, account_user_id)? {
+        return Err(ReferralError::AccountAlreadyClaimed);
+    }
+
+    let owner: Option<(String, Option<String>, Option<String>)> = tx
+        .query_row(
+            "SELECT owner_kind, owner_device_id, owner_account_user_id
+             FROM referral_codes WHERE code = ?",
+            [referral_code],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let Some((owner_kind, owner_device_id, owner_account_user_id)) = owner else {
+        return Err(ReferralError::InvalidCode);
+    };
+    let referrer_id = owner_account_user_id
+        .as_deref()
+        .or(owner_device_id.as_deref())
+        .ok_or(ReferralError::InvalidCode)?
+        .to_string();
+
+    if owner_account_user_id.as_deref() == Some(account_user_id)
+        || owner_device_id.as_deref() == Some(requester_device_id)
+    {
+        return Err(ReferralError::SelfReferral);
+    }
+
+    match owner_kind.as_str() {
+        "device" => {
+            let referrer_device_id = owner_device_id
+                .as_deref()
+                .ok_or(ReferralError::InvalidCode)?
+                .to_string();
+            credit_device_wallet_tx(
+                tx,
+                referrer_device_id.as_str(),
+                REFERRAL_BONUS_CREDITS,
+                "REFERRAL_BONUS",
+                &format!("referral bonus for account {account_user_id}"),
+                now,
+            )?;
+        }
+        "account" => {
+            let referrer_account_user_id = owner_account_user_id
+                .as_deref()
+                .ok_or(ReferralError::InvalidCode)?
+                .to_string();
+            credit_account_wallet_tx(
+                tx,
+                &referrer_account_user_id,
+                REFERRAL_BONUS_CREDITS,
+                "REFERRAL_BONUS",
+                Some(requester_device_id),
+                &format!("referral bonus for account {account_user_id}"),
+                now,
+            )?;
+        }
+        _ => return Err(ReferralError::InvalidCode),
+    }
+
+    credit_account_wallet_tx(
+        tx,
+        account_user_id,
+        REFERRAL_BONUS_CREDITS,
+        "REFERRAL_BONUS",
+        Some(requester_device_id),
+        &format!("joined with referral code {referral_code}"),
+        now,
+    )?;
+    tx.execute(
+        "INSERT INTO referral_claims
+            (claim_id, code, referrer_kind, referrer_id, referred_kind,
+             referred_device_id, referred_account_user_id, referrer_bonus_credits,
+             referred_bonus_credits, created_at)
+         VALUES (?, ?, ?, ?, 'account', NULL, ?, ?, ?, ?)",
+        params![
+            new_referral_claim_id(),
+            referral_code,
+            owner_kind,
+            referrer_id,
+            account_user_id,
+            REFERRAL_BONUS_CREDITS,
+            REFERRAL_BONUS_CREDITS,
+            now,
+        ],
+    )?;
+
+    Ok(REFERRAL_BONUS_CREDITS)
+}
+
+pub fn apply_device_join_rewards(
+    pool: &DbPool,
+    device_id: &str,
+    referral_code: Option<&str>,
+) -> Result<DeviceJoinRewards, ReferralError> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+        params![device_id, now, now],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [device_id],
+    )?;
+
+    let has_bonus: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM ledger WHERE device_id = ? AND type = 'BONUS' LIMIT 1",
+            [device_id],
+            |r| r.get(0),
+        )
+        .ok();
+
+    let mut rewards = DeviceJoinRewards::default();
+    if has_bonus.is_none() {
+        tx.execute(
+            "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
+            params![WELCOME_BONUS_CREDITS],
+        )?;
+        tx.execute(
+            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+             VALUES (?, 'BONUS', ?, ?, 'Welcome to Teale')",
+            params![device_id, WELCOME_BONUS_CREDITS, now],
+        )?;
+        tx.execute(
+            "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+             WHERE device_id = ?",
+            params![WELCOME_BONUS_CREDITS, WELCOME_BONUS_CREDITS, device_id],
+        )?;
+        rewards.welcome_bonus_credits = WELCOME_BONUS_CREDITS;
+    }
+
+    if let Some(referral_code) = normalized_optional_string(referral_code) {
+        rewards.referral_bonus_credits =
+            apply_referral_for_device_tx(&tx, device_id, &referral_code, now)?;
+    }
+
+    tx.commit()?;
+    Ok(rewards)
+}
+
+pub fn apply_account_join_rewards(
+    pool: &DbPool,
+    requester_device_id: &str,
+    account_user_id: &str,
+    referral_code: Option<&str>,
+) -> Result<AccountJoinRewards, ReferralError> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let has_bonus: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM account_ledger
+             WHERE account_user_id = ? AND type = 'BONUS' LIMIT 1",
+            [account_user_id],
+            |r| r.get(0),
+        )
+        .ok();
+
+    let mut rewards = AccountJoinRewards::default();
+    if has_bonus.is_none() {
+        credit_account_wallet_tx(
+            &tx,
+            account_user_id,
+            WELCOME_BONUS_CREDITS,
+            "BONUS",
+            Some(requester_device_id),
+            "Welcome to Teale",
+            now,
+        )?;
+        rewards.welcome_bonus_credits = WELCOME_BONUS_CREDITS;
+    }
+
+    if let Some(referral_code) = normalized_optional_string(referral_code) {
+        rewards.referral_bonus_credits = apply_referral_for_account_tx(
+            &tx,
+            requester_device_id,
+            account_user_id,
+            &referral_code,
+            now,
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(rewards)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,6 +1096,30 @@ pub struct NetworkLedgerTotals {
     pub total_credits_earned: i64,
     pub total_credits_spent: i64,
     pub total_usdc_distributed_cents: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct GenesisResetReport {
+    #[serde(rename = "devicesCleared")]
+    pub devices_cleared: usize,
+    #[serde(rename = "accountWalletsCleared")]
+    pub account_wallets_cleared: usize,
+    #[serde(rename = "deviceLedgerRowsCleared")]
+    pub device_ledger_rows_cleared: usize,
+    #[serde(rename = "accountLedgerRowsCleared")]
+    pub account_ledger_rows_cleared: usize,
+    #[serde(rename = "shareKeysCleared")]
+    pub share_keys_cleared: usize,
+    #[serde(rename = "withdrawalsCleared")]
+    pub withdrawals_cleared: usize,
+    #[serde(rename = "depositsCleared")]
+    pub deposits_cleared: usize,
+    #[serde(rename = "referralCodesCleared")]
+    pub referral_codes_cleared: usize,
+    #[serde(rename = "referralClaimsCleared")]
+    pub referral_claims_cleared: usize,
+    #[serde(rename = "mintPoolResetTo")]
+    pub mint_pool_reset_to: i64,
 }
 
 pub fn availability_credits_per_tick(prompt_price_usd: f64, completion_price_usd: f64) -> i64 {
@@ -610,124 +1252,6 @@ pub fn resolve_token(pool: &DbPool, token: &str) -> Option<String> {
     .ok()
 }
 
-fn account_api_token_preview(token: &str) -> String {
-    if token.len() <= 16 {
-        return token.to_string();
-    }
-    format!("{}...{}", &token[..12], &token[token.len() - 4..])
-}
-
-pub fn mint_account_api_key(
-    pool: &DbPool,
-    account_user_id: &str,
-    label: Option<&str>,
-) -> anyhow::Result<AccountApiKeyMinted> {
-    let mut conn = pool.lock();
-    let now = unix_now();
-    let tx = conn.transaction()?;
-
-    tx.query_row(
-        "SELECT account_user_id FROM account_wallets WHERE account_user_id = ?",
-        [account_user_id],
-        |_r| Ok(()),
-    )?;
-
-    let key_id = format!("ak_{}", uuid::Uuid::new_v4().simple());
-    let token = format!("tok_acct_{}", uuid::Uuid::new_v4().simple());
-    let cleaned_label = label
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.chars().take(64).collect::<String>());
-
-    tx.execute(
-        "INSERT INTO account_api_keys
-            (key_id, token, account_user_id, label, created_at)
-         VALUES (?, ?, ?, ?, ?)",
-        params![key_id, token, account_user_id, cleaned_label, now],
-    )?;
-
-    tx.commit()?;
-
-    Ok(AccountApiKeyMinted {
-        key_id,
-        token,
-        label: cleaned_label,
-        created_at: now,
-    })
-}
-
-pub fn list_account_api_keys(
-    pool: &DbPool,
-    account_user_id: &str,
-) -> anyhow::Result<Vec<AccountApiKeyPublic>> {
-    let conn = pool.lock();
-    let mut stmt = conn.prepare(
-        "SELECT key_id, token, label, created_at, last_used_at, revoked_at
-         FROM account_api_keys
-         WHERE account_user_id = ?
-         ORDER BY created_at DESC, key_id DESC",
-    )?;
-    let rows = stmt.query_map([account_user_id], |r| {
-        let token: String = r.get(1)?;
-        Ok(AccountApiKeyPublic {
-            key_id: r.get(0)?,
-            token_preview: account_api_token_preview(&token),
-            label: r.get(2)?,
-            created_at: r.get(3)?,
-            last_used_at: r.get(4)?,
-            revoked_at: r.get(5)?,
-        })
-    })?;
-    Ok(rows.filter_map(|row| row.ok()).collect())
-}
-
-pub fn revoke_account_api_key(
-    pool: &DbPool,
-    account_user_id: &str,
-    key_id: &str,
-) -> anyhow::Result<bool> {
-    let conn = pool.lock();
-    let now = unix_now();
-    let changed = conn.execute(
-        "UPDATE account_api_keys
-         SET revoked_at = COALESCE(revoked_at, ?)
-         WHERE key_id = ? AND account_user_id = ? AND revoked_at IS NULL",
-        params![now, key_id, account_user_id],
-    )?;
-    Ok(changed > 0)
-}
-
-pub fn resolve_account_api_key(
-    pool: &DbPool,
-    token: &str,
-) -> anyhow::Result<Option<ResolvedAccountApiKey>> {
-    let mut conn = pool.lock();
-    let now = unix_now();
-    let tx = conn.transaction()?;
-    let resolved = tx
-        .query_row(
-            "SELECT key_id, account_user_id
-             FROM account_api_keys
-             WHERE token = ? AND revoked_at IS NULL",
-            [token],
-            |r| {
-                Ok(ResolvedAccountApiKey {
-                    key_id: r.get(0)?,
-                    account_user_id: r.get(1)?,
-                })
-            },
-        )
-        .ok();
-    if let Some(resolved) = &resolved {
-        tx.execute(
-            "UPDATE account_api_keys SET last_used_at = ? WHERE key_id = ?",
-            params![now, resolved.key_id],
-        )?;
-    }
-    tx.commit()?;
-    Ok(resolved)
-}
-
 /// Record a bonus and mint-pool debit atomically. Returns the balance after.
 pub fn record_bonus(pool: &DbPool, device_id: &str, amount: i64) -> anyhow::Result<i64> {
     let mut conn = pool.lock();
@@ -759,6 +1283,110 @@ pub fn record_bonus(pool: &DbPool, device_id: &str, amount: i64) -> anyhow::Resu
     )?;
     tx.commit()?;
     Ok(balance)
+}
+
+fn credit_device_wallet_tx(
+    tx: &rusqlite::Transaction<'_>,
+    device_id: &str,
+    amount_credits: i64,
+    ledger_type: &str,
+    note: &str,
+    now: i64,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO devices (device_id, first_seen, last_seen) VALUES (?, ?, ?)",
+        params![device_id, now, now],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [device_id],
+    )?;
+    tx.execute(
+        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
+        params![amount_credits],
+    )?;
+    tx.execute(
+        "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+         VALUES (?, ?, ?, ?, ?)",
+        params![device_id, ledger_type, amount_credits, now, note],
+    )?;
+    tx.execute(
+        "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+         WHERE device_id = ?",
+        params![amount_credits, amount_credits, device_id],
+    )?;
+    Ok(())
+}
+
+fn credit_account_wallet_tx(
+    tx: &rusqlite::Transaction<'_>,
+    account_user_id: &str,
+    amount_credits: i64,
+    ledger_type: &str,
+    device_id: Option<&str>,
+    note: &str,
+    now: i64,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
+        params![amount_credits],
+    )?;
+    tx.execute(
+        "UPDATE account_wallets
+         SET balance_credits = balance_credits + ?, updated_at = ?
+         WHERE account_user_id = ?",
+        params![amount_credits, now, account_user_id],
+    )?;
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note)
+         VALUES (?, 'credits', ?, ?, ?, ?, ?)",
+        params![
+            account_user_id,
+            amount_credits,
+            ledger_type,
+            now,
+            device_id,
+            note
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn record_account_bonus(
+    pool: &DbPool,
+    account_user_id: &str,
+    amount_credits: i64,
+    device_id: Option<&str>,
+    note: &str,
+) -> anyhow::Result<i64> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    credit_account_wallet_tx(
+        &tx,
+        account_user_id,
+        amount_credits,
+        "BONUS",
+        device_id,
+        note,
+        now,
+    )?;
+    let balance: i64 = tx.query_row(
+        "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |r| r.get(0),
+    )?;
+    tx.commit()?;
+    Ok(balance)
+}
+
+fn new_referral_code() -> String {
+    format!("ref_{}", uuid::Uuid::new_v4().simple())
+}
+
+fn new_referral_claim_id() -> String {
+    format!("rcl_{}", uuid::Uuid::new_v4().simple())
 }
 
 #[derive(Debug, Clone)]
@@ -1299,6 +1927,58 @@ pub fn admin_mint(pool: &DbPool, device_id: &str, amount: i64, note: &str) -> an
     )?;
     tx.commit()?;
     Ok(balance)
+}
+
+pub fn reset_genesis(pool: &DbPool) -> anyhow::Result<GenesisResetReport> {
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+
+    let count = |tx: &rusqlite::Transaction<'_>, table: &str| -> anyhow::Result<usize> {
+        Ok(
+            tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })? as usize,
+        )
+    };
+
+    let report = GenesisResetReport {
+        devices_cleared: count(&tx, "devices")?,
+        account_wallets_cleared: count(&tx, "account_wallets")?,
+        device_ledger_rows_cleared: count(&tx, "ledger")?,
+        account_ledger_rows_cleared: count(&tx, "account_ledger")?,
+        share_keys_cleared: count(&tx, "share_keys")?,
+        withdrawals_cleared: count(&tx, "account_withdrawals")?,
+        deposits_cleared: count(&tx, "account_onchain_deposits")?,
+        referral_codes_cleared: count(&tx, "referral_codes")?,
+        referral_claims_cleared: count(&tx, "referral_claims")?,
+        mint_pool_reset_to: crate::db::INITIAL_MINT_POOL,
+    };
+
+    tx.execute("DELETE FROM tokens", [])?;
+    tx.execute("DELETE FROM challenges", [])?;
+    tx.execute("DELETE FROM referral_claims", [])?;
+    tx.execute("DELETE FROM referral_codes", [])?;
+    tx.execute("DELETE FROM account_withdrawals", [])?;
+    tx.execute("DELETE FROM account_onchain_deposits", [])?;
+    tx.execute("DELETE FROM account_ledger", [])?;
+    tx.execute("DELETE FROM account_devices", [])?;
+    tx.execute("DELETE FROM account_wallets", [])?;
+    tx.execute("DELETE FROM share_key_contributions", [])?;
+    tx.execute("DELETE FROM share_keys", [])?;
+    tx.execute("DELETE FROM availability_sessions", [])?;
+    tx.execute("DELETE FROM ledger", [])?;
+    tx.execute("DELETE FROM balances", [])?;
+    tx.execute("DELETE FROM devices", [])?;
+    tx.execute(
+        "UPDATE mint_pool SET total_minted = ?, remaining = ? WHERE id = 1",
+        params![crate::db::INITIAL_MINT_POOL, crate::db::INITIAL_MINT_POOL],
+    )?;
+    tx.execute(
+        "DELETE FROM sqlite_sequence WHERE name IN ('ledger', 'account_ledger')",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(report)
 }
 
 pub fn get_balance(pool: &DbPool, device_id: &str) -> BalanceSnapshot {
@@ -2029,6 +2709,178 @@ pub fn transfer_from_account_wallet_for_account(
     })
 }
 
+/// Remaining credit limit for an API key (`limit - usage_credits`). Returns
+/// `None` if the key has no limit set or doesn't exist.
+pub fn api_key_remaining_limit(pool: &DbPool, key_id: &str) -> Option<i64> {
+    let conn = pool.lock();
+    let row = conn
+        .query_row(
+            "SELECT credit_limit, usage_credits FROM api_keys WHERE key_id = ?",
+            [key_id],
+            |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .ok()?;
+    let (limit_opt, usage) = row;
+    limit_opt.map(|limit| (limit - usage).max(0))
+}
+
+/// Snapshot of an account's spendable credits for the OpenRouter-style
+/// `GET /v1/credits` endpoint. `total_usage_credits` is summed from completed
+/// SPENT account_ledger rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreditsSnapshot {
+    #[serde(rename = "accountUserID")]
+    pub account_user_id: String,
+    #[serde(rename = "balanceCredits")]
+    pub balance_credits: i64,
+    #[serde(rename = "totalUsageCredits")]
+    pub total_usage_credits: i64,
+    #[serde(rename = "depositedUsdcCentsTotal")]
+    pub deposited_usdc_cents_total: i64,
+    #[serde(rename = "withdrawnUsdcCentsTotal")]
+    pub withdrawn_usdc_cents_total: i64,
+}
+
+pub fn credits_snapshot(pool: &DbPool, account_user_id: &str) -> anyhow::Result<CreditsSnapshot> {
+    let conn = pool.lock();
+    let (balance_credits, deposited, withdrawn): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT balance_credits, deposited_usdc_cents_total, withdrawn_usdc_cents_total
+             FROM account_wallets WHERE account_user_id = ?",
+            [account_user_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| anyhow::anyhow!("account not found"))?;
+    let total_usage: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(-amount), 0) FROM account_ledger
+             WHERE account_user_id = ? AND type = 'SPENT' AND asset = 'credits'",
+            [account_user_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(CreditsSnapshot {
+        account_user_id: account_user_id.to_string(),
+        balance_credits,
+        total_usage_credits: total_usage,
+        deposited_usdc_cents_total: deposited,
+        withdrawn_usdc_cents_total: withdrawn,
+    })
+}
+
+fn account_user_id_for_device_locked(
+    conn: &rusqlite::Connection,
+    device_id: &str,
+) -> Option<String> {
+    conn.query_row(
+        "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+        [device_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+#[derive(Debug, Clone)]
+struct AccountWalletState {
+    display_name: Option<String>,
+    phone: Option<String>,
+    email: Option<String>,
+    github_username: Option<String>,
+    balance_credits: i64,
+    usdc_cents: i64,
+    solana_address: Option<String>,
+    solana_enabled: bool,
+    deposited_usdc_cents_total: i64,
+    withdrawn_usdc_cents_total: i64,
+}
+
+#[allow(clippy::type_complexity)]
+fn load_account_wallet_state_locked(
+    conn: &rusqlite::Connection,
+    account_user_id: &str,
+) -> anyhow::Result<AccountWalletState> {
+    let (
+        display_name,
+        phone,
+        email,
+        github_username,
+        balance_credits,
+        usdc_cents,
+        solana_address,
+        solana_enabled,
+        deposited_usdc_cents_total,
+        withdrawn_usdc_cents_total,
+    ): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+    ) = conn.query_row(
+        "SELECT display_name, phone, email, github_username, balance_credits, usdc_cents,
+                solana_address, solana_enabled, deposited_usdc_cents_total,
+                withdrawn_usdc_cents_total
+         FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+            ))
+        },
+    )?;
+
+    Ok(AccountWalletState {
+        display_name,
+        phone,
+        email,
+        github_username,
+        balance_credits,
+        usdc_cents,
+        solana_address,
+        solana_enabled: solana_enabled != 0,
+        deposited_usdc_cents_total,
+        withdrawn_usdc_cents_total,
+    })
+}
+
+fn onchain_snapshot_from_state(
+    account_user_id: &str,
+    state: &AccountWalletState,
+) -> AccountOnchainSnapshot {
+    AccountOnchainSnapshot {
+        account_user_id: account_user_id.to_string(),
+        balance_credits: state.balance_credits,
+        usdc_cents: state.usdc_cents,
+        solana_address: state.solana_address.clone(),
+        solana_enabled: state.solana_enabled,
+        deposited_usdc_cents_total: state.deposited_usdc_cents_total,
+        withdrawn_usdc_cents_total: state.withdrawn_usdc_cents_total,
+        redeemable_usdc_cents: redeemable_usdc_cents(
+            state.deposited_usdc_cents_total,
+            state.withdrawn_usdc_cents_total,
+        ),
+        withdrawable_credits: withdrawable_credits(
+            state.balance_credits,
+            state.deposited_usdc_cents_total,
+            state.withdrawn_usdc_cents_total,
+        ),
+    }
+}
+
 pub fn account_summary_for_device(
     pool: &DbPool,
     device_id: &str,
@@ -2056,28 +2908,7 @@ pub fn account_summary(
     account_user_id: &str,
 ) -> anyhow::Result<AccountWalletSnapshot> {
     let conn = pool.lock();
-    let (display_name, phone, email, github_username, balance_credits, usdc_cents): (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        i64,
-        i64,
-    ) = conn.query_row(
-        "SELECT display_name, phone, email, github_username, balance_credits, usdc_cents
-         FROM account_wallets WHERE account_user_id = ?",
-        [account_user_id],
-        |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-            ))
-        },
-    )?;
+    let state = load_account_wallet_state_locked(&conn, account_user_id)?;
 
     let devices = {
         let mut stmt = conn.prepare(
@@ -2103,18 +2934,44 @@ pub fn account_summary(
     };
 
     let transactions = list_account_transactions_locked(&conn, account_user_id, 100)?;
+    let onchain = onchain_snapshot_from_state(account_user_id, &state);
 
     Ok(AccountWalletSnapshot {
         account_user_id: account_user_id.to_string(),
-        balance_credits,
-        usdc_cents,
-        display_name,
-        phone,
-        email,
-        github_username,
+        balance_credits: state.balance_credits,
+        usdc_cents: state.usdc_cents,
+        solana_address: state.solana_address,
+        solana_enabled: state.solana_enabled,
+        deposited_usdc_cents_total: state.deposited_usdc_cents_total,
+        withdrawn_usdc_cents_total: state.withdrawn_usdc_cents_total,
+        redeemable_usdc_cents: onchain.redeemable_usdc_cents,
+        withdrawable_credits: onchain.withdrawable_credits,
+        display_name: state.display_name,
+        phone: state.phone,
+        email: state.email,
+        github_username: state.github_username,
         devices,
         transactions,
     })
+}
+
+pub fn account_onchain_summary_for_device(
+    pool: &DbPool,
+    device_id: &str,
+) -> Result<AccountOnchainSnapshot, AccountOnchainError> {
+    let Some(account_user_id) = account_user_id_for_device(pool, device_id) else {
+        return Err(AccountOnchainError::AccountNotLinked);
+    };
+    account_onchain_summary(pool, &account_user_id)
+}
+
+pub fn account_onchain_summary(
+    pool: &DbPool,
+    account_user_id: &str,
+) -> Result<AccountOnchainSnapshot, AccountOnchainError> {
+    let conn = pool.lock();
+    let state = load_account_wallet_state_locked(&conn, account_user_id)?;
+    Ok(onchain_snapshot_from_state(account_user_id, &state))
 }
 
 pub fn sweep_device_to_account(
@@ -2267,6 +3124,398 @@ pub fn remove_device_from_account(
     account_summary(pool, &account_user_id)
 }
 
+fn list_account_withdrawals_locked(
+    conn: &rusqlite::Connection,
+    account_user_id: &str,
+    limit: i64,
+) -> anyhow::Result<Vec<AccountWithdrawalRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                completed_at
+         FROM account_withdrawals
+         WHERE account_user_id = ?
+         ORDER BY created_at DESC, withdrawal_id DESC
+         LIMIT ?",
+    )?;
+    let rows = stmt.query_map(params![account_user_id, limit], |r| {
+        Ok(AccountWithdrawalRecord {
+            withdrawal_id: r.get(0)?,
+            request_id: r.get(1)?,
+            account_user_id: r.get(2)?,
+            destination_address: r.get(3)?,
+            amount_usdc_cents: r.get(4)?,
+            amount_credits: r.get(5)?,
+            status: r.get(6)?,
+            tx_signature: r.get(7)?,
+            created_at: r.get(8)?,
+            completed_at: r.get(9)?,
+        })
+    })?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
+}
+
+pub fn list_account_withdrawals_for_device(
+    pool: &DbPool,
+    device_id: &str,
+    limit: i64,
+) -> Result<Vec<AccountWithdrawalRecord>, AccountOnchainError> {
+    let Some(account_user_id) = account_user_id_for_device(pool, device_id) else {
+        return Err(AccountOnchainError::AccountNotLinked);
+    };
+    let conn = pool.lock();
+    list_account_withdrawals_locked(&conn, &account_user_id, limit.clamp(1, 200))
+        .map_err(AccountOnchainError::Other)
+}
+
+fn resolve_account_onchain_address_from_state(
+    wallet_state: &AccountWalletState,
+    requested_address: Option<&str>,
+) -> Result<String, AccountOnchainError> {
+    let requested_address = normalized_optional_string(requested_address);
+    match (
+        wallet_state.solana_address.as_deref(),
+        requested_address.as_deref(),
+    ) {
+        (Some(existing), Some(requested)) if existing != requested => {
+            Err(AccountOnchainError::SolanaAddressMismatch)
+        }
+        (Some(existing), _) => Ok(existing.to_string()),
+        (None, Some(requested)) => Ok(requested.to_string()),
+        (None, None) => Err(AccountOnchainError::SolanaAddressRequired),
+    }
+}
+
+pub fn resolve_account_onchain_address_for_device(
+    pool: &DbPool,
+    requester_device_id: &str,
+    requested_address: Option<&str>,
+) -> Result<String, AccountOnchainError> {
+    let conn = pool.lock();
+    let Some(account_user_id) = account_user_id_for_device_locked(&conn, requester_device_id)
+    else {
+        return Err(AccountOnchainError::AccountNotLinked);
+    };
+    let wallet_state = load_account_wallet_state_locked(&conn, &account_user_id)?;
+    resolve_account_onchain_address_from_state(&wallet_state, requested_address)
+}
+
+pub fn record_account_onchain_deposit(
+    pool: &DbPool,
+    requester_device_id: &str,
+    req: &AccountOnchainDepositIntent,
+) -> Result<AccountOnchainSnapshot, AccountOnchainError> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let Some(account_user_id) = account_user_id_for_device_locked(&tx, requester_device_id) else {
+        return Err(AccountOnchainError::AccountNotLinked);
+    };
+
+    let wallet_state = load_account_wallet_state_locked(&tx, &account_user_id)?;
+    let effective_address =
+        resolve_account_onchain_address_from_state(&wallet_state, req.solana_address.as_deref())?;
+
+    tx.execute(
+        "UPDATE account_wallets
+         SET solana_address = ?, solana_enabled = 1, updated_at = ?
+         WHERE account_user_id = ?",
+        params![effective_address.as_str(), now, account_user_id.as_str()],
+    )?;
+
+    if let Some(tx_signature) = normalized_optional_string(req.tx_signature.as_deref()) {
+        let amount_usdc_cents = req
+            .amount_usdc_cents
+            .ok_or(AccountOnchainError::DepositAmountRequired)?;
+        if amount_usdc_cents <= 0 {
+            return Err(AccountOnchainError::InvalidUsdcAmount);
+        }
+        let amount_credits = credits_from_usdc_cents(amount_usdc_cents)?;
+        let source_address = normalized_optional_string(req.source_address.as_deref());
+
+        let existing: Option<(String, String, i64, Option<String>)> = tx
+            .query_row(
+                "SELECT account_user_id, solana_address, amount_usdc_cents, source_address
+                 FROM account_onchain_deposits
+                 WHERE tx_signature = ?",
+                [tx_signature.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
+
+        match existing {
+            Some((existing_account, existing_address, existing_amount, existing_source)) => {
+                if existing_account != account_user_id
+                    || existing_address != effective_address
+                    || existing_amount != amount_usdc_cents
+                    || existing_source.as_deref() != source_address.as_deref()
+                {
+                    return Err(AccountOnchainError::DepositConflict);
+                }
+            }
+            None => {
+                let deposit_id = format!("dep_{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "INSERT INTO account_onchain_deposits
+                        (deposit_id, account_user_id, tx_signature, solana_address,
+                         source_address, amount_usdc_cents, amount_credits, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        deposit_id,
+                        account_user_id.as_str(),
+                        tx_signature.as_str(),
+                        effective_address.as_str(),
+                        source_address.as_deref(),
+                        amount_usdc_cents,
+                        amount_credits,
+                        now,
+                    ],
+                )?;
+                tx.execute(
+                    "UPDATE account_wallets
+                     SET balance_credits = balance_credits + ?,
+                         usdc_cents = usdc_cents + ?,
+                         deposited_usdc_cents_total = deposited_usdc_cents_total + ?,
+                         updated_at = ?
+                     WHERE account_user_id = ?",
+                    params![
+                        amount_credits,
+                        amount_usdc_cents,
+                        amount_usdc_cents,
+                        now,
+                        account_user_id.as_str(),
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO account_ledger
+                        (account_user_id, asset, amount, type, timestamp, device_id, note)
+                     VALUES (?, 'usdc', ?, 'ONCHAIN_DEPOSIT_IN', ?, ?, ?)",
+                    params![
+                        account_user_id.as_str(),
+                        amount_usdc_cents,
+                        now,
+                        requester_device_id,
+                        format!("deposit {} to {}", tx_signature, effective_address),
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO account_ledger
+                        (account_user_id, asset, amount, type, timestamp, device_id, note)
+                     VALUES (?, 'credits', ?, 'ONCHAIN_DEPOSIT_CREDIT', ?, ?, ?)",
+                    params![
+                        account_user_id.as_str(),
+                        amount_credits,
+                        now,
+                        requester_device_id,
+                        format!("credited from deposit {}", tx_signature),
+                    ],
+                )?;
+            }
+        }
+    }
+
+    tx.commit()?;
+    drop(conn);
+    account_onchain_summary(pool, &account_user_id)
+}
+
+pub fn submit_account_withdrawal(
+    pool: &DbPool,
+    requester_device_id: &str,
+    req: &AccountWithdrawalRequest,
+) -> Result<AccountWithdrawalRecord, AccountOnchainError> {
+    let request_id = normalized_optional_string(Some(req.request_id.as_str()))
+        .ok_or(AccountOnchainError::MissingRequestId)?;
+    let destination_address = normalized_optional_string(Some(req.destination_address.as_str()))
+        .ok_or(AccountOnchainError::MissingDestinationAddress)?;
+    if req.amount_usdc_cents <= 0 {
+        return Err(AccountOnchainError::InvalidUsdcAmount);
+    }
+
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let Some(account_user_id) = account_user_id_for_device_locked(&tx, requester_device_id) else {
+        return Err(AccountOnchainError::AccountNotLinked);
+    };
+    let wallet_state = load_account_wallet_state_locked(&tx, &account_user_id)?;
+    if !wallet_state.solana_enabled || wallet_state.solana_address.is_none() {
+        return Err(AccountOnchainError::SolanaWalletNotEnabled);
+    }
+
+    let amount_credits = credits_from_usdc_cents(req.amount_usdc_cents)?;
+    let provided_signature = normalized_optional_string(req.tx_signature.as_deref());
+
+    if let Some(signature) = provided_signature.as_deref() {
+        let existing_by_signature: Option<String> = tx
+            .query_row(
+                "SELECT request_id FROM account_withdrawals WHERE tx_signature = ?",
+                [signature],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(existing_request_id) = existing_by_signature {
+            if existing_request_id != request_id {
+                return Err(AccountOnchainError::WithdrawalSignatureConflict);
+            }
+        }
+    }
+
+    let existing: Option<AccountWithdrawalRecord> = tx
+        .query_row(
+            "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                    amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                    completed_at
+             FROM account_withdrawals
+             WHERE request_id = ?",
+            [request_id.as_str()],
+            |r| {
+                Ok(AccountWithdrawalRecord {
+                    withdrawal_id: r.get(0)?,
+                    request_id: r.get(1)?,
+                    account_user_id: r.get(2)?,
+                    destination_address: r.get(3)?,
+                    amount_usdc_cents: r.get(4)?,
+                    amount_credits: r.get(5)?,
+                    status: r.get(6)?,
+                    tx_signature: r.get(7)?,
+                    created_at: r.get(8)?,
+                    completed_at: r.get(9)?,
+                })
+            },
+        )
+        .ok();
+
+    if let Some(existing) = existing.clone() {
+        let request_matches = existing.account_user_id.as_str() == account_user_id.as_str()
+            && existing.destination_address.as_str() == destination_address.as_str()
+            && existing.amount_usdc_cents == req.amount_usdc_cents
+            && existing.amount_credits == amount_credits;
+        if !request_matches {
+            return Err(AccountOnchainError::WithdrawalConflict);
+        }
+        if existing.status != "pending" {
+            if provided_signature.is_some()
+                && existing.tx_signature.as_deref() != provided_signature.as_deref()
+            {
+                return Err(AccountOnchainError::WithdrawalConflict);
+            }
+            return Ok(existing);
+        }
+    } else {
+        let withdrawal_id = format!("wd_{}", uuid::Uuid::new_v4().simple());
+        tx.execute(
+            "INSERT INTO account_withdrawals
+                (withdrawal_id, request_id, account_user_id, destination_address,
+                 amount_usdc_cents, amount_credits, status, tx_signature, created_at, completed_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)",
+            params![
+                withdrawal_id,
+                request_id.as_str(),
+                account_user_id.as_str(),
+                destination_address.as_str(),
+                req.amount_usdc_cents,
+                amount_credits,
+                now,
+            ],
+        )?;
+    }
+
+    let Some(tx_signature) = provided_signature else {
+        tx.commit()?;
+        drop(conn);
+        let withdrawals = list_account_withdrawals_for_device(pool, requester_device_id, 1)?;
+        return withdrawals.into_iter().next().ok_or_else(|| {
+            AccountOnchainError::Other(anyhow::anyhow!("withdrawal not found after insert"))
+        });
+    };
+
+    let redeemable_credits = credits_from_usdc_cents(redeemable_usdc_cents(
+        wallet_state.deposited_usdc_cents_total,
+        wallet_state.withdrawn_usdc_cents_total,
+    ))?;
+    let available_withdrawable = wallet_state.balance_credits.min(redeemable_credits);
+    if available_withdrawable < amount_credits {
+        return Err(AccountOnchainError::InsufficientWithdrawable {
+            balance: wallet_state.balance_credits,
+            redeemable_credits,
+            required: amount_credits,
+        });
+    }
+
+    tx.execute(
+        "UPDATE account_wallets
+         SET balance_credits = balance_credits - ?,
+             usdc_cents = usdc_cents - ?,
+             withdrawn_usdc_cents_total = withdrawn_usdc_cents_total + ?,
+             updated_at = ?
+         WHERE account_user_id = ?",
+        params![
+            amount_credits,
+            req.amount_usdc_cents,
+            req.amount_usdc_cents,
+            now,
+            account_user_id.as_str(),
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note)
+         VALUES (?, 'credits', ?, 'ONCHAIN_WITHDRAWAL_BURN', ?, ?, ?)",
+        params![
+            account_user_id.as_str(),
+            -amount_credits,
+            now,
+            requester_device_id,
+            format!("burned for withdrawal {request_id}"),
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note)
+         VALUES (?, 'usdc', ?, 'ONCHAIN_WITHDRAWAL_OUT', ?, ?, ?)",
+        params![
+            account_user_id.as_str(),
+            -req.amount_usdc_cents,
+            now,
+            requester_device_id,
+            format!("withdrawal {request_id} to {destination_address}"),
+        ],
+    )?;
+    tx.execute(
+        "UPDATE account_withdrawals
+         SET status = 'submitted', tx_signature = ?, completed_at = ?
+         WHERE request_id = ?",
+        params![tx_signature.as_str(), now, request_id.as_str()],
+    )?;
+
+    let record = tx.query_row(
+        "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                completed_at
+         FROM account_withdrawals
+         WHERE request_id = ?",
+        [request_id.as_str()],
+        |r| {
+            Ok(AccountWithdrawalRecord {
+                withdrawal_id: r.get(0)?,
+                request_id: r.get(1)?,
+                account_user_id: r.get(2)?,
+                destination_address: r.get(3)?,
+                amount_usdc_cents: r.get(4)?,
+                amount_credits: r.get(5)?,
+                status: r.get(6)?,
+                tx_signature: r.get(7)?,
+                created_at: r.get(8)?,
+                completed_at: r.get(9)?,
+            })
+        },
+    )?;
+
+    tx.commit()?;
+    Ok(record)
+}
+
 fn list_account_transactions_locked(
     conn: &rusqlite::Connection,
     account_user_id: &str,
@@ -2324,7 +3573,31 @@ pub fn settle_request(
     if cost <= 0 {
         return Ok(());
     }
-    let paying_device_id = consumer.paying_device_id();
+
+    // Account-principal spend (API keys) takes a separate path: the consumer
+    // side debits the account_wallet credit balance and stamps the api_key_id
+    // for per-key usage rollups, while the provider/availability/ops earnings
+    // continue to flow into device wallets exactly as for device spends.
+    if let ConsumerPrincipal::Account {
+        account_user_id,
+        api_key_id,
+    } = consumer
+    {
+        return settle_request_account(
+            pool,
+            account_user_id,
+            api_key_id.as_deref(),
+            provider_device_id,
+            online_device_ids,
+            cost,
+            request_id,
+            model,
+        );
+    }
+
+    let paying_device_id = consumer
+        .paying_device_id()
+        .expect("device/share consumer must have a paying device id");
 
     let mut conn = pool.lock();
     let now = unix_now();
@@ -2334,12 +3607,10 @@ pub fn settle_request(
     // this is bounded by the wallet balance; for share-keys, by the key's
     // pre-funded pool remainder. In both cases the non-negative invariant
     // holds: we never debit more than the source can cover.
-    if let Some(paying_device_id) = paying_device_id {
-        tx.execute(
-            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
-            [paying_device_id],
-        )?;
-    }
+    tx.execute(
+        "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+        [paying_device_id],
+    )?;
     // Share-key funded status (only relevant for Share principals). Keys
     // minted post-refactor (`funded=1`) have a pre-stocked pool; legacy keys
     // (`funded=0`) still debit the issuer's wallet at settle time until an
@@ -2356,7 +3627,6 @@ pub fn settle_request(
     };
     let effective_cost = match consumer {
         ConsumerPrincipal::Device(_) => {
-            let paying_device_id = paying_device_id.expect("device principal has device id");
             let bal: i64 = tx
                 .query_row(
                     "SELECT balance FROM balances WHERE device_id = ?",
@@ -2366,18 +3636,7 @@ pub fn settle_request(
                 .unwrap_or(0);
             cost.min(bal.max(0))
         }
-        ConsumerPrincipal::Account { account_user_id } => {
-            let bal: i64 = tx
-                .query_row(
-                    "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
-                    [account_user_id],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            cost.min(bal.max(0))
-        }
         ConsumerPrincipal::Share { key_id, .. } => {
-            let paying_device_id = paying_device_id.expect("share principal has issuer device id");
             if share_funded == Some(1) {
                 // New semantics: debit from the pre-funded pool.
                 let remaining = sum_share_key_contributions_tx(&tx, key_id).unwrap_or(0);
@@ -2403,6 +3662,7 @@ pub fn settle_request(
                 cost.min(bal.max(0)).min(key_remaining.max(0))
             }
         }
+        ConsumerPrincipal::Account { .. } => unreachable!("Account is handled above"),
     };
     let shortfall = cost - effective_cost;
 
@@ -2414,7 +3674,7 @@ pub fn settle_request(
     // Filter provider + paying device out of availability recipients.
     let recipients: Vec<&String> = online_device_ids
         .iter()
-        .filter(|d| Some(d.as_str()) != provider_device_id && Some(d.as_str()) != paying_device_id)
+        .filter(|d| Some(d.as_str()) != provider_device_id && d.as_str() != paying_device_id)
         .collect();
 
     let per_peer = if recipients.is_empty() {
@@ -2429,12 +3689,10 @@ pub fn settle_request(
 
     let note_base = match consumer {
         ConsumerPrincipal::Device(_) => format!("model={}", model),
-        ConsumerPrincipal::Account { account_user_id } => {
-            format!("account={} model={}", account_user_id, model)
-        }
         ConsumerPrincipal::Share { key_id, .. } => {
             format!("share_key:{} model={}", key_id, model)
         }
+        ConsumerPrincipal::Account { .. } => unreachable!("Account is handled above"),
     };
     let note = if shortfall > 0 {
         format!("{} shortfall={}", note_base, shortfall)
@@ -2446,28 +3704,14 @@ pub fn settle_request(
     // attribution regardless of source (device wallet OR share-key pool). We
     // always record it (even at effective_cost==0) so the request shows up
     // in wallet history.
-    match consumer {
-        ConsumerPrincipal::Device(_) | ConsumerPrincipal::Share { .. } => {
-            let paying_device_id = paying_device_id.expect("device-backed principal has device id");
-            tx.execute(
-                "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
-                 VALUES (?, 'SPENT', ?, ?, ?, ?)",
-                params![paying_device_id, -effective_cost, now, request_id, &note],
-            )?;
-        }
-        ConsumerPrincipal::Account { account_user_id } => {
-            tx.execute(
-                "INSERT INTO account_ledger
-                    (account_user_id, asset, amount, type, timestamp, device_id, note)
-                 VALUES (?, 'credits', ?, 'INFERENCE_SPENT', ?, NULL, ?)",
-                params![account_user_id, -effective_cost, now, &note],
-            )?;
-        }
-    }
+    tx.execute(
+        "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+         VALUES (?, 'SPENT', ?, ?, ?, ?)",
+        params![paying_device_id, -effective_cost, now, request_id, &note],
+    )?;
     if effective_cost > 0 {
         match consumer {
             ConsumerPrincipal::Device(_) => {
-                let paying_device_id = paying_device_id.expect("device principal has device id");
                 // Device path: debit the wallet and bump total_spent.
                 tx.execute(
                     "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
@@ -2475,17 +3719,7 @@ pub fn settle_request(
                     params![effective_cost, effective_cost, paying_device_id],
                 )?;
             }
-            ConsumerPrincipal::Account { account_user_id } => {
-                tx.execute(
-                    "UPDATE account_wallets
-                     SET balance_credits = balance_credits - ?, updated_at = ?
-                     WHERE account_user_id = ?",
-                    params![effective_cost, now, account_user_id],
-                )?;
-            }
             ConsumerPrincipal::Share { key_id, .. } => {
-                let paying_device_id =
-                    paying_device_id.expect("share principal has issuer device id");
                 // Always bump the key's consumed_credits ticker so budget
                 // exhaustion tracks across both semantics.
                 tx.execute(
@@ -2514,6 +3748,7 @@ pub fn settle_request(
                     )?;
                 }
             }
+            ConsumerPrincipal::Account { .. } => unreachable!("Account is handled above"),
         }
     }
 
@@ -2635,7 +3870,9 @@ pub fn settle_provider_request(
                 .unwrap_or(0);
             cost.min(bal.max(0))
         }
-        ConsumerPrincipal::Account { account_user_id } => {
+        ConsumerPrincipal::Account {
+            account_user_id, ..
+        } => {
             let bal: i64 = tx
                 .query_row(
                     "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
@@ -2676,7 +3913,9 @@ pub fn settle_provider_request(
 
     let note_base = match consumer {
         ConsumerPrincipal::Device(_) => format!("provider={} model={}", provider_id, model),
-        ConsumerPrincipal::Account { account_user_id } => format!(
+        ConsumerPrincipal::Account {
+            account_user_id, ..
+        } => format!(
             "account={} provider={} model={}",
             account_user_id, provider_id, model
         ),
@@ -2702,12 +3941,21 @@ pub fn settle_provider_request(
                 params![paying_device_id, -effective_cost, now, request_id, &note],
             )?;
         }
-        ConsumerPrincipal::Account { account_user_id } => {
+        ConsumerPrincipal::Account {
+            account_user_id,
+            api_key_id,
+        } => {
             tx.execute(
                 "INSERT INTO account_ledger
-                    (account_user_id, asset, amount, type, timestamp, device_id, note)
-                 VALUES (?, 'credits', ?, 'INFERENCE_SPENT', ?, NULL, ?)",
-                params![account_user_id, -effective_cost, now, &note],
+                    (account_user_id, asset, amount, type, timestamp, device_id, note, api_key_id)
+                 VALUES (?, 'credits', ?, 'INFERENCE_SPENT', ?, NULL, ?, ?)",
+                params![
+                    account_user_id,
+                    -effective_cost,
+                    now,
+                    &note,
+                    api_key_id.as_deref()
+                ],
             )?;
         }
     }
@@ -2721,13 +3969,23 @@ pub fn settle_provider_request(
                     params![effective_cost, effective_cost, paying_device_id],
                 )?;
             }
-            ConsumerPrincipal::Account { account_user_id } => {
+            ConsumerPrincipal::Account {
+                account_user_id,
+                api_key_id,
+            } => {
                 tx.execute(
                     "UPDATE account_wallets
                      SET balance_credits = balance_credits - ?, updated_at = ?
                      WHERE account_user_id = ?",
                     params![effective_cost, now, account_user_id],
                 )?;
+                if let Some(key_id) = api_key_id {
+                    tx.execute(
+                        "UPDATE api_keys SET usage_credits = usage_credits + ?, last_used_at = ?
+                         WHERE key_id = ?",
+                        params![effective_cost, now, key_id],
+                    )?;
+                }
             }
             ConsumerPrincipal::Share { key_id, .. } => {
                 let paying_device_id =
@@ -2886,6 +4144,166 @@ pub fn get_provider_wallet(
         )
         .ok();
     Ok(row)
+}
+
+/// Account-rooted spend on the distributed fleet (API key path). Debits the
+/// account_wallet's `balance_credits`, writes a SPENT row to `account_ledger`
+/// with the originating `api_key_id`, increments `api_keys.usage_credits`,
+/// and then distributes the same 70/25/5 split into device wallets that the
+/// device-rooted path uses.
+#[allow(clippy::too_many_arguments)]
+fn settle_request_account(
+    pool: &DbPool,
+    account_user_id: &str,
+    api_key_id: Option<&str>,
+    provider_device_id: Option<&str>,
+    online_device_ids: &[String],
+    cost: i64,
+    request_id: &str,
+    model: &str,
+) -> anyhow::Result<()> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let bal: i64 = tx
+        .query_row(
+            "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
+            [account_user_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let mut effective_cost = cost.min(bal.max(0));
+
+    // Per-key credit-limit clamp. The limit is a lifetime cap on usage_credits
+    // for this key; the pre-flight clamp in chat.rs already accounts for it,
+    // but we re-check under lock to defeat concurrent-request edge cases.
+    if let Some(key_id) = api_key_id {
+        let (current_usage, credit_limit): (i64, Option<i64>) = tx
+            .query_row(
+                "SELECT usage_credits, credit_limit FROM api_keys WHERE key_id = ?",
+                [key_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0, None));
+        if let Some(limit) = credit_limit {
+            let remaining = (limit - current_usage).max(0);
+            effective_cost = effective_cost.min(remaining);
+        }
+    }
+    let shortfall = cost - effective_cost;
+
+    let direct_earn = effective_cost * 70 / 100;
+    let pool_share = effective_cost * 25 / 100;
+    let ops_fee = effective_cost - direct_earn - pool_share;
+
+    let recipients: Vec<&String> = online_device_ids
+        .iter()
+        .filter(|d| Some(d.as_str()) != provider_device_id)
+        .collect();
+
+    let per_peer = if recipients.is_empty() {
+        0
+    } else {
+        pool_share / recipients.len() as i64
+    };
+    let availability_used = per_peer * recipients.len() as i64;
+    let pool_leftover = pool_share - availability_used;
+
+    let note_base = match api_key_id {
+        Some(k) => format!("api_key:{} model={}", k, model),
+        None => format!("model={}", model),
+    };
+    let note = if shortfall > 0 {
+        format!("{} shortfall={}", note_base, shortfall)
+    } else {
+        note_base.clone()
+    };
+
+    // SPENT row on account_ledger. We always record (even at effective_cost==0)
+    // so the request shows up in account history.
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note, api_key_id)
+         VALUES (?, 'credits', ?, 'SPENT', ?, NULL, ?, ?)",
+        params![account_user_id, -effective_cost, now, &note, api_key_id],
+    )?;
+
+    if effective_cost > 0 {
+        tx.execute(
+            "UPDATE account_wallets
+             SET balance_credits = balance_credits - ?, updated_at = ?
+             WHERE account_user_id = ?",
+            params![effective_cost, now, account_user_id],
+        )?;
+        if let Some(key_id) = api_key_id {
+            tx.execute(
+                "UPDATE api_keys SET usage_credits = usage_credits + ?, last_used_at = ?
+                 WHERE key_id = ?",
+                params![effective_cost, now, key_id],
+            )?;
+        }
+    }
+
+    // Provider DIRECT_EARN — into a device wallet.
+    if let Some(provider) = provider_device_id {
+        if direct_earn > 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+                [provider],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+                 VALUES (?, 'DIRECT_EARN', ?, ?, ?, ?)",
+                params![provider, direct_earn, now, request_id, &note],
+            )?;
+            tx.execute(
+                "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+                 WHERE device_id = ?",
+                params![direct_earn, direct_earn, provider],
+            )?;
+        }
+    }
+
+    if per_peer > 0 {
+        for peer in &recipients {
+            tx.execute(
+                "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+                [peer.as_str()],
+            )?;
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+                 VALUES (?, 'AVAILABILITY_EARN', ?, ?, ?, ?)",
+                params![peer.as_str(), per_peer, now, request_id, &note],
+            )?;
+            tx.execute(
+                "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+                 WHERE device_id = ?",
+                params![per_peer, per_peer, peer.as_str()],
+            )?;
+        }
+    }
+
+    let ops_total = ops_fee + pool_leftover;
+    if ops_total > 0 {
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES ('__ops__')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+             VALUES ('__ops__', 'OPS_FEE', ?, ?, ?, ?)",
+            params![ops_total, now, request_id, &note],
+        )?;
+        tx.execute(
+            "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+             WHERE device_id = '__ops__'",
+            params![ops_total, ops_total],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
 }
 
 fn load_active_availability_sessions(
@@ -4431,6 +5849,33 @@ mod tests {
     }
 
     #[test]
+    fn account_join_rewards_grant_new_wallet_bonus() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                phone: Some("+12813238228".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let rewards = apply_account_join_rewards(&pool, "device-a", "user-123", None).unwrap();
+        assert_eq!(rewards.welcome_bonus_credits, WELCOME_BONUS_CREDITS);
+        assert_eq!(rewards.referral_bonus_credits, 0);
+
+        let summary = account_summary(&pool, "user-123").unwrap();
+        assert_eq!(summary.balance_credits, WELCOME_BONUS_CREDITS);
+        assert!(summary
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "BONUS" && entry.amount == WELCOME_BONUS_CREDITS));
+    }
+
+    #[test]
     fn sweep_moves_device_balance_into_account_wallet() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "device-a").unwrap();
@@ -4604,50 +6049,6 @@ mod tests {
     }
 
     #[test]
-    fn account_api_keys_are_revocable_and_track_last_use() {
-        let pool = open_in_memory().unwrap();
-        upsert_device(&pool, "device-a").unwrap();
-        link_device_to_account(
-            &pool,
-            "device-a",
-            "user-123",
-            &AccountLinkMetadata {
-                display_name: Some("Taylor".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let minted = mint_account_api_key(&pool, "user-123", Some("CLI")).unwrap();
-        assert!(minted.key_id.starts_with("ak_"));
-        assert!(minted.token.starts_with("tok_acct_"));
-        assert_eq!(minted.label.as_deref(), Some("CLI"));
-
-        let keys = list_account_api_keys(&pool, "user-123").unwrap();
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key_id, minted.key_id);
-        assert_eq!(keys[0].label.as_deref(), Some("CLI"));
-        assert!(keys[0].token_preview.starts_with("tok_acct_"));
-        assert!(keys[0].last_used_at.is_none());
-        assert!(keys[0].revoked_at.is_none());
-
-        let resolved = resolve_account_api_key(&pool, &minted.token)
-            .unwrap()
-            .expect("account API key resolves");
-        assert_eq!(resolved.key_id, minted.key_id);
-        assert_eq!(resolved.account_user_id, "user-123");
-
-        let keys = list_account_api_keys(&pool, "user-123").unwrap();
-        assert!(keys[0].last_used_at.is_some());
-
-        assert!(revoke_account_api_key(&pool, "user-123", &minted.key_id).unwrap());
-        assert!(resolve_account_api_key(&pool, &minted.token)
-            .unwrap()
-            .is_none());
-        assert!(!revoke_account_api_key(&pool, "user-123", &minted.key_id).unwrap());
-    }
-
-    #[test]
     fn account_principal_settlement_debits_account_wallet() {
         let pool = open_in_memory().unwrap();
         let owner_device = "owner-device";
@@ -4673,6 +6074,7 @@ mod tests {
             &pool,
             &ConsumerPrincipal::Account {
                 account_user_id: "user-123".into(),
+                api_key_id: None,
             },
             Some(provider),
             &[provider.to_string(), peer.to_string()],
@@ -4691,7 +6093,7 @@ mod tests {
         assert!(account
             .transactions
             .iter()
-            .any(|entry| entry.type_ == "INFERENCE_SPENT" && entry.amount == -200));
+            .any(|entry| entry.type_ == "SPENT" && entry.amount == -200));
     }
 
     #[test]
@@ -4716,6 +6118,350 @@ mod tests {
         assert_eq!(summary.devices.len(), 1);
         assert_eq!(summary.devices[0].device_id, "device-a");
         assert!(account_summary_for_device(&pool, "device-b").is_err());
+    }
+
+    #[test]
+    fn onchain_deposit_enables_account_wallet_and_is_idempotent() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                email: Some("taylor@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let req = AccountOnchainDepositIntent {
+            solana_address: Some("7VFfQ8wW8p6Z1s4b7j7uC8V3s5Q6n2M4m1N9k3Lp2AbC".into()),
+            tx_signature: Some("sol-tx-1".into()),
+            source_address: Some("SourceWallet11111111111111111111111111111".into()),
+            amount_usdc_cents: Some(125),
+        };
+
+        let snapshot = record_account_onchain_deposit(&pool, "device-a", &req).unwrap();
+        assert!(snapshot.solana_enabled);
+        assert_eq!(snapshot.deposited_usdc_cents_total, 125);
+        assert_eq!(snapshot.redeemable_usdc_cents, 125);
+        assert_eq!(snapshot.balance_credits, 1_250_000);
+        assert_eq!(snapshot.withdrawable_credits, 1_250_000);
+
+        let second = record_account_onchain_deposit(&pool, "device-a", &req).unwrap();
+        assert_eq!(second.balance_credits, 1_250_000);
+        assert_eq!(second.deposited_usdc_cents_total, 125);
+
+        let account = account_summary_for_device(&pool, "device-a").unwrap();
+        assert_eq!(account.balance_credits, 1_250_000);
+        assert!(account
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "ONCHAIN_DEPOSIT_CREDIT" && entry.amount == 1_250_000));
+        assert!(account
+            .transactions
+            .iter()
+            .any(|entry| entry.type_ == "ONCHAIN_DEPOSIT_IN" && entry.amount == 125));
+    }
+
+    #[test]
+    fn transferred_credits_do_not_move_withdrawable_principal() {
+        let pool = open_in_memory().unwrap();
+        for device_id in &["sender-device", "recipient-device"] {
+            upsert_device(&pool, device_id).unwrap();
+        }
+        link_device_to_account(
+            &pool,
+            "sender-device",
+            "sender-account",
+            &AccountLinkMetadata {
+                email: Some("sender@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        link_device_to_account(
+            &pool,
+            "recipient-device",
+            "recipient-account",
+            &AccountLinkMetadata {
+                email: Some("recipient@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        record_account_onchain_deposit(
+            &pool,
+            "recipient-device",
+            &AccountOnchainDepositIntent {
+                solana_address: Some("RecipientWallet1111111111111111111111111111".into()),
+                tx_signature: None,
+                source_address: None,
+                amount_usdc_cents: None,
+            },
+        )
+        .unwrap();
+
+        record_account_onchain_deposit(
+            &pool,
+            "sender-device",
+            &AccountOnchainDepositIntent {
+                solana_address: Some("8i2h8xYxD2yKgED7H2W9r7V7uR9t2N1k3M4p6Q7s8T9U".into()),
+                tx_signature: Some("sol-deposit-2".into()),
+                source_address: None,
+                amount_usdc_cents: Some(200),
+            },
+        )
+        .unwrap();
+
+        transfer_from_account_wallet(
+            &pool,
+            "sender-device",
+            "recipient@example.com",
+            5_000,
+            Some("gift"),
+        )
+        .unwrap();
+
+        let sender = account_summary(&pool, "sender-account").unwrap();
+        let recipient = account_summary(&pool, "recipient-account").unwrap();
+        assert_eq!(sender.balance_credits, 1_995_000);
+        assert_eq!(sender.withdrawable_credits, 1_995_000);
+        assert_eq!(recipient.balance_credits, 5_000);
+        assert_eq!(recipient.withdrawable_credits, 0);
+
+        let err = submit_account_withdrawal(
+            &pool,
+            "recipient-device",
+            &AccountWithdrawalRequest {
+                request_id: "recipient-wd-1".into(),
+                destination_address: "DestWallet111111111111111111111111111111".into(),
+                amount_usdc_cents: 10,
+                tx_signature: Some("recipient-sol-wd-1".into()),
+            },
+        )
+        .unwrap_err();
+        match err {
+            AccountOnchainError::InsufficientWithdrawable {
+                balance,
+                redeemable_credits,
+                required,
+            } => {
+                assert_eq!(balance, 5_000);
+                assert_eq!(redeemable_credits, 0);
+                assert_eq!(required, 100_000);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn completed_withdrawals_are_idempotent_and_reduce_headroom() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                email: Some("withdraw@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        record_account_onchain_deposit(
+            &pool,
+            "device-a",
+            &AccountOnchainDepositIntent {
+                solana_address: Some("9h3k5m7p9r2t4v6x8z1B3D5F7H9J2L4N6P8R1T3V5X7".into()),
+                tx_signature: Some("sol-deposit-3".into()),
+                source_address: None,
+                amount_usdc_cents: Some(100),
+            },
+        )
+        .unwrap();
+
+        let pending = submit_account_withdrawal(
+            &pool,
+            "device-a",
+            &AccountWithdrawalRequest {
+                request_id: "wd-1".into(),
+                destination_address: "DestWallet222222222222222222222222222222".into(),
+                amount_usdc_cents: 40,
+                tx_signature: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(pending.status, "pending");
+
+        let submitted = submit_account_withdrawal(
+            &pool,
+            "device-a",
+            &AccountWithdrawalRequest {
+                request_id: "wd-1".into(),
+                destination_address: "DestWallet222222222222222222222222222222".into(),
+                amount_usdc_cents: 40,
+                tx_signature: Some("sol-withdraw-1".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(submitted.status, "submitted");
+        assert_eq!(submitted.tx_signature.as_deref(), Some("sol-withdraw-1"));
+
+        let repeat = submit_account_withdrawal(
+            &pool,
+            "device-a",
+            &AccountWithdrawalRequest {
+                request_id: "wd-1".into(),
+                destination_address: "DestWallet222222222222222222222222222222".into(),
+                amount_usdc_cents: 40,
+                tx_signature: Some("sol-withdraw-1".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(repeat.withdrawal_id, submitted.withdrawal_id);
+
+        let summary = account_summary_for_device(&pool, "device-a").unwrap();
+        assert_eq!(summary.balance_credits, 600_000);
+        assert_eq!(summary.withdrawn_usdc_cents_total, 40);
+        assert_eq!(summary.redeemable_usdc_cents, 60);
+        assert_eq!(summary.withdrawable_credits, 600_000);
+
+        let err = submit_account_withdrawal(
+            &pool,
+            "device-a",
+            &AccountWithdrawalRequest {
+                request_id: "wd-2".into(),
+                destination_address: "DestWallet333333333333333333333333333333".into(),
+                amount_usdc_cents: 70,
+                tx_signature: Some("sol-withdraw-2".into()),
+            },
+        )
+        .unwrap_err();
+        match err {
+            AccountOnchainError::InsufficientWithdrawable {
+                balance,
+                redeemable_credits,
+                required,
+            } => {
+                assert_eq!(balance, 600_000);
+                assert_eq!(redeemable_credits, 600_000);
+                assert_eq!(required, 700_000);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_referral_pays_both_sides_once() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "referrer-device").unwrap();
+        let code = referral_code_for_device(&pool, "referrer-device").unwrap();
+
+        let rewards =
+            apply_device_join_rewards(&pool, "new-device", Some(code.code.as_str())).unwrap();
+        assert_eq!(rewards.welcome_bonus_credits, WELCOME_BONUS_CREDITS);
+        assert_eq!(rewards.referral_bonus_credits, REFERRAL_BONUS_CREDITS);
+        assert_eq!(
+            get_balance(&pool, "new-device").balance_credits,
+            WELCOME_BONUS_CREDITS + REFERRAL_BONUS_CREDITS
+        );
+        assert_eq!(
+            get_balance(&pool, "referrer-device").balance_credits,
+            REFERRAL_BONUS_CREDITS
+        );
+
+        let err =
+            apply_device_join_rewards(&pool, "new-device", Some(code.code.as_str())).unwrap_err();
+        assert!(matches!(err, ReferralError::DeviceAlreadyClaimed));
+    }
+
+    #[test]
+    fn account_referral_pays_new_account_and_referrer_account() {
+        let pool = open_in_memory().unwrap();
+        for device_id in &["ref-device", "new-device"] {
+            upsert_device(&pool, device_id).unwrap();
+        }
+        link_device_to_account(
+            &pool,
+            "ref-device",
+            "ref-account",
+            &AccountLinkMetadata {
+                email: Some("ref@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        apply_account_join_rewards(&pool, "ref-device", "ref-account", None).unwrap();
+        let code = referral_code_for_device(&pool, "ref-device").unwrap();
+
+        link_device_to_account(
+            &pool,
+            "new-device",
+            "new-account",
+            &AccountLinkMetadata {
+                email: Some("new@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let rewards =
+            apply_account_join_rewards(&pool, "new-device", "new-account", Some(&code.code))
+                .unwrap();
+        assert_eq!(rewards.welcome_bonus_credits, WELCOME_BONUS_CREDITS);
+        assert_eq!(rewards.referral_bonus_credits, REFERRAL_BONUS_CREDITS);
+
+        let referrer = account_summary(&pool, "ref-account").unwrap();
+        let referred = account_summary(&pool, "new-account").unwrap();
+        assert_eq!(
+            referrer.balance_credits,
+            WELCOME_BONUS_CREDITS + REFERRAL_BONUS_CREDITS
+        );
+        assert_eq!(
+            referred.balance_credits,
+            WELCOME_BONUS_CREDITS + REFERRAL_BONUS_CREDITS
+        );
+    }
+
+    #[test]
+    fn reset_genesis_clears_wallet_and_referral_state() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "referrer").unwrap();
+        let code = referral_code_for_device(&pool, "referrer").unwrap();
+        apply_device_join_rewards(&pool, "new-device", Some(&code.code)).unwrap();
+        link_device_to_account(
+            &pool,
+            "new-device",
+            "user-123",
+            &AccountLinkMetadata {
+                phone: Some("+12813238228".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        apply_account_join_rewards(&pool, "new-device", "user-123", None).unwrap();
+        record_account_onchain_deposit(
+            &pool,
+            "new-device",
+            &AccountOnchainDepositIntent {
+                solana_address: Some("GenesisWallet1111111111111111111111111111".into()),
+                tx_signature: Some("genesis-deposit-1".into()),
+                source_address: None,
+                amount_usdc_cents: Some(100),
+            },
+        )
+        .unwrap();
+
+        let report = reset_genesis(&pool).unwrap();
+        assert!(report.devices_cleared >= 2);
+        assert!(report.referral_codes_cleared >= 1);
+        assert_eq!(crate::db::INITIAL_MINT_POOL, report.mint_pool_reset_to);
+        assert!(account_summary_for_device(&pool, "new-device").is_err());
+        assert_eq!(get_balance(&pool, "new-device").balance_credits, 0);
+        let code_after = referral_code_for_device(&pool, "brand-new-device").unwrap();
+        assert!(code_after.code.starts_with("ref_"));
     }
 
     // ── admin_mint ────────────────────────────────────────────────────────
@@ -5141,5 +6887,143 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, 300);
         assert_eq!(rows[0].2, 300);
+    }
+
+    fn seed_account_with_balance(account: &str, device: &str, credits: i64) -> DbPool {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, device).unwrap();
+        link_device_to_account(&pool, device, account, &AccountLinkMetadata::default()).unwrap();
+        // Fund the account wallet directly via the SQL path used by deposits.
+        let conn = pool.lock();
+        conn.execute(
+            "UPDATE account_wallets SET balance_credits = ?, updated_at = ?
+             WHERE account_user_id = ?",
+            params![credits, unix_now(), account],
+        )
+        .unwrap();
+        drop(conn);
+        pool
+    }
+
+    #[test]
+    fn api_key_settle_debits_account_and_attributes_usage() {
+        use crate::api_keys::{create_api_key, get_api_key, CreateApiKeyParams};
+        let pool = seed_account_with_balance("acc-1", "device-1", 10_000);
+        let minted = create_api_key(
+            &pool,
+            "acc-1",
+            CreateApiKeyParams {
+                name: Some("primary".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Provider device must exist before earning.
+        upsert_device(&pool, "provider").unwrap();
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Account {
+                account_user_id: "acc-1".into(),
+                api_key_id: Some(minted.public.key_id.clone()),
+            },
+            Some("provider"),
+            &["provider".to_string()],
+            100,
+            "req-key-1",
+            "kimi",
+        )
+        .unwrap();
+
+        let snapshot = credits_snapshot(&pool, "acc-1").unwrap();
+        assert_eq!(snapshot.balance_credits, 10_000 - 100);
+        assert_eq!(snapshot.total_usage_credits, 100);
+
+        let key = get_api_key(&pool, "acc-1", &minted.public.key_id).unwrap();
+        assert_eq!(key.usage_credits, 100);
+
+        // Provider got 70% of 100 = 70.
+        assert_eq!(get_balance(&pool, "provider").balance_credits, 70);
+        // No peers online so 25% rolls into ops along with the 5%.
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 30);
+    }
+
+    #[test]
+    fn api_key_credit_limit_caps_settlement() {
+        use crate::api_keys::{create_api_key, get_api_key, CreateApiKeyParams};
+        let pool = seed_account_with_balance("acc-2", "device-2", 10_000);
+        let minted = create_api_key(
+            &pool,
+            "acc-2",
+            CreateApiKeyParams {
+                name: Some("capped".into()),
+                credit_limit: Some(50),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upsert_device(&pool, "provider").unwrap();
+
+        // First settlement at cost=40 fits under the limit.
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Account {
+                account_user_id: "acc-2".into(),
+                api_key_id: Some(minted.public.key_id.clone()),
+            },
+            Some("provider"),
+            &["provider".to_string()],
+            40,
+            "req-cap-1",
+            "kimi",
+        )
+        .unwrap();
+
+        // Second settlement at cost=30 should be capped to 10 by the limit.
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Account {
+                account_user_id: "acc-2".into(),
+                api_key_id: Some(minted.public.key_id.clone()),
+            },
+            Some("provider"),
+            &["provider".to_string()],
+            30,
+            "req-cap-2",
+            "kimi",
+        )
+        .unwrap();
+
+        let key = get_api_key(&pool, "acc-2", &minted.public.key_id).unwrap();
+        assert_eq!(key.usage_credits, 50);
+        let snap = credits_snapshot(&pool, "acc-2").unwrap();
+        assert_eq!(snap.total_usage_credits, 50);
+    }
+
+    #[test]
+    fn api_key_resolves_via_token_and_disabled_blocked() {
+        use crate::api_keys::{
+            create_api_key, resolve_api_key, update_api_key, CreateApiKeyParams, UpdateApiKeyParams,
+        };
+        let pool = seed_account_with_balance("acc-3", "device-3", 1_000);
+        let minted = create_api_key(&pool, "acc-3", CreateApiKeyParams::default()).unwrap();
+
+        let resolved = resolve_api_key(&pool, &minted.token).expect("must resolve");
+        assert_eq!(resolved.account_user_id, "acc-3");
+        assert!(!resolved.disabled);
+
+        update_api_key(
+            &pool,
+            "acc-3",
+            &minted.public.key_id,
+            UpdateApiKeyParams {
+                disabled: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let after = resolve_api_key(&pool, &minted.token).unwrap();
+        assert!(after.disabled);
     }
 }

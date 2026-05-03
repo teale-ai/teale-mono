@@ -218,8 +218,11 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
     );
     "#,
-    // 008_account_api_keys.sql — revocable account-scoped API keys for
-    // direct demand traffic that should not depend on a Teale device bearer.
+    // 008_account_api_keys.sql — historical: was main's first cut at API keys
+    // before the OpenRouter-parity rewrite. Kept as a no-op so user_version=8
+    // is preserved for already-deployed DBs; the table itself is dropped in
+    // migration 012 below in favour of the richer `api_keys` schema (hashed
+    // tokens, roles, credit limits).
     r#"
     CREATE TABLE IF NOT EXISTS account_api_keys (
         key_id TEXT PRIMARY KEY,
@@ -319,6 +322,121 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_provider_ledger_provider_ts
         ON provider_ledger(provider_id, timestamp DESC);
+    "#,
+    // 010_account_onchain_wallets.sql - account-level deposit-backed Solana
+    // redemption state. Credits remain the fast internal rail; only explicitly
+    // deposited principal is redeemable as on-chain USDC.
+    r#"
+    ALTER TABLE account_wallets ADD COLUMN solana_address TEXT;
+    ALTER TABLE account_wallets ADD COLUMN solana_enabled INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE account_wallets ADD COLUMN deposited_usdc_cents_total INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE account_wallets ADD COLUMN withdrawn_usdc_cents_total INTEGER NOT NULL DEFAULT 0;
+
+    UPDATE account_wallets
+    SET deposited_usdc_cents_total = usdc_cents
+    WHERE deposited_usdc_cents_total = 0
+      AND withdrawn_usdc_cents_total = 0
+      AND usdc_cents > 0;
+
+    CREATE TABLE IF NOT EXISTS account_onchain_deposits (
+        deposit_id TEXT PRIMARY KEY,
+        account_user_id TEXT NOT NULL,
+        tx_signature TEXT NOT NULL UNIQUE,
+        solana_address TEXT NOT NULL,
+        source_address TEXT,
+        amount_usdc_cents INTEGER NOT NULL CHECK(amount_usdc_cents > 0),
+        amount_credits INTEGER NOT NULL CHECK(amount_credits > 0),
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_onchain_deposits_account_created
+        ON account_onchain_deposits(account_user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS account_withdrawals (
+        withdrawal_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        account_user_id TEXT NOT NULL,
+        destination_address TEXT NOT NULL,
+        amount_usdc_cents INTEGER NOT NULL CHECK(amount_usdc_cents > 0),
+        amount_credits INTEGER NOT NULL CHECK(amount_credits > 0),
+        status TEXT NOT NULL,
+        tx_signature TEXT UNIQUE,
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        FOREIGN KEY (account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_withdrawals_account_created
+        ON account_withdrawals(account_user_id, created_at DESC);
+    "#,
+    // 011_referrals.sql - invite codes and one-time join claims for device or
+    // account onboarding bonuses.
+    r#"
+    CREATE TABLE IF NOT EXISTS referral_codes (
+        code TEXT PRIMARY KEY,
+        owner_kind TEXT NOT NULL,
+        owner_device_id TEXT UNIQUE,
+        owner_account_user_id TEXT UNIQUE,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (owner_device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+        FOREIGN KEY (owner_account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS referral_claims (
+        claim_id TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        referrer_kind TEXT NOT NULL,
+        referrer_id TEXT NOT NULL,
+        referred_kind TEXT NOT NULL,
+        referred_device_id TEXT UNIQUE,
+        referred_account_user_id TEXT UNIQUE,
+        referrer_bonus_credits INTEGER NOT NULL,
+        referred_bonus_credits INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (code) REFERENCES referral_codes(code) ON DELETE CASCADE,
+        FOREIGN KEY (referred_device_id) REFERENCES devices(device_id) ON DELETE CASCADE,
+        FOREIGN KEY (referred_account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_referral_claims_code_created
+        ON referral_claims(code, created_at DESC);
+    "#,
+    // 012_api_keys.sql - programmatic API keys scoped to an account. Live keys
+    // can call inference; provisioning keys can additionally manage other keys.
+    // Spend is debited from the owning account_wallet's credit balance and
+    // attributed back to the key via api_keys.usage_credits + api_key_id on
+    // account_ledger rows. Hashed at rest; the plaintext token is returned to
+    // the user only at creation time.
+    //
+    // Drops the legacy `account_api_keys` table from migration 008 — that
+    // earlier model used plaintext tokens and no spend limits; this richer
+    // schema replaces it.
+    r#"
+    DROP TABLE IF EXISTS account_api_keys;
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+        key_id TEXT PRIMARY KEY,
+        account_user_id TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        prefix TEXT NOT NULL,
+        name TEXT,
+        role TEXT NOT NULL CHECK(role IN ('live', 'provisioning')),
+        credit_limit INTEGER,
+        usage_credits INTEGER NOT NULL DEFAULT 0,
+        disabled INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        FOREIGN KEY (account_user_id) REFERENCES account_wallets(account_user_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_api_keys_account_created
+        ON api_keys(account_user_id, created_at DESC);
+
+    ALTER TABLE account_ledger ADD COLUMN api_key_id TEXT REFERENCES api_keys(key_id);
+
+    CREATE INDEX IF NOT EXISTS idx_account_ledger_api_key
+        ON account_ledger(api_key_id, timestamp DESC);
     "#,
 ];
 

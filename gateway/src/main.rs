@@ -202,20 +202,40 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/network", get(handlers::network::network))
         .route("/v1/account/link", post(handlers::account::link_account))
         .route("/v1/account/summary", get(handlers::account::summary))
+        .route(
+            "/v1/account/wallet/onchain",
+            get(handlers::account::onchain),
+        )
+        .route(
+            "/v1/account/wallet/deposit-intent",
+            post(handlers::account::deposit_intent),
+        )
+        .route(
+            "/v1/account/wallet/withdraw",
+            post(handlers::account::withdraw),
+        )
+        .route(
+            "/v1/account/wallet/withdrawals",
+            get(handlers::account::withdrawals),
+        )
         .route("/v1/account/sweep", post(handlers::account::sweep_device))
         .route("/v1/account/send", post(handlers::account::send))
-        .route(
-            "/v1/account/api-keys",
-            get(handlers::account::list_api_keys).post(handlers::account::create_api_key),
-        )
-        .route(
-            "/v1/account/api-keys/:key_id",
-            axum::routing::delete(handlers::account::revoke_api_key),
-        )
         .route(
             "/v1/account/devices/remove",
             post(handlers::account::remove_device),
         )
+        .route(
+            "/v1/keys",
+            post(handlers::keys::create).get(handlers::keys::list),
+        )
+        .route(
+            "/v1/keys/:key_id",
+            get(handlers::keys::get)
+                .patch(handlers::keys::update)
+                .delete(handlers::keys::delete),
+        )
+        .route("/v1/key", get(handlers::keys::current))
+        .route("/v1/credits", get(handlers::keys::credits))
         .route("/v1/wallet/balance", get(handlers::wallet::balance))
         .route(
             "/v1/wallet/transactions",
@@ -236,6 +256,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/auth/device/username",
             axum::routing::patch(handlers::auth::set_username),
+        )
+        .route(
+            "/v1/auth/referrals/code",
+            get(handlers::auth::referral_code),
         )
         .route(
             "/v1/auth/keys/share",
@@ -274,6 +298,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/admin/providers/:provider_id/payout",
             post(handlers::admin_providers::payout_provider),
+        )
+        .route(
+            "/v1/admin/reset-genesis",
+            post(handlers::admin::reset_genesis),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

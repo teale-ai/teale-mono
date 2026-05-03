@@ -339,32 +339,30 @@ pub(crate) fn prepare_chat_request_excluding(
         //   Share-key (funded=0, legacy) → min(pool remainder, issuer wallet).
         //     (Old semantics where the pool was just a cap on issuer spend.)
         let effective_budget = match consumer_p {
-            ledger::ConsumerPrincipal::Share { key_id, .. } => {
+            ledger::ConsumerPrincipal::Share {
+                key_id,
+                issuer_device_id,
+            } => {
                 let pool_remaining = share_key_remaining(pool, key_id).unwrap_or(0);
                 if share_key_is_funded(pool, key_id) {
                     pool_remaining
                 } else {
-                    let issuer_balance = ledger::get_balance(
-                        pool,
-                        consumer_p
-                            .paying_device_id()
-                            .expect("share principal has issuer device"),
-                    )
-                    .balance_credits;
+                    let issuer_balance =
+                        ledger::get_balance(pool, issuer_device_id).balance_credits;
                     pool_remaining.min(issuer_balance)
                 }
             }
-            ledger::ConsumerPrincipal::Account { account_user_id } => {
-                ledger::account_balance_credits(pool, account_user_id)
-            }
-            ledger::ConsumerPrincipal::Device(_) => {
-                ledger::get_balance(
-                    pool,
-                    consumer_p
-                        .paying_device_id()
-                        .expect("device principal has device id"),
-                )
-                .balance_credits
+            ledger::ConsumerPrincipal::Device(d) => ledger::get_balance(pool, d).balance_credits,
+            ledger::ConsumerPrincipal::Account {
+                account_user_id,
+                api_key_id,
+            } => {
+                let account_balance = ledger::account_balance_credits(pool, account_user_id);
+                let key_remaining = api_key_id
+                    .as_deref()
+                    .and_then(|k| ledger::api_key_remaining_limit(pool, k))
+                    .unwrap_or(i64::MAX);
+                account_balance.min(key_remaining)
             }
         };
 
@@ -590,7 +588,7 @@ fn preferred_linked_node_ids(
     if !enabled {
         return Vec::new();
     }
-    let PrincipalKind::Account {
+    let PrincipalKind::ApiKey {
         account_user_id, ..
     } = &principal.kind
     else {
@@ -639,17 +637,15 @@ pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::Co
             key_id: key_id.to_string(),
         });
     }
-    match &principal.kind {
-        PrincipalKind::Device { device_id } => {
-            Some(ledger::ConsumerPrincipal::Device(device_id.to_string()))
-        }
-        PrincipalKind::Account {
-            account_user_id, ..
-        } => Some(ledger::ConsumerPrincipal::Account {
+    if let Some((key_id, account_user_id, _role)) = principal.api_key() {
+        return Some(ledger::ConsumerPrincipal::Account {
             account_user_id: account_user_id.to_string(),
-        }),
-        PrincipalKind::Share { .. } | PrincipalKind::Static { .. } => None,
+            api_key_id: Some(key_id.to_string()),
+        });
     }
+    principal
+        .device_id()
+        .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
 }
 
 pub(crate) async fn pick_and_dispatch(
@@ -1644,6 +1640,7 @@ quantization: null
                 discover_interval_seconds: 10,
             },
             synthetic_probes: Default::default(),
+            solana: Default::default(),
         }
     }
 
