@@ -122,30 +122,69 @@ pub async fn chat_completions(
     Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<Value>,
 ) -> Result<Response, GatewayError> {
-    let prepared = prepare_chat_request(&state, &headers, &principal, req)?;
-    if prepared.streaming {
-        let stream = run_streaming(
-            state,
-            prepared.catalog_model,
-            prepared.req_body,
-            prepared.consumer,
-            prepared.required_ctx,
-            prepared.preferred_node_ids,
-        )
-        .await?;
-        Ok(stream.into_response())
-    } else {
-        let json = run_buffered(
-            state,
-            prepared.catalog_model,
-            prepared.req_body,
-            prepared.consumer,
-            prepared.required_ctx,
-            prepared.preferred_node_ids,
-        )
-        .await?;
-        Ok(json.into_response())
+    let mut excluded: Vec<String> = Vec::new();
+    loop {
+        let prepared =
+            prepare_chat_request_excluding(&state, &headers, &principal, req.clone(), &excluded)?;
+        let was_virtual = prepared.was_virtual_resolution;
+        let attempted_model = prepared.catalog_model.id.clone();
+
+        let result: Result<Response, GatewayError> = if prepared.streaming {
+            run_streaming(
+                state.clone(),
+                prepared.catalog_model,
+                prepared.req_body,
+                prepared.consumer,
+                prepared.required_ctx,
+                prepared.preferred_node_ids,
+            )
+            .await
+            .map(IntoResponse::into_response)
+        } else {
+            run_buffered(
+                state.clone(),
+                prepared.catalog_model,
+                prepared.req_body,
+                prepared.consumer,
+                prepared.required_ctx,
+                prepared.preferred_node_ids,
+            )
+            .await
+            .map(IntoResponse::into_response)
+        };
+
+        match result {
+            Ok(response) => return Ok(response),
+            Err(err) if should_cascade(&err, was_virtual, &excluded) => {
+                warn!(
+                    failed_model = %attempted_model,
+                    attempt = excluded.len() + 1,
+                    "teale/auto cascade: re-resolving with failed model excluded"
+                );
+                excluded.push(attempted_model);
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
     }
+}
+
+/// Whether a dispatch failure should trigger a fresh `resolve_auto` pass with
+/// the just-failed model excluded. Only fires for virtual-model requests
+/// (`teale/auto` etc.) — concrete-model requests bubble the original error to
+/// the caller so they can decide what to do.
+pub(crate) fn should_cascade(
+    err: &GatewayError,
+    was_virtual: bool,
+    excluded: &[String],
+) -> bool {
+    if !was_virtual || excluded.len() >= MAX_AUTO_CASCADE_RETRIES {
+        return false;
+    }
+    matches!(
+        err,
+        GatewayError::NoEligibleDevice(_) | GatewayError::AllUpstreamsFailed(_)
+    )
 }
 
 pub(crate) struct PreparedChatRequest {
@@ -155,13 +194,35 @@ pub(crate) struct PreparedChatRequest {
     pub required_ctx: u32,
     pub preferred_node_ids: Vec<String>,
     pub streaming: bool,
+    /// True when the requested model was a virtual one (e.g. `teale/auto`) and
+    /// the gateway resolved it to a concrete model. The caller can use this to
+    /// decide whether a dispatch failure is recoverable by re-resolving with
+    /// the failed model excluded.
+    pub was_virtual_resolution: bool,
 }
 
+/// Maximum number of times a virtual `teale/auto` request may cascade to a
+/// different concrete model after dispatch failures. Bounded so a fully
+/// degraded fleet still surfaces an error to the caller within one wall-clock
+/// "request" instead of marching through every model in the catalog.
+pub(crate) const MAX_AUTO_CASCADE_RETRIES: usize = 3;
+
+#[cfg(test)]
 pub(crate) fn prepare_chat_request(
     state: &AppState,
     headers: &HeaderMap,
     principal: &AuthPrincipal,
+    req: Value,
+) -> Result<PreparedChatRequest, GatewayError> {
+    prepare_chat_request_excluding(state, headers, principal, req, &[])
+}
+
+pub(crate) fn prepare_chat_request_excluding(
+    state: &AppState,
+    headers: &HeaderMap,
+    principal: &AuthPrincipal,
     mut req: Value,
+    excluded_models: &[String],
 ) -> Result<PreparedChatRequest, GatewayError> {
     // Parse the inbound request loosely so we can copy pass-through fields.
     let mut parsed: ChatCompletionRequest = serde_json::from_value(req.clone())
@@ -173,6 +234,7 @@ pub(crate) fn prepare_chat_request(
     // Catalog lookup.
     let mut catalog_model = resolve_requested_model(state, &requested_model)
         .ok_or_else(|| GatewayError::ModelNotFound(requested_model.clone()))?;
+    let was_virtual_resolution = catalog_model.is_virtual;
 
     let floor = &state.config.scheduler.per_model_floor;
 
@@ -216,6 +278,7 @@ pub(crate) fn prepare_chat_request(
             },
             floor.small,
             floor.large,
+            excluded_models,
         )
         .cloned()
         .ok_or_else(|| {
@@ -340,6 +403,7 @@ pub(crate) fn prepare_chat_request(
         required_ctx,
         preferred_node_ids,
         streaming,
+        was_virtual_resolution,
     })
 }
 

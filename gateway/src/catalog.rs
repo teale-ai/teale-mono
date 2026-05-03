@@ -238,18 +238,20 @@ pub fn estimated_size_gb(params_b: f64, quantization: Option<&str>) -> f64 {
 /// the per-model floor. Returns `None` if no catalog model satisfies both
 /// — caller must translate to 503 `NoEligibleDevice` (strict, per the
 /// project's fallback policy).
-pub fn resolve_auto(
-    catalog: &[CatalogModel],
+pub fn resolve_auto<'a>(
+    catalog: &'a [CatalogModel],
     required_ctx: u32,
     profile: AutoRouteProfile,
     eligible_count: impl Fn(&str, u32) -> u32,
     floor_small: u32,
     floor_large: u32,
-) -> Option<&CatalogModel> {
+    exclude_model_ids: &[String],
+) -> Option<&'a CatalogModel> {
     let build_candidates = |prefer_agent_harness: bool| -> Vec<&CatalogModel> {
         catalog
             .iter()
             .filter(|m| !m.is_virtual)
+            .filter(|m| !exclude_model_ids.iter().any(|x| x == &m.id))
             .filter(|m| m.context_length >= required_ctx)
             .filter(|m| match (profile, prefer_agent_harness) {
                 (AutoRouteProfile::Generic, _) => true,
@@ -367,6 +369,7 @@ mod tests {
             |id, _| u32::from(id == "small" || id == "big"),
             1,
             1,
+            &[],
         )
         .expect("should resolve");
         assert_eq!(picked.id, "small");
@@ -385,6 +388,7 @@ mod tests {
             |id, _| u32::from(id == "small" || id == "agentic"),
             1,
             1,
+            &[],
         )
         .expect("should resolve");
         assert_eq!(picked.id, "agentic");
@@ -403,6 +407,7 @@ mod tests {
             |id, _| u32::from(id == "small"),
             1,
             1,
+            &[],
         )
         .expect("should resolve");
         assert_eq!(picked.id, "small");
@@ -418,10 +423,68 @@ mod tests {
             |_, need_ctx| u32::from(need_ctx <= 64_000),
             1,
             1,
+            &[],
         );
         assert!(
             picked.is_none(),
             "should reject when no node can honor context"
         );
+    }
+
+    #[test]
+    fn exclude_list_skips_named_models_so_dispatch_can_cascade() {
+        // When dispatch fails for the smallest-fit model, the chat handler
+        // re-runs resolve_auto with that model excluded so the request
+        // cascades to the next-best model that has its own supply.
+        let catalog = vec![
+            model("a-small", 8.0, 32768, &[]),
+            model("a-medium", 27.0, 262144, &[]),
+            model("a-large", 1000.0, 262144, &[]),
+        ];
+        let always_one = |_: &str, _: u32| 1u32;
+
+        let first =
+            resolve_auto(&catalog, 20_000, AutoRouteProfile::Generic, always_one, 1, 1, &[])
+                .expect("first pass picks smallest");
+        assert_eq!(first.id, "a-small");
+
+        let second = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::Generic,
+            always_one,
+            1,
+            1,
+            &["a-small".to_string()],
+        )
+        .expect("second pass picks next-smallest");
+        assert_eq!(second.id, "a-medium");
+
+        let third = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::Generic,
+            always_one,
+            1,
+            1,
+            &["a-small".to_string(), "a-medium".to_string()],
+        )
+        .expect("third pass picks the last remaining model");
+        assert_eq!(third.id, "a-large");
+
+        let exhausted = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::Generic,
+            always_one,
+            1,
+            1,
+            &[
+                "a-small".to_string(),
+                "a-medium".to_string(),
+                "a-large".to_string(),
+            ],
+        );
+        assert!(exhausted.is_none());
     }
 }
