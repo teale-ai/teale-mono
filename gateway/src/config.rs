@@ -24,6 +24,8 @@ pub struct Config {
     pub reliability: ReliabilityConfig,
     #[serde(default)]
     pub synthetic_probes: SyntheticProbeConfig,
+    #[serde(default)]
+    pub solana: SolanaConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -129,6 +131,38 @@ impl Default for SyntheticProbeConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct SolanaConfig {
+    #[serde(default = "default_solana_rpc_url")]
+    pub rpc_url: String,
+    #[serde(default = "default_solana_usdc_mint")]
+    pub usdc_mint: String,
+    #[serde(default = "default_solana_commitment")]
+    pub commitment: String,
+    #[serde(default = "default_solana_request_timeout_seconds")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_solana_max_supported_transaction_version")]
+    pub max_supported_transaction_version: u8,
+    #[serde(default = "default_solana_treasury_address")]
+    pub treasury_address: String,
+    #[serde(default = "default_solana_withdrawal_fee_bps")]
+    pub withdrawal_fee_bps: u16,
+}
+
+impl Default for SolanaConfig {
+    fn default() -> Self {
+        Self {
+            rpc_url: default_solana_rpc_url(),
+            usdc_mint: default_solana_usdc_mint(),
+            commitment: default_solana_commitment(),
+            request_timeout_seconds: default_solana_request_timeout_seconds(),
+            max_supported_transaction_version: default_solana_max_supported_transaction_version(),
+            treasury_address: default_solana_treasury_address(),
+            withdrawal_fee_bps: default_solana_withdrawal_fee_bps(),
+        }
+    }
+}
+
 fn default_bind() -> String {
     "0.0.0.0:8080".to_string()
 }
@@ -189,6 +223,27 @@ fn default_synthetic_probe_interval() -> u64 {
 fn default_synthetic_probe_max_tokens() -> u32 {
     16
 }
+fn default_solana_rpc_url() -> String {
+    "https://api.mainnet-beta.solana.com".to_string()
+}
+fn default_solana_usdc_mint() -> String {
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()
+}
+fn default_solana_commitment() -> String {
+    "finalized".to_string()
+}
+fn default_solana_request_timeout_seconds() -> u64 {
+    15
+}
+fn default_solana_max_supported_transaction_version() -> u8 {
+    0
+}
+fn default_solana_treasury_address() -> String {
+    "8Cs7qHZ9qz6M3HfZt9H6FBq7toCPKp4KUG8H9xE6V4V3".to_string()
+}
+fn default_solana_withdrawal_fee_bps() -> u16 {
+    180
+}
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
@@ -212,6 +267,7 @@ impl Config {
             scheduler: SchedulerConfig::default(),
             reliability: ReliabilityConfig::default(),
             synthetic_probes: SyntheticProbeConfig::default(),
+            solana: SolanaConfig::default(),
         }
     }
 }

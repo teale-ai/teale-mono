@@ -1,6 +1,6 @@
 //! Bearer-token auth middleware.
 //!
-//! Three token paths are supported in parallel:
+//! Four token paths are supported in parallel:
 //!
 //! 1. **Static tokens** from env (`GATEWAY_TOKENS`), loaded at startup. Format
 //!    is comma-separated `token:scope` pairs, e.g.
@@ -13,9 +13,12 @@
 //!    stash in a request extension so downstream handlers can attribute
 //!    spend / earn.
 //!
-//! 3. **Account API keys** minted for linked human accounts and persisted in
-//!    SQLite. These authorize direct demand traffic without requiring a Teale
-//!    device bearer on every request.
+//! 3. **Programmatic API keys** (`tk_live_…` / `tk_prov_…`) minted for linked
+//!    human accounts. Spending debits the account_wallet and is attributed
+//!    back to the originating key for usage rollups.
+//!
+//! 4. **Share keys** — short-lived scoped bearers minted by a device for
+//!    community previews; the key carries its own funded budget.
 //!
 //! On success, the middleware attaches an `AuthPrincipal` request extension.
 
@@ -29,6 +32,7 @@ use axum::{
     response::Response,
 };
 
+use crate::api_keys::{self, ApiKeyRole};
 use crate::ledger;
 use crate::state::AppState;
 
@@ -52,11 +56,6 @@ pub enum PrincipalKind {
     Static { scope: String },
     /// Device-bound token issued by /v1/auth/device/exchange
     Device { device_id: String },
-    /// Human-account-scoped API key for direct demand traffic.
-    Account {
-        account_user_id: String,
-        key_id: String,
-    },
     /// Temporary share key minted by a device for community previews.
     /// Spending debits the key's funded pool and ticks the key's
     /// `consumed_credits`; exhaustion/expiry/revoke is enforced in middleware.
@@ -66,21 +65,24 @@ pub enum PrincipalKind {
         /// Snapshot at auth time; `settle_request` re-reads under lock for truth.
         budget_remaining: i64,
     },
+    /// Programmatic API key bound to an account. Spending debits the
+    /// account_wallet's credit balance and increments `api_keys.usage_credits`.
+    /// Provisioning keys can additionally manage other keys.
+    ApiKey {
+        key_id: String,
+        account_user_id: String,
+        role: ApiKeyRole,
+        /// Snapshot at auth time; settle re-checks under lock.
+        credit_limit: Option<i64>,
+        /// Snapshot at auth time.
+        usage_credits: i64,
+    },
 }
 
 impl AuthPrincipal {
     pub fn device_id(&self) -> Option<&str> {
         match &self.kind {
             PrincipalKind::Device { device_id } => Some(device_id),
-            _ => None,
-        }
-    }
-
-    pub fn account_user_id(&self) -> Option<&str> {
-        match &self.kind {
-            PrincipalKind::Account {
-                account_user_id, ..
-            } => Some(account_user_id),
             _ => None,
         }
     }
@@ -93,6 +95,19 @@ impl AuthPrincipal {
                 key_id,
                 ..
             } => Some((issuer_device_id.as_str(), key_id.as_str())),
+            _ => None,
+        }
+    }
+
+    /// Returns `(key_id, account_user_id, role)` for API-key principals.
+    pub fn api_key(&self) -> Option<(&str, &str, ApiKeyRole)> {
+        match &self.kind {
+            PrincipalKind::ApiKey {
+                key_id,
+                account_user_id,
+                role,
+                ..
+            } => Some((key_id.as_str(), account_user_id.as_str(), *role)),
             _ => None,
         }
     }
@@ -163,21 +178,29 @@ pub async fn require_bearer(
         }
     }
 
-    // 2b) Account API key match (via DB). These are human-account-scoped,
-    // revocable direct-demand credentials.
+    // 2a) Programmatic API-key match. Disabled keys are rejected with 401;
+    //     credit-limit exhaustion is enforced at settle time, not auth time
+    //     (so /v1/keys, /v1/credits, /v1/key still work for inspection).
     if let Some(pool) = state.db.as_ref() {
-        if let Ok(Some(resolved)) = ledger::resolve_account_api_key(pool, &token) {
+        if let Some(resolved) = api_keys::resolve_api_key(pool, &token) {
+            if resolved.disabled {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+            api_keys::touch_last_used(pool, &resolved.key_id);
             req.extensions_mut().insert(AuthPrincipal {
-                kind: PrincipalKind::Account {
-                    account_user_id: resolved.account_user_id,
+                kind: PrincipalKind::ApiKey {
                     key_id: resolved.key_id,
+                    account_user_id: resolved.account_user_id,
+                    role: resolved.role,
+                    credit_limit: resolved.credit_limit,
+                    usage_credits: resolved.usage_credits,
                 },
             });
             return Ok(next.run(req).await);
         }
     }
 
-    // 2c) Share-key match — temporary scoped bearers minted by a device.
+    // 2b) Share-key match — temporary scoped bearers minted by a device.
     //     Rejection reasons (expired/revoked/exhausted) short-circuit here
     //     with the right status; a miss falls through.
     if let Some(pool) = state.db.as_ref() {

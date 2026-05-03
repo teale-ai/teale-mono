@@ -66,7 +66,7 @@ public struct WithdrawalService: Sendable {
             instructions.append(createATAInstruction)
         }
 
-        // Transfer net amount (95%) to destination
+        // Transfer the user-facing net amount to the destination.
         let transferInstruction = TokenProgram.transferInstruction(
             source: sourceATA,
             destination: destATA,
@@ -75,7 +75,7 @@ public struct WithdrawalService: Sendable {
         )
         instructions.append(transferInstruction)
 
-        // --- Treasury fee (5%) ---
+        // --- Treasury fee (1.8%) ---
         if feeAmount > 0 {
             let treasuryPubkey = try PublicKey(string: WalletKitConfig.treasuryAddress)
             let treasuryATA = try PublicKey.associatedTokenAddress(

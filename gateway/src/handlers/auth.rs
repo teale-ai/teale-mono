@@ -5,7 +5,7 @@
 //!   Return: { "nonce": "<base64>", "expiresAt": <unix> }
 //!
 //! POST /v1/auth/device/exchange
-//!   Body:   { "deviceID", "nonce", "signature" (hex ed25519 over nonce bytes) }
+//!   Body:   { "deviceID", "nonce", "signature" (hex ed25519 over nonce bytes), "referralCode"? }
 //!   Return: { "token": "tok_dev_<uuid>", "expiresAt": <unix> }
 //!   Side-effect: welcome bonus on first exchange for this deviceID.
 //!
@@ -13,6 +13,10 @@
 //!   Header: Authorization: Bearer <device token>
 //!   Body:   { "username": "<alias>" }
 //!   Return: { "deviceID", "username" }
+//!
+//! GET /v1/auth/referrals/code
+//!   Header: Authorization: Bearer <device token>
+//!   Return: { "code", "ownerKind", "ownerID" }
 
 use axum::{extract::State, http::HeaderMap, Json};
 use base64::Engine;
@@ -22,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::GatewayError;
-use crate::ledger::{self, WELCOME_BONUS_CREDITS};
+use crate::ledger;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -44,6 +48,8 @@ pub struct ExchangeReq {
     device_id: String,
     nonce: String,
     signature: String,
+    #[serde(rename = "referralCode")]
+    referral_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -53,6 +59,8 @@ pub struct ExchangeRes {
     expires_at: i64,
     #[serde(rename = "welcomeBonus", skip_serializing_if = "Option::is_none")]
     welcome_bonus: Option<i64>,
+    #[serde(rename = "referralBonus", skip_serializing_if = "Option::is_none")]
+    referral_bonus: Option<i64>,
 }
 
 fn is_hex_pubkey(s: &str) -> bool {
@@ -140,26 +148,13 @@ pub async fn exchange(
         ));
     }
 
-    // Determine if this is the first exchange for this device (to grant bonus)
-    let needs_bonus = {
-        let conn = pool.lock();
-        let has_bonus: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM ledger WHERE device_id = ? AND type = 'BONUS' LIMIT 1",
-                [&req.device_id],
-                |r| r.get(0),
-            )
-            .ok();
-        has_bonus.is_none()
-    };
-
-    let welcome_bonus = if needs_bonus {
-        ledger::record_bonus(pool, &req.device_id, WELCOME_BONUS_CREDITS)
-            .map_err(|e| GatewayError::Other(anyhow::anyhow!("record bonus: {}", e)))?;
-        Some(WELCOME_BONUS_CREDITS)
-    } else {
-        None
-    };
+    let rewards =
+        ledger::apply_device_join_rewards(pool, &req.device_id, req.referral_code.as_deref())
+            .map_err(map_referral_error)?;
+    let welcome_bonus =
+        (rewards.welcome_bonus_credits > 0).then_some(rewards.welcome_bonus_credits);
+    let referral_bonus =
+        (rewards.referral_bonus_credits > 0).then_some(rewards.referral_bonus_credits);
 
     let token = format!("tok_dev_{}", Uuid::new_v4().simple());
     let expires_at = ledger::issue_token(pool, &req.device_id, &token)
@@ -168,6 +163,7 @@ pub async fn exchange(
     tracing::info!(
         device = %req.device_id,
         bonus = ?welcome_bonus,
+        referral_bonus = ?referral_bonus,
         "issued device token"
     );
 
@@ -175,6 +171,7 @@ pub async fn exchange(
         token,
         expires_at,
         welcome_bonus,
+        referral_bonus,
     }))
 }
 
@@ -219,4 +216,36 @@ pub async fn set_username(
         device_id,
         username: trimmed.to_string(),
     }))
+}
+
+pub async fn referral_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ledger::ReferralCodeSnapshot>, GatewayError> {
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim)
+        .unwrap_or("");
+    let device_id = ledger::resolve_token(pool, bearer)
+        .ok_or_else(|| GatewayError::Unauthorized("unknown or expired device token".into()))?;
+    let snapshot = ledger::referral_code_for_device(pool, &device_id)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("referral code: {}", e)))?;
+    Ok(Json(snapshot))
+}
+
+fn map_referral_error(err: ledger::ReferralError) -> GatewayError {
+    match err {
+        ledger::ReferralError::InvalidCode => GatewayError::BadRequest(err.to_string()),
+        ledger::ReferralError::SelfReferral
+        | ledger::ReferralError::DeviceAlreadyClaimed
+        | ledger::ReferralError::AccountAlreadyClaimed => GatewayError::Conflict(err.to_string()),
+        ledger::ReferralError::AccountNotLinked => GatewayError::NotFound(err.to_string()),
+        ledger::ReferralError::Other(err) => GatewayError::Other(err),
+    }
 }

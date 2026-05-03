@@ -60,3 +60,15 @@ discover_interval_seconds = 10
 enabled = true
 interval_seconds = 1800
 max_tokens = 16
+
+[solana]
+# Deposit verification uses finalized Solana RPC data and credits only the
+# verified USDC delta into the account wallet. Override these for devnet or a
+# dedicated RPC provider when needed.
+rpc_url = "https://api.mainnet-beta.solana.com"
+usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+commitment = "finalized"
+request_timeout_seconds = 15
+max_supported_transaction_version = 0
+treasury_address = "8Cs7qHZ9qz6M3HfZt9H6FBq7toCPKp4KUG8H9xE6V4V3"
+withdrawal_fee_bps = 180

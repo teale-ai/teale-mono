@@ -134,6 +134,24 @@ pub async fn refund_expired_share_keys(
     Ok(Json(report))
 }
 
+/// POST /v1/admin/reset-genesis — clear wallet, auth, referral, and on-chain
+/// accounting state so the network starts from a clean slate.
+pub async fn reset_genesis(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<ledger::GenesisResetReport>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let report = ledger::reset_genesis(pool)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("reset-genesis: {}", e)))?;
+    tracing::warn!(
+        devices_cleared = report.devices_cleared,
+        account_wallets_cleared = report.account_wallets_cleared,
+        "admin reset gateway state to genesis"
+    );
+    Ok(Json(report))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -214,5 +232,21 @@ mod tests {
         .unwrap();
         assert_eq!(report.keys_closed, 1);
         assert_eq!(report.credits_refunded, 50);
+    }
+
+    #[tokio::test]
+    async fn reset_genesis_requires_static_bearer() {
+        let state = test_state();
+        let err = reset_genesis(
+            State(state),
+            Extension(AuthPrincipal {
+                kind: PrincipalKind::Device {
+                    device_id: "dev".into(),
+                },
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GatewayError::Forbidden(_)));
     }
 }

@@ -197,6 +197,7 @@ mod tests {
                 discover_interval_seconds: 10,
             },
             synthetic_probes: Default::default(),
+            solana: Default::default(),
         }
     }
 

@@ -49,6 +49,7 @@ url = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 time = { version = "0.3", features = ["serde"] }
 futures = "0.3"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { workspace = true }
