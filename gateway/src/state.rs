@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::db::DbPool;
 use crate::handlers::groups::GroupMessage;
 use crate::model_metrics::ModelMetricsTracker;
+use crate::providers::ProvidersHandle;
 use crate::registry::Registry;
 use crate::relay_client::RelayHandle;
 use crate::scheduler::Scheduler;
@@ -95,4 +96,7 @@ pub struct AppState {
     pub model_metrics: Arc<ModelMetricsTracker>,
     /// Device IDs allowed to mint share keys. Fail-closed when empty.
     pub share_key_issuers: ShareKeyIssuers,
+    /// Centralized 3rd-party provider marketplace. Loaded at startup from
+    /// the `providers` / `provider_models` tables; refreshed on admin mutation.
+    pub providers: ProvidersHandle,
 }

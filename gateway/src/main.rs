@@ -19,6 +19,7 @@ use teale_gateway::config::Config;
 use teale_gateway::db;
 use teale_gateway::identity::GatewayIdentity;
 use teale_gateway::ledger;
+use teale_gateway::providers::{ProviderRegistry, ProvidersHandle};
 use teale_gateway::registry::Registry;
 use teale_gateway::scheduler::Scheduler;
 use teale_gateway::state::{AppState, ShareKeyIssuers};
@@ -106,6 +107,18 @@ async fn main() -> anyhow::Result<()> {
 
     let (group_tx, _group_rx) = broadcast::channel(256);
 
+    // Centralized 3rd-party provider marketplace. We need a DbPool to load
+    // the registry; if the ledger DB couldn't open at all we fall back to a
+    // bootstrap pool (the same in-memory fallback the ledger uses) so the
+    // gateway still boots and can serve fleet-only traffic.
+    let providers_pool = pool
+        .clone()
+        .or_else(|| db::open_in_memory().ok())
+        .expect("provider registry needs at least an in-memory DB");
+    let provider_registry = ProviderRegistry::load(providers_pool)
+        .map_err(|e| anyhow::anyhow!("load provider registry: {}", e))?;
+    let providers_handle = ProvidersHandle::new(provider_registry);
+
     let state = AppState {
         config: config.clone(),
         tokens: tokens.clone(),
@@ -117,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         group_tx,
         model_metrics: Arc::new(teale_gateway::model_metrics::ModelMetricsTracker::new()),
         share_key_issuers,
+        providers: providers_handle,
     };
 
     // Spawn the Teale Credit availability drip loop.
@@ -241,6 +255,26 @@ async fn main() -> anyhow::Result<()> {
             "/v1/admin/refund-expired-share-keys",
             post(handlers::admin::refund_expired_share_keys),
         )
+        .route(
+            "/v1/admin/providers",
+            post(handlers::admin_providers::create_provider),
+        )
+        .route(
+            "/v1/admin/providers/:provider_id/models",
+            post(handlers::admin_providers::upsert_models),
+        )
+        .route(
+            "/v1/admin/providers/:provider_id/enable",
+            post(handlers::admin_providers::enable_provider),
+        )
+        .route(
+            "/v1/admin/providers/:provider_id/disable",
+            post(handlers::admin_providers::disable_provider),
+        )
+        .route(
+            "/v1/admin/providers/:provider_id/payout",
+            post(handlers::admin_providers::payout_provider),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -259,6 +293,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(handlers::models::list_models))
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/network/stats", get(handlers::network::network_stats))
+        .route(
+            "/v1/providers",
+            get(handlers::providers_public::list_providers),
+        )
         .route("/favicon.ico", get(handlers::favicon::favicon_ico))
         .route("/favicon.png", get(handlers::favicon::favicon_png))
         .route("/favicon.svg", get(handlers::favicon::favicon_svg))

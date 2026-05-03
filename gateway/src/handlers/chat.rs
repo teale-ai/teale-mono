@@ -120,8 +120,22 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Extension(principal): Extension<AuthPrincipal>,
-    Json(req): Json<Value>,
+    Json(mut req): Json<Value>,
 ) -> Result<Response, GatewayError> {
+    // Try the centralized 3rd-party provider path first. Returns None when
+    // the request isn't centralized-routable (no provider serves the model,
+    // or user preferences point at the local fleet); in that case we fall
+    // through to the existing relay/scheduler cascade with `req` left
+    // untouched except for the consumed `provider` field and any
+    // `:nitro`/`:floor` slug suffix being stripped.
+    if let Some(outcome) = crate::handlers::centralized::try_centralized_dispatch(
+        &state, &headers, &principal, &mut req,
+    )
+    .await
+    {
+        return outcome;
+    }
+
     let mut excluded: Vec<String> = Vec::new();
     loop {
         let prepared =
@@ -173,11 +187,7 @@ pub async fn chat_completions(
 /// the just-failed model excluded. Only fires for virtual-model requests
 /// (`teale/auto` etc.) — concrete-model requests bubble the original error to
 /// the caller so they can decide what to do.
-pub(crate) fn should_cascade(
-    err: &GatewayError,
-    was_virtual: bool,
-    excluded: &[String],
-) -> bool {
+pub(crate) fn should_cascade(err: &GatewayError, was_virtual: bool, excluded: &[String]) -> bool {
     if !was_virtual || excluded.len() >= MAX_AUTO_CASCADE_RETRIES {
         return false;
     }
@@ -262,10 +272,7 @@ pub(crate) fn prepare_chat_request_excluding(
                     .eligible_devices(id)
                     .into_iter()
                     .filter(|device| {
-                        crate::registry::model_matches_any(
-                            id,
-                            &device.capabilities.loaded_models,
-                        )
+                        crate::registry::model_matches_any(id, &device.capabilities.loaded_models)
                     })
                     .filter(|device| {
                         device
@@ -1680,6 +1687,7 @@ quantization: null
             group_tx,
             model_metrics: Arc::new(ModelMetricsTracker::new()),
             share_key_issuers: ShareKeyIssuers::default(),
+            providers: crate::providers::ProvidersHandle::empty_for_test(),
         }
     }
 
@@ -1736,8 +1744,10 @@ pricing_completion: "0.00000020"
         let config = dispatch_test_config(15);
         let small = concrete("test/small", 8.0, 32768);
         let big = concrete("test/big", 35.0, 262144);
-        let state =
-            dispatch_test_state_with_catalog(config, vec![virtual_auto(), small.clone(), big.clone()]);
+        let state = dispatch_test_state_with_catalog(
+            config,
+            vec![virtual_auto(), small.clone(), big.clone()],
+        );
 
         // One device has `big` actually loaded, and claims `small` as swappable.
         // Pre-fix: resolve_auto picks `small` (smaller params_b) since the

@@ -69,6 +69,14 @@ pub enum LedgerType {
     /// Admin-initiated mint into a device wallet. Tracked separately from
     /// BONUS so audit trails distinguish operator top-ups from welcome bonuses.
     AdminMint,
+    /// Centralized 3rd-party provider's 95% share of a settled request.
+    /// Lives in `provider_ledger` (not the device `ledger`) since providers
+    /// have their own wallet table. The OPS_FEE row that pairs with this
+    /// (the 5% Teale take) still goes to the device ledger under `__ops__`.
+    ProviderEarn,
+    /// Off-ramp marker for provider payouts. Internal-only in v1 (no real
+    /// USDC settlement), parity with `account_wallets.usdc_cents`.
+    ProviderPayout,
 }
 
 impl LedgerType {
@@ -84,8 +92,24 @@ impl LedgerType {
             LedgerType::ShareKeyFund => "SHARE_KEY_FUND",
             LedgerType::ShareKeyRefund => "SHARE_KEY_REFUND",
             LedgerType::AdminMint => "ADMIN_MINT",
+            LedgerType::ProviderEarn => "PROVIDER_EARN",
+            LedgerType::ProviderPayout => "PROVIDER_PAYOUT",
         }
     }
+}
+
+/// Who served the request and gets paid. Devices are members of the
+/// distributed fleet; Providers are centralized 3rd-party vendors registered
+/// via the marketplace onboarding flow.
+#[derive(Debug, Clone)]
+pub enum EarnerPrincipal {
+    /// A registered Teale device served the request. Pays the existing
+    /// 70/25/5 split (direct earner / availability pool / ops).
+    Device { device_id: String },
+    /// A centralized 3rd-party provider served the request. Pays 95/5
+    /// (provider / ops). No availability pool — there is no idle co-serving
+    /// fleet to share with on this path.
+    Provider { provider_id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2556,6 +2580,314 @@ pub fn settle_request(
     Ok(())
 }
 
+/// Settlement when a centralized 3rd-party provider served the request.
+/// Pays 95% to the provider's wallet (`provider_wallets`) and 5% to the Teale
+/// ops account (`__ops__` in the device ledger). No availability pool — the
+/// 25% availability slice exists to reward the idle distributed fleet for
+/// keeping models warm; that incentive doesn't apply to a centralized vendor.
+///
+/// The consumer-debit path is identical to `settle_request`: the same
+/// `effective_cost` cap (consumer balance OR share-key remainder) holds the
+/// non-negative invariant. If the consumer can't cover `cost`, both the
+/// provider's earn and the ops fee scale down proportionally.
+pub fn settle_provider_request(
+    pool: &DbPool,
+    consumer: &ConsumerPrincipal,
+    provider_id: &str,
+    cost: i64,
+    request_id: &str,
+    model: &str,
+) -> anyhow::Result<()> {
+    if cost <= 0 {
+        return Ok(());
+    }
+    let paying_device_id = consumer.paying_device_id();
+
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    if let Some(paying_device_id) = paying_device_id {
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
+            [paying_device_id],
+        )?;
+    }
+    let share_funded = match consumer {
+        ConsumerPrincipal::Share { key_id, .. } => tx
+            .query_row(
+                "SELECT funded FROM share_keys WHERE key_id = ?",
+                [key_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .ok(),
+        _ => None,
+    };
+    let effective_cost = match consumer {
+        ConsumerPrincipal::Device(_) => {
+            let paying_device_id = paying_device_id.expect("device principal has device id");
+            let bal: i64 = tx
+                .query_row(
+                    "SELECT balance FROM balances WHERE device_id = ?",
+                    [paying_device_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            cost.min(bal.max(0))
+        }
+        ConsumerPrincipal::Account { account_user_id } => {
+            let bal: i64 = tx
+                .query_row(
+                    "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
+                    [account_user_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            cost.min(bal.max(0))
+        }
+        ConsumerPrincipal::Share { key_id, .. } => {
+            let paying_device_id = paying_device_id.expect("share principal has issuer device id");
+            if share_funded == Some(1) {
+                let remaining = sum_share_key_contributions_tx(&tx, key_id).unwrap_or(0);
+                cost.min(remaining.max(0))
+            } else {
+                let bal: i64 = tx
+                    .query_row(
+                        "SELECT balance FROM balances WHERE device_id = ?",
+                        [paying_device_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                let key_remaining: i64 = tx
+                    .query_row(
+                        "SELECT budget_credits - consumed_credits FROM share_keys WHERE key_id = ?",
+                        [key_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                cost.min(bal.max(0)).min(key_remaining.max(0))
+            }
+        }
+    };
+    let shortfall = cost - effective_cost;
+
+    let provider_earn = effective_cost * 95 / 100;
+    let ops_fee = effective_cost - provider_earn;
+
+    let note_base = match consumer {
+        ConsumerPrincipal::Device(_) => format!("provider={} model={}", provider_id, model),
+        ConsumerPrincipal::Account { account_user_id } => format!(
+            "account={} provider={} model={}",
+            account_user_id, provider_id, model
+        ),
+        ConsumerPrincipal::Share { key_id, .. } => format!(
+            "share_key:{} provider={} model={}",
+            key_id, provider_id, model
+        ),
+    };
+    let note = if shortfall > 0 {
+        format!("{} shortfall={}", note_base, shortfall)
+    } else {
+        note_base
+    };
+
+    // Consumer debit — identical bookkeeping to settle_request, just routed
+    // to whichever wallet table backs the principal.
+    match consumer {
+        ConsumerPrincipal::Device(_) | ConsumerPrincipal::Share { .. } => {
+            let paying_device_id = paying_device_id.expect("device-backed principal has device id");
+            tx.execute(
+                "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+                 VALUES (?, 'SPENT', ?, ?, ?, ?)",
+                params![paying_device_id, -effective_cost, now, request_id, &note],
+            )?;
+        }
+        ConsumerPrincipal::Account { account_user_id } => {
+            tx.execute(
+                "INSERT INTO account_ledger
+                    (account_user_id, asset, amount, type, timestamp, device_id, note)
+                 VALUES (?, 'credits', ?, 'INFERENCE_SPENT', ?, NULL, ?)",
+                params![account_user_id, -effective_cost, now, &note],
+            )?;
+        }
+    }
+    if effective_cost > 0 {
+        match consumer {
+            ConsumerPrincipal::Device(_) => {
+                let paying_device_id = paying_device_id.expect("device principal has device id");
+                tx.execute(
+                    "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
+                     WHERE device_id = ?",
+                    params![effective_cost, effective_cost, paying_device_id],
+                )?;
+            }
+            ConsumerPrincipal::Account { account_user_id } => {
+                tx.execute(
+                    "UPDATE account_wallets
+                     SET balance_credits = balance_credits - ?, updated_at = ?
+                     WHERE account_user_id = ?",
+                    params![effective_cost, now, account_user_id],
+                )?;
+            }
+            ConsumerPrincipal::Share { key_id, .. } => {
+                let paying_device_id =
+                    paying_device_id.expect("share principal has issuer device id");
+                tx.execute(
+                    "UPDATE share_keys SET consumed_credits = consumed_credits + ?
+                     WHERE key_id = ?",
+                    params![effective_cost, key_id],
+                )?;
+                if share_funded == Some(1) {
+                    apply_pro_rata_share_key_spend_tx(&tx, key_id, effective_cost)?;
+                    tx.execute(
+                        "UPDATE balances SET total_spent = total_spent + ?
+                         WHERE device_id = ?",
+                        params![effective_cost, paying_device_id],
+                    )?;
+                } else {
+                    tx.execute(
+                        "UPDATE balances SET balance = balance - ?, total_spent = total_spent + ?
+                         WHERE device_id = ?",
+                        params![effective_cost, effective_cost, paying_device_id],
+                    )?;
+                }
+            }
+        }
+    }
+
+    // Provider earn — credited to provider_wallets + provider_ledger.
+    if provider_earn > 0 {
+        tx.execute(
+            "INSERT OR IGNORE INTO provider_wallets (provider_id, updated_at) VALUES (?, ?)",
+            params![provider_id, now],
+        )?;
+        tx.execute(
+            "INSERT INTO provider_ledger
+                (provider_id, type, amount, timestamp, ref_request_id, model_id, note)
+             VALUES (?, 'PROVIDER_EARN', ?, ?, ?, ?, ?)",
+            params![provider_id, provider_earn, now, request_id, model, &note],
+        )?;
+        tx.execute(
+            "UPDATE provider_wallets
+             SET balance_credits = balance_credits + ?,
+                 total_earned = total_earned + ?,
+                 updated_at = ?
+             WHERE provider_id = ?",
+            params![provider_earn, provider_earn, now, provider_id],
+        )?;
+    }
+
+    // Ops fee — recorded under the sentinel `__ops__` device, same shape as
+    // the distributed-path OPS_FEE so existing wallet tooling sees it.
+    if ops_fee > 0 {
+        tx.execute(
+            "INSERT OR IGNORE INTO balances (device_id) VALUES ('__ops__')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO ledger (device_id, type, amount, timestamp, ref_request_id, note)
+             VALUES ('__ops__', 'OPS_FEE', ?, ?, ?, ?)",
+            params![ops_fee, now, request_id, &note],
+        )?;
+        tx.execute(
+            "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
+             WHERE device_id = '__ops__'",
+            params![ops_fee, ops_fee],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Records a provider payout: debits `provider_wallets.balance_credits` and
+/// writes a `PROVIDER_PAYOUT` row. v1 has no real off-ramp — this is the
+/// audit marker an operator uses when they've manually settled the provider
+/// out-of-band (USDC wire, invoice, etc.).
+pub fn record_provider_payout(
+    pool: &DbPool,
+    provider_id: &str,
+    amount: i64,
+    destination: Option<&str>,
+) -> anyhow::Result<()> {
+    if amount <= 0 {
+        anyhow::bail!("payout amount must be positive");
+    }
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let bal: i64 = tx
+        .query_row(
+            "SELECT balance_credits FROM provider_wallets WHERE provider_id = ?",
+            [provider_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if amount > bal {
+        anyhow::bail!(
+            "payout exceeds provider balance: requested={} available={}",
+            amount,
+            bal
+        );
+    }
+
+    let note = destination
+        .map(|d| format!("dest={}", d))
+        .unwrap_or_default();
+    tx.execute(
+        "INSERT INTO provider_ledger (provider_id, type, amount, timestamp, note)
+         VALUES (?, 'PROVIDER_PAYOUT', ?, ?, ?)",
+        params![provider_id, -amount, now, &note],
+    )?;
+    tx.execute(
+        "UPDATE provider_wallets
+         SET balance_credits = balance_credits - ?,
+             total_paid_out = total_paid_out + ?,
+             updated_at = ?
+         WHERE provider_id = ?",
+        params![amount, amount, now, provider_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Snapshot of a provider's wallet for the admin & public surfaces.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderWalletView {
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    #[serde(rename = "balanceCredits")]
+    pub balance_credits: i64,
+    #[serde(rename = "totalEarned")]
+    pub total_earned: i64,
+    #[serde(rename = "totalPaidOut")]
+    pub total_paid_out: i64,
+}
+
+pub fn get_provider_wallet(
+    pool: &DbPool,
+    provider_id: &str,
+) -> anyhow::Result<Option<ProviderWalletView>> {
+    let conn = pool.lock();
+    let row = conn
+        .query_row(
+            "SELECT balance_credits, total_earned, total_paid_out
+             FROM provider_wallets WHERE provider_id = ?",
+            [provider_id],
+            |r| {
+                Ok(ProviderWalletView {
+                    provider_id: provider_id.to_string(),
+                    balance_credits: r.get(0)?,
+                    total_earned: r.get(1)?,
+                    total_paid_out: r.get(2)?,
+                })
+            },
+        )
+        .ok();
+    Ok(row)
+}
+
 fn load_active_availability_sessions(
     tx: &rusqlite::Transaction<'_>,
 ) -> anyhow::Result<Vec<ActiveAvailabilitySession>> {
@@ -3448,6 +3780,134 @@ mod tests {
                 .is_some_and(|n| n.contains("shortfall=60"))),
             "shortfall should be noted on the SPENT row"
         );
+    }
+
+    /// Helper that mirrors the admin-endpoint upsert path so the centralized
+    /// settlement tests don't have to depend on the registry refresh.
+    fn seed_provider_for_test(pool: &DbPool, provider_id: &str) {
+        let conn = pool.lock();
+        conn.execute(
+            "INSERT INTO providers
+                (provider_id, slug, display_name, base_url, wire_format,
+                 auth_header_name, auth_secret_ref, status, data_collection,
+                 zdr, quantization, created_at, updated_at)
+             VALUES (?, 'acme', 'ACME', 'https://api.acme.example/v1',
+                     'openai', 'Authorization', 'ACME_KEY', 'active', 'allow',
+                     0, NULL, 0, 0)",
+            [provider_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn provider_settlement_pays_95_5() {
+        // 100-credit cost served by a centralized provider: 95 credits go
+        // to the provider's wallet, 5 to ops, no availability pool.
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "consumer").unwrap();
+        record_bonus(&pool, "consumer", 10_000).unwrap();
+        seed_provider_for_test(&pool, "prov_acme");
+
+        settle_provider_request(
+            &pool,
+            &ConsumerPrincipal::Device("consumer".into()),
+            "prov_acme",
+            100,
+            "req-c1",
+            "openai/gpt-oss-120b",
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, "consumer").balance_credits, 9_900);
+        let wallet = get_provider_wallet(&pool, "prov_acme").unwrap().unwrap();
+        assert_eq!(wallet.balance_credits, 95);
+        assert_eq!(wallet.total_earned, 95);
+        // Ops gets exactly 5 — no availability pool drift.
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 5);
+    }
+
+    #[test]
+    fn provider_settlement_caps_at_consumer_balance() {
+        // Consumer has only 40 credits but the upstream usage report would
+        // imply a 100-credit cost. Effective cost clamps to 40, scaled
+        // 95/5 → 38 to provider, 2 to ops.
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "consumer").unwrap();
+        record_bonus(&pool, "consumer", 40).unwrap();
+        seed_provider_for_test(&pool, "prov_acme");
+
+        settle_provider_request(
+            &pool,
+            &ConsumerPrincipal::Device("consumer".into()),
+            "prov_acme",
+            100,
+            "short-c1",
+            "openai/gpt-oss-120b",
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, "consumer").balance_credits, 0);
+        let wallet = get_provider_wallet(&pool, "prov_acme").unwrap().unwrap();
+        assert_eq!(wallet.balance_credits, 38);
+        assert_eq!(get_balance(&pool, "__ops__").balance_credits, 2);
+    }
+
+    #[test]
+    fn provider_settlement_does_not_credit_availability_pool() {
+        // Even if other devices are "online", the centralized path must NOT
+        // pay an availability share. (The pool exists to reward idle fleet
+        // for keeping models warm; a remote vendor doesn't share that
+        // incentive.)
+        let pool = open_in_memory().unwrap();
+        for d in &["consumer", "peer1", "peer2"] {
+            upsert_device(&pool, d).unwrap();
+        }
+        record_bonus(&pool, "consumer", 10_000).unwrap();
+        seed_provider_for_test(&pool, "prov_acme");
+
+        settle_provider_request(
+            &pool,
+            &ConsumerPrincipal::Device("consumer".into()),
+            "prov_acme",
+            100,
+            "req-c2",
+            "openai/gpt-oss-120b",
+        )
+        .unwrap();
+
+        assert_eq!(get_balance(&pool, "peer1").balance_credits, 0);
+        assert_eq!(get_balance(&pool, "peer2").balance_credits, 0);
+    }
+
+    #[test]
+    fn provider_payout_debits_wallet_and_writes_audit_row() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "consumer").unwrap();
+        record_bonus(&pool, "consumer", 10_000).unwrap();
+        seed_provider_for_test(&pool, "prov_acme");
+
+        settle_provider_request(
+            &pool,
+            &ConsumerPrincipal::Device("consumer".into()),
+            "prov_acme",
+            1_000,
+            "req-payout",
+            "openai/gpt-oss-120b",
+        )
+        .unwrap();
+        let pre = get_provider_wallet(&pool, "prov_acme").unwrap().unwrap();
+        assert_eq!(pre.balance_credits, 950);
+
+        record_provider_payout(&pool, "prov_acme", 500, Some("usdc:0xabc")).unwrap();
+        let post = get_provider_wallet(&pool, "prov_acme").unwrap().unwrap();
+        assert_eq!(post.balance_credits, 450);
+        assert_eq!(post.total_paid_out, 500);
+
+        // Payouts above the wallet balance are rejected without mutation.
+        let res = record_provider_payout(&pool, "prov_acme", 9_999, None);
+        assert!(res.is_err(), "over-payout should error");
+        let still = get_provider_wallet(&pool, "prov_acme").unwrap().unwrap();
+        assert_eq!(still.balance_credits, 450);
     }
 
     #[test]

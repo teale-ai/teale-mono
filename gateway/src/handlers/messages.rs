@@ -20,9 +20,7 @@ use uuid::Uuid;
 use crate::auth::AuthPrincipal;
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
-use crate::handlers::chat::{
-    error_to_status_label, pick_and_dispatch, PreparedChatRequest,
-};
+use crate::handlers::chat::{error_to_status_label, pick_and_dispatch, PreparedChatRequest};
 use crate::ledger;
 use crate::metrics;
 use crate::relay_client::SessionEvent;
@@ -91,9 +89,7 @@ pub async fn messages(
 
         match result {
             Ok(response) => return Ok(response),
-            Err(err)
-                if crate::handlers::chat::should_cascade(&err, was_virtual, &excluded) =>
-            {
+            Err(err) if crate::handlers::chat::should_cascade(&err, was_virtual, &excluded) => {
                 tracing::warn!(
                     failed_model = %attempted_model,
                     attempt = excluded.len() + 1,
