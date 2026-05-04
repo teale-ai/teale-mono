@@ -979,7 +979,15 @@ function postNativeSessionSync(session) {
   const refreshToken = session?.refresh_token;
 
   if (!accessToken || !refreshToken) {
-    if (lastNativeSyncedSessionKey !== "__signed_out__") {
+    // Only emit authSignOut after we've previously synced a real session.
+    // On initial bootstrap the native shell may still be hydrating its tokens
+    // into the page; emitting signOut here would clobber the native session
+    // and leave the user signed-out everywhere even though they're signed in
+    // on the native side.
+    if (
+      lastNativeSyncedSessionKey &&
+      lastNativeSyncedSessionKey !== "__signed_out__"
+    ) {
       postNativeMessage({ type: "authSignOut" });
       lastNativeSyncedSessionKey = "__signed_out__";
     }
