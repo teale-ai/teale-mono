@@ -83,6 +83,21 @@ struct CompanionSettingsView: View {
                     }
                 }
 
+                Section("Claude Desktop / Claude Code") {
+                    Text("Point Claude Desktop or Claude Code at gateway.teale.com using a key created from the Teale desktop app.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text(claudeGatewaySnippet)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button("Copy config") {
+                        copyClaudeGatewaySnippet()
+                    }
+                }
+
                 // Connection preferences
                 Section("Connection") {
                     HStack {
@@ -307,4 +322,25 @@ private struct SettingsGatewayDeviceRow: View {
         NSPasteboard.general.setString(value, forType: .string)
         #endif
     }
+}
+
+private let claudeGatewaySnippet = """
+Claude Desktop:
+inferenceProvider = gateway
+inferenceGatewayBaseUrl = https://gateway.teale.com
+inferenceGatewayAuthScheme = bearer
+inferenceGatewayHeaders = ["X-Teale-Prefer-Linked-Device: true"]
+disabledBuiltinTools = ["WebSearch"]
+
+Claude Code:
+ANTHROPIC_BASE_URL=https://gateway.teale.com
+"""
+
+private func copyClaudeGatewaySnippet() {
+    #if os(iOS)
+    UIPasteboard.general.string = claudeGatewaySnippet
+    #else
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(claudeGatewaySnippet, forType: .string)
+    #endif
 }
