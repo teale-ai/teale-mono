@@ -12,8 +12,11 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -110,6 +113,8 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+
+        ClaudeGatewayCard()
 
         OutlinedTextField(
             value = snapshot.username,
@@ -359,6 +364,53 @@ private fun SupplyAccelerationPicker(
                     },
                 )
             }
+        }
+    }
+}
+
+private const val CLAUDE_GATEWAY_SNIPPET = """Claude Desktop:
+inferenceProvider = gateway
+inferenceGatewayBaseUrl = https://gateway.teale.com
+inferenceGatewayAuthScheme = bearer
+inferenceGatewayHeaders = ["X-Teale-Prefer-Linked-Device: true"]
+disabledBuiltinTools = ["WebSearch"]
+
+Claude Code:
+ANTHROPIC_BASE_URL=https://gateway.teale.com"""
+
+@Composable
+private fun ClaudeGatewayCard() {
+    val clipboard = LocalClipboardManager.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(16.dp),
+    ) {
+        Text(
+            "Claude Desktop / Claude Code",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Point Claude Desktop or Claude Code at gateway.teale.com using a key created from the Teale desktop app.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            CLAUDE_GATEWAY_SNIPPET,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+        )
+        Spacer(Modifier.height(8.dp))
+        TextButton(
+            onClick = { clipboard.setText(AnnotatedString(CLAUDE_GATEWAY_SNIPPET)) },
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            Text("Copy config")
         }
     }
 }
