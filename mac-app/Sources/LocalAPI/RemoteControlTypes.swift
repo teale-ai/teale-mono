@@ -255,6 +255,10 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
     public var keepAwake: Bool?
     public var autoManageModels: Bool?
     public var inferenceBackend: String?
+    public var rapidMLXModelAlias: String?
+    public var rapidMLXManageSubprocess: Bool?
+    public var rapidMLXBinaryPath: String?
+    public var rapidMLXPort: Int?
     public var privacyFilterMode: String?
     public var language: String?
 
@@ -272,6 +276,10 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         case keepAwake = "keep_awake"
         case autoManageModels = "auto_manage_models"
         case inferenceBackend = "inference_backend"
+        case rapidMLXModelAlias = "rapidmlx_model_alias"
+        case rapidMLXManageSubprocess = "rapidmlx_manage_subprocess"
+        case rapidMLXBinaryPath = "rapidmlx_binary_path"
+        case rapidMLXPort = "rapidmlx_port"
         case privacyFilterMode = "privacy_filter_mode"
         case language
     }
@@ -290,6 +298,10 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         keepAwake: Bool? = nil,
         autoManageModels: Bool? = nil,
         inferenceBackend: String? = nil,
+        rapidMLXModelAlias: String? = nil,
+        rapidMLXManageSubprocess: Bool? = nil,
+        rapidMLXBinaryPath: String? = nil,
+        rapidMLXPort: Int? = nil,
         privacyFilterMode: String? = nil,
         language: String? = nil
     ) {
@@ -306,6 +318,10 @@ public struct RemoteSettingsUpdate: Codable, Sendable {
         self.keepAwake = keepAwake
         self.autoManageModels = autoManageModels
         self.inferenceBackend = inferenceBackend
+        self.rapidMLXModelAlias = rapidMLXModelAlias
+        self.rapidMLXManageSubprocess = rapidMLXManageSubprocess
+        self.rapidMLXBinaryPath = rapidMLXBinaryPath
+        self.rapidMLXPort = rapidMLXPort
         self.privacyFilterMode = privacyFilterMode
         self.language = language
     }

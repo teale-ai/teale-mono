@@ -71,6 +71,14 @@ let package = Package(
             ]
         ),
 
+        // MARK: - RapidMLXKit (rapid-mlx subprocess + HTTP provider)
+        .target(
+            name: "RapidMLXKit",
+            dependencies: [
+                "SharedTypes",
+            ]
+        ),
+
         // MARK: - TealeNetKit (Private TealeNet membership & certificates)
         .target(
             name: "TealeNetKit",
@@ -201,6 +209,7 @@ let package = Package(
                 "HardwareProfile",
                 "MLXInference",
                 "LlamaCppKit",
+                "RapidMLXKit",
                 "TealeNetKit",
                 "InferenceEngine",
                 "ModelManager",
@@ -243,6 +252,7 @@ let package = Package(
                 "InferenceEngine",
                 "ModelManager",
                 "LlamaCppKit",
+                "RapidMLXKit",
                 "TealeNetKit",
                 "LocalAPI",
                 "ClusterKit",

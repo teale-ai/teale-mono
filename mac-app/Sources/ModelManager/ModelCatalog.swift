@@ -249,6 +249,21 @@ public struct ModelCatalog: Sendable {
             popularityRank: 15,
             openrouterId: "moonshotai/kimi-k2.6"
         ),
+        // DeepSeek V4 Flash — 158B-A13B MoE, served via rapid-mlx 8-bit on
+        // a single 512 GB Mac Studio Ultra. Frontier-class with 1M context.
+        ModelDescriptor(
+            id: "deepseek-v4-flash",
+            name: "DeepSeek V4 Flash (158B MoE)",
+            huggingFaceRepo: "mlx-community/DeepSeek-V4-Flash-8bit",
+            parameterCount: "158B",
+            quantization: .q8,
+            estimatedSizeGB: 158.0,
+            requiredRAMGB: 200.0,
+            family: "DeepSeek",
+            description: "DeepSeek V4 Flash — 158B MoE (13B active), 1M context, frontier-level reasoning. Served via rapid-mlx on 256 GB+ Mac Studio Ultra.",
+            popularityRank: 14,
+            openrouterId: "deepseek/deepseek-v4-flash"
+        ),
     ]
 
     /// Filter models that can run on the given hardware
