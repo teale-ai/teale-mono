@@ -284,6 +284,11 @@ footer,
   margin-bottom: 14px;
 }
 
+.form-grid > .actions-tight {
+  margin-bottom: 0;
+  align-self: end;
+}
+
 .action,
 .sort-button {
   background: transparent;
