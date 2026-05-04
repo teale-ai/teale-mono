@@ -248,6 +248,19 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             appState.inferenceBackend = value
         }
 
+        if let alias = update.rapidMLXModelAlias {
+            appState.rapidMLXModelAlias = alias
+        }
+        if let manage = update.rapidMLXManageSubprocess {
+            appState.rapidMLXManageSubprocess = manage
+        }
+        if let binary = update.rapidMLXBinaryPath {
+            appState.rapidMLXBinaryPath = binary
+        }
+        if let port = update.rapidMLXPort {
+            appState.rapidMLXPort = port
+        }
+
         if let privacyFilterMode = update.privacyFilterMode {
             guard let value = PrivacyFilterMode(rawValue: privacyFilterMode) else {
                 let valid = PrivacyFilterMode.allCases.map(\.rawValue).joined(separator: ", ")

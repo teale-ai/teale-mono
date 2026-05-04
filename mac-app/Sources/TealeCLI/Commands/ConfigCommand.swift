@@ -116,6 +116,15 @@ extension Config {
                 update.autoManageModels = parseBool(value)
             case "inference_backend":
                 update.inferenceBackend = value
+            case "rapidmlx_model_alias":
+                update.rapidMLXModelAlias = value
+            case "rapidmlx_manage_subprocess":
+                update.rapidMLXManageSubprocess = parseBool(value)
+            case "rapidmlx_binary_path":
+                update.rapidMLXBinaryPath = value
+            case "rapidmlx_port":
+                guard let v = Int(value) else { throw CleanExit.message("Expected an integer port") }
+                update.rapidMLXPort = v
             case "language":
                 update.language = value
             default:

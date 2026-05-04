@@ -180,6 +180,30 @@ local_model_for() {
   echo "$LOCAL_MODEL_LIST" | awk -F'=' -v h="$host" '$1==h {print $2; exit}'
 }
 
+# Rapid-MLX probe — defaults to :8000, OpenAI-compatible /v1/models. Hosts
+# without rapid-mlx serving will yield empty and be skipped for that case.
+RAPID_MLX_MODEL_LIST=""
+for h in "${TARGETS[@]}"; do
+  m=$(ssh -o ConnectTimeout=5 "$h" 'curl -s -m 5 http://127.0.0.1:8000/v1/models 2>/dev/null' 2>/dev/null \
+      | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for m in data.get("data", []):
+        mid = m.get("id", "")
+        if mid: print(mid); break
+except Exception:
+    print("")' 2>/dev/null) || m=""
+  RAPID_MLX_MODEL_LIST="${RAPID_MLX_MODEL_LIST}${h}=${m}"$'\n'
+  if [ -n "$m" ]; then echo "  discovered rapid-mlx on $h: ${m}"; fi
+done
+echo
+
+rapid_mlx_model_for() {
+  local host="$1"
+  echo "$RAPID_MLX_MODEL_LIST" | awk -F'=' -v h="$host" '$1==h {print $2; exit}'
+}
+
 for host in "${TARGETS[@]}"; do
   outfile="$OUT/${host}.jsonl"
   : > "$outfile"
@@ -189,6 +213,10 @@ for host in "${TARGETS[@]}"; do
   local_model="$(local_model_for "$host")"
   if [ -n "$local_model" ]; then
     cases+=("local|http://127.0.0.1:11435|${local_model}|")
+  fi
+  rapid_model="$(rapid_mlx_model_for "$host")"
+  if [ -n "$rapid_model" ]; then
+    cases+=("rapid-mlx-local|http://127.0.0.1:8000|${rapid_model}|")
   fi
   cases+=("gateway-auto|${GATEWAY_URL}|teale-auto|${GATEWAY_TOKEN}")
   case "$host" in

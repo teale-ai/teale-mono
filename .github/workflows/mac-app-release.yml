@@ -106,6 +106,21 @@ jobs:
           ```
 
           Requires macOS 14 Sonoma or later. Apple Silicon only.
+
+          ## Backends
+
+          Teale ships with four inference backends. Pick one in **Settings → Inference Engine**:
+
+          - **Local MLX** (default) — in-process MLX via mlx-swift-lm
+          - **llama.cpp** — subprocess that loads GGUF models
+          - **Exo Gateway** — HTTP proxy to an external Exo cluster
+          - **Rapid-MLX** *(new)* — fastest MLX engine on Apple Silicon (~25% faster TPS than llama.cpp on Qwen3.6-35B in our benches). Apache-2.0 OpenAI-compatible server. Install separately:
+
+            ```
+            brew install raullenchai/rapid-mlx/rapid-mlx
+            ```
+
+            Then in Teale Settings, switch the engine to **Rapid-MLX** and set the model alias (e.g. \`qwen3.6-35b\`). See [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) for the full alias list.
           EOF
           )" \
             .build/Teale.dmg \

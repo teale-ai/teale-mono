@@ -14,6 +14,7 @@ import AgentKit
 import AuthKit
 import WalletKit
 import LlamaCppKit
+import RapidMLXKit
 import TealeNetKit
 import CompilerKit
 import ChatKit
@@ -50,6 +51,10 @@ public final class AppState {
     private static let exoPreferredModelIDKey = "teale.exo_preferred_model_id"
     private static let wanRelayURLKey = "teale.wan_relay_url"
     private static let llamaCppBinaryPathKey = "teale.llamacpp_binary_path"
+    private static let rapidMLXBinaryPathKey = "teale.rapidmlx_binary_path"
+    private static let rapidMLXPortKey = "teale.rapidmlx_port"
+    private static let rapidMLXModelAliasKey = "teale.rapidmlx_model_alias"
+    private static let rapidMLXManageSubprocessKey = "teale.rapidmlx_manage_subprocess"
     // Local-first gateway fallback: when the local :11435 receives a chat-
     // completion request for a model this node can't serve, the route proxies
     // it to the configured gateway. Leave `gatewayAPIKey` empty to disable.
@@ -69,6 +74,7 @@ public final class AppState {
     private let localProvider: MLXProvider
     private let exoProvider: ExoProvider
     private let llamaCppProvider: LlamaCppProvider
+    private let rapidMLXProvider: RapidMLXProvider
 
     // Compiler (Mixture of Models)
     private var compiler: Compiler?
@@ -274,6 +280,30 @@ public final class AppState {
             Task { await applyInferenceBackendSelection() }
         }
     }
+    public var rapidMLXBinaryPath: String = UserDefaults.standard.string(forKey: rapidMLXBinaryPathKey) ?? "rapid-mlx" {
+        didSet {
+            UserDefaults.standard.set(rapidMLXBinaryPath, forKey: Self.rapidMLXBinaryPathKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var rapidMLXPort: Int = (UserDefaults.standard.object(forKey: rapidMLXPortKey) as? Int) ?? 8000 {
+        didSet {
+            UserDefaults.standard.set(rapidMLXPort, forKey: Self.rapidMLXPortKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var rapidMLXModelAlias: String = UserDefaults.standard.string(forKey: rapidMLXModelAliasKey) ?? "" {
+        didSet {
+            UserDefaults.standard.set(rapidMLXModelAlias, forKey: Self.rapidMLXModelAliasKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
+    public var rapidMLXManageSubprocess: Bool = UserDefaults.standard.bool(forKey: rapidMLXManageSubprocessKey) {
+        didSet {
+            UserDefaults.standard.set(rapidMLXManageSubprocess, forKey: Self.rapidMLXManageSubprocessKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
     /// Where the local :11435 route forwards requests whose model this node
     /// can't serve locally. Default is the production Teale gateway.
     public var gatewayFallbackURL: String = UserDefaults.standard.string(forKey: gatewayFallbackURLKey) ?? "https://gateway.teale.com" {
@@ -371,6 +401,8 @@ public final class AppState {
             return "llama.cpp"
         case .exo:
             return "Exo"
+        case .rapidMLX:
+            return "Rapid-MLX"
         }
     }
 
@@ -426,6 +458,17 @@ public final class AppState {
             host: "0.0.0.0"
         )
         self.llamaCppProvider = llamaCppProvider
+        let rapidMLXProvider = RapidMLXProvider(
+            binaryPath: UserDefaults.standard.string(forKey: Self.rapidMLXBinaryPathKey) ?? "rapid-mlx",
+            port: (UserDefaults.standard.object(forKey: Self.rapidMLXPortKey) as? Int) ?? 8000,
+            host: "0.0.0.0",
+            modelAlias: {
+                let s = UserDefaults.standard.string(forKey: Self.rapidMLXModelAliasKey) ?? ""
+                return s.isEmpty ? nil : s
+            }(),
+            manageSubprocess: UserDefaults.standard.bool(forKey: Self.rapidMLXManageSubprocessKey)
+        )
+        self.rapidMLXProvider = rapidMLXProvider
         let initialProvider: any InferenceProvider
         switch initialBackend {
         case .exo:
@@ -434,6 +477,8 @@ public final class AppState {
             initialProvider = llamaCppProvider
         case .localMLX:
             initialProvider = mlxProvider
+        case .rapidMLX:
+            initialProvider = rapidMLXProvider
         }
         self.engine = InferenceEngineManager(provider: initialProvider, throttler: throttler)
         self.requestScheduler = RequestScheduler()
@@ -739,6 +784,12 @@ public final class AppState {
                         loadingPhase = ""
                     }
                 }
+            } else if inferenceBackend == .rapidMLX,
+                      let descriptor = ModelCatalog.allModels.first(where: { $0.id == lastModelID }) {
+                // Rapid-MLX manages weights externally (HuggingFace cache,
+                // not Teale's ModelManager), so skip the downloadedModelIDs
+                // check — the rapid-mlx server handles its own provisioning.
+                await loadModel(descriptor)
             } else if let descriptor = ModelCatalog.allModels.first(where: { $0.id == lastModelID }),
                       downloadedModelIDs.contains(lastModelID) {
                 await loadModel(descriptor)
@@ -1593,6 +1644,8 @@ public final class AppState {
             return exoProvider
         case .llamaCpp:
             return llamaCppProvider
+        case .rapidMLX:
+            return rapidMLXProvider
         }
     }
 
@@ -1703,6 +1756,13 @@ public final class AppState {
         await llamaCppProvider.updateConfiguration(
             binaryPath: llamaCppBinaryPath
         )
+        await rapidMLXProvider.updateConfiguration(
+            binaryPath: rapidMLXBinaryPath,
+            port: rapidMLXPort,
+            host: "0.0.0.0",
+            modelAlias: rapidMLXModelAlias.isEmpty ? nil : rapidMLXModelAlias,
+            manageSubprocess: rapidMLXManageSubprocess
+        )
         let provider = buildActiveInferenceProvider()
         await engine.setProvider(provider)
         await refreshStatus()
@@ -1763,6 +1823,7 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
     case localMLX = "local_mlx"
     case llamaCpp = "llama_cpp"
     case exo = "exo"
+    case rapidMLX = "rapid_mlx"
 
     public var id: String { rawValue }
 
@@ -1774,6 +1835,8 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
             return "llama.cpp"
         case .exo:
             return "Exo Gateway"
+        case .rapidMLX:
+            return "Rapid-MLX"
         }
     }
 }
