@@ -12,6 +12,7 @@
 //!   6. On error or session disconnect before completion, retry once on the
 //!      next-best device (excluding the failed node).
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::time::{Duration, Instant};
 
@@ -1199,6 +1200,8 @@ async fn run_buffered(
     let mut tried = 0u32;
     let mut accumulated_text = String::new();
     let mut last_chunk_obj: Option<serde_json::Map<String, Value>> = None;
+    let mut tool_calls = BufferedToolCalls::default();
+    let mut finish_reason = "stop".to_string();
     let mut captured_usage: Option<Value> = None;
     let mut tokens_out: u64 = 0;
     let mut first_token_at: Option<Instant> = None;
@@ -1242,6 +1245,10 @@ async fn run_buffered(
                     if let Some(text) = extract_delta_content(&chunk) {
                         accumulated_text.push_str(&text);
                     }
+                    if let Some(reason) = extract_finish_reason(&chunk) {
+                        finish_reason = reason;
+                    }
+                    tool_calls.merge_chunk(&chunk);
                     if let Some(obj) = chunk.as_object() {
                         if let Some(u) = obj.get("usage").cloned() {
                             if !u.is_null() {
@@ -1361,6 +1368,8 @@ async fn run_buffered(
                 &model_id,
                 &accumulated_text,
                 &last_chunk_obj,
+                tool_calls.materialize(),
+                &finish_reason,
                 tokens_out,
             );
             return Ok(Json(reply));
@@ -1427,10 +1436,87 @@ fn extract_delta_content(chunk: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn extract_finish_reason(chunk: &Value) -> Option<String> {
+    chunk
+        .get("choices")?
+        .get(0)?
+        .get("finish_reason")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+#[derive(Default)]
+struct BufferedToolCalls {
+    calls: BTreeMap<usize, BufferedToolCall>,
+}
+
+#[derive(Default)]
+struct BufferedToolCall {
+    id: Option<String>,
+    kind: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+impl BufferedToolCalls {
+    fn merge_chunk(&mut self, chunk: &Value) {
+        let Some(tool_calls) = chunk
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("tool_calls"))
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+
+        for (fallback_index, call) in tool_calls.iter().enumerate() {
+            let index = call
+                .get("index")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(fallback_index);
+            let state = self.calls.entry(index).or_default();
+            if let Some(id) = call.get("id").and_then(Value::as_str) {
+                state.id = Some(id.to_string());
+            }
+            if let Some(kind) = call.get("type").and_then(Value::as_str) {
+                state.kind = Some(kind.to_string());
+            }
+            if let Some(function) = call.get("function") {
+                if let Some(name) = function.get("name").and_then(Value::as_str) {
+                    state.name = Some(name.to_string());
+                }
+                if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                    state.arguments.push_str(arguments);
+                }
+            }
+        }
+    }
+
+    fn materialize(&self) -> Vec<Value> {
+        self.calls
+            .values()
+            .map(|call| {
+                serde_json::json!({
+                    "id": call.id.clone().unwrap_or_else(|| format!("call_{}", Uuid::new_v4().simple())),
+                    "type": call.kind.clone().unwrap_or_else(|| "function".to_string()),
+                    "function": {
+                        "name": call.name.clone().unwrap_or_default(),
+                        "arguments": call.arguments,
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
 fn build_non_stream_response(
     model_id: &str,
     text: &str,
     last_chunk: &Option<serde_json::Map<String, Value>>,
+    tool_calls: Vec<Value>,
+    finish_reason: &str,
     tokens_out: u64,
 ) -> Value {
     let id = last_chunk
@@ -1449,6 +1535,14 @@ fn build_non_stream_response(
                 .map(|d| d.as_secs())
                 .unwrap_or(0)
         });
+    let mut message = serde_json::json!({
+        "role": "assistant",
+        "content": text,
+    });
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = Value::Array(tool_calls);
+    }
+
     serde_json::json!({
         "id": id,
         "object": "chat.completion",
@@ -1456,11 +1550,8 @@ fn build_non_stream_response(
         "model": model_id,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": text,
-            },
-            "finish_reason": "stop",
+            "message": message,
+            "finish_reason": finish_reason,
         }],
         "usage": {
             "prompt_tokens": 0,
@@ -1635,6 +1726,63 @@ quantization: null
             seed: None,
             user: None,
         }
+    }
+
+    #[test]
+    fn buffered_response_preserves_tool_call_deltas() {
+        let first = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup_work_order",
+                            "arguments": "{\"property_id\":\"APM-"
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+        let second = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": "104\",\"issue\":\"leaking faucet\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let mut tool_calls = BufferedToolCalls::default();
+        tool_calls.merge_chunk(&first);
+        tool_calls.merge_chunk(&second);
+
+        let reply = build_non_stream_response(
+            "qwen/qwen3.6-27b",
+            "",
+            &None,
+            tool_calls.materialize(),
+            extract_finish_reason(&second).as_deref().unwrap_or("stop"),
+            2,
+        );
+
+        let choice = &reply["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        assert_eq!(
+            choice["message"]["tool_calls"][0]["function"]["name"],
+            "lookup_work_order"
+        );
+        assert_eq!(
+            choice["message"]["tool_calls"][0]["function"]["arguments"],
+            "{\"property_id\":\"APM-104\",\"issue\":\"leaking faucet\"}"
+        );
     }
 
     fn dispatch_test_config(ttft_deadline_seconds: u64) -> Config {

@@ -70,6 +70,15 @@ for host in "${TARGETS[@]}"; do
   echo "  [$host] installing + restarting..."
   if ! ssh -o ConnectTimeout=15 "$host" 'bash -s' <<'REMOTE' | sed "s/^/    /"; then
 set -e
+LA_PLIST="$HOME/Library/LaunchAgents/com.teale.fleet-supply.plist"
+LA_DOMAIN="gui/$(id -u)"
+LA_SERVICE="$LA_DOMAIN/com.teale.fleet-supply"
+
+# If fleet supply is managed by LaunchAgent, stop it first so KeepAlive does
+# not race the bundle swap or start a second copy beside the manual restart.
+launchctl bootout "$LA_SERVICE" >/dev/null 2>&1 || true
+launchctl remove com.teale.fleet-supply >/dev/null 2>&1 || true
+
 # Kill running instances and wait for the old listener to release :11435.
 # A slow shutdown can otherwise leave the old build serving while the new
 # binary starts as a second process without the API port.
@@ -90,12 +99,20 @@ mv /tmp/Teale.app.new /Applications/Teale.app
 # Clear quarantine so ad-hoc signed apps run without right-click-open
 xattr -dr com.apple.quarantine /Applications/Teale.app 2>/dev/null || true
 
-# Boot the binary directly. This is more reliable than `open -a` over SSH and
-# still starts the same app bundle in fleet-supply mode.
-nohup /Applications/Teale.app/Contents/MacOS/Teale --fleet-supply \
-  >/tmp/teale-fleet.log 2>&1 </dev/null &
-sleep 2
-echo "deployed $(date -u '+%Y-%m-%dT%H:%M:%SZ') pid=$!"
+# Prefer the persistent LaunchAgent when present; otherwise boot the binary
+# directly for ad-hoc hosts that have not installed fleet-supply persistence.
+if [ -f "$LA_PLIST" ]; then
+  launchctl bootstrap "$LA_DOMAIN" "$LA_PLIST" >/dev/null 2>&1 || launchctl load "$LA_PLIST"
+  launchctl kickstart -k "$LA_SERVICE" >/dev/null 2>&1 || true
+  sleep 2
+  PID=$(launchctl print "$LA_SERVICE" 2>/dev/null | awk '/pid =/ { print $3; exit }')
+  echo "deployed $(date -u '+%Y-%m-%dT%H:%M:%SZ') launchagent_pid=${PID:-unknown}"
+else
+  nohup /Applications/Teale.app/Contents/MacOS/Teale --fleet-supply \
+    >/tmp/teale-fleet.log 2>&1 </dev/null &
+  sleep 2
+  echo "deployed $(date -u '+%Y-%m-%dT%H:%M:%SZ') pid=$!"
+fi
 REMOTE
     echo "  [$host] install FAILED"
     FAIL+=("$host")
