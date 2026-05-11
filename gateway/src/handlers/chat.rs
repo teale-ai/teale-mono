@@ -255,11 +255,13 @@ pub(crate) fn prepare_chat_request_excluding(
     if catalog_model.is_virtual {
         let required_ctx = estimate_required_context(&parsed);
         let auto_profile = infer_auto_route_profile(headers, &parsed);
+        let required_supported_parameters = required_auto_supported_parameters(&parsed);
         let registry = state.registry.clone();
         let resolved = resolve_auto(
             &state.catalog,
             required_ctx,
             auto_profile,
+            &required_supported_parameters,
             |id, need_ctx| {
                 // Match the post-resolution floor check (`loaded_count` below):
                 // count only devices that have the model loaded right now, not
@@ -573,6 +575,26 @@ fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) ->
     } else {
         AutoRouteProfile::Generic
     }
+}
+
+fn required_auto_supported_parameters(req: &ChatCompletionRequest) -> Vec<&'static str> {
+    let mut required = Vec::new();
+    if req
+        .tools
+        .as_ref()
+        .map(|tools| match tools {
+            Value::Array(items) => !items.is_empty(),
+            Value::Null => false,
+            _ => true,
+        })
+        .unwrap_or(false)
+    {
+        required.push("tools");
+    }
+    if req.tool_choice.is_some() {
+        required.push("tool_choice");
+    }
+    required
 }
 
 fn preferred_linked_node_ids(
