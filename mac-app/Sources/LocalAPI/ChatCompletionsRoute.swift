@@ -17,9 +17,9 @@ enum ChatCompletionsRoute {
         let body = try await request.body.collect(upTo: 1_048_576)
         var chatRequest = try JSONDecoder().decode(ChatCompletionRequest.self, from: body)
 
-        // "teale-auto" means "let the system pick" — clear the model field
-        // so the Compiler's smart routing decides based on quality and speed.
-        if chatRequest.model == ModelsRoute.autoModelID {
+        // Local UI advertises "teale-auto"; gateway/OpenAI clients commonly
+        // use "teale/auto". Both mean "let the system pick".
+        if chatRequest.model == ModelsRoute.autoModelID || chatRequest.model == "teale/auto" {
             chatRequest.model = nil
         }
 
