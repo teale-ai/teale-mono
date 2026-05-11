@@ -197,7 +197,7 @@ public actor MLXProvider: InferenceProvider {
         }
 
         // Prepare input and generate
-        let userInput = UserInput(messages: messages)
+        let userInput = UserInput(messages: messages, tools: mlxToolSpecs(from: request.tools))
         do {
             try await withError {
                 let lmInput = try await container.prepare(input: userInput)
@@ -213,8 +213,12 @@ public actor MLXProvider: InferenceProvider {
                         if tokenCount >= maxTokens { break generationLoop }
                     case .info:
                         break
-                    case .toolCall:
-                        break
+                    case .toolCall(let toolCall):
+                        continuation.yield(makeToolCallChunk(id: chatId, model: modelName, toolCall: toolCall))
+                        continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "tool_calls"))
+                        continuation.finish()
+                        _status = .ready(descriptor)
+                        return
                     }
                 }
             }
@@ -244,6 +248,66 @@ public actor MLXProvider: InferenceProvider {
                 )
             ]
         )
+    }
+
+    private func makeToolCallChunk(id: String, model: String, toolCall: MLXLMCommon.ToolCall) -> ChatCompletionChunk {
+        let args = toolCall.function.arguments.mapValues { $0.anyValue }
+        let argsData = try? JSONSerialization.data(withJSONObject: args)
+        let argsString = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+
+        return ChatCompletionChunk(
+            id: id,
+            model: model,
+            choices: [
+                ChatCompletionChunk.StreamChoice(
+                    index: 0,
+                    delta: ChatCompletionChunk.Delta(
+                        role: nil,
+                        content: nil,
+                        toolCalls: [
+                            SharedTypes.ToolCall(
+                                index: 0,
+                                id: "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
+                                type: "function",
+                                function: .init(name: toolCall.function.name, arguments: argsString)
+                            )
+                        ]
+                    ),
+                    finishReason: nil
+                )
+            ]
+        )
+    }
+
+    private func mlxToolSpecs(from tools: [OpenAIJSONValue]?) -> [MLXLMCommon.ToolSpec]? {
+        guard let specs = tools?.compactMap({ openAIJSONDictionary($0) }), !specs.isEmpty else {
+            return nil
+        }
+        return specs
+    }
+
+    private func openAIJSONDictionary(_ value: OpenAIJSONValue) -> [String: any Sendable]? {
+        guard case .object(let object) = value else { return nil }
+        return object.mapValues { openAIJSONSendable($0) }
+    }
+
+    private func openAIJSONSendable(_ value: OpenAIJSONValue) -> any Sendable {
+        switch value {
+        case .string(let string):
+            return string
+        case .int(let int):
+            return int
+        case .double(let double):
+            return double
+        case .bool(let bool):
+            return bool
+        case .object(let object):
+            return object.mapValues { openAIJSONSendable($0) }
+        case .array(let array):
+            return array.map { openAIJSONSendable($0) }
+        case .null:
+            return ""
+        }
     }
 }
 

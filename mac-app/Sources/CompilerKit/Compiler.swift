@@ -149,6 +149,17 @@ public actor Compiler: InferenceProvider {
         // No model specified — pick the best one automatically
         guard !availableModels.isEmpty else { return request }
 
+        // Agent harnesses are sensitive to network routing failures and require
+        // exact tool-call semantics. Prefer the local ready model when a tool
+        // request arrives through `teale-auto`; explicit model requests still
+        // route normally above.
+        if request.tools?.isEmpty == false || request.toolChoice != nil,
+           let local = availableModels.first(where: { $0.deviceID == nil }) {
+            var routed = request
+            routed.model = local.model
+            return routed
+        }
+
         let generalTask = SubTask(
             prompt: "",
             category: .general,

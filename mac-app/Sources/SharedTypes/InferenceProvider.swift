@@ -60,9 +60,11 @@ extension InferenceProvider {
 extension InferenceProvider {
     public func generateFull(request: ChatCompletionRequest) async throws -> ChatCompletionResponse {
         var fullContent = ""
+        var toolAccumulator = ToolCallAccumulator()
         let stream = generate(request: request)
         var lastChunkId = "chatcmpl-\(UUID().uuidString)"
         var model = request.model ?? "unknown"
+        var finishReason = "stop"
 
         for try await chunk in stream {
             lastChunkId = chunk.id
@@ -70,15 +72,66 @@ extension InferenceProvider {
             if let content = chunk.choices.first?.delta.content {
                 fullContent += content
             }
+            if let toolCalls = chunk.choices.first?.delta.toolCalls {
+                toolAccumulator.append(toolCalls)
+            }
+            if let reason = chunk.choices.first?.finishReason {
+                finishReason = reason
+            }
         }
 
         return ChatCompletionResponse(
             id: lastChunkId,
             model: model,
             choices: [
-                .init(index: 0, message: APIMessage(role: "assistant", content: fullContent), finishReason: "stop")
+                .init(
+                    index: 0,
+                    message: APIMessage(
+                        role: "assistant",
+                        content: fullContent,
+                        toolCalls: toolAccumulator.materializedCalls
+                    ),
+                    finishReason: finishReason
+                )
             ],
             usage: nil
         )
+    }
+}
+
+private struct ToolCallAccumulator {
+    private struct PartialCall {
+        var id: String?
+        var type: String?
+        var name: String?
+        var arguments = ""
+    }
+
+    private var calls: [Int: PartialCall] = [:]
+
+    mutating func append(_ toolCalls: [ToolCall]) {
+        for (offset, call) in toolCalls.enumerated() {
+            let index = call.index ?? offset
+            var partial = calls[index] ?? PartialCall()
+            if let id = call.id { partial.id = id }
+            if let type = call.type { partial.type = type }
+            if let function = call.function {
+                if let name = function.name { partial.name = name }
+                if let arguments = function.arguments { partial.arguments += arguments }
+            }
+            calls[index] = partial
+        }
+    }
+
+    var materializedCalls: [ToolCall]? {
+        let materialized = calls.keys.sorted().map { index in
+            let partial = calls[index]!
+            return ToolCall(
+                id: partial.id ?? "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
+                type: partial.type ?? "function",
+                function: .init(name: partial.name, arguments: partial.arguments)
+            )
+        }
+        return materialized.isEmpty ? nil : materialized
     }
 }

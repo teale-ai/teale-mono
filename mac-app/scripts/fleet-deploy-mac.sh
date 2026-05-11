@@ -70,9 +70,18 @@ for host in "${TARGETS[@]}"; do
   echo "  [$host] installing + restarting..."
   if ! ssh -o ConnectTimeout=15 "$host" 'bash -s' <<'REMOTE' | sed "s/^/    /"; then
 set -e
-# Kill running instance
-pkill -f '/Applications/Teale.app/Contents/MacOS/Teale' 2>/dev/null || true
-sleep 1
+# Kill running instances and wait for the old listener to release :11435.
+# A slow shutdown can otherwise leave the old build serving while the new
+# binary starts as a second process without the API port.
+pkill -TERM -f '/Applications/Teale.app/Contents/MacOS/Teale' 2>/dev/null || true
+for _ in 1 2 3 4 5; do
+  pgrep -f '/Applications/Teale.app/Contents/MacOS/Teale' >/dev/null 2>&1 || break
+  sleep 1
+done
+if pgrep -f '/Applications/Teale.app/Contents/MacOS/Teale' >/dev/null 2>&1; then
+  pkill -KILL -f '/Applications/Teale.app/Contents/MacOS/Teale' 2>/dev/null || true
+  sleep 1
+fi
 
 # Swap app bundle
 sudo -n rm -rf /Applications/Teale.app 2>/dev/null || rm -rf /Applications/Teale.app
