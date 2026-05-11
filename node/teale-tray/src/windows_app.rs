@@ -27,6 +27,9 @@ const APP_CSS: &[u8] = include_bytes!(
 const APP_JS: &[u8] = include_bytes!(
     "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/app.js"
 );
+const SUPABASE_JS: &[u8] = include_bytes!(
+    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/supabase-js-2.105.4.min.js"
+);
 const IPC_PORT: u16 = 11438;
 const REMOTE_DESKTOP_URL: &str = "https://teale.com/docs/desktop-companion/index.html";
 static PENDING_OAUTH_CALLBACK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -263,6 +266,7 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         "index.html" => (INDEX_HTML.as_bytes().to_vec(), "text/html", 200),
         "app.css" => (APP_CSS.to_vec(), "text/css", 200),
         "app.js" => (APP_JS.to_vec(), "text/javascript", 200),
+        "supabase-js-2.105.4.min.js" => (SUPABASE_JS.to_vec(), "text/javascript", 200),
         "auth/pending" => {
             let body = serde_json::to_vec(&serde_json::json!({
                 "url": take_pending_oauth_callback()

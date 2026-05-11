@@ -56,6 +56,32 @@ jobs:
         run: |
           codesign --verify --deep --strict --verbose=2 .build/Teale.app
 
+      - name: Verify bundled Supabase auth config
+        run: |
+          SUPABASE_PLIST="$(find .build/Teale.app/Contents/Resources -name Supabase.plist -print -quit)"
+          if [ -z "$SUPABASE_PLIST" ]; then
+            echo "Missing bundled Supabase.plist"
+            exit 1
+          fi
+
+          SUPABASE_URL="$(/usr/libexec/PlistBuddy -c 'Print :SUPABASE_URL' "$SUPABASE_PLIST")"
+          SUPABASE_ANON_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPABASE_ANON_KEY' "$SUPABASE_PLIST")"
+          if [ -z "$SUPABASE_URL" ] || [[ "$SUPABASE_URL" == *YOUR_PROJECT_ID* ]]; then
+            echo "Bundled Supabase URL is missing or still templated"
+            exit 1
+          fi
+          if [ -z "$SUPABASE_ANON_KEY" ] || [[ "$SUPABASE_ANON_KEY" == *YOUR_ANON_KEY_HERE* ]]; then
+            echo "Bundled Supabase anon key is missing or still templated"
+            exit 1
+          fi
+
+          echo "Bundled Supabase auth config: $(python3 - "$SUPABASE_URL" <<'PY'
+          from urllib.parse import urlparse
+          import sys
+          print(urlparse(sys.argv[1]).netloc)
+          PY
+          )"
+
       - name: Build and sign DMG
         env:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
