@@ -41,7 +41,7 @@ use crate::cluster::NodeRuntimeState;
 use crate::config::Config;
 use crate::hardware::{build_capabilities, detect_hardware};
 use crate::identity::NodeIdentity;
-use crate::inference::{build_llama_command, build_mnn_command, InferenceProxy};
+use crate::inference::{build_ds4_command, build_llama_command, build_mnn_command, InferenceProxy};
 use crate::model_registry::RegistryStore;
 use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
@@ -144,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
         match config.backend.as_str() {
             "litert" => config.litert.as_ref().map(|c| c.context_size),
             "mnn" => config.mnn.as_ref().map(|c| c.context_size),
+            "ds4" => config.ds4.as_ref().map(|c| c.context_size),
             _ => config.llama.as_ref().map(|c| c.context_size),
         }
     };
@@ -351,6 +352,17 @@ async fn start_backend(
                     });
                     (mnn.port, mid.clone(), mid)
                 }
+                "ds4" => {
+                    let ds4 = config.ds4.as_ref().unwrap();
+                    if ds4.model.trim().is_empty() {
+                        return Ok((Backend::Unavailable, String::new(), None));
+                    }
+                    (
+                        ds4.port,
+                        ds4.resolved_model_id(),
+                        ds4.resolved_backend_model_id(),
+                    )
+                }
                 _ => {
                     let llama = config.llama.as_ref().unwrap();
                     if llama.model.trim().is_empty() {
@@ -383,6 +395,17 @@ async fn start_backend(
                                 .spawn()
                                 .map_err(|e| anyhow::anyhow!("spawn mnn_llm: {}", e))?;
                             attach_stderr_logger(&mut child, "mnn_llm");
+                            Ok(child)
+                        })
+                    }
+                    "ds4" => {
+                        let ds4 = config.ds4.as_ref().unwrap().clone();
+                        Supervisor::spawn("ds4-server", move || {
+                            let mut cmd = build_ds4_command(&ds4)?;
+                            let mut child = cmd
+                                .spawn()
+                                .map_err(|e| anyhow::anyhow!("spawn ds4-server: {}", e))?;
+                            attach_stderr_logger(&mut child, "ds4-server");
                             Ok(child)
                         })
                     }
@@ -611,12 +634,22 @@ fn build_device_info(
 }
 
 fn infer_model_dir(config: &Config) -> std::path::PathBuf {
+    if let Some(dir) = config.llama.as_ref().and_then(|llama| {
+        let path = std::path::Path::new(&llama.model);
+        if llama.model.trim().is_empty() {
+            None
+        } else {
+            path.parent().map(|p| p.to_path_buf())
+        }
+    }) {
+        return dir;
+    }
     config
-        .llama
+        .ds4
         .as_ref()
-        .and_then(|llama| {
-            let path = std::path::Path::new(&llama.model);
-            if llama.model.trim().is_empty() {
+        .and_then(|ds4| {
+            let path = std::path::Path::new(&ds4.model);
+            if ds4.model.trim().is_empty() {
                 None
             } else {
                 path.parent().map(|p| p.to_path_buf())
@@ -641,6 +674,15 @@ fn swap_manager_loaded_models_from_registry(
             } else {
                 Some(vec![llama.resolved_model_id()])
             }
+        })
+        .or_else(|| {
+            config.ds4.as_ref().and_then(|ds4| {
+                if ds4.model.trim().is_empty() {
+                    None
+                } else {
+                    Some(vec![ds4.resolved_model_id()])
+                }
+            })
         })
         .unwrap_or_default()
 }

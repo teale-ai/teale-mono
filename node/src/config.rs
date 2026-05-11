@@ -3,12 +3,13 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub relay: RelayConfig,
-    /// Inference backend: "llama" (default), "mnn", or "litert"
+    /// Inference backend: "llama" (default), "mnn", "litert", or "ds4"
     #[serde(default = "default_backend")]
     pub backend: String,
     pub llama: Option<LlamaConfig>,
     pub mnn: Option<MnnConfig>,
     pub litert: Option<LiteRtConfig>,
+    pub ds4: Option<Ds4Config>,
     #[serde(default)]
     pub control: ControlConfig,
     pub node: NodeConfig,
@@ -73,6 +74,51 @@ impl LlamaConfig {
             .filter(|s| !s.trim().is_empty())
             .cloned()
             .unwrap_or_else(|| self.resolved_model_id())
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Ds4Config {
+    pub binary: String,
+    /// Path to the DS4-specific DeepSeek V4 Flash GGUF. This is passed to
+    /// ds4-server as --model and is never advertised as the gateway model id.
+    pub model: String,
+    /// Canonical model id advertised to the relay and gateway.
+    #[serde(default)]
+    pub model_id: Option<String>,
+    /// Model id sent to ds4-server. ds4-server exposes deepseek-v4-flash
+    /// locally even when Teale advertises a canonical gateway id.
+    #[serde(default)]
+    pub backend_model_id: Option<String>,
+    #[serde(default = "default_ds4_context_size")]
+    pub context_size: u32,
+    #[serde(default = "default_ds4_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub kv_disk_dir: Option<String>,
+    #[serde(default)]
+    pub kv_disk_space_mb: Option<u32>,
+    #[serde(default)]
+    pub threads: Option<u32>,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+impl Ds4Config {
+    pub fn resolved_model_id(&self) -> String {
+        self.model_id
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "deepseek-ai/deepseek-v4-flash".to_string())
+    }
+
+    pub fn resolved_backend_model_id(&self) -> String {
+        self.backend_model_id
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "deepseek-v4-flash".to_string())
     }
 }
 
@@ -181,11 +227,17 @@ fn default_context_size() -> u32 {
 fn default_mnn_context_size() -> u32 {
     2048
 }
+fn default_ds4_context_size() -> u32 {
+    100000
+}
 fn default_llama_port() -> u16 {
     11436
 }
 fn default_mnn_port() -> u16 {
     11437
+}
+fn default_ds4_port() -> u16 {
+    11438
 }
 fn default_litert_context_size() -> u32 {
     4096
@@ -222,9 +274,14 @@ impl Config {
                     anyhow::bail!("[litert] config section is required when backend = \"litert\"");
                 }
             }
+            "ds4" => {
+                if config.ds4.is_none() {
+                    anyhow::bail!("[ds4] config section is required when backend = \"ds4\"");
+                }
+            }
             other => {
                 anyhow::bail!(
-                    "Unknown backend '{}'. Supported: \"llama\", \"mnn\", \"litert\"",
+                    "Unknown backend '{}'. Supported: \"llama\", \"mnn\", \"litert\", \"ds4\"",
                     other
                 );
             }

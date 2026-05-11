@@ -142,6 +142,7 @@ extension AppState {
         case .localMLX: return "MLX"
         case .llamaCpp: return "llama.cpp (Metal)"
         case .exo: return "Exo"
+        case .ds4: return "DS4 (Metal)"
         case .rapidMLX: return "Rapid-MLX"
         }
     }

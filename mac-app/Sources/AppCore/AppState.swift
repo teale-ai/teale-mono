@@ -51,6 +51,7 @@ public final class AppState {
     private static let exoPreferredModelIDKey = "teale.exo_preferred_model_id"
     private static let wanRelayURLKey = "teale.wan_relay_url"
     private static let llamaCppBinaryPathKey = "teale.llamacpp_binary_path"
+    private static let ds4BinaryPathKey = "teale.ds4_binary_path"
     private static let rapidMLXBinaryPathKey = "teale.rapidmlx_binary_path"
     private static let rapidMLXPortKey = "teale.rapidmlx_port"
     private static let rapidMLXModelAliasKey = "teale.rapidmlx_model_alias"
@@ -74,6 +75,7 @@ public final class AppState {
     private let localProvider: MLXProvider
     private let exoProvider: ExoProvider
     private let llamaCppProvider: LlamaCppProvider
+    private let ds4Provider: Ds4Provider
     private let rapidMLXProvider: RapidMLXProvider
 
     // Compiler (Mixture of Models)
@@ -280,6 +282,12 @@ public final class AppState {
             Task { await applyInferenceBackendSelection() }
         }
     }
+    public var ds4BinaryPath: String = UserDefaults.standard.string(forKey: ds4BinaryPathKey) ?? "ds4-server" {
+        didSet {
+            UserDefaults.standard.set(ds4BinaryPath, forKey: Self.ds4BinaryPathKey)
+            Task { await applyInferenceBackendSelection() }
+        }
+    }
     public var rapidMLXBinaryPath: String = UserDefaults.standard.string(forKey: rapidMLXBinaryPathKey) ?? "rapid-mlx" {
         didSet {
             UserDefaults.standard.set(rapidMLXBinaryPath, forKey: Self.rapidMLXBinaryPathKey)
@@ -399,6 +407,8 @@ public final class AppState {
             return "MLX"
         case .llamaCpp:
             return "llama.cpp"
+        case .ds4:
+            return "DS4"
         case .exo:
             return "Exo"
         case .rapidMLX:
@@ -458,6 +468,13 @@ public final class AppState {
             host: "0.0.0.0"
         )
         self.llamaCppProvider = llamaCppProvider
+        let ds4Provider = Ds4Provider(
+            binaryPath: UserDefaults.standard.string(forKey: Self.ds4BinaryPathKey) ?? "ds4-server",
+            host: "0.0.0.0",
+            kvDiskDir: "\(FileManager.default.homeDirectoryForCurrentUser.path)/.context/ds4-kv",
+            kvDiskSpaceMB: 8192
+        )
+        self.ds4Provider = ds4Provider
         let rapidMLXProvider = RapidMLXProvider(
             binaryPath: UserDefaults.standard.string(forKey: Self.rapidMLXBinaryPathKey) ?? "rapid-mlx",
             port: (UserDefaults.standard.object(forKey: Self.rapidMLXPortKey) as? Int) ?? 8000,
@@ -475,6 +492,8 @@ public final class AppState {
             initialProvider = exoProvider
         case .llamaCpp:
             initialProvider = llamaCppProvider
+        case .ds4:
+            initialProvider = ds4Provider
         case .localMLX:
             initialProvider = mlxProvider
         case .rapidMLX:
@@ -1644,6 +1663,8 @@ public final class AppState {
             return exoProvider
         case .llamaCpp:
             return llamaCppProvider
+        case .ds4:
+            return ds4Provider
         case .rapidMLX:
             return rapidMLXProvider
         }
@@ -1756,6 +1777,9 @@ public final class AppState {
         await llamaCppProvider.updateConfiguration(
             binaryPath: llamaCppBinaryPath
         )
+        await ds4Provider.updateConfiguration(
+            binaryPath: ds4BinaryPath
+        )
         await rapidMLXProvider.updateConfiguration(
             binaryPath: rapidMLXBinaryPath,
             port: rapidMLXPort,
@@ -1823,6 +1847,7 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
     case localMLX = "local_mlx"
     case llamaCpp = "llama_cpp"
     case exo = "exo"
+    case ds4 = "ds4"
     case rapidMLX = "rapid_mlx"
 
     public var id: String { rawValue }
@@ -1835,6 +1860,8 @@ public enum InferenceBackend: String, CaseIterable, Hashable, Identifiable {
             return "llama.cpp"
         case .exo:
             return "Exo Gateway"
+        case .ds4:
+            return "DS4"
         case .rapidMLX:
             return "Rapid-MLX"
         }

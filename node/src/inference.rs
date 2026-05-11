@@ -19,7 +19,7 @@ use tracing::{debug, error, info};
 
 use teale_protocol::openai::ChatCompletionRequest;
 
-use crate::config::{LlamaConfig, MnnConfig};
+use crate::config::{Ds4Config, LlamaConfig, MnnConfig};
 
 /// Bounded channel capacity for streaming chunks back to the dispatcher.
 /// Chosen so a 2048-token response can buffer without blocking, but fast
@@ -412,6 +412,35 @@ pub fn spawn_llama_server(config: &LlamaConfig) -> anyhow::Result<Child> {
     }
 
     Ok(child)
+}
+
+/// Build the `Command` for ds4-server (does not spawn).
+pub fn build_ds4_command(config: &Ds4Config) -> anyhow::Result<Command> {
+    let mut cmd = Command::new(&config.binary);
+    cmd.arg("--model")
+        .arg(&config.model)
+        .arg("--port")
+        .arg(config.port.to_string())
+        .arg("--ctx")
+        .arg(config.context_size.to_string())
+        .arg("--host")
+        .arg("127.0.0.1");
+
+    if let Some(threads) = config.threads {
+        cmd.arg("--threads").arg(threads.to_string());
+    }
+    if let Some(dir) = config.kv_disk_dir.as_ref().filter(|s| !s.trim().is_empty()) {
+        cmd.arg("--kv-disk-dir").arg(dir);
+    }
+    if let Some(space_mb) = config.kv_disk_space_mb {
+        cmd.arg("--kv-disk-space-mb").arg(space_mb.to_string());
+    }
+    for arg in &config.extra_args {
+        cmd.arg(arg);
+    }
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    Ok(cmd)
 }
 
 pub fn build_mnn_command(config: &MnnConfig) -> anyhow::Result<Command> {

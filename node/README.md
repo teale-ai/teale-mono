@@ -178,6 +178,30 @@ gpu_backend = "opencl"
 - **Pre-built models**: [Qwen3.5 4B MNN](https://huggingface.co/taobao-mnn/Qwen3.5-4B-MNN) and [Qwen3 4B MNN](https://huggingface.co/taobao-mnn/Qwen3-4B-MNN) are ready to deploy
 - **No Google Play Services required**: Works on Huawei devices without GMS
 
+## DS4 (DeepSeek V4 Flash)
+
+For Mac Studio Ultra supply nodes, Teale can supervise `ds4-server` directly.
+DS4 is not a general GGUF runner; it is a DeepSeek V4 Flash-specific backend
+for the GGUFs from `antirez/deepseek-v4-gguf`.
+
+```toml
+backend = "ds4"
+
+[ds4]
+binary = "/Users/tailor512/.context/ds4-teale/ds4/ds4-server"
+model = "/Users/tailor512/.context/ds4-teale/ds4/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"
+model_id = "deepseek-ai/deepseek-v4-flash"
+backend_model_id = "deepseek-v4-flash"
+context_size = 100000
+port = 11438
+kv_disk_dir = "/Users/tailor512/.context/ds4-teale/kv"
+kv_disk_space_mb = 8192
+```
+
+Teale advertises `model_id` to the relay and sends `backend_model_id` to
+`ds4-server`. This keeps the gateway-facing slug stable while matching DS4's
+local `/v1/models` surface.
+
 ## LiteRT-LM (Pixel / Tensor — In-Process)
 
 For Pixel devices with Tensor chips, LiteRT-LM uses Google's on-device runtime with GPU/NPU acceleration optimized for Gemma models.
@@ -257,7 +281,7 @@ Qwen3.5 is a generation newer than Qwen3 with hybrid Gated Delta Networks + spar
 
 | Platform | GPU | Backend | Status |
 |----------|-----|---------|--------|
-| macOS (Apple Silicon) | Metal | llama-server | Native binary |
+| macOS (Apple Silicon) | Metal | llama-server or ds4-server | Native binary |
 | Linux x86_64 | CUDA/ROCm/Vulkan/CPU | llama-server | Docker or native |
 | Linux aarch64 | CPU | llama-server | Native binary |
 | Windows x86_64 | CUDA/Vulkan/CPU | llama-server | Native binary |
@@ -270,7 +294,7 @@ Qwen3.5 is a generation newer than Qwen3 with hybrid Gated Delta Networks + spar
 1. Generates an Ed25519 identity (persisted to disk)
 2. Connects to the TealeNet relay server via WebSocket
 3. Registers as a supply node with hardware capabilities
-4. Launches inference backend (llama-server or MNN-LLM) as a subprocess
+4. Launches inference backend (llama-server, ds4-server, or MNN-LLM) as a subprocess
 5. Accepts inference requests from demand nodes (Mac/iPhone app)
 6. Proxies requests to the backend's OpenAI-compatible API
 7. Streams responses back through the relay

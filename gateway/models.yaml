@@ -196,6 +196,20 @@ models:
     routing_tags: [agent-harness]
     aliases: [deepseek-v3.2, deepseek-v3-2, deepseek-v3.2-8bit]
 
+  - id: deepseek-ai/deepseek-v4-flash
+    display_name: DeepSeek V4 Flash (DS4)
+    owned_by: deepseek-ai
+    context_length: 1000000
+    max_output_tokens: 384000
+    params_b: 284
+    pricing_prompt: "0.00000025"
+    pricing_completion: "0.00000050"
+    quantization: DS4-Q4
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "DeepSeek V4 Flash served by ds4-server on Mac Studio Ultra-class supply nodes."
+    routing_tags: [agent-harness]
+    aliases: [deepseek-v4-flash, ds4, ds4-flash]
+
   - id: moonshotai/kimi-k2
     display_name: Kimi K2 (exo cluster)
     owned_by: moonshotai
