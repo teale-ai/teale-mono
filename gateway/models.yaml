@@ -320,6 +320,6 @@ models:
     pricing_prompt: "0.00000010"
     pricing_completion: "0.00000020"
     virtual: true
-    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed]
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
     description: "Virtual routing model. Teale picks the smallest healthy model that fits your context + max_tokens. Primary model for third-party harnesses (Hermes, OpenClaw)."
     aliases: [teale-auto, auto]

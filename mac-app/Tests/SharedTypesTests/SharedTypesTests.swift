@@ -25,6 +25,42 @@ final class SharedTypesTests: XCTestCase {
         XCTAssertEqual(decoded.stream, true)
     }
 
+    func testChatCompletionRequestPreservesToolsAndToolChoice() throws {
+        let tool: OpenAIJSONValue = .object([
+            "type": .string("function"),
+            "function": .object([
+                "name": .string("lookup_work_order"),
+                "description": .string("Look up a property maintenance work order"),
+                "parameters": .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "property_id": .object(["type": .string("string")]),
+                        "issue": .object(["type": .string("string")])
+                    ]),
+                    "required": .array([.string("property_id"), .string("issue")])
+                ])
+            ])
+        ])
+        let request = ChatCompletionRequest(
+            model: "teale-auto",
+            messages: [APIMessage(role: "user", content: "Use the tool")],
+            tools: [tool],
+            toolChoice: .object([
+                "type": .string("function"),
+                "function": .object(["name": .string("lookup_work_order")])
+            ])
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let raw = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNotNil(raw["tools"])
+        XCTAssertNotNil(raw["tool_choice"])
+
+        let decoded = try JSONDecoder().decode(ChatCompletionRequest.self, from: data)
+        XCTAssertEqual(decoded.tools, [tool])
+        XCTAssertEqual(decoded.toolChoice, request.toolChoice)
+    }
+
     func testChatCompletionResponseCodable() throws {
         let response = ChatCompletionResponse(
             id: "test-id",
@@ -43,6 +79,46 @@ final class SharedTypesTests: XCTestCase {
         XCTAssertEqual(decoded.choices[0].message.content, "Hi there")
     }
 
+    func testChatCompletionResponseDecodesToolCallsWithNullContent() throws {
+        let json = """
+        {
+          "id": "chatcmpl-tool",
+          "object": "chat.completion",
+          "created": 1700000000,
+          "model": "qwen3.6-35b",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call_lookup",
+                    "type": "function",
+                    "function": {
+                      "name": "lookup_work_order",
+                      "arguments": "{\\"property_id\\":\\"APM-104\\",\\"issue\\":\\"leaking faucet\\"}"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": "tool_calls"
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: json)
+
+        let message = decoded.choices[0].message
+        XCTAssertEqual(message.content, "")
+        XCTAssertEqual(decoded.choices[0].finishReason, "tool_calls")
+        XCTAssertEqual(message.toolCalls?.first?.id, "call_lookup")
+        XCTAssertEqual(message.toolCalls?.first?.function?.name, "lookup_work_order")
+        XCTAssertEqual(message.toolCalls?.first?.function?.arguments, #"{"property_id":"APM-104","issue":"leaking faucet"}"#)
+    }
+
     func testChatCompletionChunkCodable() throws {
         let chunk = ChatCompletionChunk(
             id: "chunk-1",
@@ -57,6 +133,44 @@ final class SharedTypesTests: XCTestCase {
 
         XCTAssertEqual(decoded.choices[0].delta.content, "Hello")
         XCTAssertNil(decoded.choices[0].delta.role)
+    }
+
+    func testChatCompletionChunkDecodesToolCallDelta() throws {
+        let json = """
+        {
+          "id": "chunk-tool",
+          "object": "chat.completion.chunk",
+          "created": 1700000000,
+          "model": "qwen3.6-35b",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "id": "call_lookup",
+                    "type": "function",
+                    "function": {
+                      "name": "lookup_work_order",
+                      "arguments": "{\\"property_id\\":"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": null
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(ChatCompletionChunk.self, from: json)
+        let toolCall = try XCTUnwrap(decoded.choices[0].delta.toolCalls?.first)
+
+        XCTAssertEqual(toolCall.index, 0)
+        XCTAssertEqual(toolCall.id, "call_lookup")
+        XCTAssertEqual(toolCall.function?.name, "lookup_work_order")
+        XCTAssertEqual(toolCall.function?.arguments, #"{"property_id":"#)
     }
 
     func testModelDescriptorCodable() throws {

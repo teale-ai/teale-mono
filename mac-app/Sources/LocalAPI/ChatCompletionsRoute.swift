@@ -347,6 +347,7 @@ enum ChatCompletionsRoute {
     private static func shouldEmit(chunk: ChatCompletionChunk) -> Bool {
         if chunk.usage != nil { return true }
         if chunk.choices.first?.finishReason != nil { return true }
+        if chunk.choices.first?.delta.toolCalls?.isEmpty == false { return true }
         let content = chunk.choices.first?.delta.content ?? ""
         return !content.isEmpty
     }
