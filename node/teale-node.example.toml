@@ -1,7 +1,7 @@
 # teale-node — Cross-platform TealeNet supply node configuration
 # Copy this file to teale-node.toml and customize.
 
-# Inference backend: "llama" (default) or "mnn"
+# Inference backend: "llama" (default), "mnn", "litert", or "ds4"
 # backend = "llama"
 
 [relay]
@@ -26,6 +26,23 @@ context_size = 8192
 port = 11436
 # Extra arguments to pass to llama-server
 # extra_args = ["--flash-attn", "--threads", "8"]
+
+# ── DS4 Backend (DeepSeek V4 Flash on Mac Studio Ultra) ───────────────
+# DS4 is a DeepSeek V4 Flash-specific Metal/CUDA engine. Use this on large
+# Apple Silicon machines when serving antirez/deepseek-v4-gguf through Teale.
+#
+# backend = "ds4"
+#
+# [ds4]
+# binary = "/Users/tailor512/.context/ds4-teale/ds4/ds4-server"
+# model = "/Users/tailor512/.context/ds4-teale/ds4/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"
+# model_id = "deepseek-ai/deepseek-v4-flash"
+# backend_model_id = "deepseek-v4-flash"
+# context_size = 100000
+# port = 11438
+# kv_disk_dir = "/Users/tailor512/.context/ds4-teale/kv"
+# kv_disk_space_mb = 8192
+# # extra_args = ["--warm-weights"]
 
 [control]
 # Local companion / tray control API
