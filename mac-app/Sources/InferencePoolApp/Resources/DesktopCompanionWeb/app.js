@@ -3942,7 +3942,7 @@ async function ensureAuthClient(authConfig) {
 
   if (!window.supabase?.createClient) {
     els.authStatus.textContent = "Supabase client failed to load";
-    els.authUser.textContent = "Check network access to the Supabase CDN script.";
+    els.authUser.textContent = "The bundled Supabase auth script is missing from this build.";
     return;
   }
 
