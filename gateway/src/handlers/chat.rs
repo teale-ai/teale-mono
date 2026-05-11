@@ -286,8 +286,7 @@ pub(crate) fn prepare_chat_request_excluding(
                     })
                     .count() as u32
             },
-            floor.small,
-            floor.large,
+            (floor.small, floor.large),
             excluded_models,
         )
         .cloned()
