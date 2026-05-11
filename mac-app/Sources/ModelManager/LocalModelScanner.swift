@@ -202,6 +202,9 @@ public struct LocalModelScanner: Sendable {
             var isDir: ObjCBool = false
             fm.fileExists(atPath: subdir.path, isDirectory: &isDir)
             if isDir.boolValue {
+                if source == .exoCache, subdir.lastPathComponent == "caches" {
+                    continue
+                }
                 results.append(contentsOf: scanRecursive(subdir, source: source, depth: depth + 1, maxDepth: maxDepth))
             }
         }
@@ -226,8 +229,10 @@ public struct LocalModelScanner: Sendable {
         let configURL = dir.appendingPathComponent("config.json")
         let config = ModelConfigJSON.parse(from: configURL)
 
-        // Compute directory size
-        let sizeGB = directorySizeGB(dir)
+        // Hugging Face snapshots can be hundreds of GB. Snapshot scans run on
+        // the control path, so avoid recursively walking weights just to render
+        // model metadata.
+        let sizeGB = source == .huggingFaceCache ? 0 : directorySizeGB(dir)
 
         // Derive name from path
         let name = deriveName(from: dir, source: source)

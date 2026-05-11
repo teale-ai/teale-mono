@@ -34,6 +34,14 @@ public struct GGUFScanner: Sendable {
         #endif
         let fm = FileManager.default
 
+        // Teale's own GGUF cache is the controlled fleet path. Scan it first
+        // so restore-by-id does not wait behind large third-party caches.
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let tealeGGUF = appSupport.appendingPathComponent("Teale/gguf")
+        if fm.fileExists(atPath: tealeGGUF.path) {
+            dirs.append((tealeGGUF, .tealeCache))
+        }
+
         // LM Studio models (common GGUF source)
         let lmStudio = home.appendingPathComponent(".cache/lm-studio/models")
         if fm.fileExists(atPath: lmStudio.path) {
@@ -52,19 +60,16 @@ public struct GGUFScanner: Sendable {
             dirs.append((hfCache, .huggingFaceCache))
         }
 
-        // Teale's own GGUF cache
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let tealeGGUF = appSupport.appendingPathComponent("Teale/gguf")
-        if fm.fileExists(atPath: tealeGGUF.path) {
-            dirs.append((tealeGGUF, .tealeCache))
-        }
-
         return dirs
     }
 
     // MARK: - Scanning
 
     private func scanDirectory(_ baseDir: URL, source: GGUFModelInfo.ModelSource) -> [GGUFModelInfo] {
+        if source == .huggingFaceCache {
+            return scanHuggingFaceCache(baseDir)
+        }
+
         var results: [GGUFModelInfo] = []
         let fm = FileManager.default
 
@@ -84,6 +89,61 @@ public struct GGUFScanner: Sendable {
 
             if let info = modelInfo(from: fileURL, source: source) {
                 results.append(info)
+            }
+        }
+
+        return results
+    }
+
+    private func scanHuggingFaceCache(_ baseDir: URL) -> [GGUFModelInfo] {
+        let fm = FileManager.default
+        guard let modelDirs = try? fm.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var results: [GGUFModelInfo] = []
+        for modelDir in modelDirs where modelDir.lastPathComponent.hasPrefix("models--") {
+            let snapshots = modelDir.appendingPathComponent("snapshots", isDirectory: true)
+            guard let snapshotDirs = try? fm.contentsOfDirectory(
+                at: snapshots,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for snapshot in snapshotDirs {
+                results.append(contentsOf: scanGGUFFiles(in: snapshot, maxDepth: 2, source: .huggingFaceCache))
+            }
+        }
+        return results
+    }
+
+    private func scanGGUFFiles(in dir: URL, maxDepth: Int, source: GGUFModelInfo.ModelSource) -> [GGUFModelInfo] {
+        guard maxDepth >= 0 else { return [] }
+
+        var results: [GGUFModelInfo] = []
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        for fileURL in contents {
+            if fileURL.pathExtension.lowercased() == "gguf",
+               let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               size >= 1_000_000,
+               let info = modelInfo(from: fileURL, source: source) {
+                results.append(info)
+                continue
+            }
+
+            var isDir: ObjCBool = false
+            if maxDepth > 0,
+               fm.fileExists(atPath: fileURL.path, isDirectory: &isDir),
+               isDir.boolValue {
+                results.append(contentsOf: scanGGUFFiles(in: fileURL, maxDepth: maxDepth - 1, source: source))
             }
         }
 
