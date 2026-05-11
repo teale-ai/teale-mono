@@ -252,10 +252,10 @@ pub fn resolve_auto<'a>(
     profile: AutoRouteProfile,
     required_supported_parameters: &[&str],
     eligible_count: impl Fn(&str, u32) -> u32,
-    floor_small: u32,
-    floor_large: u32,
+    floors: (u32, u32),
     exclude_model_ids: &[String],
 ) -> Option<&'a CatalogModel> {
+    let (floor_small, floor_large) = floors;
     let build_candidates = |prefer_agent_harness: bool| -> Vec<&CatalogModel> {
         catalog
             .iter()
@@ -390,8 +390,7 @@ mod tests {
             AutoRouteProfile::Generic,
             &[],
             |id, _| u32::from(id == "small" || id == "big"),
-            1,
-            1,
+            (1, 1),
             &[],
         )
         .expect("should resolve");
@@ -410,8 +409,7 @@ mod tests {
             AutoRouteProfile::AgentHarness,
             &[],
             |id, _| u32::from(id == "small" || id == "agentic"),
-            1,
-            1,
+            (1, 1),
             &[],
         )
         .expect("should resolve");
@@ -430,8 +428,7 @@ mod tests {
             AutoRouteProfile::AgentHarness,
             &[],
             |id, _| u32::from(id == "small"),
-            1,
-            1,
+            (1, 1),
             &[],
         )
         .expect("should resolve");
@@ -462,8 +459,7 @@ mod tests {
             AutoRouteProfile::AgentHarness,
             &["tools", "tool_choice"],
             |id, _| u32::from(id == "hermes" || id == "qwen-tools"),
-            1,
-            1,
+            (1, 1),
             &[],
         )
         .expect("should resolve to a tool-capable model");
@@ -479,8 +475,7 @@ mod tests {
             AutoRouteProfile::AgentHarness,
             &[],
             |_, need_ctx| u32::from(need_ctx <= 64_000),
-            1,
-            1,
+            (1, 1),
             &[],
         );
         assert!(
@@ -507,8 +502,7 @@ mod tests {
             AutoRouteProfile::Generic,
             &[],
             always_one,
-            1,
-            1,
+            (1, 1),
             &[],
         )
         .expect("first pass picks smallest");
@@ -520,8 +514,7 @@ mod tests {
             AutoRouteProfile::Generic,
             &[],
             always_one,
-            1,
-            1,
+            (1, 1),
             &["a-small".to_string()],
         )
         .expect("second pass picks next-smallest");
@@ -533,8 +526,7 @@ mod tests {
             AutoRouteProfile::Generic,
             &[],
             always_one,
-            1,
-            1,
+            (1, 1),
             &["a-small".to_string(), "a-medium".to_string()],
         )
         .expect("third pass picks the last remaining model");
@@ -546,8 +538,7 @@ mod tests {
             AutoRouteProfile::Generic,
             &[],
             always_one,
-            1,
-            1,
+            (1, 1),
             &[
                 "a-small".to_string(),
                 "a-medium".to_string(),
