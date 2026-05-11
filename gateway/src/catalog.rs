@@ -135,6 +135,14 @@ impl CatalogModel {
             .iter()
             .any(|t| t.eq_ignore_ascii_case(tag))
     }
+
+    pub fn supports_all_parameters(&self, required: &[&str]) -> bool {
+        required.iter().all(|param| {
+            self.supported_parameters
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(param))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +250,7 @@ pub fn resolve_auto<'a>(
     catalog: &'a [CatalogModel],
     required_ctx: u32,
     profile: AutoRouteProfile,
+    required_supported_parameters: &[&str],
     eligible_count: impl Fn(&str, u32) -> u32,
     floor_small: u32,
     floor_large: u32,
@@ -253,6 +262,7 @@ pub fn resolve_auto<'a>(
             .filter(|m| !m.is_virtual)
             .filter(|m| !exclude_model_ids.iter().any(|x| x == &m.id))
             .filter(|m| m.context_length >= required_ctx)
+            .filter(|m| m.supports_all_parameters(required_supported_parameters))
             .filter(|m| match (profile, prefer_agent_harness) {
                 (AutoRouteProfile::Generic, _) => true,
                 (AutoRouteProfile::AgentHarness, true) => m.has_routing_tag("agent-harness"),
@@ -322,6 +332,18 @@ mod tests {
         }
     }
 
+    fn model_with_supported(
+        id: &str,
+        params_b: f64,
+        context_length: u32,
+        tags: &[&str],
+        supported_parameters: &[&str],
+    ) -> CatalogModel {
+        let mut model = model(id, params_b, context_length, tags);
+        model.supported_parameters = supported_parameters.iter().map(|s| s.to_string()).collect();
+        model
+    }
+
     #[test]
     fn estimated_metrics_are_replaced_by_actual_samples() {
         let mut m = model("kimi", 1000.0, 262_144, &["agent-harness"]);
@@ -366,6 +388,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::Generic,
+            &[],
             |id, _| u32::from(id == "small" || id == "big"),
             1,
             1,
@@ -385,6 +408,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::AgentHarness,
+            &[],
             |id, _| u32::from(id == "small" || id == "agentic"),
             1,
             1,
@@ -404,6 +428,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::AgentHarness,
+            &[],
             |id, _| u32::from(id == "small"),
             1,
             1,
@@ -414,12 +439,45 @@ mod tests {
     }
 
     #[test]
+    fn tool_auto_requires_models_that_support_tools() {
+        let catalog = vec![
+            model_with_supported(
+                "hermes",
+                8.0,
+                32_768,
+                &["agent-harness"],
+                &["temperature", "max_tokens"],
+            ),
+            model_with_supported(
+                "qwen-tools",
+                27.0,
+                262_144,
+                &["agent-harness"],
+                &["temperature", "max_tokens", "tools", "tool_choice"],
+            ),
+        ];
+        let picked = resolve_auto(
+            &catalog,
+            20_000,
+            AutoRouteProfile::AgentHarness,
+            &["tools", "tool_choice"],
+            |id, _| u32::from(id == "hermes" || id == "qwen-tools"),
+            1,
+            1,
+            &[],
+        )
+        .expect("should resolve to a tool-capable model");
+        assert_eq!(picked.id, "qwen-tools");
+    }
+
+    #[test]
     fn auto_resolution_uses_context_eligible_supply() {
         let catalog = vec![model("agentic", 27.0, 262144, &["agent-harness"])];
         let picked = resolve_auto(
             &catalog,
             120_000,
             AutoRouteProfile::AgentHarness,
+            &[],
             |_, need_ctx| u32::from(need_ctx <= 64_000),
             1,
             1,
@@ -447,6 +505,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::Generic,
+            &[],
             always_one,
             1,
             1,
@@ -459,6 +518,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::Generic,
+            &[],
             always_one,
             1,
             1,
@@ -471,6 +531,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::Generic,
+            &[],
             always_one,
             1,
             1,
@@ -483,6 +544,7 @@ mod tests {
             &catalog,
             20_000,
             AutoRouteProfile::Generic,
+            &[],
             always_one,
             1,
             1,
