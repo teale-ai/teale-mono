@@ -140,6 +140,8 @@ public actor WANProvider: InferenceProvider {
                 )
                 return
             } catch {
+                if error is DesktopPrivacyFilterError { throw error }
+                wanLog("Remote generation failed for peer \(peer.peerInfo.displayName) model=\(requestedModel ?? "auto"): \(error.localizedDescription)")
                 // WAN peer failed, fall through to next option
             }
         }
@@ -171,6 +173,8 @@ public actor WANProvider: InferenceProvider {
                         return
                     }
                 } catch {
+                    if error is DesktopPrivacyFilterError { throw error }
+                    wanLog("On-demand WAN connect/generate failed for \(discoveredPeer.displayName) model=\(requestedModel): \(error.localizedDescription)")
                     continue
                 }
             }
@@ -187,6 +191,8 @@ public actor WANProvider: InferenceProvider {
                     )
                     return
                 } catch {
+                    if error is DesktopPrivacyFilterError { throw error }
+                    wanLog("Fallback WAN generation failed for peer \(connection.remoteNodeID): \(error.localizedDescription)")
                     // This peer failed, try next one
                     continue
                 }
@@ -439,5 +445,9 @@ public actor WANProvider: InferenceProvider {
         }
         chunk.usage = nil
         return chunk
+    }
+
+    private func wanLog(_ message: String) {
+        FileHandle.standardError.write(Data("[WANProvider] \(message)\n".utf8))
     }
 }
