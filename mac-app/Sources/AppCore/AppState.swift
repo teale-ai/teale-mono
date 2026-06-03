@@ -1201,6 +1201,11 @@ public final class AppState {
                         models.append((id: model, ownedBy: "wan:\(peer.displayName)"))
                     }
                 }
+                for peer in wanMgr.state.discoveredPeers {
+                    for model in peer.capabilities.loadedModels {
+                        models.append((id: model, ownedBy: "wan:\(peer.displayName)"))
+                    }
+                }
                 for peer in await clusterMgr.topology.connectedPeers {
                     for model in peer.loadedModels {
                         models.append((id: model, ownedBy: "lan:\(peer.deviceInfo.name)"))

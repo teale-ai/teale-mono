@@ -738,6 +738,7 @@ public final class WANManager: @unchecked Sendable {
                 lastHeartbeat: Date()
             )
             connectedPeers[offer.fromNodeID] = connected
+            startListening(to: connected)
         } catch {
             // Direct P2P failed — fall back to relay
             FileHandle.standardError.write(Data("[WAN] Direct connection from \(offer.fromNodeID.prefix(16)) failed: \(error). Trying relay fallback...\n".utf8))
@@ -754,6 +755,7 @@ public final class WANManager: @unchecked Sendable {
                     lastHeartbeat: Date()
                 )
                 connectedPeers[offer.fromNodeID] = connected
+                startListening(to: connected)
                 FileHandle.standardError.write(Data("[WAN] Relay fallback succeeded for \(offer.fromNodeID.prefix(16))!\n".utf8))
             } catch {
                 FileHandle.standardError.write(Data("[WAN] Relay fallback also failed for \(offer.fromNodeID.prefix(16)): \(error)\n".utf8))
