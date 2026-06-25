@@ -7,18 +7,18 @@ const ROUTES = {
   modelLoad: "/v1/app/models/load",
   modelDownload: "/v1/app/models/download",
   modelUnload: "/v1/app/models/unload",
-  authSession: "/v1/app/auth/session",
-  accountSummary: "/v1/app/account",
-  accountApiKeys: "/v1/app/account/api-keys",
-  accountApiKeysRevoke: "/v1/app/account/api-keys/revoke",
-  accountLink: "/v1/app/account/link",
-  accountSweep: "/v1/app/account/sweep",
-  accountSend: "/v1/app/account/send",
-  accountDevicesRemove: "/v1/app/account/devices/remove",
-  networkModels: "/v1/app/network/models",
-  networkStats: "/v1/app/network/stats",
-  walletRefresh: "/v1/app/wallet/refresh",
-  walletSend: "/v1/app/wallet/send",
+  authSession: "/v1/desktop/app/auth/session",
+  accountSummary: "/v1/desktop/app/account",
+  accountApiKeys: "/v1/desktop/app/account/api-keys",
+  accountApiKeysRevoke: "/v1/desktop/app/account/api-keys/revoke",
+  accountLink: "/v1/desktop/app/account/link",
+  accountSweep: "/v1/desktop/app/account/sweep",
+  accountSend: "/v1/desktop/app/account/send",
+  accountDevicesRemove: "/v1/desktop/app/account/devices/remove",
+  networkModels: "/v1/desktop/app/network/models",
+  networkStats: "/v1/desktop/app/network/stats",
+  walletRefresh: "/v1/desktop/app/wallet/refresh",
+  walletSend: "/v1/desktop/app/wallet/send",
   authPending: "teale://localhost/auth/pending",
   bundledApp: null,
   localApiKey: null,
@@ -1681,6 +1681,17 @@ function userLabel(user) {
     return t("auth.status.notSignedIn");
   }
   return user.phone || user.email || user.user_metadata?.user_name || user.id;
+}
+
+function displayPhoneForInput(phone) {
+  const value = String(phone || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("+")) {
+    return value;
+  }
+  return /^\d{8,15}$/.test(value) ? `+${value}` : value;
 }
 
 function providerLabel(identities) {
@@ -3883,8 +3894,13 @@ function renderAuthState() {
     ? userLabel(authUser)
     : accountSummary?.phone || accountSummary?.email || accountSummary?.account_user_id || t("auth.status.signedIn");
   els.authSignoutButton.hidden = false;
-  els.authPhonePanel.hidden = true;
-  els.authPhonePanel.style.display = "none";
+  els.authPhonePanel.hidden = false;
+  els.authPhonePanel.style.display = "";
+  els.authPhoneSendButton.disabled = false;
+  els.authPhoneVerifyButton.disabled = false;
+  if (!els.authPhoneInput.value.trim()) {
+    els.authPhoneInput.value = displayPhoneForInput(authUser?.phone || accountSummary?.phone);
+  }
 
   if (githubLinked || githubIdentity) {
     els.authGithubButton.textContent = t("auth.button.githubLinked");
@@ -4784,7 +4800,7 @@ els.authGithubButton.addEventListener("click", () => startOAuth("github"));
 els.authGoogleButton.addEventListener("click", () => startOAuth("google"));
 
 els.authPhoneSendButton.addEventListener("click", async () => {
-  if (!supabaseClient || authUser) {
+  if (!supabaseClient) {
     return;
   }
   try {
@@ -4803,7 +4819,7 @@ els.authPhoneSendButton.addEventListener("click", async () => {
 });
 
 els.authPhoneVerifyButton.addEventListener("click", async () => {
-  if (!supabaseClient || authUser) {
+  if (!supabaseClient) {
     return;
   }
   try {
@@ -4817,7 +4833,8 @@ els.authPhoneVerifyButton.addEventListener("click", async () => {
       throw error;
     }
     authSession = data.session;
-    authUser = data.user;
+    authUser = data.session?.user || data.user || null;
+    postNativeSessionSync(authSession);
     clearAuthErrorState();
     clearPendingOAuthProvider();
     await ensureSupabaseIdentity();
