@@ -333,6 +333,30 @@ fn catalog_contains_minimax_m2_7_entry() {
     assert!(minimax.matches("minimax-m2.7"));
 }
 
+#[test]
+fn catalog_contains_glm_5_2_exo_entry() {
+    let path = env_models_yaml();
+    let models = catalog::load(&path).expect("load models.yaml");
+    let glm = models
+        .iter()
+        .find(|m| m.id == "pipenetwork/GLM-5.2-MLX-5bit")
+        .expect("glm 5.2 exo present");
+    assert_eq!(glm.context_length, 1048576);
+    assert_eq!(glm.max_output_tokens, 32768);
+    assert_eq!(glm.quantization.as_deref(), Some("MLX-5bit"));
+    assert!(
+        glm.aliases.iter().any(|a| a == "zai/glm-5.2"),
+        "glm catalog entry must keep the canonical Z.ai alias"
+    );
+    assert!(
+        glm.aliases.iter().any(|a| a == "glm5.2"),
+        "glm catalog entry must keep a compact shorthand alias"
+    );
+    assert!(glm.matches("pipenetwork/GLM-5.2-MLX-5bit"));
+    assert!(glm.matches("zai/glm-5.2"));
+    assert!(glm.matches("glm5.2"));
+}
+
 fn env_models_yaml() -> String {
     // Tests run with CWD at the crate (gateway/). models.yaml is alongside.
     "models.yaml".to_string()
