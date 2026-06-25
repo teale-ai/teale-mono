@@ -64,11 +64,10 @@ fn single_supplier_large_cold_start_grace(state: &AppState, catalog_model: &Cata
         return false;
     }
     let loaded = state.registry.loaded_count(&catalog_model.id);
-    let candidate_count = if loaded > 0 {
-        loaded as usize
-    } else {
-        state.registry.eligible_devices(&catalog_model.id).len()
-    };
+    if loaded > 0 {
+        return false;
+    }
+    let candidate_count = state.registry.eligible_devices(&catalog_model.id).len();
     candidate_count <= 1
 }
 
@@ -2099,7 +2098,7 @@ pricing_completion: "0.00000020"
     }
 
     #[tokio::test]
-    async fn large_single_supplier_uses_request_timeout_for_first_token_deadline() {
+    async fn loaded_large_single_supplier_uses_normal_first_token_deadline() {
         let model = kimi_like();
         let state = dispatch_test_state(dispatch_test_config(18), &model);
         state.registry.upsert_device(
@@ -2108,10 +2107,10 @@ pricing_completion: "0.00000020"
             dispatch_caps(&[&model.id], &[]),
         );
 
-        assert!(single_supplier_large_cold_start_grace(&state, &model));
+        assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
             pre_first_token_deadline(&state, &model),
-            Duration::from_secs(state.config.reliability.request_timeout_seconds)
+            Duration::from_secs(18)
         );
     }
 
@@ -2133,7 +2132,7 @@ pricing_completion: "0.00000020"
     }
 
     #[tokio::test]
-    async fn large_loaded_supplier_keeps_grace_even_with_extra_swappable_node() {
+    async fn large_loaded_supplier_uses_normal_deadline_even_with_extra_swappable_node() {
         let model = kimi_like();
         let state = dispatch_test_state(dispatch_test_config(18), &model);
         state.registry.upsert_device(
@@ -2147,10 +2146,10 @@ pricing_completion: "0.00000020"
             dispatch_caps(&[], &[&model.id]),
         );
 
-        assert!(single_supplier_large_cold_start_grace(&state, &model));
+        assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
             pre_first_token_deadline(&state, &model),
-            Duration::from_secs(state.config.reliability.request_timeout_seconds)
+            Duration::from_secs(18)
         );
     }
 
@@ -2259,7 +2258,7 @@ pricing_completion: "0.00000020"
     }
 
     #[tokio::test]
-    async fn pick_and_dispatch_single_large_supplier_retries_same_node_before_quarantine() {
+    async fn pick_and_dispatch_loaded_single_large_supplier_quarantines_failed_open() {
         let model = kimi_like();
         let state = dispatch_test_state(dispatch_test_config(10), &model);
         state.registry.upsert_device(
@@ -2268,25 +2267,7 @@ pricing_completion: "0.00000020"
             dispatch_caps(&[&model.id], &[]),
         );
 
-        let relay = state.relay.clone();
-        let signal_second_ready = tokio::spawn(async move {
-            let mut seen = std::collections::HashSet::new();
-            let deadline = Instant::now() + Duration::from_secs(8);
-            loop {
-                for session_id in relay.test_ready_waiter_ids() {
-                    if seen.insert(session_id.clone()) && seen.len() == 2 {
-                        assert!(relay.test_signal_ready(&session_id));
-                        return;
-                    }
-                }
-                if Instant::now() >= deadline {
-                    panic!("timed out waiting for second relay-open attempt");
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-        });
-
-        let (rx, target_node, _session_id) = pick_and_dispatch(
+        let err = pick_and_dispatch(
             &state,
             &model,
             &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
@@ -2295,17 +2276,11 @@ pricing_completion: "0.00000020"
             &[],
         )
         .await
-        .expect("dispatch should retry same node during cold-start grace");
-        drop(rx);
+        .expect_err("loaded single large supplier should not get cold-start grace");
 
-        signal_second_ready
-            .await
-            .expect("ready waiter task should finish");
-
-        assert_eq!(target_node, "node-a");
+        assert!(matches!(err, GatewayError::AllUpstreamsFailed(_)));
         let eligible = state.registry.eligible_devices(&model.id);
-        let eligible_ids: Vec<_> = eligible.iter().map(|d| d.node_id.as_str()).collect();
-        assert_eq!(eligible_ids, vec!["node-a"]);
-        assert_eq!(state.registry.in_flight("node-a"), 1);
+        assert!(eligible.is_empty());
+        assert_eq!(state.registry.in_flight("node-a"), 0);
     }
 }
