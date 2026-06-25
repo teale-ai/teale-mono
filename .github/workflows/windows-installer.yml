@@ -198,8 +198,7 @@ jobs:
 
           $config | ConvertTo-Json -Compress | Set-Content "node\installer\supabase-config.json" -Encoding UTF8
 
-          $supabaseHost = ([Uri]$supabaseUrl).Host
-          Write-Host "Supabase auth config staged for host $supabaseHost"
+          python scripts\validate-supabase-config.py --json node\installer\supabase-config.json
 
       - name: Install Inno Setup
         shell: pwsh

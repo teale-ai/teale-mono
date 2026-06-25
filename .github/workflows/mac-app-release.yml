@@ -47,6 +47,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm /tmp/cert.p12
 
+      - name: Stage Supabase auth config
+        env:
+          TEALE_SUPABASE_URL: ${{ secrets.TEALE_SUPABASE_URL }}
+          TEALE_SUPABASE_ANON_KEY: ${{ secrets.TEALE_SUPABASE_ANON_KEY }}
+          TEALE_SUPABASE_REDIRECT_URL: ${{ secrets.TEALE_SUPABASE_REDIRECT_URL }}
+        run: |
+          python3 ../scripts/validate-supabase-config.py \
+            --plist Sources/AuthKit/Resources/Supabase.plist \
+            --apply-env \
+            --write-plist Sources/AuthKit/Resources/Supabase.plist
+
       - name: Build app bundle (signed)
         env:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
@@ -75,12 +86,7 @@ jobs:
             exit 1
           fi
 
-          echo "Bundled Supabase auth config: $(python3 - "$SUPABASE_URL" <<'PY'
-          from urllib.parse import urlparse
-          import sys
-          print(urlparse(sys.argv[1]).netloc)
-          PY
-          )"
+          python3 ../scripts/validate-supabase-config.py --plist "$SUPABASE_PLIST"
 
       - name: Build and sign DMG
         env:

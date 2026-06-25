@@ -107,6 +107,8 @@ jobs:
             target/x86_64-unknown-linux-gnu/release/teale-tray \
             .build/linux-downloads/llama-server \
             .build/Teale-linux-x86_64
+          python3 scripts/validate-supabase-config.py \
+            --json .build/Teale-linux-x86_64/config/supabase-config.json
           tar -C .build -czf .build/Teale-linux-x86_64.tar.gz Teale-linux-x86_64
           sha256sum .build/Teale-linux-x86_64.tar.gz > .build/Teale-linux-x86_64-checksums.txt
 
