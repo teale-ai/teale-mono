@@ -53,17 +53,27 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-gnu -p teale-tray
 
       - name: Download llama-server (CPU build)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p .build/linux-downloads
           eval "$(
           python3 - <<'PY'
           import json
+          import os
           import shlex
           import urllib.request
 
-          releases = json.load(
-              urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases")
+          request = urllib.request.Request(
+              "https://api.github.com/repos/ggml-org/llama.cpp/releases",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "User-Agent": "teale-linux-desktop-release",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
           )
+          releases = json.load(urllib.request.urlopen(request))
           for release in releases:
               for asset in release.get("assets", []):
                   name = asset.get("name", "")
