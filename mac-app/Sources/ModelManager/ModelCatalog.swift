@@ -233,6 +233,19 @@ public struct ModelCatalog: Sendable {
             popularityRank: 14,
             openrouterId: "zai/glm-5.1"
         ),
+        ModelDescriptor(
+            id: "glm-5.2-mlx-5bit",
+            name: "GLM-5.2 5-bit (exo)",
+            huggingFaceRepo: "pipenetwork/GLM-5.2-MLX-5bit",
+            parameterCount: "754B",
+            quantization: .q5,
+            estimatedSizeGB: 488.0,
+            requiredRAMGB: 640.0,
+            family: "GLM",
+            description: "GLM-5.2 MLX 5-bit with 1M context. Requires the paired 512 GB Ultra exo cluster over TB5/RDMA.",
+            popularityRank: 15,
+            openrouterId: "pipenetwork/GLM-5.2-MLX-5bit"
+        ),
         // Kimi K2.6 — 1T MoE, natively int4, 256K context. MLX variant is
         // 554 GB — needs multi-Ultra exo cluster (single 512 GB Mac can't
         // load it alone). Served via exo-sharded MLX, not llama.cpp.
@@ -246,7 +259,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 640.0,
             family: "Kimi",
             description: "Moonshot Kimi K2.6 — 1T MoE (32B active), native int4, multimodal (MoonViT), 256K context. Requires 2× 512 GB Ultra exo cluster over TB5.",
-            popularityRank: 15,
+            popularityRank: 16,
             openrouterId: "moonshotai/kimi-k2.6"
         ),
         // DeepSeek V4 Flash — 158B-A13B MoE, served via rapid-mlx 8-bit on

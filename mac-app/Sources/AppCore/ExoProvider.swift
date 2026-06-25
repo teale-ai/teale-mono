@@ -414,6 +414,8 @@ func modelDescriptorForExternalID(_ modelID: String) -> ModelDescriptor {
         quantization = .fp16
     } else if lowercasedID.contains("8bit") || lowercasedID.contains("-q8") || lowercasedID.contains("_q8") {
         quantization = .q8
+    } else if lowercasedID.contains("5bit") || lowercasedID.contains("-q5") || lowercasedID.contains("_q5") {
+        quantization = .q5
     } else {
         quantization = .q4
     }
@@ -424,6 +426,8 @@ func modelDescriptorForExternalID(_ modelID: String) -> ModelDescriptor {
     switch quantization {
     case .q4:
         sizeMultiplier = 0.55
+    case .q5:
+        sizeMultiplier = 0.69
     case .q8:
         sizeMultiplier = 1.1
     case .fp16:

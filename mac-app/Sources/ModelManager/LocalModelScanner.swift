@@ -47,6 +47,7 @@ public struct LocalModelInfo: Identifiable, Sendable {
     private func detectQuantization() -> QuantizationType {
         let pathStr = path.lastPathComponent.lowercased()
         if pathStr.contains("4bit") || pathStr.contains("q4") { return .q4 }
+        if pathStr.contains("5bit") || pathStr.contains("q5") { return .q5 }
         if pathStr.contains("8bit") || pathStr.contains("q8") { return .q8 }
         return .fp16
     }

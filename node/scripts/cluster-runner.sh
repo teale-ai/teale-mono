@@ -43,8 +43,12 @@ EXO_OFFLINE="${EXO_OFFLINE:-1}"
 EXO_NO_DOWNLOADS="${EXO_NO_DOWNLOADS:-1}"
 EXO_NO_BATCH="${EXO_NO_BATCH:-1}"
 EXO_NO_FAST_SYNCH="${EXO_NO_FAST_SYNCH:-1}"
+EXO_FORCE_FAST_SYNCH="${EXO_FORCE_FAST_SYNCH:-0}"
 EXO_PREFERRED_SHARDING="${EXO_PREFERRED_SHARDING:-Pipeline}"
 EXO_PREFERRED_INSTANCE_META="${EXO_PREFERRED_INSTANCE_META:-MlxJaccl}"
+LEAF_EXO_DEFAULT_MODELS_DIR="${LEAF_EXO_DEFAULT_MODELS_DIR:-${EXO_DEFAULT_MODELS_DIR:-}}"
+LEAF_EXO_MODELS_DIRS="${LEAF_EXO_MODELS_DIRS:-${EXO_MODELS_DIRS:-}}"
+LEAF_EXO_MODELS_READ_ONLY_DIRS="${LEAF_EXO_MODELS_READ_ONLY_DIRS:-${EXO_MODELS_READ_ONLY_DIRS:-}}"
 
 if [[ -z "${LEAF_HOST}" ]]; then
   echo "LEAF_HOST (or LEAF_IP) must be set to the second Mac." >&2
@@ -101,6 +105,9 @@ build_exo_args() {
   if [[ "${EXO_NO_FAST_SYNCH}" == "1" ]]; then
     args+=("--no-fast-synch")
   fi
+  if [[ "${EXO_FORCE_FAST_SYNCH}" == "1" ]]; then
+    args+=("--fast-synch")
+  fi
   printf '%s\n' "${args[@]}"
 }
 
@@ -139,6 +146,10 @@ start_leaf() {
       EXO_NO_DOWNLOADS="${EXO_NO_DOWNLOADS}" \
       EXO_OFFLINE="${EXO_OFFLINE}" \
       EXO_NO_FAST_SYNCH="${EXO_NO_FAST_SYNCH}" \
+      EXO_FORCE_FAST_SYNCH="${EXO_FORCE_FAST_SYNCH}" \
+      LEAF_EXO_DEFAULT_MODELS_DIR="${LEAF_EXO_DEFAULT_MODELS_DIR}" \
+      LEAF_EXO_MODELS_DIRS="${LEAF_EXO_MODELS_DIRS}" \
+      LEAF_EXO_MODELS_READ_ONLY_DIRS="${LEAF_EXO_MODELS_READ_ONLY_DIRS}" \
       /bin/bash -s <<'EOF'
 set -euo pipefail
 
@@ -173,6 +184,9 @@ build_args() {
   if [[ "${EXO_NO_FAST_SYNCH}" == "1" ]]; then
     args+=("--no-fast-synch")
   fi
+  if [[ "${EXO_FORCE_FAST_SYNCH}" == "1" ]]; then
+    args+=("--fast-synch")
+  fi
   printf '%s\n' "${args[@]}"
 }
 
@@ -199,8 +213,22 @@ EXO_ARGS=()
 while IFS= read -r arg; do
   EXO_ARGS+=("${arg}")
 done < <(build_args)
+EXO_ENV=(
+  "PATH=${PATH}"
+  "EXO_LIBP2P_NAMESPACE=${EXO_LIBP2P_NAMESPACE}"
+  "EXO_MACMON_PATH=${EXO_MACMON_PATH}"
+)
+if [[ -n "${LEAF_EXO_DEFAULT_MODELS_DIR:-}" ]]; then
+  EXO_ENV+=("EXO_DEFAULT_MODELS_DIR=${LEAF_EXO_DEFAULT_MODELS_DIR}")
+fi
+if [[ -n "${LEAF_EXO_MODELS_DIRS:-}" ]]; then
+  EXO_ENV+=("EXO_MODELS_DIRS=${LEAF_EXO_MODELS_DIRS}")
+fi
+if [[ -n "${LEAF_EXO_MODELS_READ_ONLY_DIRS:-}" ]]; then
+  EXO_ENV+=("EXO_MODELS_READ_ONLY_DIRS=${LEAF_EXO_MODELS_READ_ONLY_DIRS}")
+fi
 PATH="${EXO_SUPPORT_DIR}:$(dirname "${EXO_RESOLVED}"):${PATH}" \
-nohup env PATH="${PATH}" EXO_LIBP2P_NAMESPACE="${EXO_LIBP2P_NAMESPACE}" EXO_MACMON_PATH="${EXO_MACMON_PATH}" \
+nohup env "${EXO_ENV[@]}" \
   "${EXO_RESOLVED}" "${EXO_ARGS[@]}" >"${LEAF_LOG_DIR}/exo-leaf.out.log" 2>"${LEAF_LOG_DIR}/exo-leaf.err.log" &
 EOF
 }
@@ -231,6 +259,32 @@ wait_for_local_api() {
   return 1
 }
 
+wait_for_cluster_nodes() {
+  API_PORT="${API_PORT}" python3 - <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.request
+
+base = f"http://127.0.0.1:{os.environ['API_PORT']}"
+deadline = time.time() + 180
+last = 0
+while time.time() < deadline:
+    try:
+        with urllib.request.urlopen(base + "/state", timeout=10) as response:
+            state = json.load(response)
+        nodes = state.get("topology", {}).get("nodes", [])
+        last = len(nodes)
+        if len(nodes) >= 2:
+            raise SystemExit(0)
+    except Exception:
+        pass
+    time.sleep(2)
+raise SystemExit(f"cluster did not report two nodes before timeout; last node count={last}")
+PY
+}
+
 ensure_instance() {
   MODEL_ID="${MODEL_ID}" API_PORT="${API_PORT}" EXO_PREFERRED_SHARDING="${EXO_PREFERRED_SHARDING}" EXO_PREFERRED_INSTANCE_META="${EXO_PREFERRED_INSTANCE_META}" python3 - <<'PY'
 import json
@@ -253,16 +307,37 @@ loaded = {
 if model_id in loaded:
     raise SystemExit(0)
 
+with urllib.request.urlopen(base + "/state", timeout=60) as response:
+    state = json.load(response)
+
+for instance in state.get("instances", {}).values():
+    inner = instance.get("MlxJacclInstance") or instance.get("MlxRingInstance") or {}
+    assignments = inner.get("shardAssignments", {})
+    if assignments.get("modelId") == model_id:
+        runner_to_shard = assignments.get("runnerToShard", {})
+        if len(assignments.get("nodeToRunner", {})) >= 2:
+            raise SystemExit(0)
+        raise SystemExit(f"existing single-node instance for {model_id}; delete it before running cluster-runner")
+
 preview_url = base + "/instance/previews?" + urllib.parse.urlencode({"model_id": model_id})
 with urllib.request.urlopen(preview_url, timeout=120) as response:
     previews = json.load(response).get("previews", [])
 
 healthy = [preview for preview in previews if preview.get("error") is None]
+multi_node = [
+    preview
+    for preview in healthy
+    if len(preview.get("memory_delta_by_node") or {}) >= 2
+]
+if multi_node:
+    healthy = multi_node
 
 def preview_rank(preview):
     sharding = preview.get("sharding")
     instance_meta = preview.get("instance_meta")
+    node_count = len(preview.get("memory_delta_by_node") or {})
     return (
+        0 if node_count >= 2 else 1,
         0 if sharding == os.environ["EXO_PREFERRED_SHARDING"] else 1,
         0 if instance_meta == os.environ["EXO_PREFERRED_INSTANCE_META"] else 1,
         sharding or "",
@@ -272,6 +347,21 @@ def preview_rank(preview):
 instance = next((preview.get("instance") for preview in sorted(healthy, key=preview_rank)), None)
 if instance is None:
     raise SystemExit(f"no healthy placement preview for {model_id}")
+
+chosen = sorted(healthy, key=preview_rank)[0]
+if (
+    len(chosen.get("memory_delta_by_node") or {}) < 2
+    or chosen.get("sharding") != os.environ["EXO_PREFERRED_SHARDING"]
+    or chosen.get("instance_meta") != os.environ["EXO_PREFERRED_INSTANCE_META"]
+):
+    raise SystemExit(
+        "refusing non-preferred placement: "
+        f"nodes={len(chosen.get('memory_delta_by_node') or {})} "
+        f"sharding={chosen.get('sharding')} "
+        f"instance_meta={chosen.get('instance_meta')}"
+    )
+
+instance = chosen.get("instance")
 
 request = urllib.request.Request(
     base + "/instance",
@@ -316,8 +406,22 @@ done < <(build_exo_args)
 kill_stale_local_exo "${EXO_BIN}" "${API_PORT}"
 
 echo "==> starting head EXO with model=${MODEL_ID}"
+EXO_ENV=(
+  "PATH=${PATH}"
+  "EXO_LIBP2P_NAMESPACE=${NAMESPACE}"
+  "EXO_MACMON_PATH=${EXO_MACMON_PATH}"
+)
+if [[ -n "${EXO_DEFAULT_MODELS_DIR:-}" ]]; then
+  EXO_ENV+=("EXO_DEFAULT_MODELS_DIR=${EXO_DEFAULT_MODELS_DIR}")
+fi
+if [[ -n "${EXO_MODELS_DIRS:-}" ]]; then
+  EXO_ENV+=("EXO_MODELS_DIRS=${EXO_MODELS_DIRS}")
+fi
+if [[ -n "${EXO_MODELS_READ_ONLY_DIRS:-}" ]]; then
+  EXO_ENV+=("EXO_MODELS_READ_ONLY_DIRS=${EXO_MODELS_READ_ONLY_DIRS}")
+fi
 PATH="${EXO_SUPPORT_DIR}:$(dirname "${EXO_BIN}"):${PATH}" \
-env PATH="${PATH}" EXO_LIBP2P_NAMESPACE="${NAMESPACE}" EXO_MACMON_PATH="${EXO_MACMON_PATH}" \
+env "${EXO_ENV[@]}" \
   "${EXO_BIN}" \
   -m \
   "${EXO_ARGS[@]}" \
@@ -325,6 +429,7 @@ env PATH="${PATH}" EXO_LIBP2P_NAMESPACE="${NAMESPACE}" EXO_MACMON_PATH="${EXO_MA
 HEAD_EXO_PID=$!
 
 wait_for_local_api
+wait_for_cluster_nodes
 
 while kill -0 "${HEAD_EXO_PID}" >/dev/null 2>&1; do
   ensure_instance || true
