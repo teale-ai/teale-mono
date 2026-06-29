@@ -3,6 +3,7 @@ import Foundation
 // MARK: - Quantization
 
 public enum QuantizationType: String, Codable, Sendable {
+    case q2 = "2bit"
     case q4 = "4bit"
     case q5 = "5bit"
     case q8 = "8bit"
@@ -10,6 +11,7 @@ public enum QuantizationType: String, Codable, Sendable {
 
     public var displayName: String {
         switch self {
+        case .q2: return "2-bit"
         case .q4: return "4-bit"
         case .q5: return "5-bit"
         case .q8: return "8-bit"
@@ -157,8 +159,8 @@ public enum OpenRouterIdResolver {
         ("gpt-oss-20b", "openai/gpt-oss-20b"),
         ("mistral-small-3-2-24b", "mistralai/mistral-small-3.2-24b-instruct"),
         ("gemma-3-27b-it", "google/gemma-3-27b-it"),
-        ("glm-5-2-mlx-5bit", "pipenetwork/GLM-5.2-MLX-5bit"),
-        ("glm-5-2", "pipenetwork/GLM-5.2-MLX-5bit"),
+        ("deepseek-v4-flash", "deepseek-ai/deepseek-v4-flash"),
+        ("deepseek-v4-pro", "deepseek-ai/deepseek-v4-pro"),
         ("glm-5-1", "zai/glm-5.1"),
         // Covers both MLX repo name ("Kimi-K2.6" → "kimi-k2-6") and GGUF
         // filenames like "Kimi-K2.6-UD-Q8_K_XL-00001-of-00014.gguf".

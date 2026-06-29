@@ -85,7 +85,10 @@ struct CompanionHomeView: View {
         if let balanceCredits = gatewayState.walletBalance?.balanceCredits {
             return appState.companionDisplayAmountString(credits: balanceCredits)
         }
-        return appState.companionText("wallet.loadingGateway", fallback: "Loading gateway wallet...")
+        if let error = gatewayState.lastWalletRefreshError, !error.isEmpty {
+            return appState.companionText("wallet.gatewayUnavailable", fallback: "Gateway wallet unavailable")
+        }
+        return appState.companionText("wallet.connectingGateway", fallback: "Connecting gateway wallet")
     }
 
     private var accountLabel: String {

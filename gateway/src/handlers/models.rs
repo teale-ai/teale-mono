@@ -13,7 +13,7 @@ use crate::registry::normalize_model_id;
 use crate::state::AppState;
 
 const CATALOG_HTML: &str = include_str!("models.html");
-const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2"];
+const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
 
 pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Content negotiation: browsers (Accept: text/html) get the styled catalog

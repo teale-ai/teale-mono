@@ -40,22 +40,38 @@ enum DesktopCompanionRoute {
 
     static func networkModels(controller: (any DesktopCompanionControlling)?) async throws -> Response {
         guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
-        return try jsonResponse(try await controller.desktop_network_models())
+        do {
+            return try jsonResponse(try await controller.desktop_network_models())
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
     }
 
     static func networkStats(controller: (any DesktopCompanionControlling)?) async throws -> Response {
         guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
-        return try jsonResponse(try await controller.desktop_network_stats())
+        do {
+            return try jsonResponse(try await controller.desktop_network_stats())
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
     }
 
     static func accountSummary(controller: (any DesktopCompanionControlling)?) async throws -> Response {
         guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
-        return try jsonResponse(try await controller.desktop_account_summary())
+        do {
+            return try jsonResponse(try await controller.desktop_account_summary())
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
     }
 
     static func accountAPIKeys(controller: (any DesktopCompanionControlling)?) async throws -> Response {
         guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
-        return try jsonResponse(try await controller.desktop_account_api_keys())
+        do {
+            return try jsonResponse(try await controller.desktop_account_api_keys())
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
     }
 
     static func linkAccount(
@@ -150,7 +166,11 @@ enum DesktopCompanionRoute {
         controller: (any DesktopCompanionControlling)?
     ) async throws -> Response {
         guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
-        return try jsonResponse(try await controller.desktop_refresh_wallet())
+        do {
+            return try jsonResponse(try await controller.desktop_refresh_wallet())
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
     }
 
     static func sendDeviceWallet(

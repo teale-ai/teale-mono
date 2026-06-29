@@ -361,6 +361,43 @@ public struct DesktopCompanionAccountAPIKeySnapshot: Codable, Sendable {
     public var createdAt: Int64
     public var lastUsedAt: Int64?
     public var revokedAt: Int64?
+
+    private enum CodingKeys: String, CodingKey {
+        case keyID
+        case tokenPreview
+        case label
+        case name
+        case prefix
+        case createdAt
+        case lastUsedAt
+        case revokedAt
+        case disabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        tokenPreview = try container.decodeIfPresent(String.self, forKey: .tokenPreview)
+            ?? container.decodeIfPresent(String.self, forKey: .prefix)
+            ?? String(keyID.prefix(6))
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+            ?? container.decodeIfPresent(String.self, forKey: .name)
+        createdAt = try container.decode(Int64.self, forKey: .createdAt)
+        lastUsedAt = try container.decodeIfPresent(Int64.self, forKey: .lastUsedAt)
+        let disabled = try container.decodeIfPresent(Bool.self, forKey: .disabled) ?? false
+        revokedAt = try container.decodeIfPresent(Int64.self, forKey: .revokedAt)
+            ?? (disabled ? createdAt : nil)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(keyID, forKey: .keyID)
+        try container.encode(tokenPreview, forKey: .tokenPreview)
+        try container.encodeIfPresent(label, forKey: .label)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(lastUsedAt, forKey: .lastUsedAt)
+        try container.encodeIfPresent(revokedAt, forKey: .revokedAt)
+    }
 }
 
 public struct DesktopCompanionAccountAPIKeysResponse: Codable, Sendable {
@@ -372,10 +409,39 @@ public struct DesktopCompanionAccountAPIKeyMintedResponse: Codable, Sendable {
     public var token: String
     public var label: String?
     public var createdAt: Int64
+
+    private enum CodingKeys: String, CodingKey {
+        case keyID
+        case token
+        case label
+        case name
+        case createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        token = try container.decode(String.self, forKey: .token)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+            ?? container.decodeIfPresent(String.self, forKey: .name)
+        createdAt = try container.decode(Int64.self, forKey: .createdAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(keyID, forKey: .keyID)
+        try container.encode(token, forKey: .token)
+        try container.encodeIfPresent(label, forKey: .label)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 public struct DesktopCompanionAccountAPIKeyRevokeResponse: Codable, Sendable {
     public var revoked: Bool
+
+    public init(revoked: Bool) {
+        self.revoked = revoked
+    }
 }
 
 public struct DesktopCompanionAccountSweepResponse: Codable, Sendable {

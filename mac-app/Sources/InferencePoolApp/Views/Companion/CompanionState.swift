@@ -408,8 +408,9 @@ private let companionModelPricingByID: [String: CompanionModelPricing] = [
     "qwen/qwen3.6-27b": .init(promptUSDPerToken: 0.00000025, completionUSDPerToken: 0.00000050),
     "qwen/qwen3.6-35b-a3b": .init(promptUSDPerToken: 0.00000030, completionUSDPerToken: 0.00000060),
     "deepseek/deepseek-v3.2": .init(promptUSDPerToken: 0.00000025, completionUSDPerToken: 0.00000050),
+    "deepseek-ai/deepseek-v4-flash": .init(promptUSDPerToken: 0.00000025, completionUSDPerToken: 0.00000050),
+    "deepseek-ai/deepseek-v4-pro": .init(promptUSDPerToken: 0.00000035, completionUSDPerToken: 0.00000070),
     "zai/glm-5.1": .init(promptUSDPerToken: 0.00000025, completionUSDPerToken: 0.00000050),
-    "pipenetwork/GLM-5.2-MLX-5bit": .init(promptUSDPerToken: 0.00000025, completionUSDPerToken: 0.00000050),
     "moonshotai/kimi-k2": .init(promptUSDPerToken: 0.00000035, completionUSDPerToken: 0.00000070),
     "moonshotai/kimi-k2.6": .init(promptUSDPerToken: 0.00000050, completionUSDPerToken: 0.00000100),
 ]

@@ -100,6 +100,31 @@
     .summary dt { color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px; }
     .summary dd { margin: 0; color: var(--bright); font-variant-numeric: tabular-nums; }
     .summary dd small { color: var(--dim); margin-left: 6px; }
+    .showcase {
+      display: none;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0 18px;
+    }
+    .showcase-card {
+      border: 1px solid var(--bright);
+      background: var(--card);
+      padding: 14px 16px;
+    }
+    .showcase-card .label {
+      color: var(--dim);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .showcase-card .name { color: var(--bright); font-weight: 500; }
+    .showcase-card .meta { color: var(--text); margin-top: 6px; }
+    .showcase-card .perf {
+      color: var(--bright);
+      margin-top: 8px;
+      font-variant-numeric: tabular-nums;
+    }
     .catalog-head {
       display: flex;
       align-items: center;
@@ -169,6 +194,7 @@
       .model { grid-template-columns: 1fr; }
       .model .tier { text-align: left; }
       .model dl.stats { grid-template-columns: 1fr; }
+      .showcase { grid-template-columns: 1fr; }
       .catalog-head { align-items: flex-start; }
       .catalog-controls { width: 100%; justify-content: stretch; }
       .price-toggle { width: 100%; }
@@ -193,6 +219,9 @@
     <dt>RAM</dt><dd id="ramTotal">—</dd>
     <dt>Fresh metrics</dt><dd id="trafficCount">— <small>(models with fresh samples)</small></dd>
   </dl>
+
+  <div class="prompt"><span class="arrow">&gt;</span> finalizing for launch</div>
+  <div class="showcase" id="showcase"></div>
 
   <div class="catalog-head">
     <div class="prompt"><span class="arrow">&gt;</span> available models</div>
@@ -294,6 +323,39 @@
     return `prompt ${fmtUsdPerMillion(pricing.prompt)} · completion ${fmtUsdPerMillion(pricing.completion)} per 1M tokens`;
   }
 
+  function metricValue(metrics, key) {
+    if (!metrics) return null;
+    if (key === "ttft") return metrics.ttft_ms_p50 ?? metrics.ttft_ms_avg ?? metrics.ttft_ms_p95;
+    if (key === "tps") return metrics.tps_p50 ?? metrics.tps_avg ?? metrics.tps_p95;
+    return null;
+  }
+
+  function renderShowcase(allModels) {
+    const showcase = document.getElementById("showcase");
+    const picks = [
+      { id: "qwen/qwen3.6-35b-a3b", label: "primary lane" },
+      { id: "qwen/qwen3-coder-next-80b-a3b-instruct", label: "quality lane" }
+    ].map(pick => {
+      const model = allModels.find(m => m.id === pick.id);
+      return model ? { ...pick, model } : null;
+    }).filter(Boolean);
+
+    showcase.innerHTML = "";
+    showcase.style.display = picks.length ? "grid" : "none";
+    picks.forEach(({ label, model }) => {
+      const card = document.createElement("div");
+      card.className = "showcase-card";
+      const metrics = model.metrics || null;
+      const metricLabel = metrics && metrics.source === "estimate" ? "estimate" : "live";
+      card.innerHTML =
+        `<div class="label">${label}</div>` +
+        `<div class="name">${model.id}</div>` +
+        `<div class="meta">${fmtCtx(model.context_length)} context · ${model.quantization || "DS4"} · ${pluralize(model.loaded_device_count ?? 0, "device", "devices")}</div>` +
+        `<div class="perf">ttft ${fmtMs(metricValue(metrics, "ttft"))} · tps ${fmtTps(metricValue(metrics, "tps"))} <small>${metricLabel}</small></div>`;
+      showcase.appendChild(card);
+    });
+  }
+
   function syncControls() {
     document.getElementById("priceUsd").setAttribute("aria-pressed", priceMode === "usd" ? "true" : "false");
     document.getElementById("priceCredits").setAttribute("aria-pressed", priceMode === "credits" ? "true" : "false");
@@ -313,6 +375,7 @@
     document.getElementById("trafficCount").innerHTML = String(withFreshMetrics) +
       ' <small>(models with fresh samples)</small>';
     syncControls();
+    renderShowcase(allModels);
 
     catalog.innerHTML = "";
     empty.style.display = models.length ? "none" : "block";

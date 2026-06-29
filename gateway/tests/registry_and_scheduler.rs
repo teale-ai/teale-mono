@@ -334,27 +334,36 @@ fn catalog_contains_minimax_m2_7_entry() {
 }
 
 #[test]
-fn catalog_contains_glm_5_2_exo_entry() {
+fn catalog_contains_hermes_frontier_lanes() {
     let path = env_models_yaml();
     let models = catalog::load(&path).expect("load models.yaml");
-    let glm = models
+    let flash = models
         .iter()
-        .find(|m| m.id == "pipenetwork/GLM-5.2-MLX-5bit")
-        .expect("glm 5.2 exo present");
-    assert_eq!(glm.context_length, 1048576);
-    assert_eq!(glm.max_output_tokens, 32768);
-    assert_eq!(glm.quantization.as_deref(), Some("MLX-5bit"));
+        .find(|m| m.id == "deepseek-ai/deepseek-v4-flash")
+        .expect("deepseek v4 flash present");
+    assert_eq!(flash.context_length, 1_000_000);
+    assert_eq!(flash.max_output_tokens, 384000);
+    assert_eq!(flash.quantization.as_deref(), Some("DS4-Q4"));
     assert!(
-        glm.aliases.iter().any(|a| a == "zai/glm-5.2"),
-        "glm catalog entry must keep the canonical Z.ai alias"
+        flash.aliases.iter().any(|a| a == "ds4-flash"),
+        "flash catalog entry must keep a DS4 shorthand alias"
     );
+    assert!(flash.matches("deepseek-ai/deepseek-v4-flash"));
+    assert!(flash.matches("ds4-flash"));
+
+    let qwen_next = models
+        .iter()
+        .find(|m| m.id == "qwen/qwen3-coder-next-80b-a3b-instruct")
+        .expect("qwen3 coder next present");
+    assert_eq!(qwen_next.context_length, 262144);
+    assert_eq!(qwen_next.max_output_tokens, 32768);
+    assert_eq!(qwen_next.quantization.as_deref(), Some("UD-Q4_K_M"));
     assert!(
-        glm.aliases.iter().any(|a| a == "glm5.2"),
-        "glm catalog entry must keep a compact shorthand alias"
+        qwen_next.aliases.iter().any(|a| a == "qwen-next"),
+        "qwen-next catalog entry must keep a stable shorthand alias"
     );
-    assert!(glm.matches("pipenetwork/GLM-5.2-MLX-5bit"));
-    assert!(glm.matches("zai/glm-5.2"));
-    assert!(glm.matches("glm5.2"));
+    assert!(qwen_next.matches("qwen/qwen3-coder-next-80b-a3b-instruct"));
+    assert!(qwen_next.matches("qwen-next"));
 }
 
 fn env_models_yaml() -> String {

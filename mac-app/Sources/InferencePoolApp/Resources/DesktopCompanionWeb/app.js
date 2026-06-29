@@ -871,6 +871,7 @@ let oauthReconcileInFlight = false;
 let oauthCallbackExchangeInFlight = false;
 let networkModels = [];
 let networkModelsFetchedAt = 0;
+let networkModelsError = null;
 let networkStats = null;
 let networkStatsFetchedAt = 0;
 let networkStatsError = null;
@@ -1450,6 +1451,19 @@ function friendlyError(error) {
   return message;
 }
 
+function payloadErrorMessage(payload, fallback) {
+  if (typeof payload?.error === "string") {
+    return payload.error;
+  }
+  if (typeof payload?.error?.message === "string") {
+    return payload.error.message;
+  }
+  if (typeof payload?.message === "string") {
+    return payload.message;
+  }
+  return fallback;
+}
+
 function hardwareRamGB(hardware) {
   return hardware?.total_ram_gb ?? hardware?.totalRAMGB ?? null;
 }
@@ -1596,7 +1610,7 @@ function asciiProgress(percent) {
 
 function maskToken(token) {
   if (!token) {
-    return "Syncing...";
+    return "Waiting for bearer";
   }
   if (token.length <= 16) {
     return token;
@@ -1810,6 +1824,45 @@ function deviceWalletBalance() {
     usdcCents: lastSnapshot?.wallet?.gateway_usdc_cents ?? 0,
     note: walletStatusNote(lastSnapshot?.wallet),
     transactions: visibleWalletTransactions(lastSnapshot?.wallet_transactions),
+  };
+}
+
+function walletBalanceLabel(walletView, compact = true) {
+  if (walletView.credits != null) {
+    return formatDisplayCredits(walletView.credits, compact);
+  }
+  if (lastSnapshot?.wallet?.gateway_sync_error) {
+    return "Gateway wallet unavailable";
+  }
+  if (lastSnapshot?.wallet?.current_device_id) {
+    return "Connecting gateway wallet";
+  }
+  return t("common.waitingLocalService");
+}
+
+function fallbackNetworkStats() {
+  if (!lastSnapshot) {
+    return null;
+  }
+  const hardware = lastSnapshot.device?.hardware || {};
+  const loadedModelIds = new Set();
+  if (lastSnapshot.loaded_model_id) {
+    loadedModelIds.add(lastSnapshot.loaded_model_id);
+  }
+  for (const model of lastSnapshot.models || []) {
+    if (model?.loaded && model.id) {
+      loadedModelIds.add(model.id);
+    }
+  }
+  return {
+    total_devices: 1,
+    total_ram_gb: hardwareRamGB(hardware) ?? 0,
+    total_models: loadedModelIds.size,
+    avg_ttft_ms: null,
+    avg_tps: null,
+    total_credits_earned: lastSnapshot.wallet?.gateway_total_earned_credits ?? 0,
+    total_credits_spent: lastSnapshot.wallet?.gateway_total_spent_credits ?? 0,
+    total_usdc_distributed_cents: 0,
   };
 }
 
@@ -2870,8 +2923,9 @@ async function sendChatMessage() {
 }
 
 function renderHomeNetworkStats() {
-  if (!networkStats) {
-    const placeholder = networkStatsError ? "Unavailable" : "Loading...";
+  const stats = networkStats || fallbackNetworkStats();
+  if (!stats) {
+    const placeholder = networkStatsError ? "Gateway unavailable" : "Loading...";
     els.homeNetworkDevices.textContent = placeholder;
     els.homeNetworkRam.textContent = placeholder;
     els.homeNetworkModels.textContent = placeholder;
@@ -2883,14 +2937,14 @@ function renderHomeNetworkStats() {
     return;
   }
 
-  els.homeNetworkDevices.textContent = formatCredits(networkStats.total_devices ?? 0);
-  els.homeNetworkRam.textContent = formatRamGB(networkStats.total_ram_gb);
-  els.homeNetworkModels.textContent = formatCredits(networkStats.total_models ?? 0);
-  els.homeNetworkTtft.textContent = formatMs(networkStats.avg_ttft_ms);
-  els.homeNetworkTps.textContent = formatTps(networkStats.avg_tps);
-  els.homeNetworkEarned.textContent = formatDisplayCredits(networkStats.total_credits_earned ?? 0, true);
-  els.homeNetworkSpent.textContent = formatDisplayCredits(networkStats.total_credits_spent ?? 0, true);
-  els.homeNetworkUsdc.textContent = `${formatUsdc(networkStats.total_usdc_distributed_cents ?? 0)} USDC`;
+  els.homeNetworkDevices.textContent = formatCredits(stats.total_devices ?? 0);
+  els.homeNetworkRam.textContent = formatRamGB(stats.total_ram_gb);
+  els.homeNetworkModels.textContent = formatCredits(stats.total_models ?? 0);
+  els.homeNetworkTtft.textContent = formatMs(stats.avg_ttft_ms);
+  els.homeNetworkTps.textContent = formatTps(stats.avg_tps);
+  els.homeNetworkEarned.textContent = formatDisplayCredits(stats.total_credits_earned ?? 0, true);
+  els.homeNetworkSpent.textContent = formatDisplayCredits(stats.total_credits_spent ?? 0, true);
+  els.homeNetworkUsdc.textContent = `${formatUsdc(stats.total_usdc_distributed_cents ?? 0)} USDC`;
 }
 
 function buildLocalCurl(demand) {
@@ -2979,7 +3033,7 @@ async function post(path, body = null) {
   const res = await apiFetch(path, init);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed: ${res.status}`);
+    throw new Error(payloadErrorMessage(payload, `Request failed: ${res.status}`));
   }
   return res.json();
 }
@@ -2988,7 +3042,7 @@ async function getJson(path) {
   const res = await apiFetch(path);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed: ${res.status}`);
+    throw new Error(payloadErrorMessage(payload, `Request failed: ${res.status}`));
   }
   return res.json();
 }
@@ -3000,7 +3054,7 @@ async function getJsonMaybeMissing(path) {
   }
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed: ${res.status}`);
+    throw new Error(payloadErrorMessage(payload, `Request failed: ${res.status}`));
   }
   return res.json();
 }
@@ -3097,7 +3151,7 @@ function setDisconnected(error) {
   els.localModelId.textContent = t("common.noModelLoaded");
   els.localCurl.textContent = "Waiting for a local model...";
   els.networkBaseUrl.textContent = "-";
-  els.networkToken.textContent = t("common.syncing");
+  els.networkToken.textContent = "Waiting for bearer";
   els.networkToken.title = "Copy device bearer";
   els.networkToken.disabled = true;
   els.networkTokenCopy.textContent = "Copy device bearer";
@@ -3349,7 +3403,9 @@ function renderNetworkModels() {
   els.networkModelTableBody.innerHTML = "";
   const visibleModels = visibleNetworkModels();
   if (!visibleModels.length) {
-    els.networkModelEmpty.textContent = "No live gateway model data yet.";
+    els.networkModelEmpty.textContent = networkModelsError
+      ? `Could not load live gateway models: ${networkModelsError}`
+      : "No live gateway model data yet.";
     return;
   }
 
@@ -4543,6 +4599,7 @@ async function refreshNetworkModels(force = false) {
       prompt: model.pricing_prompt,
       completion: model.pricing_completion,
     }));
+    networkModelsError = null;
     networkModelsFetchedAt = now;
     renderNetworkModels();
     renderDemand(lastSnapshot);
@@ -4550,8 +4607,10 @@ async function refreshNetworkModels(force = false) {
   } catch (error) {
     console.error(error);
     networkModels = [];
+    networkModelsError = friendlyError(error);
     els.networkModelTableBody.innerHTML = "";
-    els.networkModelEmpty.textContent = "Could not load live gateway models yet.";
+    els.networkModelEmpty.textContent = `Could not load live gateway models: ${networkModelsError}`;
+    renderDemand(lastSnapshot);
     renderChat(lastSnapshot);
   }
 }
@@ -4600,9 +4659,7 @@ function renderHome(snapshot) {
   const walletView = deviceWalletBalance();
   els.homeStatus.textContent = labelForState(snapshot?.service_state);
   els.homeModel.textContent = snapshot?.loaded_model_id || "No model loaded";
-  els.homeBalance.textContent = walletView.credits != null
-    ? formatDisplayCredits(walletView.credits, true)
-    : "Syncing...";
+  els.homeBalance.textContent = walletBalanceLabel(walletView, true);
   els.homeAccount.textContent = userLabel(authUser);
   renderHomeNetworkStats();
 }
@@ -4636,9 +4693,7 @@ function renderSupply(snapshot) {
 
   els.supplyEarningRate.textContent = availabilityRateLabel(wallet);
   els.supplySessionCredits.textContent = formatDisplayCredits(wallet.estimated_session_credits ?? 0, true);
-  els.supplyWalletBalance.textContent = deviceWalletBalance().credits != null
-    ? formatDisplayCredits(deviceWalletBalance().credits, true)
-    : "Syncing...";
+  els.supplyWalletBalance.textContent = walletBalanceLabel(deviceWalletBalance(), true);
 
   const recommended = snapshot.models.find((model) => model.recommended) || snapshot.models[0];
   updateRecommendedAction(snapshot, recommended);
@@ -4680,8 +4735,8 @@ function renderWallet(snapshot) {
   els.walletBalance.textContent = walletView.credits != null
     ? formatDisplayCredits(walletView.credits, false)
     : wallet.gateway_sync_error
-      ? "Retrying sync"
-      : "Syncing...";
+      ? "Gateway wallet unavailable"
+      : walletBalanceLabel(walletView, false);
   els.walletUsdc.textContent = formatUsdc(walletView.usdcCents ?? 0);
   els.walletSince.textContent = formatRelativeFromUnix(wallet.supplying_since);
   els.walletRate.textContent = availabilityRateLabel(wallet);
@@ -4717,7 +4772,8 @@ function render(snapshot) {
 async function refresh() {
   const res = await apiFetch(ROUTES.snapshot);
   if (!res.ok) {
-    throw new Error(`Teale status failed: ${res.status}`);
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payloadErrorMessage(payload, `Teale status failed: ${res.status}`));
   }
   const snapshot = await res.json();
   consecutiveSnapshotFailures = 0;

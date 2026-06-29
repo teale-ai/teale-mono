@@ -123,7 +123,7 @@ actor GatewayCompanionAccountClient {
 
     func fetchAccountSummary() async throws -> CompanionGatewayAccountSummary {
         let token = try await authClient.bearer()
-        return try await authClient.getJSON(path: "/v1/account", bearerToken: token)
+        return try await authClient.getJSON(path: "/v1/account/summary", bearerToken: token)
     }
 }
 

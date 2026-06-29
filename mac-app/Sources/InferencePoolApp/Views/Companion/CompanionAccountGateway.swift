@@ -316,7 +316,7 @@ private enum CompanionAccountGatewayClient {
     static func listAPIKeys(appState: AppState) async throws -> [CompanionAccountAPIKey] {
         let response: CompanionAccountAPIKeyListResponse = try await getJSON(
             appState: appState,
-            path: "/v1/account/api-keys"
+            path: "/v1/keys"
         )
         return response.keys
     }
@@ -328,9 +328,9 @@ private enum CompanionAccountGatewayClient {
     ) async throws -> CompanionAccountAPIKeyMinted {
         try await postJSON(
             appState: appState,
-            path: "/v1/account/api-keys",
+            path: "/v1/keys",
             body: CompanionCreateAccountAPIKeyRequest(
-                label: label.isEmpty ? nil : label
+                name: label.isEmpty ? nil : label
             )
         )
     }
@@ -340,10 +340,11 @@ private enum CompanionAccountGatewayClient {
         appState: AppState,
         keyID: String
     ) async throws -> CompanionAccountAPIKeyRevokeResponse {
-        try await deleteJSON(
+        try await deleteVoid(
             appState: appState,
-            path: "/v1/account/api-keys/\(keyID)"
+            path: "/v1/keys/\(keyID)"
         )
+        return CompanionAccountAPIKeyRevokeResponse(revoked: true)
     }
 
     @MainActor
@@ -389,6 +390,27 @@ private enum CompanionAccountGatewayClient {
         } catch let GatewayAuthError.http(code, _) where code == 401 {
             let refreshed = try await refreshBearer(using: client, appState: appState)
             return try await client.deleteJSON(path: path, bearerToken: refreshed)
+        }
+    }
+
+    @MainActor
+    private static func deleteVoid(
+        appState: AppState,
+        path: String
+    ) async throws {
+        let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        let token = try await bearer(using: client, appState: appState)
+        do {
+            let _: EmptyAccountGatewayResponse = try await client.deleteJSON(path: path, bearerToken: token)
+        } catch let GatewayAuthError.http(code, _) where code == 401 {
+            let refreshed = try await refreshBearer(using: client, appState: appState)
+            do {
+                let _: EmptyAccountGatewayResponse = try await client.deleteJSON(path: path, bearerToken: refreshed)
+            } catch GatewayAuthError.decode {
+                return
+            }
+        } catch GatewayAuthError.decode {
+            return
         }
     }
 
@@ -507,13 +529,31 @@ struct CompanionAccountAPIKey: Decodable, Identifiable {
     var id: String { keyID }
     var isRevoked: Bool { revokedAt != nil }
 
-    enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey {
         case keyID = "keyID"
         case tokenPreview = "tokenPreview"
         case label
+        case name
+        case prefix
         case createdAt = "createdAt"
         case lastUsedAt = "lastUsedAt"
         case revokedAt = "revokedAt"
+        case disabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+            ?? container.decodeIfPresent(String.self, forKey: .name)
+        tokenPreview = try container.decodeIfPresent(String.self, forKey: .tokenPreview)
+            ?? container.decodeIfPresent(String.self, forKey: .prefix)
+            ?? companionTruncatedIdentifier(keyID)
+        createdAt = try container.decode(Int64.self, forKey: .createdAt)
+        lastUsedAt = try container.decodeIfPresent(Int64.self, forKey: .lastUsedAt)
+        let disabled = try container.decodeIfPresent(Bool.self, forKey: .disabled) ?? false
+        revokedAt = try container.decodeIfPresent(Int64.self, forKey: .revokedAt)
+            ?? (disabled ? createdAt : nil)
     }
 }
 
@@ -523,11 +563,21 @@ struct CompanionAccountAPIKeyMinted: Decodable {
     let label: String?
     let createdAt: Int64
 
-    enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey {
         case keyID = "keyID"
         case token
         case label
+        case name
         case createdAt = "createdAt"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        token = try container.decode(String.self, forKey: .token)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+            ?? container.decodeIfPresent(String.self, forKey: .name)
+        createdAt = try container.decode(Int64.self, forKey: .createdAt)
     }
 }
 
@@ -538,6 +588,8 @@ private struct CompanionAccountAPIKeyListResponse: Decodable {
 private struct CompanionAccountAPIKeyRevokeResponse: Decodable {
     let revoked: Bool
 }
+
+private struct EmptyAccountGatewayResponse: Decodable {}
 
 private struct CompanionAccountLinkRequest: Encodable {
     let accountUserID: String
@@ -561,7 +613,7 @@ private struct CompanionAccountSendRequest: Encodable {
 }
 
 private struct CompanionCreateAccountAPIKeyRequest: Encodable {
-    let label: String?
+    let name: String?
 }
 
 private func normalizedRecipientID(_ rawValue: String) throws -> String {

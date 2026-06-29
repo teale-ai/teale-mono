@@ -424,6 +424,8 @@ func modelDescriptorForExternalID(_ modelID: String) -> ModelDescriptor {
     let numericParameterCount = Double(parameterCount.dropLast()) ?? 8
     let sizeMultiplier: Double
     switch quantization {
+    case .q2:
+        sizeMultiplier = 0.30
     case .q4:
         sizeMultiplier = 0.55
     case .q5:

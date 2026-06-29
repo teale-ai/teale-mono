@@ -233,19 +233,6 @@ public struct ModelCatalog: Sendable {
             popularityRank: 14,
             openrouterId: "zai/glm-5.1"
         ),
-        ModelDescriptor(
-            id: "glm-5.2-mlx-5bit",
-            name: "GLM-5.2 5-bit (exo)",
-            huggingFaceRepo: "pipenetwork/GLM-5.2-MLX-5bit",
-            parameterCount: "754B",
-            quantization: .q5,
-            estimatedSizeGB: 488.0,
-            requiredRAMGB: 640.0,
-            family: "GLM",
-            description: "GLM-5.2 MLX 5-bit with 1M context. Requires the paired 512 GB Ultra exo cluster over TB5/RDMA.",
-            popularityRank: 15,
-            openrouterId: "pipenetwork/GLM-5.2-MLX-5bit"
-        ),
         // Kimi K2.6 — 1T MoE, natively int4, 256K context. MLX variant is
         // 554 GB — needs multi-Ultra exo cluster (single 512 GB Mac can't
         // load it alone). Served via exo-sharded MLX, not llama.cpp.
@@ -262,20 +249,36 @@ public struct ModelCatalog: Sendable {
             popularityRank: 16,
             openrouterId: "moonshotai/kimi-k2.6"
         ),
-        // DeepSeek V4 Flash — 158B-A13B MoE, served via rapid-mlx 8-bit on
+        // DeepSeek V4 Flash — 284B-A13B MoE, served via ds4-server GGUF on
         // a single 512 GB Mac Studio Ultra. Frontier-class with 1M context.
         ModelDescriptor(
             id: "deepseek-v4-flash",
-            name: "DeepSeek V4 Flash (158B MoE)",
-            huggingFaceRepo: "mlx-community/DeepSeek-V4-Flash-8bit",
-            parameterCount: "158B",
-            quantization: .q8,
-            estimatedSizeGB: 158.0,
-            requiredRAMGB: 200.0,
+            name: "DeepSeek V4 Flash (DS4 Q4)",
+            huggingFaceRepo: "antirez/deepseek-v4-gguf",
+            parameterCount: "284B",
+            quantization: .q4,
+            estimatedSizeGB: 180.0,
+            requiredRAMGB: 256.0,
             family: "DeepSeek",
-            description: "DeepSeek V4 Flash — 158B MoE (13B active), 1M context, frontier-level reasoning. Served via rapid-mlx on 256 GB+ Mac Studio Ultra.",
+            description: "DeepSeek V4 Flash — DS4 Q4 GGUF, 13B active, 1M context. Candidate for one 512 GB Mac Studio Ultra.",
             popularityRank: 14,
-            openrouterId: "deepseek/deepseek-v4-flash"
+            openrouterId: "deepseek-ai/deepseek-v4-flash"
+        ),
+        // DeepSeek V4 Pro — quality-max DS4 candidate for the second 512 GB
+        // machine. Start with the DS4 Pro Q2 imatrix GGUF and promote only if
+        // benchmark quality justifies the slower decode.
+        ModelDescriptor(
+            id: "deepseek-v4-pro",
+            name: "DeepSeek V4 Pro (DS4 Q2)",
+            huggingFaceRepo: "antirez/deepseek-v4-gguf",
+            parameterCount: "1.6T",
+            quantization: .q2,
+            estimatedSizeGB: 430.0,
+            requiredRAMGB: 500.0,
+            family: "DeepSeek",
+            description: "DeepSeek V4 Pro — DS4 Q2 imatrix GGUF, 1M context. Candidate for one 512 GB Mac Studio Ultra quality lane.",
+            popularityRank: 15,
+            openrouterId: "deepseek-ai/deepseek-v4-pro"
         ),
     ]
 

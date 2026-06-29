@@ -68,7 +68,7 @@ struct CompanionDemandView: View {
         TealeSection(prompt: appState.companionText("demand.networkModels", fallback: "teale network models")) {
             let rows = gatewayState.networkModels
             if rows.isEmpty {
-                Text(appState.companionText("demand.noLiveModels", fallback: "No live network model data yet."))
+                Text(networkModelsEmptyLabel)
                     .font(TealeDesign.monoSmall)
                     .foregroundStyle(TealeDesign.muted)
             } else {
@@ -79,6 +79,16 @@ struct CompanionDemandView: View {
                 }
             }
         }
+    }
+
+    private var networkModelsEmptyLabel: String {
+        if let error = gatewayState.lastModelRefreshError, !error.isEmpty {
+            return appState.companionText(
+                "demand.modelsUnavailable",
+                fallback: "Could not load live gateway models: \(error)"
+            )
+        }
+        return appState.companionText("demand.noLiveModels", fallback: "No live network model data yet.")
     }
 
     // MARK: teale network (curl)

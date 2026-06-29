@@ -115,6 +115,7 @@ public struct InferencePricing: Sendable {
     /// Multiplier based on quantization level.
     public static func quantizationMultiplier(_ quantization: QuantizationType) -> Double {
         switch quantization {
+        case .q2: return 0.75
         case .q4: return 1.0
         case .q5: return 1.15
         case .q8: return 1.5

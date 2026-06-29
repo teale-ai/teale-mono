@@ -1,6 +1,6 @@
 import Foundation
 
-public enum GatewayAuthError: Error, CustomStringConvertible {
+public enum GatewayAuthError: Error, CustomStringConvertible, LocalizedError {
     case http(Int, String)
     case decode(String)
     case network(String)
@@ -12,6 +12,8 @@ public enum GatewayAuthError: Error, CustomStringConvertible {
         case .network(let m): return "network: \(m)"
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 /// Handles the ed25519 challenge → sign → exchange dance with

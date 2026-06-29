@@ -15,12 +15,11 @@ public actor Ds4Provider: InferenceProvider {
     private var threads: Int?
     private var extraArgs: [String]
     private let session: URLSession
-    private let backendModelID = "deepseek-v4-flash"
 
     public init(
         binaryPath: String = "ds4-server",
         port: Int = 11438,
-        contextSize: Int = 100000,
+        contextSize: Int = 1_000_000,
         host: String = "127.0.0.1",
         kvDiskDir: String? = nil,
         kvDiskSpaceMB: Int? = 8192,
@@ -193,7 +192,7 @@ public actor Ds4Provider: InferenceProvider {
         urlRequest.timeoutInterval = 600
 
         var proxiedRequest = request
-        proxiedRequest.model = backendModelID
+        proxiedRequest.model = backendModelID(for: descriptor)
         proxiedRequest.stream = true
         urlRequest.httpBody = try JSONEncoder().encode(proxiedRequest)
 
@@ -230,6 +229,14 @@ public actor Ds4Provider: InferenceProvider {
 
     private var serverBaseURL: URL {
         URL(string: "http://127.0.0.1:\(serverPort)")!
+    }
+
+    private func backendModelID(for descriptor: ModelDescriptor) -> String {
+        let identifiers = descriptor.identifiers.map { $0.lowercased() }
+        if identifiers.contains(where: { $0.contains("deepseek-v4-pro") || $0.contains("v4-pro") }) {
+            return "deepseek-v4-pro"
+        }
+        return "deepseek-v4-flash"
     }
 
     private func resolvedBinaryPath() -> String {
