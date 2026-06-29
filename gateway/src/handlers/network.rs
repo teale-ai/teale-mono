@@ -13,7 +13,7 @@ use crate::catalog::is_large;
 use crate::ledger;
 use crate::state::AppState;
 
-const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2"];
+const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
 
 #[derive(Serialize)]
 struct DeviceView {

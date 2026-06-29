@@ -128,6 +128,9 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         if let host = components.host, host.hasPrefix("relay.") {
             components.host = host.replacingOccurrences(of: "relay.", with: "gateway.", options: .anchored)
         }
+        guard let host = components.host?.lowercased(), host == "gateway.teale.com" || host.hasSuffix(".teale.com") else {
+            return fallback
+        }
 
         components.path = ""
         components.query = nil
@@ -825,8 +828,8 @@ extension RemoteControlBridge: DesktopCompanionControlling {
                 id: model.id,
                 context_length: model.context_length,
                 device_count: model.loaded_device_count ?? 0,
-                ttft_ms_p50: model.metrics?.ttft_ms_p50,
-                tps_p50: model.metrics?.tps_p50,
+                ttft_ms_p50: model.metrics?.ttft_ms_p50 ?? model.metrics?.ttft_ms_avg,
+                tps_p50: model.metrics?.tps_p50 ?? model.metrics?.tps_avg,
                 pricing_prompt: model.pricing?.prompt,
                 pricing_completion: model.pricing?.completion
             )
@@ -846,7 +849,7 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     }
 
     func desktop_account_api_keys() async throws -> DesktopCompanionAccountAPIKeysResponse {
-        try await desktopGatewayJSON(method: "GET", path: "/v1/account/api-keys")
+        try await desktopGatewayJSON(method: "GET", path: "/v1/keys")
     }
 
     func desktop_link_account(_ request: DesktopCompanionAccountLinkRequest) async throws -> DesktopCompanionAccountSnapshot {
@@ -854,19 +857,20 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     }
 
     func desktop_create_account_api_key(label: String?) async throws -> DesktopCompanionAccountAPIKeyMintedResponse {
-        struct Payload: Encodable { let label: String? }
+        struct Payload: Encodable { let name: String? }
         return try await desktopGatewayJSON(
             method: "POST",
-            path: "/v1/account/api-keys",
-            body: Payload(label: label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty)
+            path: "/v1/keys",
+            body: Payload(name: label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty)
         )
     }
 
     func desktop_revoke_account_api_key(key_id: String) async throws -> DesktopCompanionAccountAPIKeyRevokeResponse {
-        try await desktopGatewayJSON(
+        let _: EmptyGatewayResponse = try await desktopGatewayJSON(
             method: "DELETE",
-            path: "/v1/account/api-keys/\(key_id)"
+            path: "/v1/keys/\(key_id)"
         )
+        return DesktopCompanionAccountAPIKeyRevokeResponse(revoked: true)
     }
 
     func desktop_sweep_account_device(device_id: String) async throws -> DesktopCompanionAccountSweepResponse {
@@ -1033,12 +1037,17 @@ extension RemoteControlBridge: DesktopCompanionControlling {
 
     private func desktopGatewayBearer(forceRefresh: Bool) async throws -> String {
         let client = GatewayAuthClient(baseURL: gatewayRootURL())
-        if !forceRefresh, !appState.gatewayAPIKey.isEmpty {
+        if !forceRefresh, shouldReuseGatewayBearer(appState.gatewayAPIKey) {
             return appState.gatewayAPIKey
         }
         let token = forceRefresh ? try await client.exchange() : try await client.bearer()
         appState.gatewayAPIKey = token
         return token
+    }
+
+    private func shouldReuseGatewayBearer(_ token: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && !trimmed.hasPrefix("local-")
     }
 
     private func desktopGatewayJSON<Response: Decodable>(
@@ -1179,6 +1188,8 @@ private struct DesktopGatewayPricing: Decodable {
 private struct DesktopGatewayMetrics: Decodable {
     let ttft_ms_p50: UInt32?
     let tps_p50: Float?
+    let ttft_ms_avg: UInt32?
+    let tps_avg: Float?
 }
 
 private struct DesktopSupabaseUserLookupResponse: Decodable {

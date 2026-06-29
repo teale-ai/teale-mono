@@ -385,7 +385,9 @@ pub fn delete_api_key(
 ) -> Result<(), ApiKeyError> {
     let conn = pool.lock();
     let rows = conn.execute(
-        "DELETE FROM api_keys WHERE key_id = ? AND account_user_id = ?",
+        // Preserve the row for account_ledger foreign-key history. Revocation
+        // is enforced by auth rejecting disabled keys.
+        "UPDATE api_keys SET disabled = 1 WHERE key_id = ? AND account_user_id = ?",
         params![key_id, account_user_id],
     )?;
     if rows == 0 {

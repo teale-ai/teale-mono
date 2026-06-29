@@ -351,6 +351,10 @@ let package = Package(
             dependencies: ["WalletKit"]
         ),
         .testTarget(
+            name: "GatewayKitTests",
+            dependencies: ["GatewayKit"]
+        ),
+        .testTarget(
             name: "AgentKitTests",
             dependencies: ["AgentKit"]
         ),
@@ -361,6 +365,10 @@ let package = Package(
         .testTarget(
             name: "TealeSDKTests",
             dependencies: ["TealeSDK"]
+        ),
+        .testTarget(
+            name: "LocalAPITests",
+            dependencies: ["LocalAPI"]
         ),
         .testTarget(
             name: "TealeTests",

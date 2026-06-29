@@ -27,7 +27,13 @@ struct TealeApp: App {
     }
 
     private func handleIncomingURL(_ url: URL) {
-        DesktopCompanionBridge.shared.handleIncomingURL(url)
+        let handledByWebCompanion = DesktopCompanionBridge.shared.handleIncomingURL(url)
+        if !handledByWebCompanion,
+           url.host == "auth",
+           url.path == "/callback",
+           let authManager = appState.authManager {
+            Task { await authManager.handleOAuthCallback(url: url) }
+        }
     }
 
     private static func patchAppMenuTitle(_ name: String) {

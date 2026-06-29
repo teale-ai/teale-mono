@@ -102,22 +102,15 @@ cluster runner.
 
 ## DeepSeek V4 matrix
 
-For the 2× 512 GB setup, benchmark `DeepSeek-V4-Flash` and `DeepSeek-V4-Pro`
-as separate deployment shapes instead of treating "fits in cluster RAM" as the
-only question:
+For the 2× 512 GB setup, benchmark DS4 as two independent single-machine
+deployments instead of using exo tensor parallelism:
 
-- `DeepSeek-V4-Flash` single-node — baseline on one 512 GB Ultra. This is the
-  control case because Flash should fit on one node without tensor parallelism.
-- `DeepSeek-V4-Flash` 2-node tensor parallel — only worth promoting if it beats
-  the single-node baseline on warm TTFT and sustained decode after paying the
-  inter-node communication tax.
-- `DeepSeek-V4-Pro` 2-node tensor parallel — capacity-only candidate. Do not
-  promote it unless the current `exo + MLX` stack proves it can load
-  `model_type=deepseek_v4` cleanly.
+- `DeepSeek-V4-Flash` DS4 Q4 on one 512 GB Ultra — stability baseline.
+- `DeepSeek-V4-Pro` DS4 Q2 on the other 512 GB Ultra — quality lane.
 
 Use [docs/deepseek-v4-exo-benchmarks.md](./deepseek-v4-exo-benchmarks.md) for
-the exact benchmark matrix and [scripts/bench-deepseek-v4-exo.sh](../scripts/bench-deepseek-v4-exo.sh)
-to capture TTFT/TPS summaries from any OpenAI-compatible endpoint.
+the exact comparison matrix and [scripts/bench-ds4-openai.sh](../scripts/bench-ds4-openai.sh)
+to capture TTFT/TPS summaries from each DS4 OpenAI-compatible endpoint.
 
 ## Running as a daemon
 

@@ -359,7 +359,9 @@ public actor RapidMLXProvider: InferenceProvider {
         let token = id.split(separator: "/").last.map(String.init) ?? id
         let lower = id.lowercased()
         let quantization: QuantizationType
-        if lower.contains("8bit") || lower.contains("-q8") || lower.contains("_q8") {
+        if lower.contains("2bit") || lower.contains("-q2") || lower.contains("_q2") || lower.contains("iq2") {
+            quantization = .q2
+        } else if lower.contains("8bit") || lower.contains("-q8") || lower.contains("_q8") {
             quantization = .q8
         } else if lower.contains("fp16") || lower.contains("bf16") {
             quantization = .fp16

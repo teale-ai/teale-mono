@@ -7026,4 +7026,31 @@ mod tests {
         let after = resolve_api_key(&pool, &minted.token).unwrap();
         assert!(after.disabled);
     }
+
+    #[test]
+    fn api_key_delete_revokes_used_key_without_breaking_ledger_history() {
+        use crate::api_keys::{create_api_key, delete_api_key, get_api_key, CreateApiKeyParams};
+        let pool = seed_account_with_balance("acc-4", "device-4", 1_000);
+        let minted = create_api_key(&pool, "acc-4", CreateApiKeyParams::default()).unwrap();
+        upsert_device(&pool, "provider").unwrap();
+
+        settle_request(
+            &pool,
+            &ConsumerPrincipal::Account {
+                account_user_id: "acc-4".into(),
+                api_key_id: Some(minted.public.key_id.clone()),
+            },
+            Some("provider"),
+            &["provider".to_string()],
+            25,
+            "req-delete-used-key",
+            "qwen",
+        )
+        .unwrap();
+
+        delete_api_key(&pool, "acc-4", &minted.public.key_id).unwrap();
+        let key = get_api_key(&pool, "acc-4", &minted.public.key_id).unwrap();
+        assert!(key.disabled);
+        assert_eq!(key.usage_credits, 25);
+    }
 }

@@ -40,6 +40,14 @@ use crate::metrics;
 use crate::relay_client::{PendingSession, SessionEvent};
 use crate::state::AppState;
 
+const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
+
+fn is_hidden_model_id(model_id: &str) -> bool {
+    HIDDEN_MODEL_IDS
+        .iter()
+        .any(|hidden| crate::registry::model_matches_any(model_id, &[hidden.to_string()]))
+}
+
 fn ttft_deadline_seconds_for_model(
     reliability: &crate::config::ReliabilityConfig,
     catalog_model: &CatalogModel,
@@ -89,7 +97,14 @@ fn resolve_requested_model(state: &AppState, requested_model: &str) -> Option<Ca
         .find(|m| m.matches(requested_model))
         .cloned()
     {
+        if is_hidden_model_id(&model.id) {
+            return None;
+        }
         return Some(model);
+    }
+
+    if is_hidden_model_id(requested_model) {
+        return None;
     }
 
     let live_devices: Vec<_> = state
@@ -257,6 +272,10 @@ pub(crate) fn prepare_chat_request_excluding(
         let auto_profile = infer_auto_route_profile(headers, &parsed);
         let required_supported_parameters = required_auto_supported_parameters(&parsed);
         let registry = state.registry.clone();
+        let mut excluded_with_hidden =
+            Vec::with_capacity(excluded_models.len() + HIDDEN_MODEL_IDS.len());
+        excluded_with_hidden.extend(excluded_models.iter().cloned());
+        excluded_with_hidden.extend(HIDDEN_MODEL_IDS.iter().map(|id| (*id).to_string()));
         let resolved = resolve_auto(
             &state.catalog,
             required_ctx,
@@ -286,7 +305,7 @@ pub(crate) fn prepare_chat_request_excluding(
                     .count() as u32
             },
             (floor.small, floor.large),
-            excluded_models,
+            &excluded_with_hidden,
         )
         .cloned()
         .ok_or_else(|| {
@@ -1958,6 +1977,28 @@ pricing_completion: "0.00000020"
             resolved.pricing_completion,
             crate::catalog::LIVE_MODEL_DEFAULT_COMPLETION_PRICE
         );
+    }
+
+    #[tokio::test]
+    async fn hidden_kimi_model_does_not_resolve_from_catalog_or_live_registry() {
+        let config = dispatch_test_config(15);
+        let hidden = concrete("moonshotai/kimi-k2.6", 1000.0, 262144);
+        let catalog_state = dispatch_test_state_with_catalog(config.clone(), vec![hidden]);
+        catalog_state.registry.upsert_device(
+            "node-kimi".into(),
+            "Tailor 512g1".into(),
+            dispatch_caps(&["moonshotai/kimi-k2.6"], &[]),
+        );
+        assert!(resolve_requested_model(&catalog_state, "moonshotai/kimi-k2.6").is_none());
+        assert!(resolve_requested_model(&catalog_state, "kimi-k2.6").is_none());
+
+        let live_state = dispatch_test_state_with_catalog(config, vec![]);
+        live_state.registry.upsert_device(
+            "node-kimi".into(),
+            "Tailor 512g1".into(),
+            dispatch_caps(&["moonshotai/kimi-k2.6"], &[]),
+        );
+        assert!(resolve_requested_model(&live_state, "moonshotai/kimi-k2.6").is_none());
     }
 
     #[test]

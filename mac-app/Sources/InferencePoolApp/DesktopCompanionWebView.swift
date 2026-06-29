@@ -53,9 +53,11 @@ final class DesktopCompanionBridge {
         syncNativeStateIntoPage()
     }
 
-    func handleIncomingURL(_ url: URL) {
+    @discardableResult
+    func handleIncomingURL(_ url: URL) -> Bool {
         pendingOAuthCallbackURL = url.absoluteString
         dispatchPendingOAuthCallbackIfPossible()
+        return webView != nil
     }
 
     func takePendingOAuthCallbackURL() -> String? {

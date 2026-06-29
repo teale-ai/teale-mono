@@ -231,6 +231,7 @@ public struct GGUFModelInfo: Identifiable, Sendable {
         // Estimate from file size and quantization
         let bitsPerParam: Double
         switch detectQuantization() {
+        case .q2: bitsPerParam = 2.5
         case .q4: bitsPerParam = 4.5
         case .q5: bitsPerParam = 5.5
         case .q8: bitsPerParam = 8.5
@@ -245,6 +246,7 @@ public struct GGUFModelInfo: Identifiable, Sendable {
 
     private func detectQuantization() -> QuantizationType {
         let lower = filename.lowercased()
+        if lower.contains("q2") || lower.contains("2bit") || lower.contains("iq2") { return .q2 }
         if lower.contains("q5") || lower.contains("5bit") { return .q5 }
         if lower.contains("q8") || lower.contains("8bit") { return .q8 }
         if lower.contains("f16") || lower.contains("fp16") || lower.contains("f32") { return .fp16 }

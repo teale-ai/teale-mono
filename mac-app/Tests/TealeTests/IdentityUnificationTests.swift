@@ -57,4 +57,15 @@ final class IdentityUnificationTests: XCTestCase {
         XCTAssertFalse(status.earningEligible)
         XCTAssertEqual(status.eligibilityLabel, "Not yet")
     }
+
+    func testCompanionGatewayURLIgnoresPrivateDebugFallbacks() {
+        XCTAssertEqual(
+            companionGatewayAPIBaseURL(for: "http://tailor96s-mac-studio:18081").absoluteString,
+            "https://gateway.teale.com/v1"
+        )
+        XCTAssertEqual(
+            companionGatewayAPIBaseURL(for: "wss://relay.teale.com/ws").absoluteString,
+            "https://gateway.teale.com/v1"
+        )
+    }
 }

@@ -82,7 +82,7 @@ final class CompanionGatewayState {
     }
 
     private func ensureBearer(appState: AppState) async -> String? {
-        if !appState.gatewayAPIKey.isEmpty {
+        if shouldReuseGatewayBearer(appState.gatewayAPIKey) {
             bearerToken = appState.gatewayAPIKey
         }
 
@@ -96,7 +96,7 @@ final class CompanionGatewayState {
             appState.gatewayAPIKey = token
             return token
         } catch {
-            if !appState.gatewayAPIKey.isEmpty {
+            if shouldReuseGatewayBearer(appState.gatewayAPIKey) {
                 bearerToken = appState.gatewayAPIKey
                 return appState.gatewayAPIKey
             }
@@ -111,16 +111,21 @@ final class CompanionGatewayState {
             )
 
             var deviceCounts: [String: Int] = [:]
+            var networkError: Error?
             if let bearerToken, !bearerToken.isEmpty {
-                let network: GatewayNetworkEnvelope = try await getJSON(
-                    url: baseURL.appending(path: "network"),
-                    bearerToken: bearerToken
-                )
+                do {
+                    let network: GatewayNetworkEnvelope = try await getJSON(
+                        url: baseURL.appending(path: "network"),
+                        bearerToken: bearerToken
+                    )
 
-                for device in network.devices where device.isAvailable && !device.heartbeatStale {
-                    for modelID in device.loadedModels {
-                        deviceCounts[modelID, default: 0] += 1
+                    for device in network.devices where device.isAvailable && !device.heartbeatStale {
+                        for modelID in device.loadedModels {
+                            deviceCounts[modelID, default: 0] += 1
+                        }
                     }
+                } catch {
+                    networkError = error
                 }
             }
 
@@ -150,7 +155,11 @@ final class CompanionGatewayState {
                     return left.id < right.id
                 }
 
-            lastModelRefreshError = nil
+            if networkModels.isEmpty, let networkError {
+                lastModelRefreshError = networkError.localizedDescription
+            } else {
+                lastModelRefreshError = nil
+            }
         } catch {
             lastModelRefreshError = error.localizedDescription
         }
@@ -353,6 +362,9 @@ func companionGatewayRootURL(for fallbackURL: String) -> URL {
     if let host = components.host, host.hasPrefix("relay.") {
         components.host = host.replacingOccurrences(of: "relay.", with: "gateway.", options: .anchored)
     }
+    guard let host = components.host?.lowercased(), host == "gateway.teale.com" || host.hasSuffix(".teale.com") else {
+        return fallback
+    }
 
     components.path = ""
     components.query = nil
@@ -362,4 +374,9 @@ func companionGatewayRootURL(for fallbackURL: String) -> URL {
 
 func companionGatewayAPIBaseURL(for fallbackURL: String) -> URL {
     companionGatewayRootURL(for: fallbackURL).appending(path: "v1")
+}
+
+private func shouldReuseGatewayBearer(_ token: String) -> Bool {
+    let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    return !trimmed.isEmpty && !trimmed.hasPrefix("local-")
 }

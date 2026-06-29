@@ -141,7 +141,10 @@ struct CompanionSupplyView: View {
         if let balanceCredits = gatewayState.walletBalance?.balanceCredits {
             return appState.companionDisplayAmountString(credits: balanceCredits)
         }
-        return companionTruncatedIdentifier(GatewayIdentity.shared.deviceID)
+        if let error = gatewayState.lastWalletRefreshError, !error.isEmpty {
+            return appState.companionText("wallet.gatewayUnavailable", fallback: "Gateway wallet unavailable")
+        }
+        return appState.companionText("wallet.connectingGateway", fallback: "Connecting gateway wallet")
     }
 
     private var loadedModelSummary: CompanionNetworkModelSummary? {
