@@ -334,6 +334,14 @@ let package = Package(
             name: "InferenceEngineTests",
             dependencies: ["InferenceEngine"]
         ),
+        .target(
+            name: "PINKit",
+            dependencies: []
+        ),
+        .testTarget(
+            name: "PINKitTests",
+            dependencies: ["PINKit"]
+        ),
         .testTarget(
             name: "WANKitTests",
             dependencies: ["WANKit"]
