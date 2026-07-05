@@ -3780,6 +3780,8 @@ name = "teale-protocol"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "ed25519-dalek",
+ "hex",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

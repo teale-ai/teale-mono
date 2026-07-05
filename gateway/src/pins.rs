@@ -617,6 +617,277 @@ pub fn sign_netmap(
     })
 }
 
+pub fn set_settings(pool: &DbPool, pin_id: &str, settings: &PinSettings) -> anyhow::Result<()> {
+    let json = serde_json::to_string(settings)?;
+    let conn = pool.lock();
+    let changed = conn.execute(
+        "UPDATE pins SET settings = ? WHERE pin_id = ? AND deleted_at IS NULL",
+        params![json, pin_id],
+    )?;
+    anyhow::ensure!(changed == 1, "unknown network");
+    Ok(())
+}
+
+pub fn member_status(
+    pool: &DbPool,
+    pin_id: &str,
+    device_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let conn = pool.lock();
+    Ok(conn
+        .query_row(
+            "SELECT status FROM pin_members WHERE pin_id = ? AND device_id = ?",
+            params![pin_id, device_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn set_allow_remote_models(
+    pool: &DbPool,
+    pin_id: &str,
+    device_id: &str,
+    allow: bool,
+) -> anyhow::Result<()> {
+    let conn = pool.lock();
+    conn.execute(
+        "UPDATE pin_members SET allow_remote_models = ? WHERE pin_id = ? AND device_id = ?",
+        params![allow, pin_id, device_id],
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPolicyEntry {
+    pub device_id: String,
+    pub model_id: String,
+    pub desired_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub set_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<i64>,
+}
+
+/// Full-replace the desired loadout for one device. `models` is
+/// (model_id, desired_state) with state in {loaded, downloaded, none}.
+pub fn set_model_policy(
+    pool: &DbPool,
+    pin_id: &str,
+    device_id: &str,
+    models: &[(String, String)],
+    set_by: &str,
+) -> anyhow::Result<()> {
+    for (_, state) in models {
+        anyhow::ensure!(
+            matches!(state.as_str(), "loaded" | "downloaded" | "none"),
+            "invalid desired state {state}"
+        );
+    }
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let now = unix_now();
+    tx.execute(
+        "DELETE FROM pin_model_policy WHERE pin_id = ? AND device_id = ?",
+        params![pin_id, device_id],
+    )?;
+    for (model_id, state) in models {
+        tx.execute(
+            "INSERT INTO pin_model_policy
+                (pin_id, device_id, model_id, desired_state, set_by, set_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![pin_id, device_id, model_id, state, set_by, now],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn model_policy(
+    pool: &DbPool,
+    pin_id: &str,
+    device_id: Option<&str>,
+) -> anyhow::Result<Vec<ModelPolicyEntry>> {
+    let conn = pool.lock();
+    let sql =
+        "SELECT device_id, model_id, desired_state, applied_state, last_error, set_at, applied_at
+         FROM pin_model_policy WHERE pin_id = ?";
+    let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<ModelPolicyEntry> {
+        Ok(ModelPolicyEntry {
+            device_id: row.get(0)?,
+            model_id: row.get(1)?,
+            desired_state: row.get(2)?,
+            applied_state: row.get(3)?,
+            last_error: row.get(4)?,
+            set_at: row.get(5)?,
+            applied_at: row.get(6)?,
+        })
+    };
+    let rows = match device_id {
+        Some(dev) => {
+            let mut stmt = conn.prepare(&format!("{sql} AND device_id = ? ORDER BY model_id"))?;
+            let rows = stmt.query_map(params![pin_id, dev], map_row)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+        None => {
+            let mut stmt = conn.prepare(&format!("{sql} ORDER BY device_id, model_id"))?;
+            let rows = stmt.query_map(params![pin_id], map_row)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    Ok(rows)
+}
+
+/// Device-reported reconciliation status: (model_id, applied_state, error).
+pub fn report_model_policy_status(
+    pool: &DbPool,
+    pin_id: &str,
+    device_id: &str,
+    statuses: &[(String, String, Option<String>)],
+) -> anyhow::Result<()> {
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let now = unix_now();
+    for (model_id, applied, error) in statuses {
+        tx.execute(
+            "UPDATE pin_model_policy
+             SET applied_state = ?, applied_at = ?, last_error = ?
+             WHERE pin_id = ? AND device_id = ? AND model_id = ?",
+            params![applied, now, error.as_deref(), pin_id, device_id, model_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageEntry {
+    /// YYYY-MM-DD (UTC).
+    pub day: String,
+    pub consumer_device_id: String,
+    pub model_id: String,
+    pub requests: i64,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRow {
+    pub day: String,
+    pub provider_device_id: String,
+    pub consumer_device_id: String,
+    pub model_id: String,
+    pub requests: i64,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+}
+
+/// Additive upsert of a provider's usage batch. Returns false when the batch
+/// id was already applied (idempotent replay from a device whose ack was
+/// lost). NEVER touches ledger/balances.
+pub fn record_usage_batch(
+    pool: &DbPool,
+    pin_id: &str,
+    provider_device_id: &str,
+    batch_id: &str,
+    entries: &[UsageEntry],
+) -> anyhow::Result<bool> {
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO pin_usage_batches
+            (pin_id, provider_device_id, batch_id, received_at)
+         VALUES (?, ?, ?, ?)",
+        params![pin_id, provider_device_id, batch_id, unix_now()],
+    )?;
+    if inserted == 0 {
+        return Ok(false); // duplicate batch — drop without applying
+    }
+    for e in entries {
+        anyhow::ensure!(
+            e.requests >= 0 && e.tokens_in >= 0 && e.tokens_out >= 0,
+            "usage counts must be non-negative"
+        );
+        tx.execute(
+            "INSERT INTO pin_usage
+                (pin_id, day, provider_device_id, consumer_device_id, model_id,
+                 requests, tokens_in, tokens_out)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(pin_id, day, provider_device_id, consumer_device_id, model_id)
+             DO UPDATE SET
+                requests = requests + excluded.requests,
+                tokens_in = tokens_in + excluded.tokens_in,
+                tokens_out = tokens_out + excluded.tokens_out",
+            params![
+                pin_id,
+                e.day,
+                provider_device_id,
+                e.consumer_device_id,
+                e.model_id,
+                e.requests,
+                e.tokens_in,
+                e.tokens_out,
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
+/// Raw usage rows, optionally bounded to [from, to] days (inclusive) and
+/// filtered to a single consumer (member self-scope).
+pub fn usage_rows(
+    pool: &DbPool,
+    pin_id: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    consumer_filter: Option<&str>,
+) -> anyhow::Result<Vec<UsageRow>> {
+    let conn = pool.lock();
+    let mut sql = String::from(
+        "SELECT day, provider_device_id, consumer_device_id, model_id,
+                requests, tokens_in, tokens_out
+         FROM pin_usage WHERE pin_id = ?",
+    );
+    let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(pin_id.to_string())];
+    if let Some(from) = from {
+        sql.push_str(" AND day >= ?");
+        args.push(Box::new(from.to_string()));
+    }
+    if let Some(to) = to {
+        sql.push_str(" AND day <= ?");
+        args.push(Box::new(to.to_string()));
+    }
+    if let Some(consumer) = consumer_filter {
+        sql.push_str(" AND consumer_device_id = ?");
+        args.push(Box::new(consumer.to_string()));
+    }
+    sql.push_str(" ORDER BY day, provider_device_id, consumer_device_id, model_id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+            |row| {
+                Ok(UsageRow {
+                    day: row.get(0)?,
+                    provider_device_id: row.get(1)?,
+                    consumer_device_id: row.get(2)?,
+                    model_id: row.get(3)?,
+                    requests: row.get(4)?,
+                    tokens_in: row.get(5)?,
+                    tokens_out: row.get(6)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn bump_netmap_generation(pool: &DbPool, pin_id: &str) -> anyhow::Result<i64> {
     let conn = pool.lock();
     conn.execute(

@@ -513,6 +513,19 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
     );
     "#,
+    // 014_pin_usage_batches.sql — idempotency ledger for provider usage
+    // reports. A device retrying a batch whose ack was lost must not double
+    // count tokens; batch ids are remembered and replays dropped.
+    r#"
+    CREATE TABLE IF NOT EXISTS pin_usage_batches (
+        pin_id TEXT NOT NULL,
+        provider_device_id TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        received_at INTEGER NOT NULL,
+        PRIMARY KEY (pin_id, provider_device_id, batch_id),
+        FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
+    );
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
