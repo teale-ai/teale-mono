@@ -819,3 +819,80 @@ footer {
     max-width: 100%;
   }
 }
+
+/* ── Private Inference Networks ── */
+.pin-network-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+.pin-network-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.pin-network-row:hover,
+.pin-network-row.selected {
+  border-color: var(--accent, #35c3b4);
+}
+.pin-network-row .pin-net-name {
+  font-weight: 600;
+}
+.pin-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #2a2a2a);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pin-badge.active { border-color: #2f9e44; color: #51cf66; }
+.pin-badge.pending { border-color: #e8a33d; color: #ffc078; }
+.pin-badge.disabled, .pin-badge.offline { opacity: 0.6; }
+.pin-badge.role { border-color: var(--accent, #35c3b4); color: var(--accent, #35c3b4); }
+.pin-inline-form {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pin-inline-form .text-input,
+.pin-tab-panel .text-input {
+  background: transparent;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  padding: 6px 10px;
+  min-width: 160px;
+}
+.pin-form-gap { flex: 0 0 16px; }
+.pin-tab-strip { margin-bottom: 10px; }
+.pin-tab.active {
+  border-color: var(--accent, #35c3b4);
+  color: var(--accent, #35c3b4);
+}
+.pin-pending-banner {
+  border: 1px solid #e8a33d;
+  border-radius: 8px;
+  color: #ffc078;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.pin-toggle {
+  display: block;
+  margin: 4px 0;
+}
+.action.danger {
+  border-color: #a03030;
+  color: #ff8787;
+}
