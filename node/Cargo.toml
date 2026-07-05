@@ -20,6 +20,11 @@ hex = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }
 ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+blake2 = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }

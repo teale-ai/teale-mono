@@ -16,6 +16,7 @@ mod identity;
 mod inference;
 mod litert;
 mod model_registry;
+mod pin;
 #[cfg(windows)]
 mod power_win;
 mod privacy_filter;
