@@ -22,6 +22,15 @@ use teale_protocol::{PinEndpoint, SignedPinNetmap};
 
 pub const SYNC_INTERVAL_SECONDS: u64 = 60;
 
+/// Gateway scheduling answer: which member to dial. Connection material
+/// (wg key, endpoints) is resolved from the netmap by device id.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleChoice {
+    pub device_id: String,
+    pub node_pubkey: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PinMembership {
@@ -403,6 +412,30 @@ impl PinManager {
             }
         }
         None
+    }
+
+    /// Gateway-side provider choice for one request. Metadata only.
+    pub async fn schedule(
+        &self,
+        pin_id: &str,
+        model: &str,
+        exclude: &[String],
+    ) -> Result<ScheduleChoice> {
+        let bearer = self.bearer().await?;
+        let resp = self
+            .client
+            .post(format!("{}/v1/pins/{}/schedule", self.gateway_url, pin_id))
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({
+                "model": model,
+                "exclude": exclude,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ScheduleChoice>()
+            .await?;
+        Ok(resp)
     }
 
     /// Push pending usage batches with this manager's bearer + client.
