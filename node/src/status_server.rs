@@ -352,6 +352,9 @@ struct AuthSessionLookupRequest {
 enum ChatProvider {
     Local,
     Network,
+    /// Route to a Private Inference Network peer (the prompt travels only
+    /// on the encrypted device-to-device connection).
+    Pin,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -550,6 +553,8 @@ pub struct StatusState {
     relay_connected: Arc<AtomicBool>,
     privacy_filter: PrivacyFilterService,
     inner: Arc<Mutex<RuntimeInner>>,
+    /// Private Inference Network runtime; None when PIN is not configured.
+    pin: Arc<std::sync::RwLock<Option<Arc<crate::pin::runtime::PinRuntime>>>>,
 }
 
 impl StatusState {
@@ -581,6 +586,7 @@ impl StatusState {
             node_state,
             relay_connected: Arc::new(AtomicBool::new(false)),
             privacy_filter: PrivacyFilterService::new().expect("privacy filter client init"),
+            pin: Arc::new(std::sync::RwLock::new(None)),
             inner: Arc::new(Mutex::new(RuntimeInner {
                 registry,
                 initializing,
@@ -684,6 +690,35 @@ impl StatusState {
 
     pub async fn resume_supply(&self) {
         self.node_state.user_paused.store(false, Ordering::SeqCst);
+    }
+
+    pub fn set_pin_runtime(&self, runtime: Arc<crate::pin::runtime::PinRuntime>) {
+        *self.pin.write().expect("pin lock") = Some(runtime);
+    }
+
+    pub fn pin_runtime(&self) -> Option<Arc<crate::pin::runtime::PinRuntime>> {
+        self.pin.read().expect("pin lock").clone()
+    }
+
+    pub(crate) fn node_state_handle(&self) -> Arc<NodeRuntimeState> {
+        self.node_state.clone()
+    }
+
+    /// Models with a verified file on disk (for PIN policy reconciliation).
+    pub async fn downloaded_model_ids(&self) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        inner
+            .registry
+            .models
+            .iter()
+            .filter(|(_, record)| {
+                record
+                    .downloaded_file_path
+                    .as_deref()
+                    .is_some_and(|path| Path::new(path).exists())
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub async fn start_download(self: &Arc<Self>, model_id: &str) -> anyhow::Result<()> {
@@ -1805,6 +1840,12 @@ async fn proxy_chat_completion(
     request.stream_options = Some(json!({ "include_usage": true }));
 
     let (url, bearer_token, prepared) = match payload.provider {
+        ChatProvider::Pin => {
+            return Err((
+                "500 Internal Server Error",
+                "pin provider must be handled before proxying".to_string(),
+            ))
+        }
         ChatProvider::Local => {
             let loaded_model_id = state
                 .swap
@@ -2088,6 +2129,85 @@ fn synthetic_sse_content_event(content: String) -> String {
     )
 }
 
+/// Stream a PIN completion as SSE. The prompt goes peer-to-peer over the
+/// encrypted transport; only the SSE framing happens here.
+async fn handle_pin_chat(
+    stream: &mut tokio::net::TcpStream,
+    body: &[u8],
+    state: Arc<StatusState>,
+) -> Result<(), (&'static str, String)> {
+    let payload: AppChatRequest = serde_json::from_slice(body)
+        .map_err(|e| ("400 Bad Request", format!("invalid chat payload: {e}")))?;
+    let model = payload
+        .request
+        .model
+        .clone()
+        .filter(|m| !m.trim().is_empty())
+        .ok_or((
+            "400 Bad Request",
+            "`model` is required for pin chat".to_string(),
+        ))?;
+    let runtime = state
+        .pin_runtime()
+        .ok_or(("409 Conflict", "no private network configured".to_string()))?;
+
+    let mut pin_stream = crate::pin::client::pin_completion(
+        &runtime.manager,
+        &runtime.identity,
+        &model,
+        payload.request,
+    )
+    .await
+    .map_err(|e| ("502 Bad Gateway", format!("pin completion failed: {e:#}")))?;
+
+    let headers = concat!(
+        "HTTP/1.1 200 OK
+",
+        "Content-Type: text/event-stream; charset=utf-8
+",
+        "Connection: close
+",
+        "Cache-Control: no-store
+",
+        "Access-Control-Allow-Origin: *
+",
+        "
+"
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .await
+        .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+
+    while let Some(chunk) = pin_stream.chunks.recv().await {
+        let frame = format!(
+            "data: {chunk}
+
+"
+        );
+        if stream.write_all(frame.as_bytes()).await.is_err() {
+            return Ok(()); // client hung up
+        }
+    }
+    if let Ok(crate::pin::client::PinStreamEnd::Error(message)) = pin_stream.end.await {
+        let frame = format!(
+            "data: {}
+
+",
+            json!({ "error": { "message": message, "source": "pin" } })
+        );
+        let _ = stream.write_all(frame.as_bytes()).await;
+    }
+    let _ = stream
+        .write_all(
+            b"data: [DONE]
+
+",
+        )
+        .await;
+    Ok(())
+}
+
 async fn handle_chat_proxy(
     stream: &mut tokio::net::TcpStream,
     body: &[u8],
@@ -2095,6 +2215,149 @@ async fn handle_chat_proxy(
 ) -> Result<(), (&'static str, String)> {
     let response = proxy_chat_completion(body, state).await?;
     write_sse_response(stream, response).await
+}
+
+impl crate::pin::runtime::ModelOps for Arc<StatusState> {
+    async fn loaded_models(&self) -> Vec<String> {
+        self.swap.loaded_models().await
+    }
+    async fn downloaded_models(&self) -> Vec<String> {
+        self.downloaded_model_ids().await
+    }
+    async fn ensure_download(&self, model_id: &str) -> anyhow::Result<()> {
+        self.start_download(model_id).await
+    }
+    async fn ensure_loaded(&self, model_id: &str) -> anyhow::Result<()> {
+        self.load_model(model_id).await
+    }
+}
+
+async fn route_pins(
+    method: &str,
+    subpath: &str,
+    body: &[u8],
+    state: Arc<StatusState>,
+) -> Result<HttpResponse, (&'static str, String)> {
+    let Some(runtime) = state.pin_runtime() else {
+        return Err(("409 Conflict", "no private network configured".to_string()));
+    };
+    let manager = &runtime.manager;
+    let bad = |e: anyhow::Error| ("502 Bad Gateway", format!("{e:#}"));
+    let parse_body = |body: &[u8]| -> Result<serde_json::Value, (&'static str, String)> {
+        if body.is_empty() {
+            Ok(json!({}))
+        } else {
+            serde_json::from_slice(body)
+                .map_err(|e| ("400 Bad Request", format!("invalid JSON body: {e}")))
+        }
+    };
+    let proxy_status = |status: u16| -> &'static str {
+        match status {
+            200..=299 => "200 OK",
+            403 => "403 Forbidden",
+            404 => "404 Not Found",
+            409 => "409 Conflict",
+            _ => "502 Bad Gateway",
+        }
+    };
+
+    match (method, subpath) {
+        // Overview: local membership state + staff view from the gateway.
+        ("GET", "") | ("GET", "/") => {
+            let staff = manager
+                .proxy("GET", "/v1/pins", None)
+                .await
+                .map(|(_, body)| body.get("staff").cloned().unwrap_or(json!([])))
+                .unwrap_or(json!([]));
+            let response = json!({
+                "networks": runtime.manager.snapshot(),
+                "staff": staff,
+                "deviceId": runtime.identity.node_id(),
+                "wgPubkey": runtime.identity.wg_pubkey_hex(),
+                "settings": runtime.settings(),
+                "pendingUsageBatches": runtime.usage.pending_batches(),
+            });
+            Ok(HttpResponse::json("200 OK", response.to_string()))
+        }
+        ("POST", "/join") => {
+            let payload = parse_body(body)?;
+            let code = payload
+                .get("code")
+                .or_else(|| payload.get("joinCode"))
+                .and_then(|v| v.as_str())
+                .ok_or(("400 Bad Request", "`code` is required".to_string()))?;
+            let display_name = payload.get("displayName").and_then(|v| v.as_str());
+            manager.join(code, display_name).await.map_err(bad)?;
+            // Sync immediately so a pending membership shows up in the UI.
+            let advert = runtime.advertisement(vec![], state.swap.loaded_models().await);
+            let _ = manager.sync_once(&advert).await;
+            Ok(HttpResponse::json(
+                "202 Accepted",
+                json!({ "status": "submitted" }).to_string(),
+            ))
+        }
+        ("POST", "/create") => {
+            let payload = parse_body(body)?;
+            let (status, resp) = manager
+                .proxy("POST", "/v1/pins", Some(payload))
+                .await
+                .map_err(bad)?;
+            Ok(HttpResponse::json(proxy_status(status), resp.to_string()))
+        }
+        ("GET", "/settings/local") => Ok(HttpResponse::json(
+            "200 OK",
+            serde_json::to_string(&runtime.settings())
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?,
+        )),
+        ("POST", "/settings/local") => {
+            let payload = parse_body(body)?;
+            let updated = runtime
+                .update_settings(|s| {
+                    if let Some(v) = payload.get("allowRemoteModels").and_then(|v| v.as_bool()) {
+                        s.allow_remote_models = v;
+                    }
+                    if let Some(v) = payload.get("dinPriorityEqual").and_then(|v| v.as_bool()) {
+                        s.din_priority_equal = v;
+                    }
+                    if let Some(v) = payload.get("dinContribute").and_then(|v| v.as_bool()) {
+                        s.din_contribute = v;
+                    }
+                })
+                .map_err(|e| ("500 Internal Server Error", e.to_string()))?;
+            // Apply immediately to the running node.
+            state
+                .node_state_handle()
+                .pin_gate
+                .set_din_priority_equal(updated.din_priority_equal);
+            if updated.din_contribute {
+                state.resume_supply().await;
+            } else {
+                state.pause_supply().await;
+            }
+            Ok(HttpResponse::json(
+                "200 OK",
+                serde_json::to_string(&updated)
+                    .map_err(|e| ("500 Internal Server Error", e.to_string()))?,
+            ))
+        }
+        // Everything else is a scoped passthrough to the gateway:
+        //   GET  /:id | /:id/members | /:id/usage?... | /:id/models | /:id/join-code
+        //   POST /:id/members/:dev/approve | .../deny | /:id/rotate-code | /:id/leave
+        //   PATCH/DELETE /:id/members/:dev, PUT /:id/models/:dev, PUT /:id/settings
+        (m, sub) if !sub.is_empty() => {
+            let payload = if body.is_empty() {
+                None
+            } else {
+                Some(parse_body(body)?)
+            };
+            let (status, resp) = manager
+                .proxy(m, &format!("/v1/pins{sub}"), payload)
+                .await
+                .map_err(bad)?;
+            Ok(HttpResponse::json(proxy_status(status), resp.to_string()))
+        }
+        _ => Err(("404 Not Found", format!("no pin route {method} {subpath}"))),
+    }
 }
 
 pub fn spawn(state: Arc<StatusState>, port: u16) {
@@ -2149,6 +2412,19 @@ async fn handle(
     };
 
     if request.method == "POST" && request.path == "/v1/app/chat/completions" {
+        let is_pin = serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()
+            .and_then(|v| v.get("provider").and_then(|p| p.as_str()).map(String::from))
+            .is_some_and(|p| p.eq_ignore_ascii_case("pin"));
+        if is_pin {
+            if let Err((status, message)) =
+                handle_pin_chat(&mut stream, &request.body, state.clone()).await
+            {
+                let response = HttpResponse::json(status, json!({ "error": message }).to_string());
+                let _ = stream.write_all(response.render().as_bytes()).await;
+            }
+            return Ok(());
+        }
         if let Err((status, message)) =
             handle_chat_proxy(&mut stream, &request.body, state.clone()).await
         {
@@ -2177,6 +2453,13 @@ async fn route(
 ) -> Result<HttpResponse, (&'static str, String)> {
     if method == "OPTIONS" {
         return Ok(HttpResponse::empty("204 No Content"));
+    }
+
+    // Private Inference Network app API. Management calls proxy to the
+    // gateway control plane with this device's bearer; local state (netmaps,
+    // settings, usage outbox) is served directly.
+    if let Some(stripped) = path.strip_prefix("/v1/app/pins") {
+        return route_pins(method, stripped, body, state).await;
     }
 
     match (method, path) {

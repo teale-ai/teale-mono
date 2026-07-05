@@ -266,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/pins/:id/members/:dev/deny",
             post(handlers::pins::deny_member),
         )
+        .route("/v1/pins/:id/leave", post(handlers::pins::leave))
         .route(
             "/v1/pins/:id/rotate-code",
             post(handlers::pins::rotate_code),

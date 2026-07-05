@@ -414,6 +414,38 @@ impl PinManager {
         None
     }
 
+    /// Authenticated passthrough for the local app API: forwards a request
+    /// to the gateway control plane with this device's bearer and returns
+    /// (status, body). Never used for prompt content.
+    pub async fn proxy(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<(u16, serde_json::Value)> {
+        let bearer = self.bearer().await?;
+        let url = format!("{}{}", self.gateway_url, path);
+        let mut req = match method {
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            "PUT" => self.client.put(&url),
+            "PATCH" => self.client.patch(&url),
+            "DELETE" => self.client.delete(&url),
+            other => anyhow::bail!("unsupported proxy method {other}"),
+        }
+        .bearer_auth(bearer);
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        let body = resp
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or_else(|_| serde_json::json!({}));
+        Ok((status, body))
+    }
+
     /// Gateway-side provider choice for one request. Metadata only.
     pub async fn schedule(
         &self,
@@ -446,6 +478,14 @@ impl PinManager {
             .await
     }
 
+    /// Test seam: plant a desired model policy without a live control plane.
+    #[cfg(test)]
+    pub(crate) fn plant_policy_for_tests(&self, pin_id: &str, policy: Vec<serde_json::Value>) {
+        if let Some(state) = self.state.lock().get_mut(pin_id) {
+            state.model_policy = policy;
+        }
+    }
+
     /// Test seam: plant a verified netmap without a live control plane.
     #[cfg(test)]
     pub(crate) fn plant_state_for_tests(
@@ -466,30 +506,6 @@ impl PinManager {
             },
         );
     }
-}
-
-/// Spawn the 60 s sync loop. `advertise` is called each tick to gather the
-/// current endpoints/models/policy-status snapshot.
-pub fn spawn_sync_loop(
-    manager: Arc<PinManager>,
-    preseed_join_code: Option<String>,
-    advertise: impl Fn() -> SyncAdvertisement + Send + Sync + 'static,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Some(code) = preseed_join_code {
-            if let Err(err) = manager.preseed_join_if_needed(&code).await {
-                tracing::warn!("pin preseed join failed: {err:#}");
-            }
-        }
-        loop {
-            let advert = advertise();
-            match manager.sync_once(&advert).await {
-                Ok(count) => tracing::debug!("pin sync ok ({count} networks)"),
-                Err(err) => tracing::warn!("pin sync failed: {err:#}"),
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(SYNC_INTERVAL_SECONDS)).await;
-        }
-    })
 }
 
 #[cfg(test)]

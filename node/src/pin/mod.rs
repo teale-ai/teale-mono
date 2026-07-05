@@ -10,6 +10,7 @@ pub mod endpoints;
 pub mod gate;
 pub mod manager;
 pub mod noise;
+pub mod runtime;
 pub mod serve;
 pub mod transport;
 pub mod usage;

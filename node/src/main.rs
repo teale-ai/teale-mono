@@ -224,6 +224,28 @@ async fn main() -> anyhow::Result<()> {
     }
     tray_status.clear_starting().await;
     status_server::spawn(tray_status.clone(), config.control.port);
+    // Private Inference Network runtime: membership sync, encrypted data
+    // plane, PIN-first admission, model-policy reconciliation.
+    match pin::runtime::spawn_pin_runtime(
+        &config,
+        identity.clone(),
+        state.clone(),
+        swap_manager.clone(),
+        tray_status.clone(),
+    )
+    .await
+    {
+        Ok(Some(runtime)) => {
+            info!(
+                "PIN runtime up (udp port {}, wg pubkey {})",
+                runtime.transport_port,
+                runtime.identity.wg_pubkey_hex()
+            );
+        }
+        Ok(None) => {}
+        Err(err) => warn!("PIN runtime disabled: {err:#}"),
+    }
+
     if let Err(err) = gateway_wallet::spawn(
         tray_status.clone(),
         identity.clone(),

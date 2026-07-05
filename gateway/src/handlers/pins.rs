@@ -345,6 +345,21 @@ pub async fn remove_member(
     Ok(Json(serde_json::json!({ "status": "removed" })))
 }
 
+/// Self-removal: an active/disabled member device leaves the network. Same
+/// effect as an admin removal (netmap generation bump; re-join requires a
+/// fresh knock + approval).
+pub async fn leave(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(pin_id): Path<String>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    let device_id = require_device(&principal)?;
+    let pool = require_pool(&state)?;
+    pins::remove_member(pool, &pin_id, &device_id, &device_id)
+        .map_err(|e| GatewayError::Conflict(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "status": "left" })))
+}
+
 // ------------------------------------------------------------ codes/roles/etc
 
 pub async fn rotate_code(
