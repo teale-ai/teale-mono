@@ -14,9 +14,9 @@ use crate::status_server::{GatewayWalletState, StatusState, WalletTransactionSna
 const WALLET_SYNC_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
-struct DeviceToken {
-    value: String,
-    expires_at: i64,
+pub(crate) struct DeviceToken {
+    pub(crate) value: String,
+    pub(crate) expires_at: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +137,7 @@ async fn sync_wallet_once(
     Ok(())
 }
 
-async fn ensure_device_token(
+pub(crate) async fn ensure_device_token(
     client: &reqwest::Client,
     gateway_url: &str,
     identity: &NodeIdentity,
@@ -250,7 +250,7 @@ async fn fetch_transactions(
     Ok(payload.transactions)
 }
 
-fn now_unix_secs() -> u64 {
+pub(crate) fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -261,7 +261,7 @@ fn now_unix_secs_i64() -> i64 {
     now_unix_secs().try_into().unwrap_or(i64::MAX)
 }
 
-fn derive_gateway_url(relay_url: &str) -> anyhow::Result<String> {
+pub(crate) fn derive_gateway_url(relay_url: &str) -> anyhow::Result<String> {
     let relay = Url::parse(relay_url).with_context(|| format!("invalid relay url: {relay_url}"))?;
     let scheme = match relay.scheme() {
         "ws" => "http",

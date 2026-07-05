@@ -13,6 +13,28 @@ pub struct Config {
     #[serde(default)]
     pub control: ControlConfig,
     pub node: NodeConfig,
+    /// Private Inference Network membership (optional).
+    #[serde(default)]
+    pub pin: PinConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PinConfig {
+    /// Preseeded join code for mass IT deployment: on startup, if this
+    /// device is not yet a member of any network, it auto-submits a join
+    /// request with this code and waits for admin approval.
+    #[serde(default)]
+    pub join_code: Option<String>,
+    /// Pinned gateway Ed25519 pubkey (hex) for netmap verification.
+    /// When omitted the key is pinned on first use (TOFU) and persisted.
+    #[serde(default)]
+    pub gateway_pubkey: Option<String>,
+    /// Data directory override for netmap cache / usage queue.
+    #[serde(default)]
+    pub data_dir: Option<String>,
+    /// UDP port for the PIN data plane. 0 = ephemeral.
+    #[serde(default)]
+    pub port: u16,
 }
 
 #[derive(Debug, Deserialize, Clone)]
