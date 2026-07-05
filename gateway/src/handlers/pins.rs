@@ -457,6 +457,8 @@ pub struct SyncReq {
     #[serde(default)]
     endpoints: Vec<teale_protocol::PinEndpoint>,
     #[serde(default)]
+    loaded_models: Vec<String>,
+    #[serde(default)]
     known_generation: Option<i64>,
     /// (modelId, appliedState, error) reconciliation reports.
     #[serde(default)]
@@ -515,8 +517,16 @@ pub async fn sync(
 
     let endpoints_json =
         serde_json::to_string(&req.endpoints).map_err(|e| GatewayError::Other(e.into()))?;
-    pins::update_member_endpoints(pool, &pin_id, &device_id, &endpoints_json)
-        .map_err(GatewayError::Other)?;
+    let loaded_models_json =
+        serde_json::to_string(&req.loaded_models).map_err(|e| GatewayError::Other(e.into()))?;
+    pins::update_member_endpoints(
+        pool,
+        &pin_id,
+        &device_id,
+        &endpoints_json,
+        &loaded_models_json,
+    )
+    .map_err(GatewayError::Other)?;
     if !req.model_policy_status.is_empty() {
         let statuses: Vec<(String, String, Option<String>)> = req
             .model_policy_status
@@ -1044,6 +1054,7 @@ mod tests {
                     kind: "lan".into(),
                     addr: "10.0.0.9:41641".into(),
                 }],
+                loaded_models: vec!["advertised-model".into()],
                 known_generation,
                 model_policy_status: vec![],
             }),
@@ -1077,6 +1088,9 @@ mod tests {
             .find(|m| m.device_id == "dev-1")
             .unwrap();
         assert_eq!(me.endpoints[0].addr, "10.0.0.9:41641");
+        // Registry is empty in this test: netmap falls back to the models
+        // the device advertised on sync.
+        assert_eq!(me.loaded_models, vec!["advertised-model".to_string()]);
 
         // Same generation → no netmap payload.
         let resp = sync_once(&state, "dev-1", &pin.pin_id, Some(gen)).await;
@@ -1186,6 +1200,7 @@ mod tests {
             Path(pin.pin_id.clone()),
             Json(SyncReq {
                 endpoints: vec![],
+                loaded_models: vec![],
                 known_generation: None,
                 model_policy_status: vec![ModelPolicyStatusReq {
                     model_id: "glm-5.2".into(),

@@ -56,6 +56,7 @@ pub struct PinMember {
     pub serves_models: bool,
     pub allow_remote_models: bool,
     pub endpoints: String,
+    pub loaded_models: String,
     pub requested_at: i64,
     pub approved_by: Option<String>,
     pub joined_at: Option<i64>,
@@ -496,7 +497,8 @@ pub fn members(pool: &DbPool, pin_id: &str) -> anyhow::Result<Vec<PinMember>> {
     let conn = pool.lock();
     let mut stmt = conn.prepare(
         "SELECT pin_id, device_id, node_pubkey, display_name, status, serves_models,
-                allow_remote_models, endpoints, requested_at, approved_by, joined_at, last_seen
+                allow_remote_models, endpoints, loaded_models, requested_at, approved_by,
+                joined_at, last_seen
          FROM pin_members
          WHERE pin_id = ? AND status != 'removed'
          ORDER BY requested_at",
@@ -512,10 +514,11 @@ pub fn members(pool: &DbPool, pin_id: &str) -> anyhow::Result<Vec<PinMember>> {
                 serves_models: row.get::<_, i64>(5)? != 0,
                 allow_remote_models: row.get::<_, i64>(6)? != 0,
                 endpoints: row.get(7)?,
-                requested_at: row.get(8)?,
-                approved_by: row.get(9)?,
-                joined_at: row.get(10)?,
-                last_seen: row.get(11)?,
+                loaded_models: row.get(8)?,
+                requested_at: row.get(9)?,
+                approved_by: row.get(10)?,
+                joined_at: row.get(11)?,
+                last_seen: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -536,13 +539,22 @@ pub fn update_member_endpoints(
     pin_id: &str,
     device_id: &str,
     endpoints_json: &str,
+    loaded_models_json: &str,
 ) -> anyhow::Result<()> {
-    // Validate it's JSON before persisting; endpoints are relayed to peers.
+    // Validate it's JSON before persisting; both fields are relayed to peers.
     let _: serde_json::Value = serde_json::from_str(endpoints_json)?;
+    let _: serde_json::Value = serde_json::from_str(loaded_models_json)?;
     let conn = pool.lock();
     conn.execute(
-        "UPDATE pin_members SET endpoints = ?, last_seen = ? WHERE pin_id = ? AND device_id = ?",
-        params![endpoints_json, unix_now(), pin_id, device_id],
+        "UPDATE pin_members SET endpoints = ?, loaded_models = ?, last_seen = ?
+         WHERE pin_id = ? AND device_id = ?",
+        params![
+            endpoints_json,
+            loaded_models_json,
+            unix_now(),
+            pin_id,
+            device_id
+        ],
     )?;
     Ok(())
 }
@@ -591,7 +603,9 @@ pub fn build_netmap(
                 } else {
                     serde_json::from_str(&m.endpoints).unwrap_or_default()
                 },
-                loaded_models: live_info.map(|i| i.loaded_models).unwrap_or_default(),
+                loaded_models: live_info
+                    .map(|i| i.loaded_models)
+                    .unwrap_or_else(|| serde_json::from_str(&m.loaded_models).unwrap_or_default()),
                 last_seen: m.last_seen,
             }
         })
@@ -1153,6 +1167,7 @@ mod tests {
             &pin.pin_id,
             "dev-a",
             r#"[{"kind":"lan","addr":"10.0.0.5:41641"}]"#,
+            r#"["offline-model"]"#,
         )
         .unwrap();
         update_member_endpoints(
@@ -1160,6 +1175,7 @@ mod tests {
             &pin.pin_id,
             "dev-b",
             r#"[{"kind":"lan","addr":"10.0.0.6:41641"}]"#,
+            "[]",
         )
         .unwrap();
 

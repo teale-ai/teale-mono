@@ -526,6 +526,12 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
     );
     "#,
+    // 015_pin_member_loaded_models.sql — devices advertise their loaded
+    // models on /sync; persisted so netmaps (and offline-LAN scheduling on
+    // peers) reflect devices the live registry hasn't heard from.
+    r#"
+    ALTER TABLE pin_members ADD COLUMN loaded_models TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
