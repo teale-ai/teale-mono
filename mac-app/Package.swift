@@ -193,6 +193,7 @@ let package = Package(
         .target(
             name: "LocalAPI",
             dependencies: [
+                "PINKit",
                 "SharedTypes",
                 "InferenceEngine",
                 "PrivacyFilterKit",
@@ -205,6 +206,7 @@ let package = Package(
         .target(
             name: "AppCore",
             dependencies: [
+                "PINKit",
                 "SharedTypes",
                 "HardwareProfile",
                 "MLXInference",

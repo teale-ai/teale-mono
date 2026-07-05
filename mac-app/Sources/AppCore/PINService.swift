@@ -1,0 +1,103 @@
+import Foundation
+import PINKit
+import GatewayKit
+import WANKit
+
+/// Owns the Mac app's PIN control-plane runtime: the PINKit manager, the
+/// 60-second sync loop, and usage flushing. Serving-side request mapping is
+/// installed by AppState (WAN inbound requests → PIN WFQ lane + usage).
+public final class PINService: @unchecked Sendable {
+
+    struct AuthAdapter: PINGatewayAuth {
+        let deviceID: String
+        let client: GatewayAuthClient
+        func bearer() async throws -> String { try await client.bearer() }
+    }
+
+    public let manager: PINManager
+    private var syncTask: Task<Void, Never>?
+
+    public init(gatewayBaseURL: URL) throws {
+        let identity = try AppState.canonicalWANIdentity()
+        let wgPubkeyHex = identity.keyAgreementPublicKey.rawRepresentation
+            .map { String(format: "%02x", $0) }.joined()
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        )[0].appendingPathComponent("Teale/pin", isDirectory: true)
+        manager = PINManager(
+            gatewayBaseURL: gatewayBaseURL,
+            auth: AuthAdapter(
+                deviceID: GatewayIdentity.shared.deviceID,
+                client: GatewayAuthClient(baseURL: gatewayBaseURL)
+            ),
+            wgPubkeyHex: wgPubkeyHex,
+            dataDir: support
+        )
+    }
+
+    /// Start the periodic control-plane sync. Providers are polled each
+    /// tick so endpoints/models stay current.
+    public func start(
+        endpoints: @escaping @Sendable () async -> [PinEndpoint],
+        loadedModels: @escaping @Sendable () async -> [String]
+    ) {
+        guard syncTask == nil else { return }
+        syncTask = Task { [manager] in
+            while !Task.isCancelled {
+                let currentEndpoints = await endpoints()
+                let models = await loadedModels()
+                do {
+                    _ = try await manager.syncOnce(
+                        endpoints: currentEndpoints, loadedModels: models)
+                } catch {
+                    // Offline is normal; cached netmaps keep the LAN working.
+                }
+                await manager.flushUsage()
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+            }
+        }
+    }
+
+    public func stop() {
+        syncTask?.cancel()
+        syncTask = nil
+    }
+
+    /// Build the /v1/app/pins overview payload (same shape as the node).
+    public func overviewJSON() async throws -> Data {
+        let snapshot = await manager.snapshot()
+        let staff = await manager.fetchStaffSummaries()
+        let settings = await manager.settings()
+        var networks: [[String: Any]] = []
+        for pin in snapshot {
+            var entry: [String: Any] = [
+                "pinId": pin.pinId,
+                "name": pin.name,
+                "membership": pin.membership,
+                "modelPolicy": pin.modelPolicy,
+            ]
+            if let signed = pin.netmap {
+                entry["netmap"] = [
+                    "netmap": signed.rawNetmapObject,
+                    "gatewayPubkey": signed.gatewayPubkey,
+                    "signature": signed.signature,
+                ]
+            }
+            if let s = pin.settings { entry["settings"] = s }
+            networks.append(entry)
+        }
+        let payload: [String: Any] = [
+            "networks": networks,
+            "staff": staff,
+            "deviceId": GatewayIdentity.shared.deviceID,
+            "wgPubkey": manager.wgPubkeyHex,
+            "settings": [
+                "allowRemoteModels": settings.allowRemoteModels,
+                "dinPriorityEqual": settings.dinPriorityEqual,
+                "dinContribute": settings.dinContribute,
+            ],
+            "pendingUsageBatches": await manager.pendingUsageBatches(),
+        ]
+        return try JSONSerialization.data(withJSONObject: payload)
+    }
+}

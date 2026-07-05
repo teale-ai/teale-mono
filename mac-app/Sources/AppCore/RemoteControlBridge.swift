@@ -1240,3 +1240,62 @@ private struct GatewayWalletTransactionSnapshot: Decodable {
     let timestamp: Int64
     let note: String?
 }
+
+// MARK: - PINControlling (Private Inference Networks local API)
+
+extension RemoteControlBridge: PINControlling {
+    private var pinService: PINService? {
+        get async { await MainActor.run { appState.pinService } }
+    }
+
+    func pinOverview() async throws -> Data {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        return try await service.overviewJSON()
+    }
+
+    func pinJoin(code: String, displayName: String?) async throws {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        try await service.manager.join(code: code, displayName: displayName)
+        // Immediate sync so a pending membership appears in the UI.
+        _ = try? await service.manager.syncOnce(endpoints: [], loadedModels: [])
+    }
+
+    func pinLocalSettings() async throws -> Data {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        let settings = await service.manager.settings()
+        return try JSONEncoder().encode(settings)
+    }
+
+    func pinUpdateLocalSettings(_ body: Data) async throws -> Data {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        let patch = try JSONSerialization.jsonObject(with: body) as? [String: Any] ?? [:]
+        let updated = await service.manager.updateSettings { settings in
+            if let v = patch["allowRemoteModels"] as? Bool { settings.allowRemoteModels = v }
+            if let v = patch["dinPriorityEqual"] as? Bool { settings.dinPriorityEqual = v }
+            if let v = patch["dinContribute"] as? Bool { settings.dinContribute = v }
+        }
+        if let dinContribute = patch["dinContribute"] as? Bool {
+            await MainActor.run { appState.contributeCompute = dinContribute }
+        }
+        return try JSONEncoder().encode(updated)
+    }
+
+    func pinProxy(method: String, subpath: String, body: Data?) async throws -> (Int, Data) {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        let json = body.flatMap {
+            (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+        }
+        return try await service.manager.proxy(
+            method: method, path: "/v1/pins\(subpath)", body: json)
+    }
+}

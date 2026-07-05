@@ -8,6 +8,7 @@ import ModelManager
 import MLXInference
 import LocalAPI
 import ClusterKit
+import PINKit
 import WANKit
 import CreditKit
 import AgentKit
@@ -96,6 +97,9 @@ public final class AppState {
 
     // PTN (Private TealeNet)
     public let ptnManager: PTNManager
+    /// Private Inference Networks (PIN) control-plane runtime; nil only if
+    /// the WAN identity could not be derived.
+    public let pinService: PINService?
 
     // WAN P2P
     public let wanManager: WANManager
@@ -512,6 +516,8 @@ public final class AppState {
             localDisplayName: hostname
         )
         self.wanManager = WANManager()
+        self.pinService = try? PINService(
+            gatewayBaseURL: URL(string: "https://gateway.teale.com")!)
         if let config = SupabaseConfig.default {
             self.authManager = AuthManager(config: config)
         } else {
@@ -590,11 +596,16 @@ public final class AppState {
             }
         }
 
-        self.wanManager.onInferenceRequest = { [weak self] payload, connection in
+        self.wanManager.onInferenceRequestFromPeer = { [weak self] payload, connection, peerNodeID in
             guard let self else { return }
 
-            // Honor the master "Contribute compute" opt-out.
-            if !self.contributeCompute {
+            // Private-network membership: requests from PIN members ride the
+            // weighted-fair PIN lane, bypass the public contribute toggle
+            // (network membership is its own consent), and count usage.
+            let pinMembership = await self.pinService?.manager.memberForNodePubkey(peerNodeID)
+
+            // Honor the master "Contribute compute" opt-out for PUBLIC work.
+            if pinMembership == nil && !self.contributeCompute {
                 let response = InferenceErrorPayload(
                     requestID: payload.requestID,
                     errorMessage: "This node is not contributing compute."
@@ -603,11 +614,10 @@ public final class AppState {
                 return
             }
 
-            // Determine request source for WFQ scheduling
+            // Determine request source for WFQ scheduling.
             let source: RequestScheduler.RequestSource
-            if let groupID = payload.request.groupID,
-               self.ptnManager.isMember(of: groupID) {
-                source = .ptn(groupID)
+            if let (pinId, _) = pinMembership {
+                source = .ptn(pinId)
             } else {
                 source = .wwtn
             }
@@ -638,6 +648,20 @@ public final class AppState {
                 await MainActor.run {
                     self.totalRequestsServed += 1
                     self.totalTokensGenerated += tokenCount
+                }
+
+                // Token accounting (counts only — PINs have no credits).
+                if let (pinId, member) = pinMembership, let pinService = self.pinService {
+                    let promptChars = (try? JSONEncoder().encode(payload.request))?.count ?? 0
+                    await pinService.manager.recordUsage(
+                        PINManager.UsageRecord(
+                            pinId: pinId,
+                            day: PINManager.todayUTC(),
+                            consumerDeviceId: member.deviceId,
+                            modelId: payload.request.model ?? "unknown",
+                            tokensIn: Int64(promptChars / 4),
+                            tokensOut: Int64(tokenCount)
+                        ))
                 }
             } catch {
                 await self.requestScheduler.complete()
@@ -1185,6 +1209,25 @@ public final class AppState {
         guard !isServerRunning else { return }
         isServerRunning = true
         let wanMgr = self.wanManager
+        if let pinService {
+            let engineStatusProvider = { @Sendable [weak self] () async -> [String] in
+                await MainActor.run { [weak self] in
+                    guard let self else { return [] }
+                    return self.advertisedLoadedModels(for: self.engineStatus)
+                }
+            }
+            pinService.start(
+                endpoints: { [weak wanMgr] in
+                    guard let port = wanMgr?.listenPort else { return [] }
+                    var endpoints: [PinEndpoint] = []
+                    if let lanIP = Self.primaryLANAddress() {
+                        endpoints.append(PinEndpoint(kind: "lan", addr: "\(lanIP):\(port)"))
+                    }
+                    return endpoints
+                },
+                loadedModels: engineStatusProvider
+            )
+        }
         let clusterMgr = self.clusterManager
         let controlBridge = RemoteControlBridge(appState: self)
         let server = LocalHTTPServer(
@@ -1194,6 +1237,7 @@ public final class AppState {
             allowNetworkAccess: allowNetworkAccess,
             controller: controlBridge,
             desktopController: controlBridge,
+            pinController: controlBridge,
             peerModelProvider: {
                 var models: [(id: String, ownedBy: String)] = []
                 for peer in wanMgr.state.connectedPeers {
@@ -1586,6 +1630,32 @@ public final class AppState {
                 await self.applyInferenceBackendSelection()
             }
         }
+    }
+
+    /// Primary non-loopback IPv4 for PIN endpoint advertisement.
+    nonisolated static func primaryLANAddress() -> String? {
+        var addresses: [String] = []
+        var interfaceList: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaceList) == 0 else { return nil }
+        defer { freeifaddrs(interfaceList) }
+        var cursor = interfaceList
+        while let interface = cursor {
+            defer { cursor = interface.pointee.ifa_next }
+            guard let addr = interface.pointee.ifa_addr,
+                addr.pointee.sa_family == UInt8(AF_INET),
+                (interface.pointee.ifa_flags & UInt32(IFF_LOOPBACK)) == 0
+            else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(
+                addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                nil, 0, NI_NUMERICHOST) == 0 {
+                addresses.append(String(cString: host))
+            }
+        }
+        // Prefer RFC1918 space over anything exotic.
+        return addresses.first {
+            $0.hasPrefix("10.") || $0.hasPrefix("192.168.") || $0.hasPrefix("172.")
+        } ?? addresses.first
     }
 
     nonisolated static func canonicalWANIdentity() throws -> WANNodeIdentity {

@@ -32,6 +32,7 @@ public actor LocalHTTPServer {
     private let allowNetworkAccess: Bool
     private let controller: (any LocalAppControlling)?
     private let desktopController: (any DesktopCompanionControlling)?
+    private let pinController: (any PINControlling)?
     private let peerModelProvider: PeerModelProvider?
     private let onRequestCompleted: RequestCompletedHandler?
 
@@ -42,6 +43,7 @@ public actor LocalHTTPServer {
         allowNetworkAccess: Bool = false,
         controller: (any LocalAppControlling)? = nil,
         desktopController: (any DesktopCompanionControlling)? = nil,
+        pinController: (any PINControlling)? = nil,
         peerModelProvider: PeerModelProvider? = nil,
         onRequestCompleted: RequestCompletedHandler? = nil
     ) {
@@ -51,6 +53,7 @@ public actor LocalHTTPServer {
         self.allowNetworkAccess = allowNetworkAccess
         self.controller = controller
         self.desktopController = desktopController
+        self.pinController = pinController
         self.peerModelProvider = peerModelProvider
         self.onRequestCompleted = onRequestCompleted
     }
@@ -122,44 +125,10 @@ public actor LocalHTTPServer {
             return try await RemoteControlRoute.unloadModel(controller: controller)
         }
 
-        // PTN endpoints
-        router.get("/v1/app/ptn") { _, _ -> Response in
-            return try await RemoteControlRoute.listPTNs(controller: controller)
-        }
+        // Private Inference Network endpoints (shared contract with the
+        // Rust node so the companion web UI works unmodified).
+        PINRoute.register(router, controller: pinController)
 
-        router.post("/v1/app/ptn/create") { request, _ -> Response in
-            return try await RemoteControlRoute.createPTN(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/invite") { request, _ -> Response in
-            return try await RemoteControlRoute.generatePTNInvite(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/issue-cert") { request, _ -> Response in
-            return try await RemoteControlRoute.issuePTNCert(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/join-with-cert") { request, _ -> Response in
-            return try await RemoteControlRoute.joinPTNWithCert(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/leave") { request, _ -> Response in
-            return try await RemoteControlRoute.leavePTN(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/promote-admin") { request, _ -> Response in
-            return try await RemoteControlRoute.promoteAdmin(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/import-ca-key") { request, _ -> Response in
-            return try await RemoteControlRoute.importCAKey(request: request, controller: controller)
-        }
-
-        router.post("/v1/app/ptn/recover") { request, _ -> Response in
-            return try await RemoteControlRoute.recoverPTN(request: request, controller: controller)
-        }
-
-        // API Key endpoints
         router.get("/v1/app/apikeys") { _, _ -> Response in
             return try await RemoteControlRoute.listAPIKeys(controller: controller)
         }

@@ -172,6 +172,22 @@ public final class WANManager: @unchecked Sendable {
 
     // Callbacks
     public var onInferenceRequest: ((InferenceRequestPayload, WANTransportConnection) async -> Void)?
+    /// PIN-aware variant: also passes the requesting peer's node ID so the
+    /// handler can map it to a private-network membership. When set, it is
+    /// preferred over `onInferenceRequest`.
+    public var onInferenceRequestFromPeer: ((InferenceRequestPayload, WANTransportConnection, String) async -> Void)?
+
+    /// Actual UDP port the WAN listener is bound to (nil before start).
+    public var listenPort: UInt16? {
+        listener?.port?.rawValue
+    }
+
+    /// Hex X25519 key-agreement public key of this node's WAN identity —
+    /// the static key peers authenticate on the PIN data plane.
+    public var wgPublicKeyHex: String? {
+        config?.identity.keyAgreementPublicKey.rawRepresentation
+            .map { String(format: "%02x", $0) }.joined()
+    }
     public var onPTNJoinRequest: ((PTNJoinRequestTransportPayload, WANTransportConnection) async -> Void)?
 
     public init() {}
@@ -618,7 +634,11 @@ public final class WANManager: @unchecked Sendable {
             connectedPeers[peer.peerInfo.nodeID]?.lastHeartbeat = Date()
 
         case .inferenceRequest(let payload):
-            await onInferenceRequest?(payload, peer.connection)
+            if let handler = onInferenceRequestFromPeer {
+                await handler(payload, peer.connection, peer.peerInfo.nodeID)
+            } else {
+                await onInferenceRequest?(payload, peer.connection)
+            }
 
         case .inferenceChunk, .inferenceComplete, .inferenceError:
             // Handled by WANProvider

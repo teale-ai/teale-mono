@@ -235,10 +235,10 @@ public protocol PINGatewayAuth: Sendable {
 /// Control-plane client: memberships, sync, signed-netmap TOFU cache, usage
 /// batching, generic authenticated proxy. Mirrors node/src/pin/manager.rs.
 public actor PINManager {
-    public let gatewayBaseURL: URL
-    public let dataDir: URL
+    public nonisolated let gatewayBaseURL: URL
+    public nonisolated let dataDir: URL
     /// X25519 static pubkey advertised for data-plane auth (hex).
-    public let wgPubkeyHex: String
+    public nonisolated let wgPubkeyHex: String
 
     private let auth: any PINGatewayAuth
     private let session: URLSession
@@ -459,6 +459,18 @@ public actor PINManager {
             guard let netmap = pin.netmap?.netmap else { continue }
             if let member = netmap.members.first(where: {
                 !$0.disabled && $0.wgPubkey.lowercased() == wgKeyHex.lowercased()
+            }) {
+                return (pin.pinId, member)
+            }
+        }
+        return nil
+    }
+
+    public func memberForNodePubkey(_ nodeId: String) -> (String, PinNetmapMember)? {
+        for pin in state.values where pin.membership == "active" {
+            guard let netmap = pin.netmap?.netmap else { continue }
+            if let member = netmap.members.first(where: {
+                !$0.disabled && $0.nodePubkey.lowercased() == nodeId.lowercased()
             }) {
                 return (pin.pinId, member)
             }
