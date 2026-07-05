@@ -557,6 +557,66 @@ pub fn delete_pin(pool: &DbPool, pin_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Live (heartbeat-derived) view of a member device, looked up by node
+/// pubkey. `None` means the device is not currently connected.
+pub struct LiveMemberInfo {
+    pub loaded_models: Vec<String>,
+}
+
+/// Assemble the current netmap for a network. `live` resolves a member's
+/// node pubkey to registry state when the device is online; offline members
+/// appear with their persisted endpoints and no loaded models.
+pub fn build_netmap(
+    pool: &DbPool,
+    pin_id: &str,
+    live: impl Fn(&str) -> Option<LiveMemberInfo>,
+) -> anyhow::Result<teale_protocol::PinNetmap> {
+    let pin = get_pin(pool, pin_id)?.ok_or_else(|| anyhow::anyhow!("unknown network"))?;
+    let members = members(pool, pin_id)?
+        .into_iter()
+        .filter(|m| m.status == "active" || m.status == "disabled")
+        .map(|m| {
+            let disabled = m.status == "disabled";
+            let live_info = live(&m.node_pubkey);
+            teale_protocol::PinNetmapMember {
+                device_id: m.device_id,
+                node_pubkey: m.node_pubkey,
+                display_name: m.display_name,
+                serves_models: m.serves_models,
+                disabled,
+                // Disabled devices stay listed (peers must recognize and
+                // reject them) but their endpoints are withheld.
+                endpoints: if disabled {
+                    Vec::new()
+                } else {
+                    serde_json::from_str(&m.endpoints).unwrap_or_default()
+                },
+                loaded_models: live_info.map(|i| i.loaded_models).unwrap_or_default(),
+                last_seen: m.last_seen,
+            }
+        })
+        .collect();
+    Ok(teale_protocol::PinNetmap {
+        pin_id: pin.pin_id,
+        name: pin.name,
+        generation: pin.netmap_generation,
+        issued_at: unix_now(),
+        members,
+    })
+}
+
+pub fn sign_netmap(
+    netmap: teale_protocol::PinNetmap,
+    identity: &crate::identity::GatewayIdentity,
+) -> anyhow::Result<teale_protocol::SignedPinNetmap> {
+    let message = teale_protocol::canonical_json(&netmap)?;
+    Ok(teale_protocol::SignedPinNetmap {
+        gateway_pubkey: identity.public_key_hex(),
+        signature: identity.sign_hex(&message),
+        netmap,
+    })
+}
+
 pub fn bump_netmap_generation(pool: &DbPool, pin_id: &str) -> anyhow::Result<i64> {
     let conn = pool.lock();
     conn.execute(
@@ -805,6 +865,74 @@ mod tests {
         let mine = pins_for_device(&pool, "dev-2").unwrap();
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].status, "pending");
+    }
+
+    #[test]
+    fn netmap_includes_active_and_disabled_only_and_signs() {
+        let (pool, pin) = setup();
+        for (dev, key) in [("dev-a", "aa"), ("dev-b", "bb"), ("dev-c", "cc")] {
+            submit_join(&pool, &pin.pin_id, dev, key.repeat(32).as_str(), None).unwrap();
+        }
+        approve_member(&pool, &pin.pin_id, "dev-a", "owner-acct").unwrap();
+        approve_member(&pool, &pin.pin_id, "dev-b", "owner-acct").unwrap();
+        set_member_disabled(&pool, &pin.pin_id, "dev-b", true).unwrap();
+        // dev-c stays pending and must not appear.
+        update_member_endpoints(
+            &pool,
+            &pin.pin_id,
+            "dev-a",
+            r#"[{"kind":"lan","addr":"10.0.0.5:41641"}]"#,
+        )
+        .unwrap();
+        update_member_endpoints(
+            &pool,
+            &pin.pin_id,
+            "dev-b",
+            r#"[{"kind":"lan","addr":"10.0.0.6:41641"}]"#,
+        )
+        .unwrap();
+
+        let live = |pubkey: &str| {
+            (pubkey == "aa".repeat(32)).then(|| LiveMemberInfo {
+                loaded_models: vec!["qwen3-4b".to_string()],
+            })
+        };
+        let netmap = build_netmap(&pool, &pin.pin_id, live).unwrap();
+        assert_eq!(
+            netmap.generation,
+            netmap_generation(&pool, &pin.pin_id).unwrap()
+        );
+        assert_eq!(netmap.members.len(), 2);
+
+        let a = netmap
+            .members
+            .iter()
+            .find(|m| m.device_id == "dev-a")
+            .unwrap();
+        assert!(!a.disabled);
+        assert_eq!(a.endpoints.len(), 1);
+        assert_eq!(a.loaded_models, vec!["qwen3-4b".to_string()]);
+
+        let b = netmap
+            .members
+            .iter()
+            .find(|m| m.device_id == "dev-b")
+            .unwrap();
+        assert!(b.disabled);
+        assert!(b.endpoints.is_empty(), "disabled endpoints withheld");
+        assert!(b.loaded_models.is_empty());
+
+        // Sign and verify with the pinned gateway key.
+        let dir = std::env::temp_dir().join(format!("pin-test-{}", uuid::Uuid::new_v4()));
+        let identity =
+            crate::identity::GatewayIdentity::load_or_create(dir.join("id.key").to_str().unwrap())
+                .unwrap();
+        let signed = sign_netmap(netmap, &identity).unwrap();
+        assert!(signed.verify(&identity.public_key_hex()));
+        let mut tampered = signed.clone();
+        tampered.netmap.members[0].disabled = !tampered.netmap.members[0].disabled;
+        assert!(!tampered.verify(&identity.public_key_hex()));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

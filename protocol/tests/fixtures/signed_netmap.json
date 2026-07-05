@@ -1,0 +1,41 @@
+{
+  "netmap": {
+    "pinId": "11111111-2222-3333-4444-555555555555",
+    "name": "teale-hq",
+    "generation": 7,
+    "issuedAt": 1751600000,
+    "members": [
+      {
+        "deviceId": "dev-windows-01",
+        "nodePubkey": "abababababababababababababababababababababababababababababababab",
+        "displayName": "Front Desk PC",
+        "servesModels": true,
+        "disabled": false,
+        "endpoints": [
+          {
+            "kind": "lan",
+            "addr": "192.168.1.20:41641"
+          },
+          {
+            "kind": "reflexive",
+            "addr": "203.0.113.7:41641"
+          }
+        ],
+        "loadedModels": [
+          "qwen3-4b-instruct"
+        ],
+        "lastSeen": 1751599990
+      },
+      {
+        "deviceId": "dev-mac-01",
+        "nodePubkey": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "servesModels": false,
+        "disabled": true,
+        "endpoints": [],
+        "loadedModels": []
+      }
+    ]
+  },
+  "gatewayPubkey": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+  "signature": "d186be84f78698e39636cf8b244c9fc49ffb1033ee47eb2c5e9890ba2246fb917fcffa0eea389919a88881e3d30cc9672aa67812c9305d1c9c925a40eb7f6406"
+}

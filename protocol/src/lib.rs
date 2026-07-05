@@ -11,6 +11,7 @@ pub mod apple_date;
 pub mod cluster;
 pub mod hardware;
 pub mod openai;
+pub mod pin;
 pub mod relay;
 
 pub use apple_date::{now_reference_seconds, reference_to_unix, unix_to_reference};
@@ -22,6 +23,10 @@ pub use cluster::{
 };
 pub use hardware::{GpuBackend, HardwareCapability, NodeCapabilities, Tier};
 pub use openai::{ApiMessage, ChatCompletionRequest, ModelEntry, ModelsResponse, Pricing};
+pub use pin::{
+    canonical_json, PinEndpoint, PinNetmap, PinNetmapMember, SignedPinNetmap,
+    NETMAP_MAX_AGE_SECONDS,
+};
 pub use relay::{
     DiscoverPayload, IncomingRelayMessage, OutgoingRelayMessage, PeerNotificationPayload,
     RegisterPayload, RelayDataPayload, RelayErrorPayload, RelaySessionPayload,
