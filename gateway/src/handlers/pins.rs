@@ -456,6 +456,9 @@ pub async fn delete_pin(
 pub struct SyncReq {
     #[serde(default)]
     endpoints: Vec<teale_protocol::PinEndpoint>,
+    /// X25519 static pubkey (hex) for data-plane Noise auth.
+    #[serde(default)]
+    wg_pubkey: String,
     #[serde(default)]
     loaded_models: Vec<String>,
     #[serde(default)]
@@ -525,6 +528,7 @@ pub async fn sync(
         &device_id,
         &endpoints_json,
         &loaded_models_json,
+        &req.wg_pubkey,
     )
     .map_err(GatewayError::Other)?;
     if !req.model_policy_status.is_empty() {
@@ -1054,6 +1058,7 @@ mod tests {
                     kind: "lan".into(),
                     addr: "10.0.0.9:41641".into(),
                 }],
+                wg_pubkey: "ab".repeat(32),
                 loaded_models: vec!["advertised-model".into()],
                 known_generation,
                 model_policy_status: vec![],
@@ -1200,6 +1205,7 @@ mod tests {
             Path(pin.pin_id.clone()),
             Json(SyncReq {
                 endpoints: vec![],
+                wg_pubkey: String::new(),
                 loaded_models: vec![],
                 known_generation: None,
                 model_policy_status: vec![ModelPolicyStatusReq {

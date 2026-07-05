@@ -51,6 +51,7 @@ pub struct PinMember {
     pub pin_id: String,
     pub device_id: String,
     pub node_pubkey: String,
+    pub wg_pubkey: String,
     pub display_name: Option<String>,
     pub status: String,
     pub serves_models: bool,
@@ -496,7 +497,7 @@ pub fn pins_for_device(
 pub fn members(pool: &DbPool, pin_id: &str) -> anyhow::Result<Vec<PinMember>> {
     let conn = pool.lock();
     let mut stmt = conn.prepare(
-        "SELECT pin_id, device_id, node_pubkey, display_name, status, serves_models,
+        "SELECT pin_id, device_id, node_pubkey, wg_pubkey, display_name, status, serves_models,
                 allow_remote_models, endpoints, loaded_models, requested_at, approved_by,
                 joined_at, last_seen
          FROM pin_members
@@ -509,16 +510,17 @@ pub fn members(pool: &DbPool, pin_id: &str) -> anyhow::Result<Vec<PinMember>> {
                 pin_id: row.get(0)?,
                 device_id: row.get(1)?,
                 node_pubkey: row.get(2)?,
-                display_name: row.get(3)?,
-                status: row.get(4)?,
-                serves_models: row.get::<_, i64>(5)? != 0,
-                allow_remote_models: row.get::<_, i64>(6)? != 0,
-                endpoints: row.get(7)?,
-                loaded_models: row.get(8)?,
-                requested_at: row.get(9)?,
-                approved_by: row.get(10)?,
-                joined_at: row.get(11)?,
-                last_seen: row.get(12)?,
+                wg_pubkey: row.get(3)?,
+                display_name: row.get(4)?,
+                status: row.get(5)?,
+                serves_models: row.get::<_, i64>(6)? != 0,
+                allow_remote_models: row.get::<_, i64>(7)? != 0,
+                endpoints: row.get(8)?,
+                loaded_models: row.get(9)?,
+                requested_at: row.get(10)?,
+                approved_by: row.get(11)?,
+                joined_at: row.get(12)?,
+                last_seen: row.get(13)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -540,17 +542,19 @@ pub fn update_member_endpoints(
     device_id: &str,
     endpoints_json: &str,
     loaded_models_json: &str,
+    wg_pubkey: &str,
 ) -> anyhow::Result<()> {
-    // Validate it's JSON before persisting; both fields are relayed to peers.
+    // Validate it's JSON before persisting; these fields are relayed to peers.
     let _: serde_json::Value = serde_json::from_str(endpoints_json)?;
     let _: serde_json::Value = serde_json::from_str(loaded_models_json)?;
     let conn = pool.lock();
     conn.execute(
-        "UPDATE pin_members SET endpoints = ?, loaded_models = ?, last_seen = ?
+        "UPDATE pin_members SET endpoints = ?, loaded_models = ?, wg_pubkey = ?, last_seen = ?
          WHERE pin_id = ? AND device_id = ?",
         params![
             endpoints_json,
             loaded_models_json,
+            wg_pubkey,
             unix_now(),
             pin_id,
             device_id
@@ -593,6 +597,7 @@ pub fn build_netmap(
             teale_protocol::PinNetmapMember {
                 device_id: m.device_id,
                 node_pubkey: m.node_pubkey,
+                wg_pubkey: m.wg_pubkey,
                 display_name: m.display_name,
                 serves_models: m.serves_models,
                 disabled,
@@ -1168,6 +1173,7 @@ mod tests {
             "dev-a",
             r#"[{"kind":"lan","addr":"10.0.0.5:41641"}]"#,
             r#"["offline-model"]"#,
+            "ee".repeat(32).as_str(),
         )
         .unwrap();
         update_member_endpoints(
@@ -1176,6 +1182,7 @@ mod tests {
             "dev-b",
             r#"[{"kind":"lan","addr":"10.0.0.6:41641"}]"#,
             "[]",
+            "ff".repeat(32).as_str(),
         )
         .unwrap();
 

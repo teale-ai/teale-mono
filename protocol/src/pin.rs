@@ -27,6 +27,11 @@ pub struct PinNetmapMember {
     pub device_id: String,
     /// Ed25519 hex (relay identity pubkey).
     pub node_pubkey: String,
+    /// X25519 hex — the Noise static key peers authenticate on the data
+    /// plane. NOT derivable from `node_pubkey` (different scalar derivation);
+    /// devices advertise it on sync.
+    #[serde(default)]
+    pub wg_pubkey: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub serves_models: bool,
@@ -142,6 +147,7 @@ mod tests {
             members: vec![PinNetmapMember {
                 device_id: "dev-1".into(),
                 node_pubkey: "ab".repeat(32),
+                wg_pubkey: "cd".repeat(32),
                 display_name: Some("Alice's PC".into()),
                 serves_models: true,
                 disabled: false,

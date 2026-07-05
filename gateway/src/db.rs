@@ -532,6 +532,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE pin_members ADD COLUMN loaded_models TEXT NOT NULL DEFAULT '[]';
     "#,
+    // 016_pin_member_wg_pubkey.sql — X25519 static key for data-plane Noise
+    // peer authentication. Distinct from node_pubkey (Ed25519): CryptoKit
+    // reuses the Ed25519 seed as the X25519 scalar, so the public keys are
+    // unrelated and must be advertised separately.
+    r#"
+    ALTER TABLE pin_members ADD COLUMN wg_pubkey TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

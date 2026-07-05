@@ -8,6 +8,7 @@
       {
         "deviceId": "dev-windows-01",
         "nodePubkey": "abababababababababababababababababababababababababababababababab",
+        "wgPubkey": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
         "displayName": "Front Desk PC",
         "servesModels": true,
         "disabled": false,
@@ -29,6 +30,7 @@
       {
         "deviceId": "dev-mac-01",
         "nodePubkey": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "wgPubkey": "",
         "servesModels": false,
         "disabled": true,
         "endpoints": [],
@@ -37,5 +39,5 @@
     ]
   },
   "gatewayPubkey": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
-  "signature": "d186be84f78698e39636cf8b244c9fc49ffb1033ee47eb2c5e9890ba2246fb917fcffa0eea389919a88881e3d30cc9672aa67812c9305d1c9c925a40eb7f6406"
+  "signature": "9a5728d1724aa44435297412109f0f200e35bd9323251e1835d68badb644d2f319528a48fcb022ca78ba94aa02ed9eac3d921659bea84cf928d4fedb68283c05"
 }

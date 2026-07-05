@@ -19,6 +19,7 @@ fn main() {
             PinNetmapMember {
                 device_id: "dev-windows-01".into(),
                 node_pubkey: "ab".repeat(32),
+                wg_pubkey: "ef".repeat(32),
                 display_name: Some("Front Desk PC".into()),
                 serves_models: true,
                 disabled: false,
@@ -38,6 +39,7 @@ fn main() {
             PinNetmapMember {
                 device_id: "dev-mac-01".into(),
                 node_pubkey: "cd".repeat(32),
+                wg_pubkey: String::new(),
                 display_name: None,
                 serves_models: false,
                 disabled: true,
