@@ -378,6 +378,61 @@ impl PinManager {
     pub fn gateway_url(&self) -> &str {
         &self.gateway_url
     }
+
+    /// Resolve an authenticated peer static key to (pin_id, member) —
+    /// which network the peer belongs to and who it is.
+    pub fn member_for_wg_key(
+        &self,
+        wg_pubkey_hex: &str,
+    ) -> Option<(String, teale_protocol::PinNetmapMember)> {
+        let state = self.state.lock();
+        for pin in state.values() {
+            if pin.membership != "active" {
+                continue;
+            }
+            let Some(signed) = pin.netmap.as_ref() else {
+                continue;
+            };
+            if let Some(member) = signed
+                .netmap
+                .members
+                .iter()
+                .find(|m| !m.disabled && m.wg_pubkey.eq_ignore_ascii_case(wg_pubkey_hex))
+            {
+                return Some((pin.pin_id.clone(), member.clone()));
+            }
+        }
+        None
+    }
+
+    /// Push pending usage batches with this manager's bearer + client.
+    pub async fn flush_usage(&self, batcher: &super::usage::UsageBatcher) -> Result<usize> {
+        let bearer = self.bearer().await?;
+        batcher
+            .flush(&self.client, &self.gateway_url, &bearer)
+            .await
+    }
+
+    /// Test seam: plant a verified netmap without a live control plane.
+    #[cfg(test)]
+    pub(crate) fn plant_state_for_tests(
+        &self,
+        pin_id: &str,
+        name: &str,
+        netmap: teale_protocol::SignedPinNetmap,
+    ) {
+        self.state.lock().insert(
+            pin_id.to_string(),
+            PinState {
+                pin_id: pin_id.to_string(),
+                name: name.to_string(),
+                membership: "active".into(),
+                netmap: Some(netmap),
+                settings: None,
+                model_policy: Vec::new(),
+            },
+        );
+    }
 }
 
 /// Spawn the 60 s sync loop. `advertise` is called each tick to gather the

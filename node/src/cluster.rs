@@ -41,10 +41,13 @@ pub struct NodeRuntimeState {
     pub total_completion_seconds_micros: AtomicU64, // sum of completion durations in microseconds
     pub shutting_down: AtomicBool,
     pub semaphore: Arc<Semaphore>,
+    /// PIN-over-DIN admission priority, sharing `semaphore`.
+    pub pin_gate: Arc<crate::pin::gate::PriorityGate>,
 }
 
 impl NodeRuntimeState {
     pub fn new(max_concurrent: u32) -> Self {
+        let semaphore = Arc::new(Semaphore::new(max_concurrent as usize));
         Self {
             device_id: uuid::Uuid::new_v4().to_string(),
             queue_depth: AtomicU32::new(0),
@@ -59,7 +62,8 @@ impl NodeRuntimeState {
             total_completion_tokens: AtomicU64::new(0),
             total_completion_seconds_micros: AtomicU64::new(0),
             shutting_down: AtomicBool::new(false),
-            semaphore: Arc::new(Semaphore::new(max_concurrent as usize)),
+            semaphore: semaphore.clone(),
+            pin_gate: crate::pin::gate::PriorityGate::new(semaphore),
         }
     }
 
@@ -244,10 +248,11 @@ async fn handle_inference_request(
 ) {
     let request_id = req.request_id.clone();
 
-    // 1. Concurrency cap: fail fast if full.
-    let permit = match state.semaphore.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
+    // 1. Concurrency cap: fail fast if full — and yield to waiting PIN
+    // requests (PIN traffic holds queue priority; spec §9).
+    let permit = match state.pin_gate.try_acquire_din() {
+        Some(p) => p,
+        None => {
             warn!("Queue full — dropping request {}", request_id);
             state.failed_requests.fetch_add(1, Ordering::Relaxed);
             reply_err(
@@ -362,7 +367,7 @@ async fn handle_inference_request(
 
 /// Tolerant match: accept `owner/name` and bare `name` variants because
 /// OpenRouter/HF/llama-server all use different forms.
-fn model_matches_any(requested: &str, loaded: &[String]) -> bool {
+pub(crate) fn model_matches_any(requested: &str, loaded: &[String]) -> bool {
     let requested_norm = normalize_model_id(requested);
     loaded.iter().any(|loaded| {
         normalize_model_id(loaded) == requested_norm || loaded_contains(loaded, requested)

@@ -5,6 +5,9 @@
 //! docs/pin-noise-protocol.md and the golden vectors in
 //! protocol/tests/fixtures/noise_vectors.json).
 
+pub mod gate;
 pub mod manager;
 pub mod noise;
+pub mod serve;
 pub mod transport;
+pub mod usage;
