@@ -6,3 +6,4 @@
 //! protocol/tests/fixtures/noise_vectors.json).
 
 pub mod noise;
+pub mod transport;
