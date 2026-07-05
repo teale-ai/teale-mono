@@ -66,6 +66,20 @@ struct Args {
     /// Override display name
     #[arg(long)]
     name: Option<String>,
+
+    /// Machine-readable output for subcommands
+    #[arg(long, global = true)]
+    json: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Manage Private Inference Networks (join, approve, devices, models…)
+    #[command(subcommand)]
+    Pin(pin::cli::PinCommand),
 }
 
 #[tokio::main]
@@ -78,6 +92,11 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let mut config = Config::load(&args.config)?;
+
+    // Subcommands talk to an already-running node's local API and exit.
+    if let Some(Command::Pin(command)) = args.command {
+        return pin::cli::run(command, config.control.port, args.json).await;
+    }
 
     info!("teale-node v{}", env!("CARGO_PKG_VERSION"));
 
