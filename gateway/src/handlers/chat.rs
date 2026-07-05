@@ -701,6 +701,12 @@ pub(crate) async fn pick_and_dispatch(
     let mut outbound: ChatCompletionRequest = serde_json::from_value(req_body.clone())
         .map_err(|e| GatewayError::BadRequest(format!("{}", e)))?;
     outbound.model = Some(catalog_model.id.clone());
+    if catalog_model.id == "deepseek-ai/deepseek-v4-flash" {
+        outbound
+            .extra
+            .entry("reasoning_effort".to_string())
+            .or_insert_with(|| Value::String("none".to_string()));
+    }
     // OpenRouter explicitly requires the `usage` block on every response,
     // including streamed ones. Force `stream_options.include_usage=true` on
     // the outbound request so upstream emits a final usage chunk we can
@@ -1707,6 +1713,7 @@ quantization: null
             response_format: None,
             seed: None,
             user: None,
+            extra: Default::default(),
         }
     }
 
@@ -1742,6 +1749,7 @@ quantization: null
             response_format: None,
             seed: None,
             user: None,
+            extra: Default::default(),
         }
     }
 

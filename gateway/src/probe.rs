@@ -192,6 +192,7 @@ async fn probe_target(
         response_format: None,
         seed: Some(0),
         user: Some("gateway-synthetic-probe".to_string()),
+        extra: Default::default(),
     };
 
     let (tx, mut rx) = mpsc::channel::<SessionEvent>(64);

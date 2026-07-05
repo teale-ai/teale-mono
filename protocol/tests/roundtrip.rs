@@ -75,6 +75,7 @@ fn sample_request() -> InferenceRequestPayload {
             response_format: None,
             seed: Some(42),
             user: None,
+            extra: [("reasoning_effort".to_string(), json!("none"))].into(),
         },
         streaming: true,
     }
@@ -111,7 +112,13 @@ fn heartbeat_roundtrip() {
 
 #[test]
 fn inference_request_roundtrip() {
-    assert_round_trip(ClusterMessage::InferenceRequest(Box::new(sample_request())));
+    let msg = ClusterMessage::InferenceRequest(Box::new(sample_request()));
+    let value = msg.to_value();
+    assert_eq!(
+        value["inferenceRequest"]["_0"]["request"]["reasoning_effort"],
+        json!("none")
+    );
+    assert_round_trip(msg);
 }
 
 #[test]

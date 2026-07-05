@@ -403,6 +403,7 @@ private let companionModelPricingByID: [String: CompanionModelPricing] = [
     "mistralai/mistral-small-3.2-24b-instruct": .init(promptUSDPerToken: 0.00000040, completionUSDPerToken: 0.00000080),
     "microsoft/phi-4": .init(promptUSDPerToken: 0.00000020, completionUSDPerToken: 0.00000040),
     "google/gemma-3-27b-it": .init(promptUSDPerToken: 0.00000040, completionUSDPerToken: 0.00000080),
+    "google/gemma-4-26b-a4b-it": .init(promptUSDPerToken: 0.00000018, completionUSDPerToken: 0.00000036),
     "qwen/qwen3-32b": .init(promptUSDPerToken: 0.00000030, completionUSDPerToken: 0.00000060),
     "meta-llama/llama-4-scout": .init(promptUSDPerToken: 0.00000080, completionUSDPerToken: 0.00000160),
     "qwen/qwen3.6-27b": .init(promptUSDPerToken: 0.00000025, completionUSDPerToken: 0.00000050),
