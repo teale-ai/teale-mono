@@ -93,7 +93,7 @@ Name: "installtray"; Description: "Run Teale Tray at login (shows live status an
 [Run]
 ; Run post-install: pass whether the user opted into lid-closed supply.
 Filename: "powershell.exe"; \
-    Parameters: "-ExecutionPolicy Bypass -File ""{app}\post-install.ps1"" -InstallDir ""{app}"" -AllowSupplyLidClosed ""{code:GetLidClosedFlag}"" -PreservedModelsDir ""{code:GetPreservedModelsDir}"""; \
+    Parameters: "-ExecutionPolicy Bypass -File ""{app}\post-install.ps1"" -InstallDir ""{app}"" -AllowSupplyLidClosed ""{code:GetLidClosedFlag}"" -PreservedModelsDir ""{code:GetPreservedModelsDir}"" -PinJoinCode ""{code:GetPinJoinCode}"""; \
     StatusMsg: "Configuring Teale and starting service..."; \
     Flags: runhidden waituntilterminated
 
@@ -159,6 +159,14 @@ begin
   );
   BehaviorPage.Add('Keep supplying when the lid is closed (AC only) — recommended');
   BehaviorPage.Values[0] := True;
+end;
+
+{ Private Inference Network preseed for IT mass deployment:
+  Teale.exe /VERYSILENT /PINCODE=XXXX-XXXX-XX
+  The node auto-submits a join request; the PIN admin batch-approves. }
+function GetPinJoinCode(Param: String): String;
+begin
+  Result := ExpandConstant('{param:PINCODE|}');
 end;
 
 function GetLidClosedFlag(Param: String): String;
