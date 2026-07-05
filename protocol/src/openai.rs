@@ -1,5 +1,7 @@
 //! OpenAI-compatible request/response types.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -35,6 +37,12 @@ pub struct ChatCompletionRequest {
     pub seed: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// OpenAI-compatible providers add new request fields faster than the
+    /// shared protocol can expose typed members. Preserve unknown fields so
+    /// gateway clients can still pass provider knobs such as
+    /// `reasoning_effort` through WAN relay to the supply node.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

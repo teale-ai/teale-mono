@@ -27,17 +27,18 @@ small = 1
 
 [reliability]
 request_timeout_seconds = 300
-# TTFT deadline covers relay-open + first-token latency. Small warm models
-# are 300-500 ms end-to-end; the 60 s ceiling here accommodates cold loads
-# on large MoE models (e.g., DeepSeek V3.2 on a 2-Ultra exo cluster boots
-# in up to 57 s when nothing's been hot). Tighten back to 15 s once the
-# large-model cluster has warm-keeping and the scheduler avoids sending
-# first traffic to a fully-cold instance.
-ttft_deadline_seconds = 18
-# Small Hermes-class prompts should fail over fast when a WAN supplier is
-# cold or degraded; larger coding/tool-harness requests still inherit the
-# broader ceiling above.
-small_ttft_deadline_seconds = 8
+# TTFT deadline covers relay-open + first-token latency. Hermes/tool-agent
+# prompts routinely prefill 15k-60k tokens on single-supplier Macs, so WAN
+# reliability needs a much wider first-token window than tiny chat probes.
+# DeepSeek V4 Flash and Qwen3-Coder-Next can cold-prefill well past 30s while
+# still being healthy; do not quarantine them before they have a chance to
+# produce the first token.
+ttft_deadline_seconds = 120
+# Qwen3.6/Gemma-class "small" agent prompts are also larger than chat probes.
+# Qwen3.6 on tailor96 measured ~13s TTFT for a 19k-token Hermes prompt, and
+# Gemma on the 64 GB node can exceed the old 8s fail-fast limit under the real
+# Hermes system prompt.
+small_ttft_deadline_seconds = 60
 max_retries = 1
 # Teale's supply-side WAN stack has no direct node→relay heartbeat — it
 # only re-registers every 240 s (WANDiscovery.startReregistration), and in
