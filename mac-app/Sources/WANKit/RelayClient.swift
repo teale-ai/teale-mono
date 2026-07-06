@@ -202,10 +202,12 @@ public enum RelayMessage: Codable, Sendable {
     public struct RelayErrorPayload: Codable, Sendable {
         public var code: String
         public var message: String
+        public var retryAfterSeconds: Int?
 
-        public init(code: String, message: String) {
+        public init(code: String, message: String, retryAfterSeconds: Int? = nil) {
             self.code = code
             self.message = message
+            self.retryAfterSeconds = retryAfterSeconds
         }
     }
 }

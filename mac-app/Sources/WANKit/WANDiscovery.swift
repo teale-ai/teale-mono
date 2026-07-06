@@ -109,6 +109,10 @@ public actor WANDiscoveryService {
     private var reregistrationTask: Task<Void, Never>?
     private var localCapabilities: NodeCapabilities?
     private var forceRediscoveryOnNextResponse: Bool = false
+    private var lastDiscoverAt: Date?
+    private var discoverInFlight: Bool = false
+    private var discoverBackoffUntil: Date?
+    private let minDiscoverIntervalSeconds: TimeInterval = 10
 
     /// Callback when a new peer is discovered
     public var onPeerDiscovered: ((WANPeerInfo) -> Void)?
@@ -145,7 +149,7 @@ public actor WANDiscoveryService {
             let caps = await self?.localCapabilities ?? capabilities
             try? await relay.register(capabilities: caps)
             await self?.setForceRediscovery(true)
-            try? await relay.discover()
+            _ = try? await self?.sendDiscover(force: true)
             FileHandle.standardError.write(Data("[WAN] Re-registration complete\n".utf8))
         }
 
@@ -156,7 +160,7 @@ public actor WANDiscoveryService {
         startReregistration(capabilities: capabilities)
 
         // Initial peer discovery
-        try await relayClient.discover()
+        _ = try await sendDiscover(force: true)
 
         // Periodic discovery polling (replaces broadcast-triggered discovery)
         startDiscoveryPolling()
@@ -211,7 +215,7 @@ public actor WANDiscoveryService {
 
     /// Refresh peer list from relay
     public func refresh(filter: PeerFilter? = nil) async throws {
-        try await relayClient.discover(filter: filter)
+        _ = try await sendDiscover(filter: filter, force: true)
     }
 
     public func setOnPeerDiscovered(_ handler: ((WANPeerInfo) -> Void)?) {
@@ -226,12 +230,17 @@ public actor WANDiscoveryService {
 
     private func startMessageListener() {
         discoveryTask = Task { [weak self] in
-            guard let self = self else { return }
-            let messages = await self.relayClient.incomingMessages
+            while !Task.isCancelled {
+                guard let self = self else { return }
+                let messages = await self.relayClient.incomingMessages
 
-            for await message in messages {
-                guard !Task.isCancelled else { break }
-                await self.handleRelayMessage(message)
+                for await message in messages {
+                    guard !Task.isCancelled else { break }
+                    await self.handleRelayMessage(message)
+                }
+
+                FileHandle.standardError.write(Data("[WAN] Discovery relay stream ended, re-subscribing...\n".utf8))
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
     }
@@ -262,9 +271,48 @@ public actor WANDiscoveryService {
             // Registration confirmed
             break
 
+        case .error(let payload):
+            if payload.code == "rate_limited" {
+                noteRelayRateLimit(retryAfterSeconds: payload.retryAfterSeconds)
+            }
+
         default:
             break
         }
+    }
+
+    @discardableResult
+    private func sendDiscover(filter: PeerFilter? = nil, force: Bool = false) async throws -> Bool {
+        let now = Date()
+        if let backoffUntil = discoverBackoffUntil, now < backoffUntil {
+            let remaining = Int(ceil(backoffUntil.timeIntervalSince(now)))
+            FileHandle.standardError.write(Data("[WAN] Discovery skipped; relay asked us to back off for \(remaining)s\n".utf8))
+            return false
+        }
+
+        if discoverInFlight {
+            return false
+        }
+
+        if !force, let lastDiscoverAt, now.timeIntervalSince(lastDiscoverAt) < minDiscoverIntervalSeconds {
+            return false
+        }
+
+        discoverInFlight = true
+        defer { discoverInFlight = false }
+
+        try await relayClient.discover(filter: filter)
+        lastDiscoverAt = Date()
+        return true
+    }
+
+    private func noteRelayRateLimit(retryAfterSeconds: Int?) {
+        let retryAfter = max(TimeInterval(retryAfterSeconds ?? 15), 5)
+        let until = Date().addingTimeInterval(retryAfter)
+        if discoverBackoffUntil == nil || until > discoverBackoffUntil! {
+            discoverBackoffUntil = until
+        }
+        FileHandle.standardError.write(Data("[WAN] Relay discovery rate limited; backing off for \(Int(retryAfter))s\n".utf8))
     }
 
     private func startDiscoveryPolling() {
@@ -272,7 +320,7 @@ public actor WANDiscoveryService {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
                 guard let self = self, !Task.isCancelled else { return }
-                try? await self.relayClient.discover()
+                _ = try? await self.sendDiscover()
             }
         }
     }
