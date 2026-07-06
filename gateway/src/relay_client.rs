@@ -730,6 +730,7 @@ mod tests {
             IncomingRelayMessage::Error(teale_protocol::RelayErrorPayload {
                 code: "peer_not_found".to_string(),
                 message: "Peer node-a is not connected".to_string(),
+                retry_after_seconds: None,
             }),
             &registry,
             &sessions,

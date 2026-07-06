@@ -31,7 +31,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
+use tokio::time::Instant;
 use tracing::{error, info, warn};
 
 use teale_protocol::IncomingRelayMessage;
@@ -47,6 +48,64 @@ use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
 use crate::swap::{ModelSlot, SwapManager};
 use crate::windows_model_catalog::{context_for_model, model_by_id};
+
+#[derive(Debug)]
+struct RelayBackoffState {
+    register_backoff_until: Option<Instant>,
+    discover_backoff_until: Option<Instant>,
+    last_discover_at: Option<Instant>,
+    min_discover_interval: Duration,
+}
+
+impl RelayBackoffState {
+    fn new() -> Self {
+        Self {
+            register_backoff_until: None,
+            discover_backoff_until: None,
+            last_discover_at: None,
+            min_discover_interval: Duration::from_secs(300),
+        }
+    }
+
+    fn note_rate_limit(&mut self, message: &str, retry_after_seconds: Option<u64>) {
+        let retry_after = Duration::from_secs(retry_after_seconds.unwrap_or(15).max(5));
+        let until = Instant::now() + retry_after;
+        let lower = message.to_ascii_lowercase();
+
+        if lower.contains("register") {
+            self.register_backoff_until = Some(until);
+        } else if lower.contains("discover") {
+            self.discover_backoff_until = Some(until);
+        } else {
+            self.register_backoff_until = Some(until);
+            self.discover_backoff_until = Some(until);
+        }
+    }
+
+    fn can_register(&self) -> bool {
+        self.register_backoff_until
+            .map(|until| Instant::now() >= until)
+            .unwrap_or(true)
+    }
+
+    fn can_discover(&self) -> bool {
+        let now = Instant::now();
+        if self
+            .discover_backoff_until
+            .map(|until| now < until)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        self.last_discover_at
+            .map(|last| now.duration_since(last) >= self.min_discover_interval)
+            .unwrap_or(true)
+    }
+
+    fn mark_discover_sent(&mut self) {
+        self.last_discover_at = Some(Instant::now());
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -457,6 +516,7 @@ async fn run_relay_session(
 ) -> anyhow::Result<()> {
     let (relay, mut incoming) = RelayClient::connect(&config.relay.url, identity).await?;
     let relay = Arc::new(relay);
+    let relay_backoff = Arc::new(Mutex::new(RelayBackoffState::new()));
 
     let mut initial_capabilities = capabilities.clone();
     initial_capabilities.loaded_models = swap.loaded_models().await;
@@ -480,6 +540,7 @@ async fn run_relay_session(
         let state = state.clone();
         let swap = swap.clone();
         let tray_status = tray_status.clone();
+        let relay_backoff = relay_backoff.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(interval));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -497,6 +558,10 @@ async fn run_relay_session(
                     && !state.shutting_down.load(Ordering::Relaxed);
                 snapshot.effective_context = swap.current_context_size().await;
                 snapshot.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
+                if !relay_backoff.lock().await.can_register() {
+                    tracing::debug!("heartbeat re-register skipped during relay backoff");
+                    continue;
+                }
                 if let Err(e) = relay.register_signed(
                     &identity_hex,
                     &pubkey,
@@ -537,7 +602,7 @@ async fn run_relay_session(
                 };
                 tray_status.mark_relay_connected(true);
                 tray_status.clear_last_error().await;
-                dispatch(&relay, msg, swap, state, device_info).await;
+                dispatch(&relay, msg, swap, state, device_info, &relay_backoff).await;
             }
         }
     };
@@ -553,6 +618,7 @@ async fn dispatch(
     swap: &Arc<SwapManager>,
     state: &Arc<NodeRuntimeState>,
     device_info: &Value,
+    relay_backoff: &Arc<Mutex<RelayBackoffState>>,
 ) {
     match msg {
         IncomingRelayMessage::RegisterAck { node_id } => {
@@ -560,7 +626,20 @@ async fn dispatch(
                 "Registered with relay (nodeID: {}...)",
                 &node_id[..16.min(node_id.len())]
             );
-            let _ = relay.discover();
+            let should_discover = {
+                let mut backoff = relay_backoff.lock().await;
+                if backoff.can_discover() {
+                    backoff.mark_discover_sent();
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_discover {
+                let _ = relay.discover();
+            } else {
+                tracing::debug!("discover skipped after registerAck during relay backoff");
+            }
         }
 
         IncomingRelayMessage::DiscoverResponse { peers } => {
@@ -607,6 +686,12 @@ async fn dispatch(
 
         IncomingRelayMessage::Error(err) => {
             error!("Relay error: {} — {}", err.code, err.message);
+            if err.code == "rate_limited" {
+                relay_backoff
+                    .lock()
+                    .await
+                    .note_rate_limit(&err.message, err.retry_after_seconds);
+            }
         }
 
         IncomingRelayMessage::Unknown(kind) => {

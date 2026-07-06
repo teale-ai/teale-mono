@@ -212,7 +212,7 @@ fn default_quarantine() -> u64 {
     30
 }
 fn default_discover_interval() -> u64 {
-    10
+    60
 }
 fn default_synthetic_probe_enabled() -> bool {
     false

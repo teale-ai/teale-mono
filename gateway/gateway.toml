@@ -50,7 +50,7 @@ max_retries = 1
 # better than flapping every supplier out of the catalog every 30 s.
 heartbeat_stale_seconds = 3600
 quarantine_seconds = 120
-discover_interval_seconds = 10
+discover_interval_seconds = 60
 
 [synthetic_probes]
 # Keep /v1/models TTFT/TPS from going stale when real traffic is quiet.

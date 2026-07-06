@@ -111,6 +111,8 @@ pub struct PeerNotificationPayload {
 pub struct RelayErrorPayload {
     pub code: String,
     pub message: String,
+    #[serde(default, rename = "retryAfterSeconds")]
+    pub retry_after_seconds: Option<u64>,
 }
 
 // ── Incoming ────────────────────────────────────────────────────────
