@@ -505,9 +505,11 @@ pub struct SyncResponse {
 }
 
 /// Member-device poll: advertise endpoints + report policy status, receive
-/// membership state, the netmap (when newer than `knownGeneration`), and the
-/// device's desired model loadout. Pending/removed devices get membership
-/// status only — same 200 shape, no oracle.
+/// membership state, a freshly signed netmap, and the device's desired model
+/// loadout. `knownGeneration` is accepted for wire compatibility, but live
+/// endpoints, WG keys, and loaded models do not bump membership generation, so
+/// active syncs always return the current netmap. Pending/removed devices get
+/// membership status only — same 200 shape, no oracle.
 pub async fn sync(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
@@ -555,31 +557,27 @@ pub async fn sync(
         pins::report_model_policy_status(pool, &pin_id, &device_id, &statuses)
             .map_err(GatewayError::Other)?;
     }
+    let _client_known_generation = req.known_generation;
 
     let pin = pins::get_pin(pool, &pin_id)
         .map_err(GatewayError::Other)?
         .ok_or_else(|| GatewayError::NotFound("unknown network".into()))?;
-    let netmap = if req.known_generation != Some(pin.netmap_generation) {
-        let identity = state
-            .identity
-            .as_ref()
-            .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("gateway identity unavailable")))?;
-        let devices = state.registry.snapshot_devices();
-        let by_pubkey: HashMap<String, Vec<String>> = devices
-            .into_iter()
-            .map(|d| (d.node_id.clone(), d.capabilities.loaded_models))
-            .collect();
-        let netmap = pins::build_netmap(pool, &pin_id, |pubkey| {
-            by_pubkey.get(pubkey).map(|models| pins::LiveMemberInfo {
-                loaded_models: models.clone(),
-            })
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("gateway identity unavailable")))?;
+    let devices = state.registry.snapshot_devices();
+    let by_pubkey: HashMap<String, Vec<String>> = devices
+        .into_iter()
+        .map(|d| (d.node_id.clone(), d.capabilities.loaded_models))
+        .collect();
+    let netmap = pins::build_netmap(pool, &pin_id, |pubkey| {
+        by_pubkey.get(pubkey).map(|models| pins::LiveMemberInfo {
+            loaded_models: models.clone(),
         })
-        .map_err(GatewayError::Other)?;
-        Some(pins::sign_netmap(netmap, identity).map_err(GatewayError::Other)?)
-    } else {
-        pins::touch_member_last_seen(pool, &pin_id, &device_id).map_err(GatewayError::Other)?;
-        None
-    };
+    })
+    .map_err(GatewayError::Other)?;
+    let netmap = Some(pins::sign_netmap(netmap, identity).map_err(GatewayError::Other)?);
     let model_policy =
         pins::model_policy(pool, &pin_id, Some(&device_id)).map_err(GatewayError::Other)?;
     Ok(Json(SyncResponse {
@@ -1008,7 +1006,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, GatewayError::NotFound(_)));
 
-        approve_member(
+        let _ = approve_member(
             State(state.clone()),
             Extension(device("owner-dev")),
             Path((pin.pin_id.clone(), "dev-1".into())),
@@ -1112,9 +1110,10 @@ mod tests {
         // the device advertised on sync.
         assert_eq!(me.loaded_models, vec!["advertised-model".to_string()]);
 
-        // Same generation → no netmap payload.
+        // Same generation still returns a netmap: endpoint/WG/model liveness
+        // can change without a membership-generation bump.
         let resp = sync_once(&state, "dev-1", &pin.pin_id, Some(gen)).await;
-        assert!(resp.netmap.is_none());
+        assert!(resp.netmap.is_some());
 
         // Membership change bumps generation → netmap returned again.
         knock(&state, "dev-2", &pin.join_code).await;
@@ -1432,7 +1431,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(code["joinCode"], serde_json::json!(pin.join_code));
-        delete_pin(
+        let _ = delete_pin(
             State(state.clone()),
             Extension(device("owner-dev")),
             Path(pin.pin_id.clone()),
