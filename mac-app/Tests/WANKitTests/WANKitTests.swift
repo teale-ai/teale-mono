@@ -210,6 +210,21 @@ final class RelayMessageTests: XCTestCase {
             _ = decoded
         }
     }
+
+    func testRelayErrorDecodesRetryAfterSeconds() throws {
+        let data = Data("""
+        {"error":{"code":"rate_limited","message":"Discover rate limited","retryAfterSeconds":12}}
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(RelayMessage.self, from: data)
+
+        if case .error(let payload) = decoded {
+            XCTAssertEqual(payload.code, "rate_limited")
+            XCTAssertEqual(payload.retryAfterSeconds, 12)
+        } else {
+            XCTFail("Decoded message should be .error")
+        }
+    }
 }
 
 // MARK: - STUN Client Tests
