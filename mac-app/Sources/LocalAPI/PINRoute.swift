@@ -16,6 +16,9 @@ public protocol PINControlling: Sendable {
     func pinUpdateLocalSettings(_ body: Data) async throws -> Data
     /// Authenticated passthrough to gateway /v1/pins/<subpath>.
     func pinProxy(method: String, subpath: String, body: Data?) async throws -> (Int, Data)
+    /// Stream a completion from a PIN provider. Yields SSE `data:` lines
+    /// (chunk JSON, then `[DONE]`); the prompt travels device-to-device.
+    func pinChatStream(model: String, requestBody: Data) -> AsyncThrowingStream<String, Error>
 }
 
 private struct PINJoinRequestBody: Decodable {
@@ -23,6 +26,8 @@ private struct PINJoinRequestBody: Decodable {
     var joinCode: String?
     var displayName: String?
 }
+
+private struct PINChatModelOnly: Decodable { var model: String? }
 
 enum PINRoute {
 
@@ -47,6 +52,31 @@ enum PINRoute {
             let (status, data) = try await controller.pinProxy(
                 method: "POST", subpath: "", body: Data(buffer: body))
             return Self.json(data, status: Self.mapStatus(status))
+        }
+        router.post("/v1/app/pins/chat/completions") { request, _ -> Response in
+            guard let controller else { return Self.unavailable() }
+            let body = try await request.body.collect(upTo: 4_194_304)
+            let bodyData = Data(buffer: body)
+            let model = (try? JSONDecoder().decode(PINChatModelOnly.self, from: bodyData))?.model ?? ""
+            guard !model.isEmpty else {
+                return Self.error(400, "`model` is required for pin chat")
+            }
+            let stream = controller.pinChatStream(model: model, requestBody: bodyData)
+            let responseBody = ResponseBody(contentLength: nil) { writer in
+                do {
+                    for try await line in stream {
+                        try await writer.write(.init(string: line))
+                    }
+                } catch {
+                    let msg = "data: {\"error\": \"\(error.localizedDescription)\"}\n\n"
+                    try? await writer.write(.init(string: msg))
+                }
+            }
+            return Response(
+                status: .ok,
+                headers: [.contentType: "text/event-stream", .cacheControl: "no-cache"],
+                body: responseBody
+            )
         }
         router.get("/v1/app/pins/settings/local") { _, _ -> Response in
             guard let controller else { return Self.unavailable() }

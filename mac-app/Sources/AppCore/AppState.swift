@@ -16,7 +16,6 @@ import AuthKit
 import WalletKit
 import LlamaCppKit
 import RapidMLXKit
-import TealeNetKit
 import CompilerKit
 import ChatKit
 import PrivacyFilterKit
@@ -95,8 +94,6 @@ public final class AppState {
         }
     }
 
-    // PTN (Private TealeNet)
-    public let ptnManager: PTNManager
     /// Private Inference Networks (PIN) control-plane runtime; nil only if
     /// the WAN identity could not be derived.
     public let pinService: PINService?
@@ -511,10 +508,6 @@ public final class AppState {
         let hostname = ProcessInfo.processInfo.hostName
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
         self.clusterManager = ClusterManager(localDeviceInfo: deviceInfo)
-        self.ptnManager = PTNManager(
-            localNodeID: Self.stableNodeID(),
-            localDisplayName: hostname
-        )
         self.wanManager = WANManager()
         self.pinService = try? PINService(
             gatewayBaseURL: URL(string: "https://gateway.teale.com")!)
@@ -618,6 +611,7 @@ public final class AppState {
             let source: RequestScheduler.RequestSource
             if let (pinId, _) = pinMembership {
                 source = .ptn(pinId)
+                Self.wanLog("PIN inference request \(payload.requestID) from \(peerNodeID.prefix(12)) model=\(payload.request.model ?? "unknown")")
             } else {
                 source = .wwtn
             }
@@ -641,6 +635,9 @@ public final class AppState {
 
                 let complete = InferenceCompletePayload(requestID: payload.requestID)
                 try await connection.send(.inferenceComplete(complete))
+                if pinMembership != nil {
+                    Self.wanLog("PIN inference complete \(payload.requestID) tokens=\(tokenCount)")
+                }
 
                 // Release the scheduler slot
                 await self.requestScheduler.complete()
@@ -669,20 +666,10 @@ public final class AppState {
                     requestID: payload.requestID,
                     errorMessage: error.localizedDescription
                 )
+                if pinMembership != nil {
+                    Self.wanLog("PIN inference error \(payload.requestID): \(error.localizedDescription)")
+                }
                 try? await connection.send(.inferenceError(response))
-            }
-        }
-
-        // Handle PTN join requests from remote peers
-        self.wanManager.onPTNJoinRequest = { [weak self] payload, connection in
-            guard let self else { return }
-            do {
-                let joinRequest = try JSONDecoder().decode(PTNJoinRequestPayload.self, from: payload.data)
-                let response = try await self.ptnManager.handleJoinRequest(joinRequest)
-                let responseData = try JSONEncoder().encode(response)
-                try await connection.send(.ptnJoinResponse(PTNJoinResponseTransportPayload(data: responseData)))
-            } catch {
-                FileHandle.standardError.write(Data("[PTN] Join request handling failed: \(error.localizedDescription)\n".utf8))
             }
         }
 
@@ -747,8 +734,6 @@ public final class AppState {
 
     /// Call once at app launch to initialize async components (auth, credit ledger, agent)
     public func initializeAsync() async {
-        // Load PTN memberships
-        await ptnManager.loadMemberships()
 
         // Load saved chat conversations; ensure a default DM with the AI exists
         // so the user always has a conversation to open.
@@ -1225,7 +1210,63 @@ public final class AppState {
                     }
                     return endpoints
                 },
-                loadedModels: engineStatusProvider
+                loadedModels: engineStatusProvider,
+                reconcile: { [weak self] in
+                    guard let self else { return }
+                    await self.pinService?.reconcilePolicy(
+                        loadedModels: engineStatusProvider,
+                        downloadedModels: { [weak self] in
+                            await MainActor.run {
+                                Array(self?.downloadedModelIDs ?? []).sorted()
+                            }
+                        },
+                        ensureDownload: { [weak self] modelId in
+                            guard let self else {
+                                return .failure(RemoteControlError.unsupported)
+                            }
+                            guard let descriptor = await MainActor.run(body: {
+                                self.resolveModelDescriptor(for: modelId)
+                            }) else {
+                                return .failure(
+                                    RemoteControlError.invalidSetting(
+                                        "Unknown model '\(modelId)'"))
+                            }
+                            await self.downloadModel(descriptor)
+                            return await MainActor.run {
+                                self.downloadedModelIDs.contains(descriptor.id)
+                                    ? .success(())
+                                    : .failure(
+                                        RemoteControlError.invalidSetting(
+                                            "Model '\(modelId)' did not finish downloading"))
+                            }
+                        },
+                        ensureLoaded: { [weak self] modelId in
+                            guard let self else {
+                                return .failure(RemoteControlError.unsupported)
+                            }
+                            guard let descriptor = await MainActor.run(body: {
+                                self.resolveModelDescriptor(for: modelId)
+                            }) else {
+                                return .failure(
+                                    RemoteControlError.invalidSetting(
+                                        "Unknown model '\(modelId)'"))
+                            }
+                            await self.loadModel(descriptor)
+                            return await MainActor.run {
+                                switch self.engineStatus {
+                                case .ready(let loaded) where loaded.id == descriptor.id:
+                                    return .success(())
+                                case .error(let message):
+                                    return .failure(RemoteControlError.invalidSetting(message))
+                                default:
+                                    return .failure(
+                                        RemoteControlError.invalidSetting(
+                                            "Model '\(modelId)' did not finish loading"))
+                                }
+                            }
+                        }
+                    )
+                }
             )
         }
         let clusterMgr = self.clusterManager

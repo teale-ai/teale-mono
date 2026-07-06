@@ -39,7 +39,8 @@ public final class PINService: @unchecked Sendable {
     /// tick so endpoints/models stay current.
     public func start(
         endpoints: @escaping @Sendable () async -> [PinEndpoint],
-        loadedModels: @escaping @Sendable () async -> [String]
+        loadedModels: @escaping @Sendable () async -> [String],
+        reconcile: @escaping @Sendable () async -> Void = {}
     ) {
         guard syncTask == nil else { return }
         syncTask = Task { [manager] in
@@ -52,10 +53,67 @@ public final class PINService: @unchecked Sendable {
                 } catch {
                     // Offline is normal; cached netmaps keep the LAN working.
                 }
+                // Execute any admin/modelrator model-policy pushes, then
+                // report the results on the next sync tick.
+                await reconcile()
                 await manager.flushUsage()
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
             }
         }
+    }
+
+    /// Reconcile every active network's desired loadout against local state,
+    /// honoring the per-device remote-management opt-out, and record the
+    /// per-model status for the next sync advertisement. Mirrors
+    /// node/src/pin/runtime.rs `reconcile_policy`.
+    public func reconcilePolicy(
+        loadedModels: @Sendable () async -> [String],
+        downloadedModels: @Sendable () async -> [String],
+        ensureDownload: @Sendable (String) async -> Result<Void, Error>,
+        ensureLoaded: @Sendable (String) async -> Result<Void, Error>
+    ) async {
+        let optedOut = await !manager.settings().allowRemoteModels
+        var results: [(String, String, String, String?)] = []
+        for pin in await manager.snapshot() where pin.membership == "active" {
+            for entry in pin.modelPolicy {
+                guard let modelId = entry["modelId"] as? String,
+                    let desired = entry["desiredState"] as? String
+                else { continue }
+                if optedOut {
+                    results.append((pin.pinId, modelId, "opted_out", nil))
+                    continue
+                }
+                let loaded = await loadedModels()
+                let downloaded = await downloadedModels()
+                let isLoaded = loaded.contains(modelId)
+                let isDownloaded = isLoaded || downloaded.contains(modelId)
+                switch desired {
+                case "loaded" where isLoaded:
+                    results.append((pin.pinId, modelId, "loaded", nil))
+                case "loaded":
+                    if !isDownloaded, case .failure(let err) = await ensureDownload(modelId) {
+                        results.append((pin.pinId, modelId, "downloading", "\(err)"))
+                    } else if case .failure(let err) = await ensureLoaded(modelId) {
+                        results.append((pin.pinId, modelId, "error", "\(err)"))
+                    } else {
+                        results.append((pin.pinId, modelId, "loaded", nil))
+                    }
+                case "downloaded" where isDownloaded:
+                    results.append((pin.pinId, modelId, "downloaded", nil))
+                case "downloaded":
+                    if case .failure(let err) = await ensureDownload(modelId) {
+                        results.append((pin.pinId, modelId, "downloading", "\(err)"))
+                    } else {
+                        results.append((pin.pinId, modelId, "downloaded", nil))
+                    }
+                default:
+                    // v1 never force-unloads; report reality.
+                    let state = isLoaded ? "loaded" : (isDownloaded ? "downloaded" : "absent")
+                    results.append((pin.pinId, modelId, state, nil))
+                }
+            }
+        }
+        await manager.recordPolicyStatus(results)
     }
 
     public func stop() {

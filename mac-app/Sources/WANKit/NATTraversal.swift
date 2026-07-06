@@ -19,6 +19,7 @@ public actor NATTraversal {
     private let relayClient: RelayClient
     private let identity: WANNodeIdentity
     private let timeoutSeconds: TimeInterval
+    private let directAttemptTimeoutSeconds: TimeInterval = 12
 
     public init(
         stunClient: STUNClient,
@@ -247,16 +248,24 @@ public actor NATTraversal {
             localIdentity: identity
         )
 
-        await peerConn.start()
-
-        let isReady = await peerConn.isReady
-        guard isReady else {
-            await peerConn.cancel()
-            throw WANError.peerConnectionFailed("Direct WireGuard connection timed out")
+        let startTask = Task { await peerConn.start() }
+        for _ in 0..<Int(directAttemptTimeoutSeconds * 4) {
+            if await peerConn.isReady {
+                startTask.cancel()
+                return peerConn
+            }
+            switch await peerConn.connectionState {
+            case .failed, .disconnected:
+                startTask.cancel()
+                await peerConn.cancel()
+                throw WANError.peerConnectionFailed("Direct WireGuard connection failed")
+            case .connecting, .waiting, .connected:
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
         }
-
-        // Noise handshake authenticates peers via static keys — no additional auth needed
-        return peerConn
+        await peerConn.cancel()
+        startTask.cancel()
+        throw WANError.timeout
     }
 
     /// Attempt a relayed connection (data goes through relay server)

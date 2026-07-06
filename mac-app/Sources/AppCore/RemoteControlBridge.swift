@@ -1,9 +1,9 @@
 import Foundation
 import SharedTypes
 import LocalAPI
+import PINKit
 import LlamaCppKit
 import ModelManager
-import TealeNetKit
 import AgentKit
 import AuthKit
 import GatewayKit
@@ -339,106 +339,6 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
             if loadedID == descriptor.id { return }
             throw RemoteControlError.invalidSetting("Model '\(descriptor.id)' did not finish loading")
         }
-    }
-
-    // MARK: - PTN
-
-    func remoteListPTNs() async -> [RemotePTNSnapshot] {
-        appState.ptnManager.memberships.map { m in
-            RemotePTNSnapshot(
-                ptnID: m.ptnID,
-                ptnName: m.ptnName,
-                role: m.role.rawValue,
-                isCreator: m.isCreator
-            )
-        }
-    }
-
-    func remoteCreatePTN(name: String) async throws -> RemotePTNSnapshot {
-        let membership = try await appState.ptnManager.createPTN(name: name)
-        return RemotePTNSnapshot(
-            ptnID: membership.ptnID,
-            ptnName: membership.ptnName,
-            role: membership.role.rawValue,
-            isCreator: membership.isCreator
-        )
-    }
-
-    func remoteGeneratePTNInvite(ptnID: String) async throws -> String {
-        try appState.ptnManager.generateInviteToken(ptnID: ptnID)
-    }
-
-    func remoteIssuePTNCert(ptnID: String, nodeID: String, role: String) async throws -> Data {
-        let joinRequest = PTNJoinRequestPayload(
-            inviteToken: PTNInviteToken(ptnID: ptnID, ptnName: "", inviterNodeID: "", validForSeconds: 3600),
-            joinerNodeID: nodeID,
-            joinerDisplayName: "remote"
-        )
-        // Override the invite token's ptnID to match
-        var request = joinRequest
-        request.inviteToken = PTNInviteToken(
-            ptnID: ptnID,
-            ptnName: appState.ptnManager.memberships.first(where: { $0.ptnID == ptnID })?.ptnName ?? "",
-            inviterNodeID: appState.ptnManager.localNodeID,
-            validForSeconds: 3600
-        )
-        let response = try await appState.ptnManager.handleJoinRequest(request)
-        return try JSONEncoder().encode(response)
-    }
-
-    func remoteJoinPTNWithCert(certData: Data) async throws -> RemotePTNSnapshot {
-        let response = try JSONDecoder().decode(PTNJoinResponsePayload.self, from: certData)
-        let membership = try await appState.ptnManager.completeJoin(response: response)
-        return RemotePTNSnapshot(
-            ptnID: membership.ptnID,
-            ptnName: membership.ptnName,
-            role: membership.role.rawValue,
-            isCreator: membership.isCreator
-        )
-    }
-
-    func remoteLeavePTN(ptnID: String) async throws {
-        try await appState.ptnManager.leavePTN(ptnID: ptnID)
-    }
-
-    func remotePromoteAdmin(ptnID: String, targetNodeID: String) async throws -> Data {
-        let (certData, caKeyData) = try await appState.ptnManager.promoteToAdmin(ptnID: ptnID, targetNodeID: targetNodeID)
-        // Return both the cert JSON and the CA key hex so the target can import both
-        struct PromoteResponse: Encodable {
-            var cert_json: String  // base64-encoded cert JSON
-            var ca_key_hex: String
-        }
-        let response = PromoteResponse(
-            cert_json: certData.base64EncodedString(),
-            ca_key_hex: caKeyData.map { String(format: "%02x", $0) }.joined()
-        )
-        return try JSONEncoder().encode(response)
-    }
-
-    func remoteImportCAKey(ptnID: String, caKeyHex: String) async throws -> RemotePTNSnapshot {
-        guard let keyData = Data(hexString: caKeyHex) else {
-            throw RemoteControlError.invalidSetting("Invalid hex-encoded CA key")
-        }
-        try await appState.ptnManager.importCAKey(keyData, ptnID: ptnID)
-        guard let membership = appState.ptnManager.memberships.first(where: { $0.ptnID == ptnID }) else {
-            throw RemoteControlError.invalidSetting("PTN not found after import")
-        }
-        return RemotePTNSnapshot(
-            ptnID: membership.ptnID,
-            ptnName: membership.ptnName,
-            role: membership.role.rawValue,
-            isCreator: membership.isCreator
-        )
-    }
-
-    func remoteRecoverPTN(oldPTNID: String) async throws -> RemotePTNSnapshot {
-        let (newMembership, _) = try await appState.ptnManager.recoverPTN(oldPTNID: oldPTNID)
-        return RemotePTNSnapshot(
-            ptnID: newMembership.ptnID,
-            ptnName: newMembership.ptnName,
-            role: newMembership.role.rawValue,
-            isCreator: newMembership.isCreator
-        )
     }
 
     // MARK: - API Keys
@@ -1297,5 +1197,74 @@ extension RemoteControlBridge: PINControlling {
         }
         return try await service.manager.proxy(
             method: method, path: "/v1/pins\(subpath)", body: json)
+    }
+
+    // `nonisolated`: satisfies the synchronous, nonisolated `PINControlling`
+    // requirement from a `@MainActor` type. The body only constructs the
+    // stream; all actor-isolated state (pinService, appState) is reached via
+    // `await` inside the spawned Task, so no main-actor work happens here
+    // synchronously. Without this, Swift 6 rejects the conformance.
+    nonisolated func pinChatStream(model: String, requestBody: Data) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    Self.pinLog("request start model=\(model)")
+                    guard let service = await pinService else {
+                        throw RemoteControlError.unsupported
+                    }
+                    let identity = try AppState.canonicalWANIdentity()
+                    let request = try JSONDecoder().decode(
+                        ChatCompletionRequest.self, from: requestBody)
+                    Self.pinLog("request decoded model=\(request.model ?? model)")
+                    let stream = try await PINChatClient.stream(
+                        service: service,
+                        identity: identity,
+                        model: model,
+                        request: request,
+                        connectionForNode: { [weak self] nodeID in
+                            guard let self else { return nil }
+                            let wanManager = await MainActor.run { self.appState.wanManager }
+                            if let existing = wanManager.connectedPeers(byNodeID: nodeID) {
+                                return existing
+                            }
+                            Self.pinLog("connecting WAN peer \(nodeID.prefix(16))...")
+                            let connectTask = Task {
+                                try? await wanManager.connectToPeer(nodeID: nodeID)
+                            }
+                            for _ in 0..<90 {
+                                if let connected = wanManager.connectedPeers(byNodeID: nodeID) {
+                                    connectTask.cancel()
+                                    Self.pinLog("connected WAN peer \(nodeID.prefix(16))")
+                                    return connected
+                                }
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                            }
+                            connectTask.cancel()
+                            Self.pinLog("WAN peer \(nodeID.prefix(16)) unavailable after connect attempt")
+                            return nil
+                        }
+                    )
+                    let encoder = JSONEncoder()
+                    for try await chunk in stream {
+                        if let data = try? encoder.encode(chunk),
+                            let str = String(data: data, encoding: .utf8) {
+                            Self.pinLog("yielding SSE chunk model=\(model)")
+                            continuation.yield("data: \(str)\n\n")
+                        }
+                    }
+                    Self.pinLog("request complete model=\(model)")
+                    continuation.yield("data: [DONE]\n\n")
+                    continuation.finish()
+                } catch {
+                    Self.pinLog("request error model=\(model): \(error)")
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    nonisolated private static func pinLog(_ message: String) {
+        FileHandle.standardError.write(Data("[PINLocal] \(message)\n".utf8))
     }
 }

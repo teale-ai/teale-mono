@@ -7,15 +7,6 @@ public protocol LocalAppControlling: AnyObject {
     func remoteDownloadModel(_ request: RemoteModelControlRequest) async throws -> RemoteAppSnapshot
     func remoteUnloadModel() async -> RemoteAppSnapshot
     func remoteUpdateSettings(_ update: RemoteSettingsUpdate) async throws -> RemoteAppSnapshot
-    func remoteListPTNs() async -> [RemotePTNSnapshot]
-    func remoteCreatePTN(name: String) async throws -> RemotePTNSnapshot
-    func remoteGeneratePTNInvite(ptnID: String) async throws -> String
-    func remoteIssuePTNCert(ptnID: String, nodeID: String, role: String) async throws -> Data
-    func remoteJoinPTNWithCert(certData: Data) async throws -> RemotePTNSnapshot
-    func remoteLeavePTN(ptnID: String) async throws
-    func remotePromoteAdmin(ptnID: String, targetNodeID: String) async throws -> Data
-    func remoteImportCAKey(ptnID: String, caKeyHex: String) async throws -> RemotePTNSnapshot
-    func remoteRecoverPTN(oldPTNID: String) async throws -> RemotePTNSnapshot
     func remoteListAPIKeys() async -> [RemoteAPIKeySnapshot]
     func remoteGenerateAPIKey(name: String) async -> RemoteAPIKeySnapshot
     func remoteRevokeAPIKey(id: UUID) async
@@ -29,21 +20,6 @@ public protocol LocalAppControlling: AnyObject {
     func remoteAgentConversations() async -> [RemoteAgentConversationSnapshot]
 }
 
-public struct RemotePTNSnapshot: Codable, Sendable {
-    public var ptnID: String
-    public var ptnName: String
-    public var role: String
-    public var isCreator: Bool
-    public var memberCount: Int
-
-    public init(ptnID: String, ptnName: String, role: String, isCreator: Bool, memberCount: Int = 1) {
-        self.ptnID = ptnID
-        self.ptnName = ptnName
-        self.role = role
-        self.isCreator = isCreator
-        self.memberCount = memberCount
-    }
-}
 
 public struct RemoteAppSnapshot: Codable, Sendable {
     public var appVersion: String
