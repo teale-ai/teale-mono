@@ -39,57 +39,30 @@ struct TealeClient {
         try await patch("/v1/app/settings", body: update)
     }
 
-    // MARK: - PTN
+    // MARK: - Private Inference Networks (PIN)
 
-    func listPTNs() async throws -> [RemotePTNSnapshot] {
-        try await get("/v1/app/ptn")
-    }
-
-    func createPTN(name: String) async throws -> RemotePTNSnapshot {
-        struct Body: Encodable { var name: String }
-        return try await post("/v1/app/ptn/create", body: Body(name: name))
-    }
-
-    func invitePTN(ptnID: String) async throws -> String {
-        struct Body: Encodable { var ptn_id: String }
-        struct Resp: Decodable { var invite_code: String }
-        let resp: Resp = try await post("/v1/app/ptn/invite", body: Body(ptn_id: ptnID))
-        return resp.invite_code
-    }
-
-    func leavePTN(ptnID: String) async throws {
-        struct Body: Encodable { var ptn_id: String }
-        struct Resp: Decodable { var ok: Bool }
-        let _: Resp = try await post("/v1/app/ptn/leave", body: Body(ptn_id: ptnID))
-    }
-
-    func issuePTNCert(ptnID: String, nodeID: String, role: String) async throws -> String {
-        struct Body: Encodable { var ptn_id: String; var node_id: String; var role: String }
-        let data = try await postRaw("/v1/app/ptn/issue-cert", body: Body(ptn_id: ptnID, node_id: nodeID, role: role))
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-
-    func joinPTNWithCert(certData: String) async throws -> RemotePTNSnapshot {
-        guard let data = certData.data(using: .utf8) else {
-            throw TealeClientError.invalidResponse
+    /// Raw JSON passthrough for the /v1/app/pins surface.
+    func pinRequest(
+        _ method: String, _ path: String, body: [String: Any]? = nil
+    ) async throws -> Any {
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        request.httpMethod = method
+        if let apiKey {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        return try await postRawBody("/v1/app/ptn/join-with-cert", body: data)
-    }
-
-    func promoteAdmin(ptnID: String, nodeID: String) async throws -> String {
-        struct Body: Encodable { var ptn_id: String; var node_id: String }
-        let data = try await postRaw("/v1/app/ptn/promote-admin", body: Body(ptn_id: ptnID, node_id: nodeID))
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-
-    func importCAKey(ptnID: String, caKeyHex: String) async throws -> RemotePTNSnapshot {
-        struct Body: Encodable { var ptn_id: String; var ca_key_hex: String }
-        return try await post("/v1/app/ptn/import-ca-key", body: Body(ptn_id: ptnID, ca_key_hex: caKeyHex))
-    }
-
-    func recoverPTN(ptnID: String) async throws -> RemotePTNSnapshot {
-        struct Body: Encodable { var ptn_id: String }
-        return try await post("/v1/app/ptn/recover", body: Body(ptn_id: ptnID))
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let parsed = (try? JSONSerialization.jsonObject(with: data)) ?? [:]
+        guard (200..<300).contains(status) else {
+            let message = ((parsed as? [String: Any])?["error"]).map { "\($0)" }
+                ?? "HTTP \(status)"
+            throw TealeClientError.server(message)
+        }
+        return parsed
     }
 
     // MARK: - API Keys
@@ -285,6 +258,7 @@ enum TealeClientError: LocalizedError {
     case connectionRefused
     case httpError(Int)
     case invalidResponse
+    case server(String)
 
     var errorDescription: String? {
         switch self {
@@ -294,6 +268,8 @@ enum TealeClientError: LocalizedError {
             return "HTTP error \(code)"
         case .invalidResponse:
             return "Invalid response from Teale node"
+        case .server(let message):
+            return message
         }
     }
 }

@@ -438,6 +438,107 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_account_ledger_api_key
         ON account_ledger(api_key_id, timestamp DESC);
     "#,
+    // 013_pins.sql — Private Inference Networks control plane. The gateway is
+    // coordination-only: membership, netmaps, scheduling metadata, usage COUNTS.
+    // PIN paths never touch ledger/balances (see spec §8).
+    r#"
+    CREATE TABLE IF NOT EXISTS pins (
+        pin_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        join_code TEXT NOT NULL,
+        join_code_generation INTEGER NOT NULL DEFAULT 1,
+        owner_account_user_id TEXT NOT NULL,
+        netmap_generation INTEGER NOT NULL DEFAULT 1,
+        settings TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        FOREIGN KEY (owner_account_user_id) REFERENCES account_wallets(account_user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pins_join_code ON pins(join_code) WHERE deleted_at IS NULL;
+
+    CREATE TABLE IF NOT EXISTS pin_roles (
+        pin_id TEXT NOT NULL,
+        account_user_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('admin','modelrator')),
+        granted_by TEXT,
+        granted_at INTEGER NOT NULL,
+        PRIMARY KEY (pin_id, account_user_id),
+        FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS pin_members (
+        pin_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        node_pubkey TEXT NOT NULL,
+        display_name TEXT,
+        status TEXT NOT NULL CHECK(status IN ('pending','active','disabled','removed')),
+        serves_models INTEGER NOT NULL DEFAULT 1,
+        allow_remote_models INTEGER NOT NULL DEFAULT 1,
+        endpoints TEXT NOT NULL DEFAULT '[]',
+        requested_at INTEGER NOT NULL,
+        approved_by TEXT,
+        joined_at INTEGER,
+        last_seen INTEGER,
+        removed_at INTEGER,
+        removed_by TEXT,
+        PRIMARY KEY (pin_id, device_id),
+        FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_pin_members_device ON pin_members(device_id);
+
+    CREATE TABLE IF NOT EXISTS pin_usage (
+        pin_id TEXT NOT NULL,
+        day TEXT NOT NULL,
+        provider_device_id TEXT NOT NULL,
+        consumer_device_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER NOT NULL DEFAULT 0,
+        tokens_out INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (pin_id, day, provider_device_id, consumer_device_id, model_id),
+        FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS pin_model_policy (
+        pin_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        desired_state TEXT NOT NULL CHECK(desired_state IN ('loaded','downloaded','none')),
+        set_by TEXT NOT NULL,
+        set_at INTEGER NOT NULL,
+        applied_state TEXT,
+        applied_at INTEGER,
+        last_error TEXT,
+        PRIMARY KEY (pin_id, device_id, model_id),
+        FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
+    );
+    "#,
+    // 014_pin_usage_batches.sql — idempotency ledger for provider usage
+    // reports. A device retrying a batch whose ack was lost must not double
+    // count tokens; batch ids are remembered and replays dropped.
+    r#"
+    CREATE TABLE IF NOT EXISTS pin_usage_batches (
+        pin_id TEXT NOT NULL,
+        provider_device_id TEXT NOT NULL,
+        batch_id TEXT NOT NULL,
+        received_at INTEGER NOT NULL,
+        PRIMARY KEY (pin_id, provider_device_id, batch_id),
+        FOREIGN KEY (pin_id) REFERENCES pins(pin_id) ON DELETE CASCADE
+    );
+    "#,
+    // 015_pin_member_loaded_models.sql — devices advertise their loaded
+    // models on /sync; persisted so netmaps (and offline-LAN scheduling on
+    // peers) reflect devices the live registry hasn't heard from.
+    r#"
+    ALTER TABLE pin_members ADD COLUMN loaded_models TEXT NOT NULL DEFAULT '[]';
+    "#,
+    // 016_pin_member_wg_pubkey.sql — X25519 static key for data-plane Noise
+    // peer authentication. Distinct from node_pubkey (Ed25519): CryptoKit
+    // reuses the Ed25519 seed as the X25519 scalar, so the public keys are
+    // unrelated and must be advertised separately.
+    r#"
+    ALTER TABLE pin_members ADD COLUMN wg_pubkey TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

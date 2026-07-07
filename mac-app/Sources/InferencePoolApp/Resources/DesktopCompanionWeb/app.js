@@ -3077,6 +3077,11 @@ function setActiveView(view) {
       console.error("home chat model refresh failed", error);
     });
   }
+  if (view === "networks") {
+    refreshPinNetworks().catch((error) => {
+      console.error("pin refresh failed", error);
+    });
+  }
   if (view === "demand") {
     refreshNetworkModels().catch((error) => {
       console.error("network models refresh failed", error);
@@ -5220,3 +5225,495 @@ refresh().catch((error) => {
   setDisconnected(error);
 });
 startPolling();
+
+// ── Private Inference Networks (PIN) ─────────────────────────────────────
+// Backed by the local node API at /v1/app/pins (management calls proxy to
+// the gateway with this device's bearer; prompts never touch it).
+
+const pinEls = {
+  list: document.getElementById("pin-network-list"),
+  empty: document.getElementById("pin-networks-empty"),
+  joinCode: document.getElementById("pin-join-code"),
+  joinButton: document.getElementById("pin-join-button"),
+  createName: document.getElementById("pin-create-name"),
+  createButton: document.getElementById("pin-create-button"),
+  actionStatus: document.getElementById("pin-action-status"),
+  detailSection: document.getElementById("pin-detail-section"),
+  detailTitle: document.getElementById("pin-detail-title"),
+  tabs: Array.from(document.querySelectorAll("[data-pin-tab]")),
+  panels: Array.from(document.querySelectorAll("[data-pin-panel]")),
+  pendingBanner: document.getElementById("pin-pending-banner"),
+  pendingText: document.getElementById("pin-pending-text"),
+  devicesBody: document.getElementById("pin-devices-body"),
+  devicesEmpty: document.getElementById("pin-devices-empty"),
+  modelsBody: document.getElementById("pin-models-body"),
+  modelsEmpty: document.getElementById("pin-models-empty"),
+  modelPushForm: document.getElementById("pin-model-push-form"),
+  modelDevice: document.getElementById("pin-model-device"),
+  modelId: document.getElementById("pin-model-id"),
+  modelState: document.getElementById("pin-model-state"),
+  modelPush: document.getElementById("pin-model-push"),
+  usageBy: document.getElementById("pin-usage-by"),
+  usageKeyHeader: document.getElementById("pin-usage-key-header"),
+  usageBody: document.getElementById("pin-usage-body"),
+  usageEmpty: document.getElementById("pin-usage-empty"),
+  adminSettings: document.getElementById("pin-admin-settings"),
+  joinCodeReveal: document.getElementById("pin-join-code-reveal"),
+  rotateCode: document.getElementById("pin-rotate-code"),
+  allowRemoteModels: document.getElementById("pin-allow-remote-models"),
+  dinContribute: document.getElementById("pin-din-contribute"),
+  dinEqual: document.getElementById("pin-din-equal"),
+  leave: document.getElementById("pin-leave"),
+};
+
+let pinOverview = null; // last GET /v1/app/pins payload
+let pinSelectedId = null;
+let pinActiveTab = "devices";
+let pinMembersCache = [];
+let pinPolicyCache = [];
+let pinRefreshTimer = null;
+
+/// window.confirm is a no-op in some webview shells; use two-step buttons.
+const pinArmedButtons = new WeakMap();
+function pinTwoStepConfirm(button, armedLabel) {
+  if (pinArmedButtons.get(button)) {
+    pinArmedButtons.delete(button);
+    return true;
+  }
+  const original = button.textContent;
+  pinArmedButtons.set(button, true);
+  button.textContent = armedLabel;
+  setTimeout(() => {
+    if (pinArmedButtons.get(button)) {
+      pinArmedButtons.delete(button);
+      button.textContent = original;
+    }
+  }, 4000);
+  return false;
+}
+
+function pinStatus(message, isError = false) {
+  if (!pinEls.actionStatus) return;
+  pinEls.actionStatus.textContent = message || "";
+  pinEls.actionStatus.style.color = isError ? "#ff8787" : "";
+}
+
+async function pinApi(method, path, body) {
+  const response = await apiFetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || payload?.error || `request failed (${response.status})`);
+  }
+  return payload;
+}
+
+function pinRoleFor(pinId) {
+  const staff = pinOverview?.staff || [];
+  const entry = staff.find((s) => s.pinId === pinId);
+  return entry?.role || null; // "admin" | "modelrator" | null (member)
+}
+
+function pinIsStaff(pinId) {
+  return Boolean(pinRoleFor(pinId));
+}
+
+function formatLastSeen(unixSeconds) {
+  if (!unixSeconds) return "-";
+  const delta = Math.max(0, Date.now() / 1000 - unixSeconds);
+  if (delta < 90) return "just now";
+  if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
+  return `${Math.round(delta / 86400)}d ago`;
+}
+
+async function refreshPinNetworks() {
+  const overview = await pinApi("GET", "/v1/app/pins");
+  pinOverview = overview;
+  renderPinNetworkList();
+  renderPinLocalSettings();
+  if (pinSelectedId) {
+    const stillKnown =
+      (overview.networks || []).some((n) => n.pinId === pinSelectedId) ||
+      (overview.staff || []).some((s) => s.pinId === pinSelectedId);
+    if (stillKnown) {
+      await refreshPinDetail();
+    } else {
+      pinSelectedId = null;
+      pinEls.detailSection.hidden = true;
+    }
+  }
+}
+
+function renderPinNetworkList() {
+  const networks = new Map();
+  for (const net of pinOverview?.networks || []) {
+    networks.set(net.pinId, { pinId: net.pinId, name: net.name, membership: net.membership });
+  }
+  for (const s of pinOverview?.staff || []) {
+    const existing = networks.get(s.pinId) || { pinId: s.pinId, name: s.name };
+    existing.role = s.role;
+    existing.pendingCount = s.pendingCount;
+    existing.activeCount = s.activeCount;
+    networks.set(s.pinId, existing);
+  }
+  const rows = Array.from(networks.values());
+  pinEls.list.innerHTML = "";
+  pinEls.empty.hidden = rows.length > 0;
+  for (const net of rows) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pin-network-row" + (net.pinId === pinSelectedId ? " selected" : "");
+    const badges = [];
+    if (net.membership) badges.push(`<span class="pin-badge ${net.membership}">${net.membership}</span>`);
+    if (net.role) badges.push(`<span class="pin-badge role">${net.role}</span>`);
+    if (net.pendingCount > 0) badges.push(`<span class="pin-badge pending">${net.pendingCount} pending</span>`);
+    row.innerHTML = `<span class="pin-net-name"></span>${badges.join(" ")}<span class="muted" style="margin-left:auto">${net.activeCount != null ? `${net.activeCount} devices` : ""}</span>`;
+    row.querySelector(".pin-net-name").textContent = net.name || net.pinId;
+    row.addEventListener("click", () => {
+      pinSelectedId = net.pinId;
+      renderPinNetworkList();
+      refreshPinDetail().catch((error) => pinStatus(String(error.message || error), true));
+    });
+    pinEls.list.appendChild(row);
+  }
+}
+
+function renderPinLocalSettings() {
+  const settings = pinOverview?.settings;
+  if (!settings) return;
+  pinEls.allowRemoteModels.checked = Boolean(settings.allowRemoteModels);
+  pinEls.dinContribute.checked = Boolean(settings.dinContribute);
+  pinEls.dinEqual.checked = Boolean(settings.dinPriorityEqual);
+}
+
+function setPinTab(tab) {
+  pinActiveTab = tab;
+  for (const button of pinEls.tabs) {
+    button.classList.toggle("active", button.dataset.pinTab === tab);
+  }
+  for (const panel of pinEls.panels) {
+    panel.hidden = panel.dataset.pinPanel !== tab;
+  }
+}
+
+async function refreshPinDetail() {
+  if (!pinSelectedId) return;
+  const id = pinSelectedId;
+  pinEls.detailSection.hidden = false;
+
+  let detail = null;
+  try {
+    detail = await pinApi("GET", `/v1/app/pins/${id}`);
+  } catch (error) {
+    // Pending members can't read the detail yet — show a waiting banner.
+    const local = (pinOverview?.networks || []).find((n) => n.pinId === id);
+    pinEls.detailTitle.textContent = local?.name || id;
+    pinEls.pendingBanner.hidden = false;
+    pinEls.pendingText.textContent =
+      "Waiting for an admin to approve this device's join request.";
+    pinEls.devicesBody.innerHTML = "";
+    pinEls.devicesEmpty.hidden = false;
+    return;
+  }
+  pinEls.detailTitle.textContent = detail.name || id;
+  const isStaff = pinIsStaff(id);
+  const isAdmin = pinRoleFor(id) === "admin";
+  pinEls.pendingBanner.hidden = !(isStaff && detail.pendingCount > 0);
+  if (isStaff && detail.pendingCount > 0) {
+    pinEls.pendingText.textContent = `${detail.pendingCount} device(s) waiting for approval — see the Devices tab.`;
+  }
+  pinEls.adminSettings.hidden = !isAdmin;
+  pinEls.modelPushForm.hidden = !isStaff;
+
+  if (pinActiveTab === "devices") await refreshPinMembers(id, isStaff, isAdmin);
+  if (pinActiveTab === "models") await refreshPinModels(id, isStaff);
+  if (pinActiveTab === "usage") await refreshPinUsage(id);
+}
+
+async function refreshPinMembers(id, isStaff, isAdmin) {
+  const members = await pinApi("GET", `/v1/app/pins/${id}/members`);
+  pinMembersCache = Array.isArray(members) ? members : [];
+  pinEls.devicesBody.innerHTML = "";
+  pinEls.devicesEmpty.hidden = pinMembersCache.length > 0;
+  for (const member of pinMembersCache) {
+    const tr = document.createElement("tr");
+    const name = member.displayName || `${member.deviceId.slice(0, 12)}…`;
+    let models = [];
+    try {
+      models = JSON.parse(member.loadedModels || "[]");
+    } catch (_) { /* tolerate */ }
+    const actions = [];
+    if (isAdmin && member.status === "pending") {
+      actions.push(`<button class="action" data-pin-action="approve" data-dev="${member.deviceId}">Approve</button>`);
+      actions.push(`<button class="action" data-pin-action="deny" data-dev="${member.deviceId}">Deny</button>`);
+    }
+    if (isStaff && member.status !== "pending") {
+      actions.push(`<button class="action" data-pin-action="rename" data-dev="${member.deviceId}">Rename</button>`);
+      actions.push(
+        `<button class="action" data-pin-action="toggle-serving" data-dev="${member.deviceId}" data-serves="${member.servesModels}">${member.servesModels ? "Stop serving" : "Start serving"}</button>`,
+      );
+    }
+    if (isAdmin && member.status !== "pending") {
+      actions.push(
+        `<button class="action" data-pin-action="toggle-disabled" data-dev="${member.deviceId}" data-disabled="${member.status === "disabled"}">${member.status === "disabled" ? "Enable" : "Disable"}</button>`,
+      );
+      actions.push(`<button class="action danger" data-pin-action="remove" data-dev="${member.deviceId}">Remove</button>`);
+    }
+    tr.innerHTML = `
+      <td></td>
+      <td><span class="pin-badge ${member.status}">${member.status}</span></td>
+      <td>${member.servesModels ? "yes" : "no"}</td>
+      <td>${models.length ? models.join(", ") : "-"}</td>
+      <td>${formatLastSeen(member.lastSeen)}</td>
+      <td>${actions.join(" ")}</td>`;
+    tr.querySelector("td").textContent = name;
+    pinEls.devicesBody.appendChild(tr);
+  }
+}
+
+async function refreshPinModels(id, isStaff) {
+  const policy = await pinApi("GET", `/v1/app/pins/${id}/models`);
+  pinPolicyCache = Array.isArray(policy) ? policy : [];
+  pinEls.modelsBody.innerHTML = "";
+  pinEls.modelsEmpty.hidden = pinPolicyCache.length > 0;
+  for (const entry of pinPolicyCache) {
+    const tr = document.createElement("tr");
+    const applied = entry.appliedState || "pending";
+    const appliedBadge =
+      applied === "error"
+        ? `<span class="pin-badge pending" title="${(entry.lastError || "").replace(/"/g, "&quot;")}">error</span>`
+        : `<span class="pin-badge ${applied === entry.desiredState ? "active" : "pending"}">${applied}</span>`;
+    const actions = isStaff
+      ? `<button class="action danger" data-pin-model-clear="${entry.deviceId}" data-model="${entry.modelId}">Clear</button>`
+      : "";
+    tr.innerHTML = `<td>${entry.deviceId.slice(0, 12)}…</td><td></td><td>${entry.desiredState}</td><td>${appliedBadge}</td><td>${actions}</td>`;
+    tr.querySelectorAll("td")[1].textContent = entry.modelId;
+    pinEls.modelsBody.appendChild(tr);
+  }
+  // Device dropdown for the push form: active members only.
+  pinEls.modelDevice.innerHTML = "";
+  for (const member of pinMembersCache.filter((m) => m.status === "active")) {
+    const option = document.createElement("option");
+    option.value = member.deviceId;
+    option.textContent = member.displayName || member.deviceId.slice(0, 16);
+    pinEls.modelDevice.appendChild(option);
+  }
+}
+
+async function refreshPinUsage(id) {
+  const by = pinEls.usageBy.value || "day";
+  const usage = await pinApi("GET", `/v1/app/pins/${id}/usage?by=${by}`);
+  const totals = usage?.totals || [];
+  pinEls.usageKeyHeader.textContent = { day: "Day", device: "Provider", consumer: "Consumer", model: "Model" }[by] || "Key";
+  pinEls.usageBody.innerHTML = "";
+  pinEls.usageEmpty.hidden = totals.length > 0;
+  for (const row of totals) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td></td><td>${row.requests}</td><td>${row.tokensIn}</td><td>${row.tokensOut}</td>`;
+    tr.querySelector("td").textContent = row.key;
+    pinEls.usageBody.appendChild(tr);
+  }
+}
+
+async function pinMemberAction(action, deviceId, extra) {
+  const id = pinSelectedId;
+  if (!id) return;
+  try {
+    if (action === "approve") await pinApi("POST", `/v1/app/pins/${id}/members/${deviceId}/approve`);
+    if (action === "deny") await pinApi("POST", `/v1/app/pins/${id}/members/${deviceId}/deny`);
+    if (action === "remove") {
+      await pinApi("DELETE", `/v1/app/pins/${id}/members/${deviceId}`);
+    }
+    if (action === "rename") {
+      const current = pinMembersCache.find((m) => m.deviceId === deviceId);
+      const fallback = current?.displayName || "";
+      const name =
+        typeof window.prompt === "function" ? window.prompt("Device name", fallback) : null;
+      if (name == null || name === fallback) return;
+      await pinApi("PATCH", `/v1/app/pins/${id}/members/${deviceId}`, { displayName: name });
+    }
+    if (action === "toggle-serving") {
+      await pinApi("PATCH", `/v1/app/pins/${id}/members/${deviceId}`, { servesModels: extra !== "true" });
+    }
+    if (action === "toggle-disabled") {
+      await pinApi("PATCH", `/v1/app/pins/${id}/members/${deviceId}`, { disabled: extra !== "true" });
+    }
+    pinStatus("");
+    await refreshPinNetworks();
+  } catch (error) {
+    pinStatus(String(error.message || error), true);
+  }
+}
+
+// Event wiring ------------------------------------------------------------
+
+if (pinEls.joinButton) {
+  pinEls.joinButton.addEventListener("click", async () => {
+    const code = (pinEls.joinCode.value || "").trim();
+    if (!code) {
+      pinStatus("Enter the network PIN your admin shared.", true);
+      return;
+    }
+    try {
+      pinEls.joinButton.disabled = true;
+      await pinApi("POST", "/v1/app/pins/join", { code });
+      pinEls.joinCode.value = "";
+      pinStatus("Join request submitted. An admin has to approve this device before it becomes active.");
+      await refreshPinNetworks();
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    } finally {
+      pinEls.joinButton.disabled = false;
+    }
+  });
+
+  pinEls.createButton.addEventListener("click", async () => {
+    const name = (pinEls.createName.value || "").trim();
+    if (!name) {
+      pinStatus("Give the network a name.", true);
+      return;
+    }
+    try {
+      pinEls.createButton.disabled = true;
+      const created = await pinApi("POST", "/v1/app/pins/create", { name });
+      pinEls.createName.value = "";
+      pinSelectedId = created.pinId || null;
+      pinStatus(
+        created.joinCode
+          ? `Network created. PIN: ${created.joinCode} — share it wifi-password-style; you approve each join.`
+          : "Network created.",
+      );
+      await refreshPinNetworks();
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    } finally {
+      pinEls.createButton.disabled = false;
+    }
+  });
+
+  for (const button of pinEls.tabs) {
+    button.addEventListener("click", () => {
+      setPinTab(button.dataset.pinTab);
+      refreshPinDetail().catch((error) => pinStatus(String(error.message || error), true));
+    });
+  }
+
+  pinEls.devicesBody.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-pin-action]");
+    if (!button) return;
+    if (button.dataset.pinAction === "remove" && !pinTwoStepConfirm(button, "Confirm remove?")) {
+      return;
+    }
+    pinMemberAction(
+      button.dataset.pinAction,
+      button.dataset.dev,
+      button.dataset.serves ?? button.dataset.disabled,
+    );
+  });
+
+  pinEls.modelsBody.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-pin-model-clear]");
+    if (!button || !pinSelectedId) return;
+    const deviceId = button.dataset.pinModelClear;
+    const remaining = pinPolicyCache
+      .filter((e) => e.deviceId === deviceId && e.modelId !== button.dataset.model)
+      .map((e) => ({ modelId: e.modelId, desiredState: e.desiredState }));
+    try {
+      await pinApi("PUT", `/v1/app/pins/${pinSelectedId}/models/${deviceId}`, { models: remaining });
+      await refreshPinDetail();
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    }
+  });
+
+  pinEls.modelPush.addEventListener("click", async () => {
+    const deviceId = pinEls.modelDevice.value;
+    const modelId = (pinEls.modelId.value || "").trim();
+    if (!deviceId || !modelId || !pinSelectedId) {
+      pinStatus("Pick a device and a model id.", true);
+      return;
+    }
+    // Full-replace per device: merge with existing entries for the device.
+    const merged = pinPolicyCache
+      .filter((e) => e.deviceId === deviceId && e.modelId !== modelId)
+      .map((e) => ({ modelId: e.modelId, desiredState: e.desiredState }));
+    merged.push({ modelId, desiredState: pinEls.modelState.value });
+    try {
+      await pinApi("PUT", `/v1/app/pins/${pinSelectedId}/models/${deviceId}`, { models: merged });
+      pinEls.modelId.value = "";
+      await refreshPinDetail();
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    }
+  });
+
+  pinEls.usageBy.addEventListener("change", () => {
+    refreshPinDetail().catch((error) => pinStatus(String(error.message || error), true));
+  });
+
+  pinEls.joinCodeReveal.addEventListener("click", async () => {
+    if (!pinSelectedId) return;
+    try {
+      const payload = await pinApi("GET", `/v1/app/pins/${pinSelectedId}/join-code`);
+      pinEls.joinCodeReveal.textContent = payload.joinCode || "unavailable";
+      if (payload.joinCode && navigator.clipboard) {
+        navigator.clipboard.writeText(payload.joinCode).catch(() => {});
+        pinStatus("Network PIN copied to clipboard.");
+      }
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    }
+  });
+
+  pinEls.rotateCode.addEventListener("click", async () => {
+    if (!pinSelectedId) return;
+    if (!pinTwoStepConfirm(pinEls.rotateCode, "Confirm rotate?")) return;
+    try {
+      const payload = await pinApi("POST", `/v1/app/pins/${pinSelectedId}/rotate-code`);
+      pinEls.joinCodeReveal.textContent = payload.joinCode || "rotated";
+      pinStatus("Network PIN rotated.");
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    }
+  });
+
+  const pushLocalSettings = async () => {
+    try {
+      await pinApi("POST", "/v1/app/pins/settings/local", {
+        allowRemoteModels: pinEls.allowRemoteModels.checked,
+        dinContribute: pinEls.dinContribute.checked,
+        dinPriorityEqual: pinEls.dinEqual.checked,
+      });
+      pinStatus("Device settings saved.");
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    }
+  };
+  pinEls.allowRemoteModels.addEventListener("change", pushLocalSettings);
+  pinEls.dinContribute.addEventListener("change", pushLocalSettings);
+  pinEls.dinEqual.addEventListener("change", pushLocalSettings);
+
+  pinEls.leave.addEventListener("click", async () => {
+    if (!pinSelectedId) return;
+    if (!pinTwoStepConfirm(pinEls.leave, "Confirm leave?")) return;
+    try {
+      await pinApi("POST", `/v1/app/pins/${pinSelectedId}/leave`);
+      pinSelectedId = null;
+      pinEls.detailSection.hidden = true;
+      await refreshPinNetworks();
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    }
+  });
+
+  // Poll while the networks view is active.
+  pinRefreshTimer = setInterval(() => {
+    if (activeView === "networks") {
+      refreshPinNetworks().catch(() => {});
+    }
+  }, 30000);
+}

@@ -1,0 +1,27 @@
+{
+  "handshakeHash" : "331ada15bcdab304921576645c2e8a96a236ab5267ec207ed45e032b330711df",
+  "initiatorEphemeralPrivate" : "3333333333333333333333333333333333333333333333333333333333333333",
+  "initiatorHandshakePayload" : "692d7061796c6f61642d3031",
+  "initiatorReceiveKey" : "0f83ed8e25ecf419c93461d493c1989e0bba146ddea5e30cd6d4c9a839071459",
+  "initiatorSendKey" : "938a2b277f54eebcc3c237302b7a9d734aa77e08fd89ab95dc64e2a5cceb2f13",
+  "initiatorStaticPrivate" : "1111111111111111111111111111111111111111111111111111111111111111",
+  "initiatorStaticPublic" : "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+  "message1" : "7b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14483caf92c586e37ad708468d220befd1e6d044af7da44a17cfa1711f088454b5254a20d397196447ba67b41a50a02f5f8556c90745f1c76dfd18dc8899734c94245ee8649c3a132b91360811",
+  "message2" : "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6bd7ef630d05c6c743b1d0634dc196c0b8414d7191d401e9ef90e729cd",
+  "notes" : {
+    "aead_nonce_layout" : "12 bytes: 4 zero bytes then 8-byte little-endian counter",
+    "dh" : "X25519 output passed through HKDF-SHA256(salt=empty, info=empty, len=32) — CryptoKit cannot expose raw shared secrets, so this wrapper IS the wire format",
+    "handshake_nonce" : "every handshake AEAD uses nonce 0 (fresh key per encryption)",
+    "hkdf" : "Noise HKDF with HMAC-BLAKE2s-256 (block size 64)",
+    "msg2_se_deviation" : "msg2's 'se' token re-mixes DH(initiator_ephemeral, responder_static) — i.e. a repeat of 'es' — instead of standard IK's DH(initiator_static, responder_ephemeral). Both deployed sides agree; do NOT fix one side alone",
+    "protocol" : "Noise_IK_25519_ChaChaPoly_BLAKE2s",
+    "transport_packet" : "[8-byte LE counter][ciphertext][16-byte tag], AD empty"
+  },
+  "responderEphemeralPrivate" : "4444444444444444444444444444444444444444444444444444444444444444",
+  "responderHandshakePayload" : "722d7061796c6f61642d3032",
+  "responderStaticPrivate" : "2222222222222222222222222222222222222222222222222222222222222222",
+  "responderStaticPublic" : "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
+  "transportI2R_0" : "0000000000000000546704d5b866c5d3a3b43c36b835f75b4ac9058fcf2c0b53fdf4feb68a3a",
+  "transportI2R_1" : "010000000000000048ca455bfaa89eb1b67c78b38f32e73e3b7e08413caa90783cd749100709a997a011f0cc",
+  "transportR2I_0" : "000000000000000056e9ca19d55e4469cc52fad8498edb571f57f0ddc5f05878044dcc61eabd"
+}

@@ -16,6 +16,8 @@
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="demand" type="button" data-i18n="nav.demand">demand</button>
         <span class="sep">|</span>
+        <button class="nav-link" data-view-button="networks" type="button">networks</button>
+        <span class="sep">|</span>
         <button class="nav-link" data-view-button="wallet" type="button" data-i18n="nav.wallet">wallet</button>
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="account" type="button" data-i18n="nav.account">account</button>
@@ -303,6 +305,135 @@
             <div class="actions">
               <button id="network-token-copy" class="action" type="button">Copy device bearer</button>
               <button id="network-curl-copy" class="action" type="button" data-i18n="demand.action.copyNetworkCurl">Copy network curl</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" data-view="networks">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span>private inference networks</span></p>
+          <div class="card">
+            <p class="muted">Run inference entirely on your own devices. Prompts never leave the network; the gateway only coordinates membership and token counts — no credits, no billing.</p>
+            <div id="pin-network-list" class="pin-network-list"></div>
+            <p id="pin-networks-empty" class="muted">No networks yet. Create one, or join with a network PIN from your admin.</p>
+            <div class="actions pin-inline-form">
+              <input id="pin-join-code" class="text-input" type="text" placeholder="XXXX-XXXX-XX" autocomplete="off" spellcheck="false" />
+              <button id="pin-join-button" class="action" type="button">Join network</button>
+              <span class="pin-form-gap"></span>
+              <input id="pin-create-name" class="text-input" type="text" placeholder="network name" autocomplete="off" />
+              <button id="pin-create-button" class="action" type="button">Create network</button>
+            </div>
+            <p id="pin-action-status" class="muted"></p>
+          </div>
+        </section>
+
+        <section class="section" id="pin-detail-section" hidden>
+          <p class="prompt"><span class="arrow">&gt;</span> <span id="pin-detail-title">network</span></p>
+          <div class="card">
+            <div class="actions pin-tab-strip">
+              <button class="action pin-tab active" data-pin-tab="devices" type="button">Devices</button>
+              <button class="action pin-tab" data-pin-tab="models" type="button">Models</button>
+              <button class="action pin-tab" data-pin-tab="usage" type="button">Usage</button>
+              <button class="action pin-tab" data-pin-tab="settings" type="button">Settings</button>
+            </div>
+
+            <div id="pin-pending-banner" class="pin-pending-banner" hidden>
+              <span id="pin-pending-text"></span>
+            </div>
+
+            <div class="pin-tab-panel" data-pin-panel="devices">
+              <div class="table-wrap">
+                <table class="model-table">
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>Status</th>
+                      <th>Serving</th>
+                      <th>Models</th>
+                      <th>Last seen</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pin-devices-body"></tbody>
+                </table>
+              </div>
+              <p id="pin-devices-empty" class="muted">No devices yet.</p>
+            </div>
+
+            <div class="pin-tab-panel" data-pin-panel="models" hidden>
+              <div class="table-wrap">
+                <table class="model-table">
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>Model</th>
+                      <th>Desired</th>
+                      <th>Applied</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pin-models-body"></tbody>
+                </table>
+              </div>
+              <p id="pin-models-empty" class="muted">No model policy set. Staff can push a model to a device below.</p>
+              <div class="actions pin-inline-form" id="pin-model-push-form" hidden>
+                <select id="pin-model-device" class="text-input"></select>
+                <input id="pin-model-id" class="text-input" type="text" placeholder="model id (e.g. qwen3-4b-instruct)" />
+                <select id="pin-model-state" class="text-input">
+                  <option value="loaded">loaded</option>
+                  <option value="downloaded">downloaded</option>
+                  <option value="none">none</option>
+                </select>
+                <button id="pin-model-push" class="action" type="button">Set desired</button>
+              </div>
+            </div>
+
+            <div class="pin-tab-panel" data-pin-panel="usage" hidden>
+              <div class="actions">
+                <select id="pin-usage-by" class="text-input">
+                  <option value="day">by day</option>
+                  <option value="device">by provider device</option>
+                  <option value="consumer">by consumer device</option>
+                  <option value="model">by model</option>
+                </select>
+              </div>
+              <div class="table-wrap">
+                <table class="model-table">
+                  <thead>
+                    <tr>
+                      <th id="pin-usage-key-header">Day</th>
+                      <th>Requests</th>
+                      <th>Tokens in</th>
+                      <th>Tokens out</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pin-usage-body"></tbody>
+                </table>
+              </div>
+              <p id="pin-usage-empty" class="muted">No usage recorded yet. Token counts only — never credits.</p>
+            </div>
+
+            <div class="pin-tab-panel" data-pin-panel="settings" hidden>
+              <dl class="stats" id="pin-admin-settings" hidden>
+                <dt>Network PIN</dt>
+                <dd>
+                  <button id="pin-join-code-reveal" class="device-id-button" type="button" title="Copy network PIN">reveal</button>
+                  <button id="pin-rotate-code" class="action" type="button">Rotate</button>
+                  <small>Anyone with this PIN can request to join. Rotating it does not affect existing members.</small>
+                </dd>
+              </dl>
+              <dl class="stats">
+                <dt>This device</dt>
+                <dd>
+                  <label class="pin-toggle"><input id="pin-allow-remote-models" type="checkbox" /> Allow remote model management</label>
+                  <label class="pin-toggle"><input id="pin-din-contribute" type="checkbox" /> Contribute excess capacity to the public network (DIN)</label>
+                  <label class="pin-toggle"><input id="pin-din-equal" type="checkbox" /> Treat DIN requests with equal priority (default: private network first)</label>
+                </dd>
+              </dl>
+              <div class="actions">
+                <button id="pin-leave" class="action danger" type="button">Leave network</button>
+              </div>
             </div>
           </div>
         </section>

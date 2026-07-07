@@ -79,14 +79,6 @@ let package = Package(
             ]
         ),
 
-        // MARK: - TealeNetKit (Private TealeNet membership & certificates)
-        .target(
-            name: "TealeNetKit",
-            dependencies: [
-                "SharedTypes",
-            ]
-        ),
-
         // MARK: - InferenceEngine (provider-agnostic — no MLX dependency)
         .target(
             name: "InferenceEngine",
@@ -193,6 +185,7 @@ let package = Package(
         .target(
             name: "LocalAPI",
             dependencies: [
+                "PINKit",
                 "SharedTypes",
                 "InferenceEngine",
                 "PrivacyFilterKit",
@@ -205,12 +198,12 @@ let package = Package(
         .target(
             name: "AppCore",
             dependencies: [
+                "PINKit",
                 "SharedTypes",
                 "HardwareProfile",
                 "MLXInference",
                 "LlamaCppKit",
                 "RapidMLXKit",
-                "TealeNetKit",
                 "InferenceEngine",
                 "ModelManager",
                 "LocalAPI",
@@ -253,7 +246,6 @@ let package = Package(
                 "ModelManager",
                 "LlamaCppKit",
                 "RapidMLXKit",
-                "TealeNetKit",
                 "LocalAPI",
                 "ClusterKit",
                 "WANKit",
@@ -333,6 +325,14 @@ let package = Package(
         .testTarget(
             name: "InferenceEngineTests",
             dependencies: ["InferenceEngine"]
+        ),
+        .target(
+            name: "PINKit",
+            dependencies: []
+        ),
+        .testTarget(
+            name: "PINKitTests",
+            dependencies: ["PINKit"]
         ),
         .testTarget(
             name: "WANKitTests",

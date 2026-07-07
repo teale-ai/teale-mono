@@ -8,6 +8,7 @@ import ModelManager
 import MLXInference
 import LocalAPI
 import ClusterKit
+import PINKit
 import WANKit
 import CreditKit
 import AgentKit
@@ -15,7 +16,6 @@ import AuthKit
 import WalletKit
 import LlamaCppKit
 import RapidMLXKit
-import TealeNetKit
 import CompilerKit
 import ChatKit
 import PrivacyFilterKit
@@ -94,8 +94,9 @@ public final class AppState {
         }
     }
 
-    // PTN (Private TealeNet)
-    public let ptnManager: PTNManager
+    /// Private Inference Networks (PIN) control-plane runtime; nil only if
+    /// the WAN identity could not be derived.
+    public let pinService: PINService?
 
     // WAN P2P
     public let wanManager: WANManager
@@ -507,11 +508,9 @@ public final class AppState {
         let hostname = ProcessInfo.processInfo.hostName
         let deviceInfo = DeviceInfo(name: hostname, hardware: hw)
         self.clusterManager = ClusterManager(localDeviceInfo: deviceInfo)
-        self.ptnManager = PTNManager(
-            localNodeID: Self.stableNodeID(),
-            localDisplayName: hostname
-        )
         self.wanManager = WANManager()
+        self.pinService = try? PINService(
+            gatewayBaseURL: URL(string: "https://gateway.teale.com")!)
         if let config = SupabaseConfig.default {
             self.authManager = AuthManager(config: config)
         } else {
@@ -590,11 +589,16 @@ public final class AppState {
             }
         }
 
-        self.wanManager.onInferenceRequest = { [weak self] payload, connection in
+        self.wanManager.onInferenceRequestFromPeer = { [weak self] payload, connection, peerNodeID in
             guard let self else { return }
 
-            // Honor the master "Contribute compute" opt-out.
-            if !self.contributeCompute {
+            // Private-network membership: requests from PIN members ride the
+            // weighted-fair PIN lane, bypass the public contribute toggle
+            // (network membership is its own consent), and count usage.
+            let pinMembership = await self.pinService?.manager.memberForNodePubkey(peerNodeID)
+
+            // Honor the master "Contribute compute" opt-out for PUBLIC work.
+            if pinMembership == nil && !self.contributeCompute {
                 let response = InferenceErrorPayload(
                     requestID: payload.requestID,
                     errorMessage: "This node is not contributing compute."
@@ -603,11 +607,11 @@ public final class AppState {
                 return
             }
 
-            // Determine request source for WFQ scheduling
+            // Determine request source for WFQ scheduling.
             let source: RequestScheduler.RequestSource
-            if let groupID = payload.request.groupID,
-               self.ptnManager.isMember(of: groupID) {
-                source = .ptn(groupID)
+            if let (pinId, _) = pinMembership {
+                source = .ptn(pinId)
+                Self.wanLog("PIN inference request \(payload.requestID) from \(peerNodeID.prefix(12)) model=\(payload.request.model ?? "unknown")")
             } else {
                 source = .wwtn
             }
@@ -631,6 +635,9 @@ public final class AppState {
 
                 let complete = InferenceCompletePayload(requestID: payload.requestID)
                 try await connection.send(.inferenceComplete(complete))
+                if pinMembership != nil {
+                    Self.wanLog("PIN inference complete \(payload.requestID) tokens=\(tokenCount)")
+                }
 
                 // Release the scheduler slot
                 await self.requestScheduler.complete()
@@ -639,26 +646,30 @@ public final class AppState {
                     self.totalRequestsServed += 1
                     self.totalTokensGenerated += tokenCount
                 }
+
+                // Token accounting (counts only — PINs have no credits).
+                if let (pinId, member) = pinMembership, let pinService = self.pinService {
+                    let promptChars = (try? JSONEncoder().encode(payload.request))?.count ?? 0
+                    await pinService.manager.recordUsage(
+                        PINManager.UsageRecord(
+                            pinId: pinId,
+                            day: PINManager.todayUTC(),
+                            consumerDeviceId: member.deviceId,
+                            modelId: payload.request.model ?? "unknown",
+                            tokensIn: Int64(promptChars / 4),
+                            tokensOut: Int64(tokenCount)
+                        ))
+                }
             } catch {
                 await self.requestScheduler.complete()
                 let response = InferenceErrorPayload(
                     requestID: payload.requestID,
                     errorMessage: error.localizedDescription
                 )
+                if pinMembership != nil {
+                    Self.wanLog("PIN inference error \(payload.requestID): \(error.localizedDescription)")
+                }
                 try? await connection.send(.inferenceError(response))
-            }
-        }
-
-        // Handle PTN join requests from remote peers
-        self.wanManager.onPTNJoinRequest = { [weak self] payload, connection in
-            guard let self else { return }
-            do {
-                let joinRequest = try JSONDecoder().decode(PTNJoinRequestPayload.self, from: payload.data)
-                let response = try await self.ptnManager.handleJoinRequest(joinRequest)
-                let responseData = try JSONEncoder().encode(response)
-                try await connection.send(.ptnJoinResponse(PTNJoinResponseTransportPayload(data: responseData)))
-            } catch {
-                FileHandle.standardError.write(Data("[PTN] Join request handling failed: \(error.localizedDescription)\n".utf8))
             }
         }
 
@@ -723,8 +734,6 @@ public final class AppState {
 
     /// Call once at app launch to initialize async components (auth, credit ledger, agent)
     public func initializeAsync() async {
-        // Load PTN memberships
-        await ptnManager.loadMemberships()
 
         // Load saved chat conversations; ensure a default DM with the AI exists
         // so the user always has a conversation to open.
@@ -1185,6 +1194,81 @@ public final class AppState {
         guard !isServerRunning else { return }
         isServerRunning = true
         let wanMgr = self.wanManager
+        if let pinService {
+            let engineStatusProvider = { @Sendable [weak self] () async -> [String] in
+                await MainActor.run { [weak self] in
+                    guard let self else { return [] }
+                    return self.advertisedLoadedModels(for: self.engineStatus)
+                }
+            }
+            pinService.start(
+                endpoints: { [weak wanMgr] in
+                    guard let port = wanMgr?.listenPort else { return [] }
+                    var endpoints: [PinEndpoint] = []
+                    if let lanIP = Self.primaryLANAddress() {
+                        endpoints.append(PinEndpoint(kind: "lan", addr: "\(lanIP):\(port)"))
+                    }
+                    return endpoints
+                },
+                loadedModels: engineStatusProvider,
+                reconcile: { [weak self] in
+                    guard let self else { return }
+                    await self.pinService?.reconcilePolicy(
+                        loadedModels: engineStatusProvider,
+                        downloadedModels: { [weak self] in
+                            await MainActor.run {
+                                Array(self?.downloadedModelIDs ?? []).sorted()
+                            }
+                        },
+                        ensureDownload: { [weak self] modelId in
+                            guard let self else {
+                                return .failure(RemoteControlError.unsupported)
+                            }
+                            guard let descriptor = await MainActor.run(body: {
+                                self.resolveModelDescriptor(for: modelId)
+                            }) else {
+                                return .failure(
+                                    RemoteControlError.invalidSetting(
+                                        "Unknown model '\(modelId)'"))
+                            }
+                            await self.downloadModel(descriptor)
+                            return await MainActor.run {
+                                self.downloadedModelIDs.contains(descriptor.id)
+                                    ? .success(())
+                                    : .failure(
+                                        RemoteControlError.invalidSetting(
+                                            "Model '\(modelId)' did not finish downloading"))
+                            }
+                        },
+                        ensureLoaded: { [weak self] modelId in
+                            guard let self else {
+                                return .failure(RemoteControlError.unsupported)
+                            }
+                            guard let descriptor = await MainActor.run(body: {
+                                self.resolveModelDescriptor(for: modelId)
+                            }) else {
+                                return .failure(
+                                    RemoteControlError.invalidSetting(
+                                        "Unknown model '\(modelId)'"))
+                            }
+                            await self.loadModel(descriptor)
+                            return await MainActor.run {
+                                switch self.engineStatus {
+                                case .ready(let loaded) where loaded.id == descriptor.id:
+                                    return .success(())
+                                case .error(let message):
+                                    return .failure(RemoteControlError.invalidSetting(message))
+                                default:
+                                    return .failure(
+                                        RemoteControlError.invalidSetting(
+                                            "Model '\(modelId)' did not finish loading"))
+                                }
+                            }
+                        }
+                    )
+                }
+            )
+        }
         let clusterMgr = self.clusterManager
         let controlBridge = RemoteControlBridge(appState: self)
         let server = LocalHTTPServer(
@@ -1194,6 +1278,7 @@ public final class AppState {
             allowNetworkAccess: allowNetworkAccess,
             controller: controlBridge,
             desktopController: controlBridge,
+            pinController: controlBridge,
             peerModelProvider: {
                 var models: [(id: String, ownedBy: String)] = []
                 for peer in wanMgr.state.connectedPeers {
@@ -1586,6 +1671,32 @@ public final class AppState {
                 await self.applyInferenceBackendSelection()
             }
         }
+    }
+
+    /// Primary non-loopback IPv4 for PIN endpoint advertisement.
+    nonisolated static func primaryLANAddress() -> String? {
+        var addresses: [String] = []
+        var interfaceList: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaceList) == 0 else { return nil }
+        defer { freeifaddrs(interfaceList) }
+        var cursor = interfaceList
+        while let interface = cursor {
+            defer { cursor = interface.pointee.ifa_next }
+            guard let addr = interface.pointee.ifa_addr,
+                addr.pointee.sa_family == UInt8(AF_INET),
+                (interface.pointee.ifa_flags & UInt32(IFF_LOOPBACK)) == 0
+            else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(
+                addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
+                nil, 0, NI_NUMERICHOST) == 0 {
+                addresses.append(String(cString: host))
+            }
+        }
+        // Prefer RFC1918 space over anything exotic.
+        return addresses.first {
+            $0.hasPrefix("10.") || $0.hasPrefix("192.168.") || $0.hasPrefix("172.")
+        } ?? addresses.first
     }
 
     nonisolated static func canonicalWANIdentity() throws -> WANNodeIdentity {

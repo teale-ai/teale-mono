@@ -29,6 +29,18 @@ impl NodeIdentity {
         self.sign_hex(self.node_id().as_bytes())
     }
 
+    /// X25519 static key for the PIN data plane. Mirrors WANKit's
+    /// `WANNodeIdentity.keyAgreementPrivateKey`: the raw Ed25519 seed reused
+    /// as the X25519 scalar (clamped on use). The resulting public key is
+    /// unrelated to `node_id()` and is advertised separately on sync.
+    pub fn wg_static(&self) -> x25519_dalek::StaticSecret {
+        x25519_dalek::StaticSecret::from(self.signing_key.to_bytes())
+    }
+
+    pub fn wg_pubkey_hex(&self) -> String {
+        hex::encode(x25519_dalek::PublicKey::from(&self.wg_static()).as_bytes())
+    }
+
     /// Sign "{from}:{to}:{session}" for offer/answer signatures.
     pub fn sign_session(&self, from: &str, to: &str, session: &str) -> String {
         let data = format!("{}:{}:{}", from, to, session);
@@ -37,7 +49,11 @@ impl NodeIdentity {
 
     /// Load from file or generate new identity.
     pub fn load_or_create() -> anyhow::Result<Self> {
-        let path = identity_file_path();
+        Self::load_or_create_in(identity_file_path())
+    }
+
+    /// Load/create at an explicit path — tests and sandboxed deployments.
+    pub fn load_or_create_in(path: std::path::PathBuf) -> anyhow::Result<Self> {
         if path.exists() {
             let data = std::fs::read(&path)?;
             if data.len() != 32 {

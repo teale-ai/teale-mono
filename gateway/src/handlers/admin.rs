@@ -185,6 +185,8 @@ mod tests {
             model_metrics: Arc::new(ModelMetricsTracker::new()),
             share_key_issuers: ShareKeyIssuers::from_env("TEALE_ADMIN_TEST_ISSUERS"),
             providers: crate::providers::ProvidersHandle::empty_for_test(),
+            identity: None,
+            pin_join_limiter: Default::default(),
         }
     }
 

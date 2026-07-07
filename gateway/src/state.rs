@@ -16,6 +16,32 @@ use crate::registry::Registry;
 use crate::relay_client::RelayHandle;
 use crate::scheduler::Scheduler;
 
+/// Sliding-window rate limiter for PIN join knocks: a device may submit at
+/// most `MAX_PER_WINDOW` join requests per hour, valid code or not. Keyed by
+/// device id; the join endpoint's response never reveals whether the code
+/// matched, so the limiter is the only brute-force defense.
+#[derive(Debug, Clone, Default)]
+pub struct PinJoinLimiter {
+    inner: Arc<parking_lot::Mutex<std::collections::HashMap<String, Vec<i64>>>>,
+}
+
+impl PinJoinLimiter {
+    pub const MAX_PER_WINDOW: usize = 5;
+    pub const WINDOW_SECONDS: i64 = 3600;
+
+    /// Record an attempt; returns false when the caller is over the limit.
+    pub fn allow(&self, key: &str, now_unix: i64) -> bool {
+        let mut map = self.inner.lock();
+        let attempts = map.entry(key.to_string()).or_default();
+        attempts.retain(|t| now_unix - *t < Self::WINDOW_SECONDS);
+        if attempts.len() >= Self::MAX_PER_WINDOW {
+            return false;
+        }
+        attempts.push(now_unix);
+        true
+    }
+}
+
 /// Allowlist for minting share keys. Loaded from `GATEWAY_SHARE_KEY_ISSUERS`
 /// (comma-separated 64-char hex device IDs). Empty set ⇒ mint disabled —
 /// fail-closed default so a deploy without the secret can't be abused.
@@ -99,4 +125,9 @@ pub struct AppState {
     /// Centralized 3rd-party provider marketplace. Loaded at startup from
     /// the `providers` / `provider_models` tables; refreshed on admin mutation.
     pub providers: ProvidersHandle,
+    /// Gateway Ed25519 identity, used to sign PIN netmaps. `None` only in
+    /// tests that don't exercise netmap endpoints.
+    pub identity: Option<Arc<crate::identity::GatewayIdentity>>,
+    /// Join-knock rate limiting for /v1/pins/join.
+    pub pin_join_limiter: PinJoinLimiter,
 }

@@ -44,14 +44,30 @@ public final class NoiseHandshake: Sendable {
         localStatic: Curve25519.KeyAgreement.PrivateKey,
         remoteStaticPublic: Curve25519.KeyAgreement.PublicKey
     ) throws -> (message: Data, state: HandshakeState) {
+        try initiatorBegin(
+            localStatic: localStatic,
+            remoteStaticPublic: remoteStaticPublic,
+            ephemeral: Curve25519.KeyAgreement.PrivateKey(),
+            payload: timestampPayload()
+        )
+    }
+
+    /// Deterministic variant with injectable ephemeral key and handshake payload.
+    /// Internal — used by tests to produce golden vectors. Public behavior is unchanged:
+    /// the public `initiatorBegin` delegates here with a fresh ephemeral and a timestamp payload.
+    internal static func initiatorBegin(
+        localStatic: Curve25519.KeyAgreement.PrivateKey,
+        remoteStaticPublic: Curve25519.KeyAgreement.PublicKey,
+        ephemeral: Curve25519.KeyAgreement.PrivateKey,
+        payload: Data
+    ) throws -> (message: Data, state: HandshakeState) {
         // Initialize symmetric state
         var (ck, h) = initializeSymmetric()
 
         // pre-message: <- s (mix responder's static public key)
         h = mixHash(h, data: remoteStaticPublic.rawRepresentation)
 
-        // -> e: generate ephemeral, mix into hash
-        let ephemeral = Curve25519.KeyAgreement.PrivateKey()
+        // -> e: mix ephemeral into hash
         let ephemeralPub = ephemeral.publicKey.rawRepresentation
         h = mixHash(h, data: ephemeralPub)
         var message = ephemeralPub
@@ -74,7 +90,6 @@ public final class NoiseHandshake: Sendable {
         k = ckAndK2[1]
 
         // Encrypt payload (timestamp for replay protection)
-        let payload = timestampPayload()
         let encryptedPayload = try NoiseCrypto.encrypt(key: k, nonce: 0, ad: h, plaintext: payload)
         h = mixHash(h, data: encryptedPayload)
         message.append(encryptedPayload)
@@ -172,6 +187,23 @@ public final class NoiseHandshake: Sendable {
         localStatic: Curve25519.KeyAgreement.PrivateKey,
         message1: Data
     ) throws -> (message: Data, keys: TransportKeys, remoteStaticPublic: Curve25519.KeyAgreement.PublicKey) {
+        try responderComplete(
+            localStatic: localStatic,
+            message1: message1,
+            ephemeral: Curve25519.KeyAgreement.PrivateKey(),
+            payload: timestampPayload()
+        )
+    }
+
+    /// Deterministic variant with injectable ephemeral key and handshake payload.
+    /// Internal — used by tests to produce golden vectors. Public behavior is unchanged:
+    /// the public `responderComplete` delegates here with a fresh ephemeral and a timestamp payload.
+    internal static func responderComplete(
+        localStatic: Curve25519.KeyAgreement.PrivateKey,
+        message1: Data,
+        ephemeral: Curve25519.KeyAgreement.PrivateKey,
+        payload: Data
+    ) throws -> (message: Data, keys: TransportKeys, remoteStaticPublic: Curve25519.KeyAgreement.PublicKey) {
         var (ck, h) = initializeSymmetric()
 
         // pre-message: <- s (responder's own static public key)
@@ -217,8 +249,8 @@ public final class NoiseHandshake: Sendable {
         }
 
         // Now generate response (msg2)
-        // <- e: generate responder's ephemeral
-        let ephemeral = Curve25519.KeyAgreement.PrivateKey()
+        // <- e: responder's ephemeral (injected by the deterministic variant;
+        // the public entry point passes a fresh key)
         let ephemeralPub = ephemeral.publicKey.rawRepresentation
         h = mixHash(h, data: ephemeralPub)
         var reply = ephemeralPub
@@ -238,8 +270,8 @@ public final class NoiseHandshake: Sendable {
         ck = ckAndK4[0]
         k = ckAndK4[1]
 
-        // Encrypt empty payload (or timestamp)
-        let payload = timestampPayload()
+        // Encrypt the payload (injected by the deterministic variant; the
+        // public entry point passes a replay-protection timestamp)
         let encryptedReplyPayload = try NoiseCrypto.encrypt(key: k, nonce: 0, ad: h, plaintext: payload)
         h = mixHash(h, data: encryptedReplyPayload)
         reply.append(encryptedReplyPayload)

@@ -12,6 +12,7 @@ pub mod identity;
 pub mod ledger;
 pub mod metrics;
 pub mod model_metrics;
+pub mod pins;
 pub mod probe;
 pub mod providers;
 pub mod registry;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, patch, post, put},
     Router,
 };
 use clap::Parser;
@@ -131,6 +131,8 @@ async fn main() -> anyhow::Result<()> {
         model_metrics: Arc::new(teale_gateway::model_metrics::ModelMetricsTracker::new()),
         share_key_issuers,
         providers: providers_handle,
+        identity: Some(identity.clone()),
+        pin_join_limiter: Default::default(),
     };
 
     // Spawn the Teale Credit availability drip loop.
@@ -242,6 +244,48 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::wallet::transactions),
         )
         .route("/v1/wallet/send", post(handlers::wallet::send))
+        .route(
+            "/v1/pins",
+            post(handlers::pins::create_pin).get(handlers::pins::list_pins),
+        )
+        .route("/v1/pins/join", post(handlers::pins::join))
+        .route(
+            "/v1/pins/:id",
+            get(handlers::pins::get_pin).delete(handlers::pins::delete_pin),
+        )
+        .route("/v1/pins/:id/members", get(handlers::pins::list_members))
+        .route(
+            "/v1/pins/:id/members/:dev",
+            patch(handlers::pins::patch_member).delete(handlers::pins::remove_member),
+        )
+        .route(
+            "/v1/pins/:id/members/:dev/approve",
+            post(handlers::pins::approve_member),
+        )
+        .route(
+            "/v1/pins/:id/members/:dev/deny",
+            post(handlers::pins::deny_member),
+        )
+        .route("/v1/pins/:id/leave", post(handlers::pins::leave))
+        .route(
+            "/v1/pins/:id/rotate-code",
+            post(handlers::pins::rotate_code),
+        )
+        .route("/v1/pins/:id/join-code", get(handlers::pins::get_join_code))
+        .route("/v1/pins/:id/roles/:account", put(handlers::pins::set_role))
+        .route("/v1/pins/:id/settings", put(handlers::pins::put_settings))
+        .route("/v1/pins/:id/sync", post(handlers::pins::sync))
+        .route("/v1/pins/:id/schedule", post(handlers::pins::schedule))
+        .route("/v1/pins/:id/models", get(handlers::pins::get_models))
+        .route(
+            "/v1/pins/:id/models/:dev",
+            put(handlers::pins::set_device_models),
+        )
+        .route(
+            "/v1/pins/:id/usage-report",
+            post(handlers::pins::usage_report),
+        )
+        .route("/v1/pins/:id/usage", get(handlers::pins::usage))
         .route("/v1/groups", post(handlers::groups::create_group))
         .route("/v1/groups/mine", get(handlers::groups::list_mine))
         .route("/v1/groups/:id/members", post(handlers::groups::add_member))
