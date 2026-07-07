@@ -233,7 +233,7 @@ mod tests {
     use super::*;
     use crate::identity::NodeIdentity;
     use crate::pin::transport::dial;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use teale_protocol::ApiMessage;
     use tokio::sync::Semaphore;
     use x25519_dalek::{PublicKey, StaticSecret};
@@ -283,7 +283,7 @@ mod tests {
 
     /// Manager wired to a dead gateway (network calls fail fast) but with a
     /// hand-planted netmap state — serving never needs the control plane.
-    fn offline_manager(dir: &PathBuf, members: Vec<(String, bool, bool)>) -> Arc<PinManager> {
+    fn offline_manager(dir: &Path, members: Vec<(String, bool, bool)>) -> Arc<PinManager> {
         use ed25519_dalek::{Signer, SigningKey};
         use teale_protocol::{canonical_json, PinNetmap, PinNetmapMember, SignedPinNetmap};
         let identity = Arc::new(NodeIdentity::load_or_create_in(dir.join("id.key")).unwrap());

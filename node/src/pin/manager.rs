@@ -513,6 +513,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use std::net::SocketAddr;
+    use std::path::Path;
     use teale_protocol::{canonical_json, PinNetmap, PinNetmapMember};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -621,7 +622,7 @@ mod tests {
         dir
     }
 
-    fn test_manager(addr: SocketAddr, dir: &PathBuf) -> Arc<PinManager> {
+    fn test_manager(addr: SocketAddr, dir: &Path) -> Arc<PinManager> {
         PinManager::new(
             format!("http://{addr}"),
             Arc::new(NodeIdentity::load_or_create_in(dir.join("id.key")).unwrap()),

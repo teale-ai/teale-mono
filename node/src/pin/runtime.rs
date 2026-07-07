@@ -307,6 +307,7 @@ pub async fn reconcile_policy<M: ModelOps>(runtime: &PinRuntime, ops: &M) -> Vec
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+    use std::path::Path;
     use teale_protocol::{canonical_json, PinNetmap, SignedPinNetmap};
 
     struct FakeOps {
@@ -340,7 +341,7 @@ mod tests {
         dir
     }
 
-    fn runtime_with_policy(dir: &PathBuf, policy: Vec<serde_json::Value>) -> Arc<PinRuntime> {
+    fn runtime_with_policy(dir: &Path, policy: Vec<serde_json::Value>) -> Arc<PinRuntime> {
         let identity = Arc::new(NodeIdentity::load_or_create_in(dir.join("id.key")).unwrap());
         let manager = PinManager::new(
             "http://127.0.0.1:9".into(),
