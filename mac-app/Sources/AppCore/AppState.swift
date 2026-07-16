@@ -1204,11 +1204,11 @@ public final class AppState {
             pinService.start(
                 endpoints: { [weak wanMgr] in
                     guard let port = wanMgr?.listenPort else { return [] }
-                    var endpoints: [PinEndpoint] = []
-                    if let lanIP = Self.primaryLANAddress() {
-                        endpoints.append(PinEndpoint(kind: "lan", addr: "\(lanIP):\(port)"))
+                    // Advertise every private IPv4 (physical LAN + Tailscale),
+                    // so peers on any reachable subnet can dial us.
+                    return Self.localPrivateIPv4s().map {
+                        PinEndpoint(kind: "lan", addr: "\($0):\(port)")
                     }
-                    return endpoints
                 },
                 loadedModels: engineStatusProvider,
                 reconcile: { [weak self] in
@@ -1675,9 +1675,19 @@ public final class AppState {
 
     /// Primary non-loopback IPv4 for PIN endpoint advertisement.
     nonisolated static func primaryLANAddress() -> String? {
-        var addresses: [String] = []
+        localPrivateIPv4s().first
+    }
+
+    /// All non-loopback private IPv4 addresses, most-preferred first. Peers
+    /// dial these in order, so a Mac reachable on both a physical LAN and a
+    /// Tailscale overlay advertises both — same-subnet peers use the LAN
+    /// address, cross-subnet/remote peers use the Tailscale (CGNAT) one.
+    /// Mirrors the node's endpoint gathering so cross-subnet PIN dial works.
+    nonisolated static func localPrivateIPv4s() -> [String] {
+        var lan: [String] = []       // RFC1918 physical LAN
+        var tailscale: [String] = [] // 100.64.0.0/10 CGNAT (Tailscale)
         var interfaceList: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&interfaceList) == 0 else { return nil }
+        guard getifaddrs(&interfaceList) == 0 else { return [] }
         defer { freeifaddrs(interfaceList) }
         var cursor = interfaceList
         while let interface = cursor {
@@ -1687,16 +1697,22 @@ public final class AppState {
                 (interface.pointee.ifa_flags & UInt32(IFF_LOOPBACK)) == 0
             else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            if getnameinfo(
+            guard getnameinfo(
                 addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count),
-                nil, 0, NI_NUMERICHOST) == 0 {
-                addresses.append(String(cString: host))
+                nil, 0, NI_NUMERICHOST) == 0
+            else { continue }
+            let ip = String(cString: host)
+            let octets = ip.split(separator: ".").compactMap { Int($0) }
+            guard octets.count == 4 else { continue }
+            if ip.hasPrefix("10.") || ip.hasPrefix("192.168.")
+                || (octets[0] == 172 && (16...31).contains(octets[1])) {
+                lan.append(ip)
+            } else if octets[0] == 100 && (64...127).contains(octets[1]) {
+                tailscale.append(ip)
             }
         }
-        // Prefer RFC1918 space over anything exotic.
-        return addresses.first {
-            $0.hasPrefix("10.") || $0.hasPrefix("192.168.") || $0.hasPrefix("172.")
-        } ?? addresses.first
+        // Physical LAN first (fast, same-subnet), then Tailscale overlay.
+        return lan + tailscale
     }
 
     nonisolated static func canonicalWANIdentity() throws -> WANNodeIdentity {
