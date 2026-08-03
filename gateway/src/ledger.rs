@@ -752,7 +752,7 @@ pub fn referral_code_for_device(
     pool: &DbPool,
     requester_device_id: &str,
 ) -> anyhow::Result<ReferralCodeSnapshot> {
-    let mut conn = pool.lock();
+    let conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
     tx.execute(
