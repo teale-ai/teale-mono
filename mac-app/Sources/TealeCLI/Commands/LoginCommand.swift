@@ -20,33 +20,33 @@ struct Login: AsyncParsableCommand {
         let state = await MainActor.run { authManager.authState }
         if state.isAuthenticated {
             let user = await MainActor.run { authManager.currentUser }
-            print("Already signed in as \(user?.displayName ?? user?.phone ?? "unknown").")
+            print("Already signed in as \(user?.displayName ?? user?.email ?? user?.phone ?? "unknown").")
             return
         }
 
-        // Prompt for phone number
-        print("Sign in with your phone number to link this device to your account.")
-        print("Phone number (e.g. +14155551234): ", terminator: "")
-        guard let phone = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !phone.isEmpty else {
-            print("No phone number entered.")
+        // Prompt for email address.
+        print("Sign in with your email to link this device to your account.")
+        print("Email: ", terminator: "")
+        guard let email = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !email.isEmpty else {
+            print("No email entered.")
             throw ExitCode.failure
         }
 
-        guard phone.hasPrefix("+"), phone.count >= 10 else {
-            print("Invalid phone number. Use international format: +14155551234")
+        guard email.contains("@"), email.contains(".") else {
+            print("Invalid email address.")
             throw ExitCode.failure
         }
 
-        // Send OTP
+        // Send auth code.
         do {
-            try await authManager.signInWithPhoneOTP(phone: phone)
+            try await authManager.signInWithEmailOTP(email: email)
         } catch {
             print("Failed to send verification code: \(error.localizedDescription)")
             throw ExitCode.failure
         }
 
-        print("Verification code sent! Check your SMS.")
+        print("Verification code sent. Check your email.")
         print("Code: ", terminator: "")
         guard let code = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
               !code.isEmpty else {
@@ -54,9 +54,9 @@ struct Login: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        // Verify OTP
+        // Verify auth code.
         do {
-            try await authManager.verifyPhoneOTP(phone: phone, code: code)
+            try await authManager.verifyEmailOTP(email: email, code: code)
         } catch {
             print("Verification failed: \(error.localizedDescription)")
             throw ExitCode.failure

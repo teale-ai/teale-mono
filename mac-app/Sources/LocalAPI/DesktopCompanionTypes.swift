@@ -6,6 +6,8 @@ public protocol DesktopCompanionControlling: AnyObject {
     func desktop_snapshot() async throws -> DesktopCompanionAppSnapshot
     func desktop_set_privacy_filter_mode(_ mode: PrivacyFilterMode) async throws -> DesktopCompanionAppSnapshot
     func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot
+    func desktop_request_email_code(_ request: DesktopCompanionEmailCodeRequest) async throws -> DesktopCompanionEmailCodeRequestResponse
+    func desktop_verify_email_code(_ request: DesktopCompanionEmailCodeVerifyRequest) async throws -> DesktopCompanionEmailCodeVerifyResponse
     func desktop_network_models() async throws -> [DesktopCompanionNetworkModelSnapshot]
     func desktop_network_stats() async throws -> DesktopCompanionNetworkStatsSnapshot
     func desktop_account_summary() async throws -> DesktopCompanionAccountSnapshot
@@ -319,6 +321,25 @@ public struct DesktopCompanionAccountLinkRequest: Codable, Sendable {
     public var phone: String?
     public var email: String?
     public var githubUsername: String?
+}
+
+public struct DesktopCompanionEmailCodeRequest: Codable, Sendable {
+    public var email: String
+}
+
+public struct DesktopCompanionEmailCodeRequestResponse: Codable, Sendable {
+    public var email: String
+    public var expiresAt: Int64
+}
+
+public struct DesktopCompanionEmailCodeVerifyRequest: Codable, Sendable {
+    public var email: String
+    public var code: String
+}
+
+public struct DesktopCompanionEmailCodeVerifyResponse: Codable, Sendable {
+    public var accountUserID: String
+    public var email: String
 }
 
 public struct DesktopCompanionAccountDeviceSnapshot: Codable, Sendable {

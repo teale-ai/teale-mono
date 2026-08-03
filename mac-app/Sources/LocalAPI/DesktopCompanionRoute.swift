@@ -88,6 +88,34 @@ enum DesktopCompanionRoute {
         }
     }
 
+    static func requestEmailCode(
+        request: Request,
+        controller: (any DesktopCompanionControlling)?
+    ) async throws -> Response {
+        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
+        do {
+            let body = try await request.body.collect(upTo: 1_048_576)
+            let payload = try JSONDecoder().decode(DesktopCompanionEmailCodeRequest.self, from: body)
+            return try jsonResponse(try await controller.desktop_request_email_code(payload))
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
+    }
+
+    static func verifyEmailCode(
+        request: Request,
+        controller: (any DesktopCompanionControlling)?
+    ) async throws -> Response {
+        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
+        do {
+            let body = try await request.body.collect(upTo: 1_048_576)
+            let payload = try JSONDecoder().decode(DesktopCompanionEmailCodeVerifyRequest.self, from: body)
+            return try jsonResponse(try await controller.desktop_verify_email_code(payload))
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
+    }
+
     static func createAccountAPIKey(
         request: Request,
         controller: (any DesktopCompanionControlling)?

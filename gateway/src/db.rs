@@ -539,6 +539,23 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE pin_members ADD COLUMN wg_pubkey TEXT NOT NULL DEFAULT '';
     "#,
+    // 017_account_email_codes.sql — short-lived verified email login codes
+    // for human accounts. This avoids depending on Supabase Auth email
+    // delivery for the gateway account-wallet identity.
+    r#"
+    CREATE TABLE IF NOT EXISTS account_email_codes (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        consumed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_email_codes_email_created
+        ON account_email_codes(email, created_at DESC);
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

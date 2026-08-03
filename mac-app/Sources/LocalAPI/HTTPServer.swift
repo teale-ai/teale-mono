@@ -218,6 +218,20 @@ public actor LocalHTTPServer {
             )
         }
 
+        router.post("/v1/desktop/app/account/email-code/request") { request, _ -> Response in
+            return try await DesktopCompanionRoute.requestEmailCode(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.post("/v1/desktop/app/account/email-code/verify") { request, _ -> Response in
+            return try await DesktopCompanionRoute.verifyEmailCode(
+                request: request,
+                controller: desktopController
+            )
+        }
+
         router.post("/v1/desktop/app/account/api-keys") { request, _ -> Response in
             return try await DesktopCompanionRoute.createAccountAPIKey(
                 request: request,
