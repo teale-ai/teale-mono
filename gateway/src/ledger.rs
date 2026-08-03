@@ -752,7 +752,7 @@ pub fn referral_code_for_device(
     pool: &DbPool,
     requester_device_id: &str,
 ) -> anyhow::Result<ReferralCodeSnapshot> {
-    let conn = pool.lock();
+    let mut conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
     tx.execute(
@@ -5081,7 +5081,7 @@ pub fn create_account_email_code(
     let email =
         normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
     let code_hash = hash_account_email_code(&email, code);
-    let mut conn = pool.lock();
+    let conn = pool.lock();
     let now = unix_now();
     let recent: Option<i64> = conn
         .query_row(
