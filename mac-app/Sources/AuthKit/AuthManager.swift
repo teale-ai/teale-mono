@@ -215,6 +215,45 @@ public final class AuthManager {
         )
     }
 
+    // MARK: - Email OTP
+
+    /// Send an OTP code to an email address.
+    public func signInWithEmailOTP(email: String) async throws {
+        authState = .signingIn
+        do {
+            try await client.auth.signInWithOTP(email: email, redirectTo: redirectURL)
+            authState = .signedOut
+        } catch {
+            authState = .error(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// Verify the OTP code received via email.
+    public func verifyEmailOTP(email: String, code: String) async throws {
+        do {
+            let response = try await client.auth.verifyOTP(
+                email: email,
+                token: code,
+                type: .email,
+                redirectTo: redirectURL
+            )
+            guard let session = response.session else {
+                throw NSError(domain: "AuthKit", code: -1, userInfo: [NSLocalizedDescriptionKey: "Code verification failed - no session returned. Please try again."])
+            }
+            let profile = await ensureProfile(session: session)
+            currentUser = profile
+            authState = .signedIn(profile)
+            UserDefaults.standard.set(true, forKey: Self.anonymousKey)
+            await registerDevice()
+            await fetchDevices()
+            startLastSeenTimer()
+        } catch {
+            authState = .error(error.localizedDescription)
+            throw error
+        }
+    }
+
     // MARK: - Phone OTP
 
     /// Send an OTP code to a phone number.

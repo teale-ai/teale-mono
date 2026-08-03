@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::db::{unix_now, DbPool};
 
@@ -31,6 +32,9 @@ pub const TOKEN_TTL_SECONDS: i64 = 86_400;
 pub const CREDITS_PER_USDC: i64 = 1_000_000;
 pub const CREDITS_PER_USDC_CENT: i64 = CREDITS_PER_USDC / 100;
 pub const REFERRAL_BONUS_CREDITS: i64 = 1_000_000;
+pub const EMAIL_CODE_TTL_SECONDS: i64 = 10 * 60;
+pub const EMAIL_CODE_RESEND_WINDOW_SECONDS: i64 = 60;
+pub const EMAIL_CODE_MAX_ATTEMPTS: i64 = 5;
 
 /// Share-key bounds. Enforced by `mint_share_key`.
 pub const SHARE_KEY_MIN_EXPIRES_IN: i64 = 60; // 1 minute
@@ -5042,6 +5046,131 @@ pub fn preview_share_key_funding(
         remaining_credits,
         expires_at,
     })
+}
+
+// ── Account email codes ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountEmailCodeRequest {
+    pub email: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountEmailCodeVerification {
+    #[serde(rename = "accountUserID")]
+    pub account_user_id: String,
+    pub email: String,
+}
+
+pub fn normalize_account_email(value: &str) -> Option<String> {
+    let trimmed = value.trim().to_lowercase();
+    (trimmed.contains('@') && trimmed.contains('.') && trimmed.len() <= 320).then_some(trimmed)
+}
+
+pub fn account_user_id_for_email(email: &str) -> String {
+    format!("email:{}", email)
+}
+
+pub fn create_account_email_code(
+    pool: &DbPool,
+    email: &str,
+    code: &str,
+) -> anyhow::Result<AccountEmailCodeRequest> {
+    let email =
+        normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
+    let code_hash = hash_account_email_code(&email, code);
+    let conn = pool.lock();
+    let now = unix_now();
+    let recent: Option<i64> = conn
+        .query_row(
+            "SELECT created_at FROM account_email_codes
+             WHERE email = ? AND consumed_at IS NULL
+             ORDER BY created_at DESC LIMIT 1",
+            [&email],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(created_at) = recent {
+        if now - created_at < EMAIL_CODE_RESEND_WINDOW_SECONDS {
+            anyhow::bail!("wait before requesting another code");
+        }
+    }
+    let expires_at = now + EMAIL_CODE_TTL_SECONDS;
+    conn.execute(
+        "INSERT INTO account_email_codes
+            (id, email, code_hash, created_at, expires_at, attempts, consumed_at)
+         VALUES (?, ?, ?, ?, ?, 0, NULL)",
+        params![
+            uuid::Uuid::new_v4().simple().to_string(),
+            email.as_str(),
+            code_hash,
+            now,
+            expires_at,
+        ],
+    )?;
+    Ok(AccountEmailCodeRequest { email, expires_at })
+}
+
+pub fn verify_account_email_code(
+    pool: &DbPool,
+    email: &str,
+    code: &str,
+) -> anyhow::Result<AccountEmailCodeVerification> {
+    let email =
+        normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
+    let normalized_code = code.trim();
+    if normalized_code.len() != 6 || !normalized_code.chars().all(|c| c.is_ascii_digit()) {
+        anyhow::bail!("code must be 6 digits");
+    }
+    let expected_hash = hash_account_email_code(&email, normalized_code);
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let row: Option<(String, String, i64, i64)> = tx
+        .query_row(
+            "SELECT id, code_hash, expires_at, attempts FROM account_email_codes
+             WHERE email = ? AND consumed_at IS NULL
+             ORDER BY created_at DESC LIMIT 1",
+            [&email],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok();
+    let Some((id, code_hash, expires_at, attempts)) = row else {
+        anyhow::bail!("code not found or already used");
+    };
+    if expires_at < now {
+        anyhow::bail!("code expired");
+    }
+    if attempts >= EMAIL_CODE_MAX_ATTEMPTS {
+        anyhow::bail!("too many code attempts");
+    }
+    if code_hash != expected_hash {
+        tx.execute(
+            "UPDATE account_email_codes SET attempts = attempts + 1 WHERE id = ?",
+            [&id],
+        )?;
+        tx.commit()?;
+        anyhow::bail!("invalid code");
+    }
+    tx.execute(
+        "UPDATE account_email_codes SET consumed_at = ?, attempts = attempts + 1 WHERE id = ?",
+        params![now, id],
+    )?;
+    tx.commit()?;
+    Ok(AccountEmailCodeVerification {
+        account_user_id: account_user_id_for_email(&email),
+        email,
+    })
+}
+
+fn hash_account_email_code(email: &str, code: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(email.as_bytes());
+    hasher.update(b":");
+    hasher.update(code.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

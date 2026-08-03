@@ -525,21 +525,21 @@
               </dd>
             </dl>
             <div class="actions">
-              <button id="auth-github-button" class="action action-primary" type="button">Sign in with GitHub</button>
-              <button id="auth-google-button" class="action" type="button">Sign in with Google</button>
+              <button id="auth-github-button" class="action action-primary" type="button" hidden>Sign in with GitHub</button>
+              <button id="auth-google-button" class="action" type="button" hidden>Sign in with Google</button>
               <button id="auth-signout-button" class="action" type="button" hidden>Sign out</button>
             </div>
-            <div id="auth-phone-panel" class="auth-phone-panel" hidden>
+            <div id="auth-email-panel" class="auth-phone-panel" hidden>
               <label class="field">
-                <span data-i18n="account.phone">Phone</span>
-                <input id="auth-phone-input" type="tel" placeholder="+1 555 123 4567" data-i18n-placeholder="account.input.phone" />
+                <span data-i18n="account.email">Email</span>
+                <input id="auth-email-input" type="email" autocomplete="email" placeholder="you@example.com" data-i18n-placeholder="account.input.email" />
               </label>
-              <button id="auth-phone-send-button" class="action" type="button">Send SMS code</button>
+              <button id="auth-email-send-button" class="action action-primary" type="button">Send code</button>
               <label class="field">
                 <span data-i18n="account.code">Code</span>
-                <input id="auth-phone-code-input" type="text" inputmode="numeric" placeholder="123456" data-i18n-placeholder="account.input.code" />
+                <input id="auth-email-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" data-i18n-placeholder="account.input.code" />
               </label>
-              <button id="auth-phone-verify-button" class="action" type="button">Verify code</button>
+              <button id="auth-email-verify-button" class="action" type="button">Verify code</button>
             </div>
             <p id="auth-note" class="muted" data-i18n="account.auth.note.default">
               Signing in is not required. Teale works without an account. Sign in if you want a human account that can manage multiple devices and get support.

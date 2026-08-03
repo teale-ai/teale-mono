@@ -12,6 +12,8 @@ const ROUTES = {
   accountApiKeys: "/v1/desktop/app/account/api-keys",
   accountApiKeysRevoke: "/v1/desktop/app/account/api-keys/revoke",
   accountLink: "/v1/desktop/app/account/link",
+  accountEmailCodeRequest: "/v1/desktop/app/account/email-code/request",
+  accountEmailCodeVerify: "/v1/desktop/app/account/email-code/verify",
   accountSweep: "/v1/desktop/app/account/sweep",
   accountSend: "/v1/desktop/app/account/send",
   accountDevicesRemove: "/v1/desktop/app/account/devices/remove",
@@ -128,11 +130,11 @@ const els = {
   authGithubButton: document.getElementById("auth-github-button"),
   authGoogleButton: document.getElementById("auth-google-button"),
   authSignoutButton: document.getElementById("auth-signout-button"),
-  authPhonePanel: document.getElementById("auth-phone-panel"),
-  authPhoneInput: document.getElementById("auth-phone-input"),
-  authPhoneSendButton: document.getElementById("auth-phone-send-button"),
-  authPhoneCodeInput: document.getElementById("auth-phone-code-input"),
-  authPhoneVerifyButton: document.getElementById("auth-phone-verify-button"),
+  authEmailPanel: document.getElementById("auth-email-panel"),
+  authEmailInput: document.getElementById("auth-email-input"),
+  authEmailSendButton: document.getElementById("auth-email-send-button"),
+  authEmailCodeInput: document.getElementById("auth-email-code-input"),
+  authEmailVerifyButton: document.getElementById("auth-email-verify-button"),
   authNote: document.getElementById("auth-note"),
   accountId: document.getElementById("account-id"),
   accountEmail: document.getElementById("account-email"),
@@ -217,9 +219,9 @@ const translations = {
     "account.prompt.wallet": "account wallet",
     "account.prompt.details": "details",
     "account.prompt.devices": "devices",
-    "account.phone": "Phone",
+    "account.email": "Email",
     "account.code": "Code",
-    "account.input.phone": "+1 555 123 4567",
+    "account.input.email": "you@example.com",
     "account.input.code": "123456",
     "account.auth.note.default": "Signing in is not required. Teale works without an account. Sign in if you want a human account that can manage multiple devices and get support.",
     "account.send.note": "Use full wallet IDs only. Account wallet sends target a full account wallet ID or a 64-char device wallet ID.",
@@ -239,10 +241,8 @@ const translations = {
     "auth.user.configure": "Signing in is optional. Teale works without an account on this PC.",
     "auth.user.prompt": "Signing in is optional. Teale works without an account.",
     "auth.note.walletStillWorks": "Account sign-in is only for people who want to manage multiple devices and get support.",
-    "auth.note.claimsDevice": "Sign in with GitHub, Google, or SMS to manage multiple devices and get support.",
-    "auth.note.phoneCanLink": "GitHub and Google can be linked onto this phone account.",
-    "auth.note.allLinked": "This account already has phone, GitHub, and Google linked.",
-    "auth.note.phoneLinkNotYet": "Phone linking onto an existing account is not enabled in this companion yet.",
+    "auth.note.claimsDevice": "Sign in with an email code to manage multiple devices and get support.",
+    "auth.note.emailSignedIn": "Signed in with email. Device and account sync are active.",
     "auth.button.signInGithub": "Sign in with GitHub",
     "auth.button.signInGoogle": "Sign in with Google",
     "auth.button.linkGithub": "Link GitHub",
@@ -250,11 +250,11 @@ const translations = {
     "auth.button.githubLinked": "GitHub linked",
     "auth.button.googleLinked": "Google linked",
     "auth.button.signOut": "Sign out",
-    "auth.button.sendSms": "Send SMS code",
+    "auth.button.sendEmailCode": "Send email code",
     "auth.button.verifyCode": "Verify code",
-    "auth.alert.smsSent": "SMS code sent.",
-    "auth.error.enterPhone": "Enter a phone number first.",
-    "auth.error.enterPhoneAndCode": "Enter both the phone number and the SMS code.",
+    "auth.alert.emailSent": "Code request accepted. If no email arrives, check the Supabase Auth email template and SMTP delivery settings.",
+    "auth.error.enterEmail": "Enter an email address first.",
+    "auth.error.enterEmailAndCode": "Enter both the email address and the code.",
     "provider.github": "GitHub",
     "provider.google": "Google",
     "provider.phone": "phone",
@@ -1279,8 +1279,8 @@ function resetAccountAuthState() {
   clearAuthErrorState();
   clearPendingOAuthProvider();
   clearStoredOAuthCallback();
-  els.authPhoneInput.value = "";
-  els.authPhoneCodeInput.value = "";
+  els.authEmailInput.value = "";
+  els.authEmailCodeInput.value = "";
   renderAccountWallet();
   renderAccountApiKeys();
   renderAuthState();
@@ -1737,6 +1737,9 @@ function linkedProviderNames() {
   }
   if (authUser?.phone || accountSummary?.phone) {
     providers.add("phone");
+  }
+  if (authUser?.email || accountSummary?.email) {
+    providers.add("email");
   }
   if (accountSummary?.github_username) {
     providers.add("github");
@@ -3894,15 +3897,8 @@ function renderAccountDevices() {
 
 function renderAuthState() {
   const linkedProviders = linkedProviderNames();
-  const githubLinked = linkedProviders.includes("github");
-  const googleLinked = linkedProviders.includes("google");
-  const phoneLinked = linkedProviders.includes("phone");
-  const githubIdentity = authIdentities.find((identity) => identity.provider === "github");
-  const googleIdentity = authIdentities.find((identity) => identity.provider === "google");
-  const phoneIdentity = authIdentities.find((identity) => identity.provider === "phone");
-  const signedInViaPhone = Boolean(authUser?.phone || phoneIdentity || accountSummary?.phone);
   const signedInToAccount = Boolean(
-    authUser?.id || authSession?.user?.id || accountSummary?.account_user_id || signedInViaPhone
+    authUser?.id || authSession?.user?.id || accountSummary?.account_user_id
   );
   const emails = linkedEmails();
   const githubUsername = linkedGithubUsername();
@@ -3916,20 +3912,22 @@ function renderAuthState() {
   els.accountIdentities.textContent = authIdentities.length
     ? providerLabel(authIdentities)
     : linkedProviders.map((provider) => providerDisplayName(provider)).join(" | ") || "-";
-  els.authPhoneSendButton.textContent = t("auth.button.sendSms");
-  els.authPhoneVerifyButton.textContent = t("auth.button.verifyCode");
+  els.authGithubButton.hidden = true;
+  els.authGoogleButton.hidden = true;
+  els.authEmailSendButton.textContent = t("auth.button.sendEmailCode");
+  els.authEmailVerifyButton.textContent = t("auth.button.verifyCode");
   els.authSignoutButton.textContent = t("auth.button.signOut");
 
-  if (!lastSnapshot?.auth?.configured) {
+  if (!lastSnapshot?.auth?.configured && !ROUTES.accountEmailCodeRequest) {
     els.authStatus.textContent = t("auth.status.notConfigured");
     els.authUser.textContent = t("auth.user.configure");
     els.authGithubButton.disabled = true;
     els.authGoogleButton.disabled = true;
-    els.authPhoneSendButton.disabled = true;
-    els.authPhoneVerifyButton.disabled = true;
+    els.authEmailSendButton.disabled = true;
+    els.authEmailVerifyButton.disabled = true;
     els.authSignoutButton.hidden = true;
-    els.authPhonePanel.hidden = false;
-    els.authPhonePanel.style.display = "";
+    els.authEmailPanel.hidden = false;
+    els.authEmailPanel.style.display = "";
     els.authNote.textContent = t("auth.note.walletStillWorks");
     return;
   }
@@ -3937,14 +3935,10 @@ function renderAuthState() {
   if (!signedInToAccount) {
     els.authStatus.textContent = t("auth.status.notSignedIn");
     els.authUser.textContent = authErrorMessage || t("auth.user.prompt");
-    els.authGithubButton.textContent = t("auth.button.signInGithub");
-    els.authGithubButton.disabled = false;
-    els.authGoogleButton.textContent = t("auth.button.signInGoogle");
-    els.authGoogleButton.disabled = false;
-    els.authPhonePanel.hidden = false;
-    els.authPhonePanel.style.display = "";
-    els.authPhoneSendButton.disabled = false;
-    els.authPhoneVerifyButton.disabled = false;
+    els.authEmailPanel.hidden = false;
+    els.authEmailPanel.style.display = "";
+    els.authEmailSendButton.disabled = false;
+    els.authEmailVerifyButton.disabled = false;
     els.authSignoutButton.hidden = true;
     els.authNote.textContent = authErrorMessage || t("auth.note.claimsDevice");
     return;
@@ -3955,37 +3949,11 @@ function renderAuthState() {
     ? userLabel(authUser)
     : accountSummary?.phone || accountSummary?.email || accountSummary?.account_user_id || t("auth.status.signedIn");
   els.authSignoutButton.hidden = false;
-  els.authPhonePanel.hidden = false;
-  els.authPhonePanel.style.display = "";
-  els.authPhoneSendButton.disabled = false;
-  els.authPhoneVerifyButton.disabled = false;
-  if (!els.authPhoneInput.value.trim()) {
-    els.authPhoneInput.value = displayPhoneForInput(authUser?.phone || accountSummary?.phone);
-  }
-
-  if (githubLinked || githubIdentity) {
-    els.authGithubButton.textContent = t("auth.button.githubLinked");
-    els.authGithubButton.disabled = true;
-  } else {
-    els.authGithubButton.textContent = t("auth.button.linkGithub");
-    els.authGithubButton.disabled = false;
-  }
-
-  if (googleLinked || googleIdentity) {
-    els.authGoogleButton.textContent = t("auth.button.googleLinked");
-    els.authGoogleButton.disabled = true;
-  } else {
-    els.authGoogleButton.textContent = t("auth.button.linkGoogle");
-    els.authGoogleButton.disabled = false;
-  }
-
-  if (phoneLinked || signedInViaPhone) {
-    els.authNote.textContent = (githubLinked || githubIdentity) && (googleLinked || googleIdentity)
-      ? t("auth.note.allLinked")
-      : t("auth.note.phoneCanLink");
-  } else {
-    els.authNote.textContent = t("auth.note.phoneLinkNotYet");
-  }
+  els.authEmailPanel.hidden = true;
+  els.authEmailPanel.style.display = "none";
+  els.authEmailSendButton.disabled = true;
+  els.authEmailVerifyButton.disabled = true;
+  els.authNote.textContent = t("auth.note.emailSignedIn");
 }
 
 async function ensureAuthClient(authConfig) {
@@ -4860,45 +4828,56 @@ els.supplyWalletLink.addEventListener("click", () => setActiveView("wallet"));
 els.authGithubButton.addEventListener("click", () => startOAuth("github"));
 els.authGoogleButton.addEventListener("click", () => startOAuth("google"));
 
-els.authPhoneSendButton.addEventListener("click", async () => {
-  if (!supabaseClient) {
-    return;
-  }
+els.authEmailSendButton.addEventListener("click", async () => {
   try {
-    const phone = els.authPhoneInput.value.trim();
-    if (!phone) {
-      throw new Error(t("auth.error.enterPhone"));
+    const email = els.authEmailInput.value.trim().toLowerCase();
+    if (!email) {
+      throw new Error(t("auth.error.enterEmail"));
     }
-    const { error } = await supabaseClient.auth.signInWithOtp({ phone });
-    if (error) {
-      throw error;
-    }
-    alert(t("auth.alert.smsSent"));
+    els.authEmailInput.value = email;
+    els.authEmailSendButton.disabled = true;
+    await post(ROUTES.accountEmailCodeRequest, { email });
+    els.authEmailCodeInput.focus();
+    const message = `Code sent to ${email}.`;
+    els.authUser.textContent = message;
+    els.authNote.textContent = message;
   } catch (error) {
+    els.authUser.textContent = error.message;
+    els.authNote.textContent = error.message;
     alert(error.message);
+  } finally {
+    els.authEmailSendButton.disabled = false;
   }
 });
 
-els.authPhoneVerifyButton.addEventListener("click", async () => {
-  if (!supabaseClient) {
-    return;
-  }
+els.authEmailVerifyButton.addEventListener("click", async () => {
   try {
-    const phone = els.authPhoneInput.value.trim();
-    const token = els.authPhoneCodeInput.value.trim();
-    if (!phone || !token) {
-      throw new Error(t("auth.error.enterPhoneAndCode"));
+    const email = els.authEmailInput.value.trim().toLowerCase();
+    const token = els.authEmailCodeInput.value.trim();
+    if (!email || !token) {
+      throw new Error(t("auth.error.enterEmailAndCode"));
     }
-    const { data, error } = await supabaseClient.auth.verifyOtp({ phone, token, type: "sms" });
-    if (error) {
-      throw error;
-    }
-    authSession = data.session;
-    authUser = data.session?.user || data.user || null;
-    postNativeSessionSync(authSession);
+    els.authEmailInput.value = email;
+    els.authEmailVerifyButton.disabled = true;
+    const verified = await post(ROUTES.accountEmailCodeVerify, { email, code: token });
+    authSession = null;
+    authUser = {
+      id: verified.accountUserID,
+      email: verified.email,
+      phone: null,
+      user_metadata: { email: verified.email },
+      app_metadata: { providers: ["email"] },
+      identities: [{
+        id: verified.email,
+        provider: "email",
+        email: verified.email,
+        identity_data: { email: verified.email, sub: verified.accountUserID },
+      }],
+    };
+    authIdentities = authUser.identities;
+    postNativeSessionSync(null);
     clearAuthErrorState();
     clearPendingOAuthProvider();
-    await ensureSupabaseIdentity();
     await refreshAccountState();
     await ensureGatewayAccountLink();
     await refreshAccountState();
@@ -4909,11 +4888,14 @@ els.authPhoneVerifyButton.addEventListener("click", async () => {
     renderHome(lastSnapshot);
   } catch (error) {
     alert(error.message);
+  } finally {
+    els.authEmailVerifyButton.disabled = false;
   }
 });
 
 els.authSignoutButton.addEventListener("click", async () => {
   if (!supabaseClient) {
+    resetAccountAuthState();
     return;
   }
   authTrace("signOut start");

@@ -752,6 +752,22 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         try await desktopGatewayJSON(method: "GET", path: "/v1/keys")
     }
 
+    func desktop_request_email_code(_ request: DesktopCompanionEmailCodeRequest) async throws -> DesktopCompanionEmailCodeRequestResponse {
+        try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/email-code/request",
+            body: request
+        )
+    }
+
+    func desktop_verify_email_code(_ request: DesktopCompanionEmailCodeVerifyRequest) async throws -> DesktopCompanionEmailCodeVerifyResponse {
+        try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/email-code/verify",
+            body: request
+        )
+    }
+
     func desktop_link_account(_ request: DesktopCompanionAccountLinkRequest) async throws -> DesktopCompanionAccountSnapshot {
         try await desktopGatewayJSON(method: "POST", path: "/v1/account/link", body: request)
     }

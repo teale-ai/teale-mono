@@ -1,17 +1,17 @@
 import SwiftUI
 import SharedTypes
-import Auth
 
 // MARK: - Login View
 
 public struct LoginView: View {
     var authManager: AuthManager
 
-    @State private var phoneNumber = ""
-    @State private var otpCode = ""
-    @State private var showOTPField = false
+    @State private var email = ""
+    @State private var authCode = ""
+    @State private var showCodeField = false
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var statusMessage: String?
 
     public init(authManager: AuthManager) {
         self.authManager = authManager
@@ -37,89 +37,44 @@ public struct LoginView: View {
             }
             .padding(.bottom, 40)
 
-            // Sign in with Google
-            Button {
-                Task { await handleOAuth(provider: .google) }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "g.circle.fill")
-                        .font(.title3)
-                    Text("Sign in with Google")
-                        .fontWeight(.medium)
-                }
-                .frame(maxWidth: 300)
-                .frame(height: 50)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(isLoading)
-            .padding(.bottom, 12)
-
-            // Sign in with GitHub
-            Button {
-                Task { await handleOAuth(provider: .github) }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .font(.title3)
-                    Text("Sign in with GitHub")
-                        .fontWeight(.medium)
-                }
-                .frame(maxWidth: 300)
-                .frame(height: 50)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.purple)
-            .disabled(isLoading)
-
-            // Divider
-            HStack {
-                Rectangle().fill(.tertiary).frame(height: 1)
-                Text("or")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                Rectangle().fill(.tertiary).frame(height: 1)
-            }
-            .frame(maxWidth: 300)
-            .padding(.vertical, 20)
-
-            // Phone OTP
+            // Email code
             VStack(spacing: 12) {
-                if !showOTPField {
-                    TextField("Phone number (+1...)", text: $phoneNumber)
+                if !showCodeField {
+                    TextField("Email address", text: $email)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 300)
                         .onSubmit {
-                            guard !phoneNumber.isEmpty, !isLoading else { return }
-                            Task { await handleSendOTP() }
+                            guard isValidEmail, !isLoading else { return }
+                            Task { await handleSendCode() }
                         }
                         #if os(iOS)
-                        .keyboardType(.phonePad)
-                        .textContentType(.telephoneNumber)
+                        .keyboardType(.emailAddress)
+                        .textContentType(.emailAddress)
+                        .textInputAutocapitalization(.never)
                         #endif
+                        .autocorrectionDisabled()
 
                     Button {
-                        Task { await handleSendOTP() }
+                        Task { await handleSendCode() }
                     } label: {
                         Text("Send Code")
                             .frame(maxWidth: 300)
                             .frame(height: 44)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(phoneNumber.isEmpty || isLoading)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isValidEmail || isLoading)
                 } else {
-                    Text("Enter the code sent to \(phoneNumber)")
+                    Text("Enter the code sent to \(email)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    TextField("6-digit code", text: $otpCode)
+                    TextField("6-digit code", text: $authCode)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 300)
                         .multilineTextAlignment(.center)
                         .onSubmit {
-                            guard otpCode.count >= 6, !isLoading else { return }
-                            Task { await handleVerifyOTP() }
+                            guard authCode.count >= 6, !isLoading else { return }
+                            Task { await handleVerifyCode() }
                         }
                         #if os(iOS)
                         .keyboardType(.numberPad)
@@ -128,21 +83,21 @@ public struct LoginView: View {
 
                     HStack(spacing: 12) {
                         Button("Back") {
-                            showOTPField = false
-                            otpCode = ""
+                            showCodeField = false
+                            authCode = ""
                             errorMessage = nil
                         }
                         .buttonStyle(.bordered)
 
                         Button {
-                            Task { await handleVerifyOTP() }
+                            Task { await handleVerifyCode() }
                         } label: {
                             Text("Verify")
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 44)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(otpCode.count < 6 || isLoading)
+                        .disabled(authCode.count < 6 || isLoading)
                     }
                     .frame(maxWidth: 300)
                 }
@@ -153,6 +108,14 @@ public struct LoginView: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .padding(.top, 8)
+                    .frame(maxWidth: 300)
+            }
+
+            if let status = statusMessage {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .padding(.top, 8)
                     .frame(maxWidth: 300)
             }
@@ -187,12 +150,25 @@ public struct LoginView: View {
 
     // MARK: - Actions
 
+    private var normalizedEmail: String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var isValidEmail: Bool {
+        let normalized = normalizedEmail
+        return normalized.contains("@") && normalized.contains(".")
+    }
+
     @MainActor
-    private func handleOAuth(provider: Auth.Provider) async {
+    private func handleSendCode() async {
         isLoading = true
         errorMessage = nil
+        statusMessage = nil
         do {
-            try await authManager.signInWithOAuth(provider: provider)
+            email = normalizedEmail
+            try await authManager.signInWithEmailOTP(email: email)
+            showCodeField = true
+            statusMessage = "Code request accepted. If no email arrives, check the Supabase Auth email template and SMTP delivery settings."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -200,24 +176,12 @@ public struct LoginView: View {
     }
 
     @MainActor
-    private func handleSendOTP() async {
+    private func handleVerifyCode() async {
         isLoading = true
         errorMessage = nil
+        statusMessage = nil
         do {
-            try await authManager.signInWithPhoneOTP(phone: phoneNumber)
-            showOTPField = true
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
-    }
-
-    @MainActor
-    private func handleVerifyOTP() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            try await authManager.verifyPhoneOTP(phone: phoneNumber, code: otpCode)
+            try await authManager.verifyEmailOTP(email: email, code: authCode)
         } catch {
             errorMessage = error.localizedDescription
         }
