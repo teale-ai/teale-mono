@@ -5078,8 +5078,8 @@ pub fn create_account_email_code(
     email: &str,
     code: &str,
 ) -> anyhow::Result<AccountEmailCodeRequest> {
-    let email = normalize_account_email(email)
-        .ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
+    let email =
+        normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
     let code_hash = hash_account_email_code(&email, code);
     let mut conn = pool.lock();
     let now = unix_now();
@@ -5118,8 +5118,8 @@ pub fn verify_account_email_code(
     email: &str,
     code: &str,
 ) -> anyhow::Result<AccountEmailCodeVerification> {
-    let email = normalize_account_email(email)
-        .ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
+    let email =
+        normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
     let normalized_code = code.trim();
     if normalized_code.len() != 6 || !normalized_code.chars().all(|c| c.is_ascii_digit()) {
         anyhow::bail!("code must be 6 digits");
