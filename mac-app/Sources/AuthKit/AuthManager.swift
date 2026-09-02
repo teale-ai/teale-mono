@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import GatewayKit
 import SharedTypes
 import Supabase
 import Auth
@@ -58,9 +60,14 @@ public final class AuthManager {
     private var authListenerTask: Task<Void, Never>?
     private var lastSeenTimer: Task<Void, Never>?
 
+    // Gateway-native passwordless auth (email code + magic link). Supabase
+    // remains for Apple / phone / OAuth sign-in until phase 3.
+    private let gatewaySessions: GatewaySessionClient
+    private let gatewayTokenStore = FileAuthStorage()
+    private static let gatewayTokenKey = "gateway-session-token"
     private static let anonymousKey = "teale_anonymous_mode"
 
-    public init(config: SupabaseConfig) {
+    public init(config: SupabaseConfig, gatewayBaseURL: URL? = nil) {
         self.client = SupabaseClient(
             supabaseURL: config.url,
             supabaseKey: config.anonKey,
@@ -69,6 +76,11 @@ public final class AuthManager {
             )
         )
         self.redirectURL = config.redirectURL
+        if let gatewayBaseURL {
+            self.gatewaySessions = GatewaySessionClient(baseURL: gatewayBaseURL)
+        } else {
+            self.gatewaySessions = GatewaySessionClient()
+        }
     }
 
     // Cancel tasks when no longer needed
@@ -81,6 +93,24 @@ public final class AuthManager {
 
     /// Check for existing session on app launch.
     public func checkSession() async {
+        // Gateway-native session (passwordless email login) first.
+        if let stored = try? gatewayTokenStore.retrieve(key: Self.gatewayTokenKey),
+           let data = stored,
+           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            let sessions = gatewaySessions
+            do {
+                let info = try await withTimeout(seconds: 5) {
+                    try await sessions.fetchSession(token: token)
+                }
+                finishGatewaySignIn(accountUserID: info.accountUserID, email: info.email)
+                return
+            } catch {
+                // Dead or unreachable session: drop it and fall through to the
+                // Supabase restore path (Apple / phone / OAuth users).
+                try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
+            }
+        }
+
         // Check if user previously chose anonymous mode
         if UserDefaults.standard.bool(forKey: Self.anonymousKey) {
             // Check if they also have a valid session (upgraded from anonymous).
@@ -179,8 +209,23 @@ public final class AuthManager {
         }
     }
 
-    /// Handle the OAuth callback URL (deep link from browser).
+    /// Handle the OAuth callback URL (deep link from browser). Also adopts
+    /// gateway magic-link sessions (teale://auth/session?token=…).
     public func handleOAuthCallback(url: URL) async {
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           components.scheme == "teale",
+           components.host == "auth",
+           components.path == "/session",
+           let token = components.queryItems?.first(where: { $0.name == "token" })?.value {
+            do {
+                let info = try await gatewaySessions.fetchSession(token: token)
+                try gatewayTokenStore.store(key: Self.gatewayTokenKey, value: Data(token.utf8))
+                finishGatewaySignIn(accountUserID: info.accountUserID, email: info.email)
+            } catch {
+                authState = .error(error.localizedDescription)
+            }
+            return
+        }
         do {
             let session = try await client.auth.session(from: url)
             await finishOAuthSignIn(session: session)
@@ -218,10 +263,12 @@ public final class AuthManager {
     // MARK: - Email OTP
 
     /// Send an OTP code to an email address.
+    /// Gateway-native: one email carries both a 6-digit code and a magic
+    /// link (teale://auth/session?token=…). No Supabase involved.
     public func signInWithEmailOTP(email: String) async throws {
         authState = .signingIn
         do {
-            try await client.auth.signInWithOTP(email: email, redirectTo: redirectURL)
+            try await gatewaySessions.requestEmailLogin(email: email)
             authState = .signedOut
         } catch {
             authState = .error(error.localizedDescription)
@@ -232,26 +279,57 @@ public final class AuthManager {
     /// Verify the OTP code received via email.
     public func verifyEmailOTP(email: String, code: String) async throws {
         do {
-            let response = try await client.auth.verifyOTP(
+            let res = try await gatewaySessions.verifyEmailLogin(
                 email: email,
-                token: code,
-                type: .email,
-                redirectTo: redirectURL
+                code: code,
+                deviceID: GatewayIdentity.shared.deviceID,
+                deviceName: ProcessInfo.processInfo.hostName
             )
-            guard let session = response.session else {
-                throw NSError(domain: "AuthKit", code: -1, userInfo: [NSLocalizedDescriptionKey: "Code verification failed - no session returned. Please try again."])
-            }
-            let profile = await ensureProfile(session: session)
-            currentUser = profile
-            authState = .signedIn(profile)
-            UserDefaults.standard.set(true, forKey: Self.anonymousKey)
-            await registerDevice()
-            await fetchDevices()
-            startLastSeenTimer()
+            try gatewayTokenStore.store(key: Self.gatewayTokenKey, value: Data(res.sessionToken.utf8))
+            finishGatewaySignIn(accountUserID: res.accountUserID, email: res.email)
         } catch {
             authState = .error(error.localizedDescription)
             throw error
         }
+    }
+
+    /// Complete a gateway-native email sign-in. Profiles and the device
+    /// registry still live in Supabase (RLS requires a Supabase session JWT,
+    /// which gateway logins don't have); those move to gateway account
+    /// endpoints in phase 3. Email-login users get sign-in + wallet identity
+    /// now, device sync then.
+    private func finishGatewaySignIn(accountUserID: String, email: String?) {
+        let profile = UserProfile(
+            id: Self.accountUUID(for: accountUserID),
+            displayName: nil,
+            phone: nil,
+            email: email,
+            createdAt: Date()
+        )
+        currentUser = profile
+        authState = .signedIn(profile)
+        UserDefaults.standard.set(true, forKey: Self.anonymousKey)
+    }
+
+    /// Stable UUID for a gateway account id. Supabase-UUID account ids pass
+    /// through unchanged; `email:{addr}` ids get a deterministic RFC 4122 v5
+    /// UUID so the same account always maps to the same local profile id.
+    static func accountUUID(for accountUserID: String) -> UUID {
+        if let uuid = UUID(uuidString: accountUserID) { return uuid }
+        var hasher = Insecure.SHA1()
+        var namespace = UUID(uuidString: "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")!.uuid
+        withUnsafeBytes(of: &namespace) { hasher.update(bufferPointer: $0) }
+        hasher.update(data: Data(accountUserID.utf8))
+        var bytes = Array(hasher.finalize().prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50 // version 5
+        bytes[8] = (bytes[8] & 0x3F) | 0x80 // RFC 4122 variant
+        let uuid: uuid_t = (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        )
+        return UUID(uuid: uuid)
     }
 
     // MARK: - Phone OTP
@@ -290,6 +368,12 @@ public final class AuthManager {
 
     /// Sign out. Reverts to anonymous mode (app stays usable).
     public func signOut() async {
+        if let stored = try? gatewayTokenStore.retrieve(key: Self.gatewayTokenKey),
+           let data = stored,
+           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            try? await gatewaySessions.logout(token: token)
+            try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
+        }
         try? await client.auth.signOut()
         currentUser = nil
         devices = []
