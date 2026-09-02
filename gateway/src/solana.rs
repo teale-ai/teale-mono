@@ -644,6 +644,27 @@ struct RpcSignatureStatus {
 #[derive(Debug, Deserialize)]
 struct RpcTransaction {
     meta: Option<RpcTransactionMeta>,
+    transaction: Option<RpcTransactionData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcTransactionData {
+    message: Option<RpcMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcMessage {
+    account_keys: Option<Vec<Value>>,
+    instructions: Option<Vec<RpcInstruction>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcInstruction {
+    program_id: Option<String>,
+    /// Base58-encoded instruction data (jsonParsed encoding, non-parsed program).
+    data: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -667,6 +688,168 @@ struct RpcTokenBalance {
 struct RpcUiTokenAmount {
     amount: String,
     decimals: u8,
+}
+
+
+// ---------------------------------------------------------------------------
+// Ledger-anchor memo verification
+//
+// Anchoring is operator-signed: the gateway emits the exact memo string, the
+// operator publishes it from the configured anchor authority wallet, and this
+// function verifies the published transaction byte-for-byte. Same posture as
+// USDC deposits — the gateway verifies, it never holds a key.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedMemoAnchor {
+    pub tx_signature: String,
+    pub memo: String,
+    pub fee_payer: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MemoAnchorError {
+    #[error("txSignature is required")]
+    MissingSignature,
+    #[error("anchor transaction was not found on Solana")]
+    TransactionNotFound,
+    #[error("anchor transaction is not {required_status} yet")]
+    TransactionNotSettled { required_status: String },
+    #[error("anchor transaction failed on-chain")]
+    TransactionFailed,
+    #[error("anchor transaction carries no memo instruction")]
+    NoMemoInstruction,
+    #[error("on-chain memo does not match the pending anchor memo")]
+    MemoMismatch,
+    #[error("anchor transaction fee payer {actual} is not the configured anchor authority {expected}")]
+    WrongAuthority { actual: String, expected: String },
+    #[error("solana rpc error: {0}")]
+    Rpc(String),
+}
+
+/// Verify that `tx_signature` is a settled, successful transaction whose fee
+/// payer is `authority_address` and whose Memo-program instruction data is
+/// exactly `expected_memo` (UTF-8). Any deviation — wrong wallet, wrong memo,
+/// extra whitespace — rejects the anchor.
+pub async fn verify_memo_anchor(
+    config: &SolanaConfig,
+    tx_signature: &str,
+    expected_memo: &str,
+    authority_address: &str,
+) -> Result<VerifiedMemoAnchor, MemoAnchorError> {
+    let tx_signature = tx_signature.trim();
+    if tx_signature.is_empty() {
+        return Err(MemoAnchorError::MissingSignature);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(config.request_timeout_seconds))
+        .build()
+        .map_err(|err| MemoAnchorError::Rpc(err.to_string()))?;
+
+    let status = fetch_signature_status(&client, config, tx_signature)
+        .await
+        .map_err(|err| MemoAnchorError::Rpc(err.to_string()))?;
+    let Some(status) = status else {
+        return Err(MemoAnchorError::TransactionNotFound);
+    };
+    if status.err.is_some() {
+        return Err(MemoAnchorError::TransactionFailed);
+    }
+    if !commitment_satisfied(&config.commitment, status.confirmation_status.as_deref()) {
+        return Err(MemoAnchorError::TransactionNotSettled {
+            required_status: config.commitment.clone(),
+        });
+    }
+
+    let tx = fetch_transaction(&client, config, tx_signature)
+        .await
+        .map_err(|err| MemoAnchorError::Rpc(err.to_string()))?;
+    let Some(tx) = tx else {
+        return Err(MemoAnchorError::TransactionNotFound);
+    };
+    let message = tx
+        .transaction
+        .and_then(|t| t.message)
+        .ok_or(MemoAnchorError::Rpc("transaction payload missing message".into()))?;
+
+    // Fee payer is always accountKeys[0]; jsonParsed encodes keys either as
+    // plain address strings or { pubkey, signer, ... } objects.
+    let fee_payer = message
+        .account_keys
+        .as_ref()
+        .and_then(|keys| keys.first())
+        .and_then(|k| {
+            k.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| k.get("pubkey")?.as_str().map(|s| s.to_string()))
+        })
+        .ok_or(MemoAnchorError::Rpc("transaction message has no account keys".into()))?;
+    if fee_payer != authority_address {
+        return Err(MemoAnchorError::WrongAuthority {
+            actual: fee_payer,
+            expected: authority_address.to_string(),
+        });
+    }
+
+    let memos: Vec<String> = message
+        .instructions
+        .unwrap_or_default()
+        .iter()
+        .filter(|ix| ix.program_id.as_deref() == Some(crate::anchoring::MEMO_PROGRAM_ID))
+        .filter_map(|ix| ix.data.as_ref())
+        .filter_map(|data| base58_decode(data).ok())
+        .filter_map(|bytes| String::from_utf8(bytes).ok())
+        .collect();
+    if memos.is_empty() {
+        return Err(MemoAnchorError::NoMemoInstruction);
+    }
+    if !memos.iter().any(|m| m == expected_memo) {
+        return Err(MemoAnchorError::MemoMismatch);
+    }
+
+    Ok(VerifiedMemoAnchor {
+        tx_signature: tx_signature.to_string(),
+        memo: expected_memo.to_string(),
+        fee_payer,
+    })
+}
+
+/// Minimal base58 (Bitcoin alphabet) decoder for Solana instruction data.
+/// Solana's jsonParsed encoding carries non-parsed instruction data as
+/// base58 strings; there is no bs58 crate in the dependency tree today, and
+/// memo payloads are ~150 bytes, so a small exact implementation beats a new
+/// dependency.
+pub fn base58_decode(s: &str) -> Result<Vec<u8>, MemoAnchorError> {
+    const ALPHABET: &[u8; 58] =
+        b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
+    for ch in s.bytes() {
+        let digit = match ALPHABET.iter().position(|&c| c == ch) {
+            Some(pos) => pos as u32,
+            None => {
+                return Err(MemoAnchorError::Rpc(format!(
+                    "invalid base58 character: {}",
+                    ch as char
+                )))
+            }
+        };
+        let mut carry = digit;
+        for byte in bytes.iter_mut().rev() {
+            carry += (*byte as u32) * 58;
+            *byte = (carry & 0xff) as u8;
+            carry >>= 8;
+        }
+        while carry > 0 {
+            bytes.insert(0, (carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    // Leading '1's encode leading zero bytes.
+    let leading_zeros = s.bytes().take_while(|&b| b == b'1').count();
+    let mut out = vec![0u8; leading_zeros];
+    out.extend_from_slice(&bytes);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -978,5 +1161,87 @@ mod tests {
             } if verified_destination_address == "wrong-dest-wallet"
                 && requested_destination_address == "dest-wallet"
         ));
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+
+    #[test]
+    fn base58_decodes_known_vectors() {
+        assert_eq!(base58_decode("").unwrap(), Vec::<u8>::new());
+        assert_eq!(base58_decode("1").unwrap(), vec![0u8]);
+        assert_eq!(base58_decode("11").unwrap(), vec![0u8, 0u8]);
+        assert_eq!(base58_decode("2").unwrap(), vec![1u8]);
+        assert_eq!(base58_decode("2g").unwrap(), vec![98u8]);
+        // The memo program id is a real 32-byte program address.
+        assert_eq!(
+            base58_decode(crate::anchoring::MEMO_PROGRAM_ID)
+                .unwrap()
+                .len(),
+            32
+        );
+    }
+
+    #[test]
+    fn memo_instruction_extracted_from_jsonparsed_tx() {
+        let memo = "TEALE:ANCHOR:V1:1:2:2:aaaa:bbbb";
+        // base58 of the memo bytes, computed by hand for the test:
+        // we trust round-trip here (encode is trivial), the point is the
+        // jsonParsed walking logic.
+        let data = base58_encode_for_test(memo.as_bytes());
+        let tx = sample_anchor_tx(&data);
+        let message = tx.transaction.unwrap().message.unwrap();
+        let memos: Vec<String> = message
+            .instructions
+            .unwrap()
+            .iter()
+            .filter(|ix| ix.program_id.as_deref() == Some(crate::anchoring::MEMO_PROGRAM_ID))
+            .filter_map(|ix| ix.data.as_ref())
+            .filter_map(|d| base58_decode(d).ok())
+            .filter_map(|b| String::from_utf8(b).ok())
+            .collect();
+        assert_eq!(memos, vec![memo.to_string()]);
+    }
+
+    fn base58_encode_for_test(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 58] =
+            b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let mut digits: Vec<u8> = vec![0];
+        for &byte in bytes {
+            let mut carry = byte as u32;
+            for d in digits.iter_mut().rev() {
+                carry += (*d as u32) * 256;
+                *d = (carry % 58) as u8;
+                carry /= 58;
+            }
+            while carry > 0 {
+                digits.insert(0, (carry % 58) as u8);
+                carry /= 58;
+            }
+        }
+        let zeros = bytes.iter().take_while(|&&b| b == 0).count();
+        let mut out: String = "1".repeat(zeros);
+        let start = digits.iter().position(|&d| d != 0).unwrap_or(digits.len());
+        for &d in &digits[start..] {
+            out.push(ALPHABET[d as usize] as char);
+        }
+        out
+    }
+
+    fn sample_anchor_tx(data: &str) -> RpcTransaction {
+        serde_json::from_str(&format!(
+            r#"{{"transaction": {{"message": {{
+                "accountKeys": [{{"pubkey": "anchor-authority", "signer": true}}],
+                "instructions": [
+                    {{"programId": "11111111111111111111111111111111", "data": "3yZe7d"}},
+                    {{"programId": "{memo_prog}", "data": "{data}"}}
+                ]
+            }} }}, "meta": {{"err": null}} }}"#,
+            memo_prog = crate::anchoring::MEMO_PROGRAM_ID,
+            data = data,
+        ))
+        .unwrap()
     }
 }

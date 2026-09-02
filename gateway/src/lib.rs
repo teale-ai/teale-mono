@@ -1,6 +1,7 @@
 //! Re-exports so integration tests in gateway/tests/ can reach
 //! internal modules. The binary entry-point is still main.rs.
 
+pub mod anchoring;
 pub mod api_keys;
 pub mod auth;
 pub mod catalog;

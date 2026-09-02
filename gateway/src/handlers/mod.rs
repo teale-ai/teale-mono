@@ -1,4 +1,5 @@
 pub mod account;
+pub mod anchors;
 pub mod account_email;
 pub mod admin;
 pub mod admin_providers;
