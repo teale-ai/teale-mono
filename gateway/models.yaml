@@ -60,6 +60,20 @@ models:
     routing_tags: [agent-harness]
     aliases: [qwen3-30b-a3b-instruct, qwen3-30b-a3b]
 
+  - id: qwen/qwen3-coder-30b-a3b-instruct
+    display_name: Qwen 3 Coder 30B A3B Instruct (MoE)
+    owned_by: qwen
+    context_length: 262144
+    max_output_tokens: 32768
+    params_b: 30
+    pricing_prompt: "0.00000007"
+    pricing_completion: "0.00000027"
+    quantization: Q4_K_M
+    supported_parameters: [temperature, top_p, max_tokens, stop, stream, seed, tools, tool_choice]
+    description: "Coder-tuned mixture-of-experts model for repository-scale code generation and agentic tool use."
+    routing_tags: [agent-harness]
+    aliases: [qwen3-coder-30b-a3b, qwen3-coder-30b]
+
   - id: mistralai/mistral-small-3.2-24b-instruct
     display_name: Mistral Small 3.2 24B Instruct
     owned_by: mistralai

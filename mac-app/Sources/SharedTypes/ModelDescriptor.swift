@@ -153,6 +153,7 @@ public enum OpenRouterIdResolver {
         ("qwen3-6-35b", "qwen/qwen3.6-35b-a3b"),
         ("qwen3-6-27b", "qwen/qwen3.6-27b"),
         ("qwen3-6-35b-a3b", "qwen/qwen3.6-35b-a3b"),
+        ("qwen3-coder-30b-a3b", "qwen/qwen3-coder-30b-a3b-instruct"),
         ("qwen3-30b-a3b", "qwen/qwen3-30b-a3b-instruct-2507"),
         ("qwen3-32b", "qwen/qwen3-32b"),
         ("qwen3-8b", "qwen/qwen3-8b"),
