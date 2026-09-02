@@ -32,6 +32,8 @@ pub async fn completions(
     Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<Value>,
 ) -> Result<Response, GatewayError> {
+    crate::handlers::chat::reject_account_session(&principal)?;
+
     let obj = req
         .as_object()
         .ok_or_else(|| GatewayError::BadRequest("request body must be a JSON object".into()))?;

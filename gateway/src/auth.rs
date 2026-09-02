@@ -1,6 +1,6 @@
 //! Bearer-token auth middleware.
 //!
-//! Four token paths are supported in parallel:
+//! Five token paths are supported in parallel:
 //!
 //! 1. **Static tokens** from env (`GATEWAY_TOKENS`), loaded at startup. Format
 //!    is comma-separated `token:scope` pairs, e.g.
@@ -19,6 +19,10 @@
 //!
 //! 4. **Share keys** — short-lived scoped bearers minted by a device for
 //!    community previews; the key carries its own funded budget.
+//!
+//! 5. **Account sessions** (`tsess_…`) issued by `/v1/auth/email/verify` or
+//!    the magic-link endpoint after passwordless email login. Sessions
+//!    authorize account management only — never inference spend.
 //!
 //! On success, the middleware attaches an `AuthPrincipal` request extension.
 
@@ -77,6 +81,12 @@ pub enum PrincipalKind {
         /// Snapshot at auth time.
         usage_credits: i64,
     },
+    /// Passwordless account session (`tsess_…`) for a signed-in human.
+    /// Account-management only: sessions cannot spend on inference.
+    AccountSession {
+        account_user_id: String,
+        session_id: String,
+    },
 }
 
 impl AuthPrincipal {
@@ -95,6 +105,17 @@ impl AuthPrincipal {
                 key_id,
                 ..
             } => Some((issuer_device_id.as_str(), key_id.as_str())),
+            _ => None,
+        }
+    }
+
+    /// Returns `(account_user_id, session_id)` for account-session principals.
+    pub fn account_session(&self) -> Option<(&str, &str)> {
+        match &self.kind {
+            PrincipalKind::AccountSession {
+                account_user_id,
+                session_id,
+            } => Some((account_user_id.as_str(), session_id.as_str())),
             _ => None,
         }
     }
@@ -197,6 +218,25 @@ pub async fn require_bearer(
                 },
             });
             return Ok(next.run(req).await);
+        }
+    }
+
+    // 2c) Account-session match (`tsess_…`) — passwordless human login.
+    //     Sliding renewal happens inside resolve_account_session.
+    if token.starts_with("tsess_") {
+        if let Some(pool) = state.db.as_ref() {
+            if let Some(session) = ledger::resolve_account_session(pool, &token) {
+                req.extensions_mut().insert(AuthPrincipal {
+                    kind: PrincipalKind::AccountSession {
+                        account_user_id: session.account_user_id,
+                        session_id: session.session_id,
+                    },
+                });
+                return Ok(next.run(req).await);
+            }
+            // A tsess_-prefixed token that doesn't resolve is a dead session;
+            // reject instead of falling through to slower lookups.
+            return Err(StatusCode::UNAUTHORIZED);
         }
     }
 

@@ -103,7 +103,7 @@ fn require_device(principal: &AuthPrincipal) -> Result<&str, GatewayError> {
         PrincipalKind::Share { .. } => Err(GatewayError::Unauthorized(
             "share keys cannot call account endpoints".into(),
         )),
-        PrincipalKind::Static { .. } => {
+        PrincipalKind::Static { .. } | PrincipalKind::AccountSession { .. } => {
             Err(GatewayError::Unauthorized("device bearer required".into()))
         }
     }
@@ -154,6 +154,9 @@ pub async fn summary(
     let pool = require_pool(&state)?;
     let summary = match &principal.kind {
         PrincipalKind::ApiKey {
+            account_user_id, ..
+        }
+        | PrincipalKind::AccountSession {
             account_user_id, ..
         } => ledger::account_summary(pool, account_user_id)
             .map_err(|err| GatewayError::NotFound(err.to_string()))?,
@@ -315,6 +318,9 @@ pub async fn send(
     let pool = require_pool(&state)?;
     let receipt = match &principal.kind {
         PrincipalKind::ApiKey {
+            account_user_id, ..
+        }
+        | PrincipalKind::AccountSession {
             account_user_id, ..
         } => ledger::transfer_from_account_wallet_for_account(
             pool,

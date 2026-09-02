@@ -37,7 +37,9 @@ fn require_device(principal: &AuthPrincipal) -> Result<&str, GatewayError> {
         PrincipalKind::Share { .. } => Err(GatewayError::Unauthorized(
             "share keys cannot call device-only share-key endpoints".into(),
         )),
-        PrincipalKind::Static { .. } | PrincipalKind::ApiKey { .. } => {
+        PrincipalKind::Static { .. }
+        | PrincipalKind::ApiKey { .. }
+        | PrincipalKind::AccountSession { .. } => {
             Err(GatewayError::Unauthorized("device bearer required".into()))
         }
     }

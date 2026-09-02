@@ -212,6 +212,8 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::account_email::verify),
         )
         .route("/v1/account/summary", get(handlers::account::summary))
+        .route("/v1/auth/session", get(handlers::account_auth::session))
+        .route("/v1/auth/logout", post(handlers::account_auth::logout))
         .route(
             "/v1/account/wallet/onchain",
             get(handlers::account::onchain),
@@ -396,6 +398,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/favicon.svg", get(handlers::favicon::favicon_svg))
         .route("/v1/auth/device/challenge", post(handlers::auth::challenge))
         .route("/v1/auth/device/exchange", post(handlers::auth::exchange))
+        .route(
+            "/v1/auth/email/request",
+            post(handlers::account_auth::request),
+        )
+        .route(
+            "/v1/auth/email/verify",
+            post(handlers::account_auth::verify),
+        )
+        .route("/v1/auth/link/:token", get(handlers::account_auth::link))
         .route(
             "/v1/auth/keys/share/preview/:token",
             get(handlers::share_keys::preview),

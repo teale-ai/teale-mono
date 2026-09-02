@@ -67,6 +67,13 @@ fn resolve_caller(state: &AppState, principal: &AuthPrincipal) -> Result<Caller,
             can_manage: matches!(role, ApiKeyRole::Provisioning),
             self_key_id: Some(key_id.clone()),
         }),
+        PrincipalKind::AccountSession {
+            account_user_id, ..
+        } => Ok(Caller {
+            account_user_id: account_user_id.clone(),
+            can_manage: true,
+            self_key_id: None,
+        }),
         PrincipalKind::Static { .. } | PrincipalKind::Share { .. } => Err(GatewayError::Forbidden(
             "not authorized to manage api keys".into(),
         )),

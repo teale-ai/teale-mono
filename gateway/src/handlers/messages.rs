@@ -60,6 +60,8 @@ pub async fn messages(
     Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<Value>,
 ) -> Result<Response, GatewayError> {
+    crate::handlers::chat::reject_account_session(&principal)?;
+
     let anthropic: AnthropicMessageRequest = serde_json::from_value(req)
         .map_err(|e| GatewayError::BadRequest(format!("invalid Anthropic request body: {e}")))?;
     let input_tokens = estimate_anthropic_tokens(&anthropic);
