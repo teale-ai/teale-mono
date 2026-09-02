@@ -95,8 +95,7 @@ public final class AuthManager {
     public func checkSession() async {
         // Gateway-native session (passwordless email login) first.
         if let stored = try? gatewayTokenStore.retrieve(key: Self.gatewayTokenKey),
-           let data = stored,
-           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+           let token = String(data: stored, encoding: .utf8), !token.isEmpty {
             let sessions = gatewaySessions
             do {
                 let info = try await withTimeout(seconds: 5) {
@@ -369,8 +368,7 @@ public final class AuthManager {
     /// Sign out. Reverts to anonymous mode (app stays usable).
     public func signOut() async {
         if let stored = try? gatewayTokenStore.retrieve(key: Self.gatewayTokenKey),
-           let data = stored,
-           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+           let token = String(data: stored, encoding: .utf8), !token.isEmpty {
             try? await gatewaySessions.logout(token: token)
             try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
         }
