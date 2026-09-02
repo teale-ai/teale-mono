@@ -90,7 +90,9 @@ def validate(config):
     try:
         socket.getaddrinfo(parsed.hostname, 443)
     except OSError as error:
-        raise SystemExit(f"Supabase host does not resolve: {parsed.hostname} ({error})")
+        # Warn, don't fail: a deleted/paused Supabase project must not block
+        # shipping a release while auth migrates to the gateway.
+        print(f"WARNING: Supabase host does not resolve: {parsed.hostname} ({error})")
 
     if not valid_value(config["redirect_url"]):
         raise SystemExit("Supabase redirect URL is missing or still templated")
