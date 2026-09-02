@@ -402,7 +402,64 @@ public actor RelayClient {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .deferredToDate
         let data = try encoder.encode(message)
-        try await ws.send(.data(data))
+        // Bound the send: on a half-open WebSocket (dead NAT mapping, silent
+        // network drop) ws.send can park indefinitely, and because
+        // RelayClient is an actor one parked send serializes every later
+        // send behind it — the node's 240s re-registration then never
+        // reaches the relay with no error logged anywhere (the "silent
+        // re-register exit" behind fleet catalog flapping).
+        do {
+            try await withSendTimeout(seconds: 15) {
+                try await ws.send(.data(data))
+            }
+        } catch {
+            handleDeadConnection(reason: "send failed: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    private func withSendTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask(operation: operation)
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw WANError.timeout
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
+    /// Force the connection into the reconnect path when a send or ping
+    /// proves the WebSocket is dead but no close/error event has surfaced
+    /// (half-open connection). Mirrors the receive-loop error path.
+    private func handleDeadConnection(reason: String) {
+        guard isConnected else { return }
+        FileHandle.standardError.write(Data("[WAN] Declaring relay connection dead (\(reason)); forcing reconnect\n".utf8))
+        isConnected = false
+        pingTask?.cancel()
+        pingTask = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        webSocketTask?.cancel(with: .abnormalClosure, reason: nil)
+        webSocketTask = nil
+        for (_, cont) in messageContinuations {
+            cont.finish()
+        }
+        messageContinuations.removeAll()
+        suspendActiveRelaySessions()
+        scheduleReconnect()
+    }
+
+    private var consecutivePingFailures = 0
+
+    private func notePingFailure() {
+        consecutivePingFailures += 1
+        if consecutivePingFailures >= 3 {
+            consecutivePingFailures = 0
+            handleDeadConnection(reason: "3 consecutive ping failures")
+        }
     }
 
     /// Register this node with the relay server
@@ -769,13 +826,21 @@ public actor RelayClient {
                 try? await Task.sleep(nanoseconds: 25 * 1_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 let ws = await self.webSocketTask
-                ws?.sendPing { error in
+                ws?.sendPing { [weak self] error in
+                    guard let self else { return }
                     if let error {
                         FileHandle.standardError.write(Data("[WAN] WebSocket ping failed: \(error.localizedDescription)\n".utf8))
+                        Task { await self.notePingFailure() }
+                    } else {
+                        Task { await self.resetPingFailures() }
                     }
                 }
             }
         }
+    }
+
+    private func resetPingFailures() {
+        consecutivePingFailures = 0
     }
 }
 
