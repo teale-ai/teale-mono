@@ -690,7 +690,6 @@ struct RpcUiTokenAmount {
     decimals: u8,
 }
 
-
 // ---------------------------------------------------------------------------
 // Ledger-anchor memo verification
 //
@@ -721,7 +720,9 @@ pub enum MemoAnchorError {
     NoMemoInstruction,
     #[error("on-chain memo does not match the pending anchor memo")]
     MemoMismatch,
-    #[error("anchor transaction fee payer {actual} is not the configured anchor authority {expected}")]
+    #[error(
+        "anchor transaction fee payer {actual} is not the configured anchor authority {expected}"
+    )]
     WrongAuthority { actual: String, expected: String },
     #[error("solana rpc error: {0}")]
     Rpc(String),
@@ -771,7 +772,9 @@ pub async fn verify_memo_anchor(
     let message = tx
         .transaction
         .and_then(|t| t.message)
-        .ok_or(MemoAnchorError::Rpc("transaction payload missing message".into()))?;
+        .ok_or(MemoAnchorError::Rpc(
+            "transaction payload missing message".into(),
+        ))?;
 
     // Fee payer is always accountKeys[0]; jsonParsed encodes keys either as
     // plain address strings or { pubkey, signer, ... } objects.
@@ -784,7 +787,9 @@ pub async fn verify_memo_anchor(
                 .map(|s| s.to_string())
                 .or_else(|| k.get("pubkey")?.as_str().map(|s| s.to_string()))
         })
-        .ok_or(MemoAnchorError::Rpc("transaction message has no account keys".into()))?;
+        .ok_or(MemoAnchorError::Rpc(
+            "transaction message has no account keys".into(),
+        ))?;
     if fee_payer != authority_address {
         return Err(MemoAnchorError::WrongAuthority {
             actual: fee_payer,
@@ -821,8 +826,7 @@ pub async fn verify_memo_anchor(
 /// memo payloads are ~150 bytes, so a small exact implementation beats a new
 /// dependency.
 pub fn base58_decode(s: &str) -> Result<Vec<u8>, MemoAnchorError> {
-    const ALPHABET: &[u8; 58] =
-        b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
     for ch in s.bytes() {
         let digit = match ALPHABET.iter().position(|&c| c == ch) {
@@ -1206,8 +1210,7 @@ mod anchor_tests {
     }
 
     fn base58_encode_for_test(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8; 58] =
-            b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
         let mut digits: Vec<u8> = vec![0];
         for &byte in bytes {
             let mut carry = byte as u32;
