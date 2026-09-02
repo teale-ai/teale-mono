@@ -5173,10 +5173,359 @@ fn hash_account_email_code(email: &str, code: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+// ── Account sessions (passwordless gateway auth) ────────────────────────────
+
+/// Session lifetime: 30 days, sliding (resolution past the half-life extends
+/// it back out to a full TTL).
+pub const ACCOUNT_SESSION_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+/// A resolved (valid) account session.
+#[derive(Debug, Clone)]
+pub struct AccountSession {
+    pub session_id: String,
+    pub account_user_id: String,
+    pub expires_at: i64,
+}
+
+/// A freshly issued session, including the only copy of the plaintext token.
+#[derive(Debug, Clone)]
+pub struct AccountSessionIssued {
+    pub session_id: String,
+    pub token: String,
+    pub account_user_id: String,
+    pub expires_at: i64,
+}
+
+/// Generate a new opaque session token (`tsess_` + 256 bits of randomness).
+/// Only its SHA-256 hash is ever stored.
+pub fn generate_account_session_token() -> String {
+    format!(
+        "tsess_{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn hash_account_session_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"account-session:");
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Resolve the account id a login should bind to. Users who previously
+/// linked with a Supabase UUID keep that id (wallets, balances, and devices
+/// follow the email); net-new emails get a deterministic `email:{addr}` id.
+pub fn account_user_id_for_login(pool: &DbPool, email: &str) -> anyhow::Result<String> {
+    let email =
+        normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
+    let conn = pool.lock();
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT account_user_id FROM account_wallets WHERE email = ?",
+            [&email],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let account_user_id = account_user_id_for_email(&email);
+    let now = unix_now();
+    conn.execute(
+        "INSERT INTO account_wallets
+            (account_user_id, display_name, phone, email, github_username,
+             balance_credits, usdc_cents, created_at, updated_at)
+         VALUES (?, NULL, NULL, ?, NULL, 0, 0, ?, ?)
+         ON CONFLICT(account_user_id) DO NOTHING",
+        params![account_user_id, email, now, now],
+    )?;
+    Ok(account_user_id)
+}
+
+/// Mint a session for an account. Returns the plaintext token once; only the
+/// hash is persisted.
+pub fn create_account_session(
+    pool: &DbPool,
+    account_user_id: &str,
+    device_id: Option<&str>,
+    device_name: Option<&str>,
+) -> anyhow::Result<AccountSessionIssued> {
+    let token = generate_account_session_token();
+    let token_hash = hash_account_session_token(&token);
+    let session_id = uuid::Uuid::new_v4().simple().to_string();
+    let conn = pool.lock();
+    let now = unix_now();
+    let expires_at = now + ACCOUNT_SESSION_TTL_SECONDS;
+    conn.execute(
+        "INSERT INTO account_sessions
+            (id, account_user_id, token_hash, created_at, expires_at,
+             last_seen_at, device_id, device_name, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        params![
+            session_id,
+            account_user_id,
+            token_hash,
+            now,
+            expires_at,
+            now,
+            device_id,
+            device_name,
+        ],
+    )?;
+    Ok(AccountSessionIssued {
+        session_id,
+        token,
+        account_user_id: account_user_id.to_string(),
+        expires_at,
+    })
+}
+
+/// Resolve a session token to a live session. Expired or revoked tokens miss.
+/// Sliding renewal: past the half-life, the expiry is extended to a fresh TTL.
+pub fn resolve_account_session(pool: &DbPool, token: &str) -> Option<AccountSession> {
+    if !token.starts_with("tsess_") {
+        return None;
+    }
+    let token_hash = hash_account_session_token(token);
+    let conn = pool.lock();
+    let now = unix_now();
+    let row: Option<(String, String, i64)> = conn
+        .query_row(
+            "SELECT id, account_user_id, expires_at FROM account_sessions
+             WHERE token_hash = ? AND revoked_at IS NULL",
+            [token_hash.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let (session_id, account_user_id, mut expires_at) = row?;
+    if expires_at < now {
+        return None;
+    }
+    if now > expires_at - ACCOUNT_SESSION_TTL_SECONDS / 2 {
+        expires_at = now + ACCOUNT_SESSION_TTL_SECONDS;
+        let _ = conn.execute(
+            "UPDATE account_sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?",
+            params![expires_at, now, session_id],
+        );
+    } else {
+        let _ = conn.execute(
+            "UPDATE account_sessions SET last_seen_at = ? WHERE id = ?",
+            params![now, session_id],
+        );
+    }
+    Some(AccountSession {
+        session_id,
+        account_user_id,
+        expires_at,
+    })
+}
+
+/// Revoke a session by its plaintext token (logout). Returns true if a live
+/// session was revoked.
+pub fn revoke_account_session(pool: &DbPool, token: &str) -> bool {
+    let token_hash = hash_account_session_token(token);
+    let conn = pool.lock();
+    let now = unix_now();
+    conn.execute(
+        "UPDATE account_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+        params![now, token_hash],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// The email address attached to an account wallet, if any.
+pub fn account_email_for_user(pool: &DbPool, account_user_id: &str) -> Option<String> {
+    let conn = pool.lock();
+    conn.query_row(
+        "SELECT email FROM account_wallets WHERE account_user_id = ?",
+        [account_user_id],
+        |r| r.get(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// Create an email login code row that also carries a single-use magic-link
+/// token. Both the code and the link token are SHA-256 hashed at rest.
+pub fn create_account_email_login_code(
+    pool: &DbPool,
+    email: &str,
+    code: &str,
+    link_token: &str,
+) -> anyhow::Result<AccountEmailCodeRequest> {
+    let email =
+        normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
+    let code_hash = hash_account_email_code(&email, code);
+    let link_token_hash = hash_account_session_token(link_token);
+    let conn = pool.lock();
+    let now = unix_now();
+    let recent: Option<i64> = conn
+        .query_row(
+            "SELECT created_at FROM account_email_codes
+             WHERE email = ? AND consumed_at IS NULL
+             ORDER BY created_at DESC LIMIT 1",
+            [&email],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(created_at) = recent {
+        if now - created_at < EMAIL_CODE_RESEND_WINDOW_SECONDS {
+            anyhow::bail!("wait before requesting another code");
+        }
+    }
+    let expires_at = now + EMAIL_CODE_TTL_SECONDS;
+    conn.execute(
+        "INSERT INTO account_email_codes
+            (id, email, code_hash, created_at, expires_at, attempts, consumed_at, link_token_hash)
+         VALUES (?, ?, ?, ?, ?, 0, NULL, ?)",
+        params![
+            uuid::Uuid::new_v4().simple().to_string(),
+            email.as_str(),
+            code_hash,
+            now,
+            expires_at,
+            link_token_hash,
+        ],
+    )?;
+    Ok(AccountEmailCodeRequest { email, expires_at })
+}
+
+/// Verify a magic-link token (single-use, same TTL as the code it rode in
+/// with). Consumes the underlying code row on success.
+pub fn verify_account_email_link_token(
+    pool: &DbPool,
+    link_token: &str,
+) -> anyhow::Result<AccountEmailCodeVerification> {
+    let link_token_hash = hash_account_session_token(link_token);
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let row: Option<(String, String, i64)> = tx
+        .query_row(
+            "SELECT id, email, expires_at FROM account_email_codes
+             WHERE link_token_hash = ? AND consumed_at IS NULL
+             ORDER BY created_at DESC LIMIT 1",
+            [link_token_hash.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let Some((id, email, expires_at)) = row else {
+        anyhow::bail!("link not found or already used");
+    };
+    if expires_at < now {
+        anyhow::bail!("link expired");
+    }
+    tx.execute(
+        "UPDATE account_email_codes SET consumed_at = ? WHERE id = ?",
+        params![now, id],
+    )?;
+    tx.commit()?;
+    Ok(AccountEmailCodeVerification {
+        account_user_id: account_user_id_for_email(&email),
+        email,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::open_in_memory;
+
+    #[test]
+    fn account_session_lifecycle() {
+        let pool = open_in_memory().unwrap();
+        let account = account_user_id_for_login(&pool, "Pilot@Example.com").unwrap();
+        assert_eq!(account, "email:pilot@example.com");
+
+        let issued = create_account_session(&pool, &account, Some("dev1"), Some("My Mac")).unwrap();
+        assert!(issued.token.starts_with("tsess_"));
+        let resolved = resolve_account_session(&pool, &issued.token).unwrap();
+        assert_eq!(resolved.account_user_id, account);
+        assert_eq!(resolved.session_id, issued.session_id);
+
+        // Tokens are hashed at rest: the plaintext appears nowhere.
+        let conn = pool.lock();
+        let stored: String = conn
+            .query_row("SELECT token_hash FROM account_sessions LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        drop(conn);
+        assert_ne!(stored, issued.token);
+        assert_eq!(stored.len(), 64);
+
+        // Wrong and prefix-less tokens miss.
+        assert!(resolve_account_session(&pool, "tsess_wrong").is_none());
+        assert!(resolve_account_session(&pool, "not-a-session").is_none());
+
+        // Revoke kills the session.
+        assert!(revoke_account_session(&pool, &issued.token));
+        assert!(resolve_account_session(&pool, &issued.token).is_none());
+        assert!(!revoke_account_session(&pool, &issued.token));
+    }
+
+    #[test]
+    fn login_binds_existing_wallet_by_email() {
+        let pool = open_in_memory().unwrap();
+        // A user who previously linked with a Supabase UUID keeps that id.
+        link_device_to_account(
+            &pool,
+            "dev-supabase",
+            "4f0c3d1e-uuid-style-id",
+            &AccountLinkMetadata {
+                device_name: None,
+                platform: None,
+                display_name: None,
+                phone: None,
+                email: Some("pilot@example.com".to_string()),
+                github_username: None,
+            },
+        )
+        .unwrap();
+        let account = account_user_id_for_login(&pool, "PILOT@example.com").unwrap();
+        assert_eq!(account, "4f0c3d1e-uuid-style-id");
+    }
+
+    #[test]
+    fn email_login_code_and_link_token() {
+        let pool = open_in_memory().unwrap();
+        let created =
+            create_account_email_login_code(&pool, "pilot@example.com", "123456", "linktok1")
+                .unwrap();
+        assert_eq!(created.email, "pilot@example.com");
+
+        // Code path works and consumes the row.
+        let verified = verify_account_email_code(&pool, "pilot@example.com", "123456").unwrap();
+        assert_eq!(verified.email, "pilot@example.com");
+        assert!(verify_account_email_code(&pool, "pilot@example.com", "123456").is_err());
+
+        // A consumed row's link token no longer verifies.
+        assert!(verify_account_email_link_token(&pool, "linktok1").is_err());
+
+        // Fresh row: link path verifies and is single-use.
+        create_account_email_login_code(&pool, "pilot@example.com", "654321", "linktok2").unwrap();
+        let verified = verify_account_email_link_token(&pool, "linktok2").unwrap();
+        assert_eq!(verified.email, "pilot@example.com");
+        assert!(verify_account_email_link_token(&pool, "linktok2").is_err());
+    }
+
+    #[test]
+    fn session_expiry_is_enforced() {
+        let pool = open_in_memory().unwrap();
+        let account = account_user_id_for_login(&pool, "old@example.com").unwrap();
+        let issued = create_account_session(&pool, &account, None, None).unwrap();
+        // Force the session into the past.
+        let conn = pool.lock();
+        conn.execute(
+            "UPDATE account_sessions SET expires_at = 1 WHERE id = ?",
+            [&issued.session_id],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(resolve_account_session(&pool, &issued.token).is_none());
+    }
 
     #[test]
     fn welcome_bonus_and_balance() {

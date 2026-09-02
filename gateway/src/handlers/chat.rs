@@ -137,6 +137,8 @@ pub async fn chat_completions(
     Extension(principal): Extension<AuthPrincipal>,
     Json(mut req): Json<Value>,
 ) -> Result<Response, GatewayError> {
+    reject_account_session(&principal)?;
+
     // Try the centralized 3rd-party provider path first. Returns None when
     // the request isn't centralized-routable (no provider serves the model,
     // or user preferences point at the local fleet); in that case we fall
@@ -665,6 +667,18 @@ fn share_key_is_funded(pool: &crate::db::DbPool, key_id: &str) -> bool {
     )
     .map(|f| f == 1)
     .unwrap_or(false)
+}
+
+/// Account sessions are for account management only — they never run
+/// inference. Inference spend requires a device token or a programmatic API
+/// key (which is where per-key budgets and usage rollups live).
+pub(crate) fn reject_account_session(principal: &AuthPrincipal) -> Result<(), GatewayError> {
+    if principal.account_session().is_some() {
+        return Err(GatewayError::Forbidden(
+            "account sessions cannot run inference; create an API key with /v1/keys".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Build the ledger-facing consumer from an authenticated principal.

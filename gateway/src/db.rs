@@ -583,6 +583,28 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_ledger_anchors_status ON ledger_anchors(status);
     "#,
+    // 018_account_sessions.sql — passwordless gateway-native auth. Opaque
+    // session tokens (SHA-256 hashed at rest) for human accounts, plus a
+    // single-use magic-link token on email code rows. See
+    // docs/passwordless-auth-migration.md.
+    r#"
+    CREATE TABLE IF NOT EXISTS account_sessions (
+        id TEXT PRIMARY KEY,
+        account_user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        device_id TEXT,
+        device_name TEXT,
+        revoked_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_sessions_account
+        ON account_sessions(account_user_id);
+
+    ALTER TABLE account_email_codes ADD COLUMN link_token_hash TEXT;
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
