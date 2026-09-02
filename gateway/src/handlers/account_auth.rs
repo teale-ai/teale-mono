@@ -146,7 +146,8 @@ pub async fn link(
              <p>Signed in as {}. <a href=\"{deep_link}\">Open Teale</a></p>\
              <p>If the app did not open, paste this token into it:<br><code>{}</code></p>\
              </body></html>",
-            verified.email, issued.token
+            html_escape(&verified.email),
+            issued.token
         );
         return Ok(Html(page).into_response());
     }
@@ -198,6 +199,15 @@ pub async fn logout(
         .unwrap_or("");
     ledger::revoke_account_session(pool, token);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Minimal HTML escaping for values interpolated into the fallback page.
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn public_base_url() -> String {
