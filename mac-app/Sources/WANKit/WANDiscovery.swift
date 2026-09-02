@@ -332,7 +332,15 @@ public actor WANDiscoveryService {
                 try? await Task.sleep(nanoseconds: 240 * 1_000_000_000)
                 guard let self = self, !Task.isCancelled else { return }
                 let caps = await self.localCapabilities ?? capabilities
-                try? await self.relayClient.register(capabilities: caps)
+                // Log every outcome: this loop was implicated in fleet-wide
+                // catalog flapping and its failures were previously swallowed
+                // by `try?`, making silent exits impossible to diagnose.
+                do {
+                    try await self.relayClient.register(capabilities: caps)
+                    FileHandle.standardError.write(Data("[WAN] Periodic re-register OK (models: \(caps.loadedModels))\n".utf8))
+                } catch {
+                    FileHandle.standardError.write(Data("[WAN] Periodic re-register FAILED: \(error.localizedDescription)\n".utf8))
+                }
             }
         }
     }

@@ -1380,6 +1380,18 @@ public final class AppState {
     private func syncAdvertisedLoadedModels() {
         let loadedModels = advertisedLoadedModels(for: engineStatus)
 
+        // A model load/reload in progress is a transient state: the previous
+        // advertisement must stand until a stable state (.ready, or .idle
+        // from an explicit unload) replaces it. Pushing [] here erases the
+        // node from the gateway catalog, and because the gateway's discover
+        // upsert overwrites capabilities wholesale, the periodic relay
+        // re-register then keeps advertising [] until the next positive
+        // sync — the fleet-wide catalog flap.
+        if loadedModels.isEmpty, case .loadingModel = engineStatus {
+            Self.wanLog("syncAdvertised: skipping empty advertisement while a model load is in progress")
+            return
+        }
+
         // On the exo backend, a Teale instance is a thin proxy to a cluster
         // that may be hosting multiple models simultaneously. Advertise ALL
         // of them to the gateway, not just the one ExoProvider happens to
