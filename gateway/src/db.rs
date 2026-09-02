@@ -556,6 +556,33 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_account_email_codes_email_created
         ON account_email_codes(email, created_at DESC);
     "#,
+    // 014_ledger_anchoring.sql — external verifiability for the credit ledger.
+    // Hashes live in a side table so the money path (INSERT INTO ledger) stays
+    // untouched; anchors are Merkle roots published to Solana by an
+    // operator-signed memo transaction. See docs/ledger-verifiability.md.
+    r#"
+    CREATE TABLE IF NOT EXISTS ledger_entry_hashes (
+        entry_id INTEGER PRIMARY KEY,
+        entry_hash TEXT NOT NULL,
+        chain_hash TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ledger_anchors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        first_entry_id INTEGER NOT NULL,
+        last_entry_id INTEGER NOT NULL,
+        entry_count INTEGER NOT NULL,
+        merkle_root TEXT NOT NULL,
+        chain_tip TEXT NOT NULL,
+        memo TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        tx_signature TEXT,
+        confirmed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ledger_anchors_status ON ledger_anchors(status);
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

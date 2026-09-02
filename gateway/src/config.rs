@@ -147,6 +147,10 @@ pub struct SolanaConfig {
     pub treasury_address: String,
     #[serde(default = "default_solana_withdrawal_fee_bps")]
     pub withdrawal_fee_bps: u16,
+    /// Wallet allowed to publish ledger-anchor memos. Empty disables anchor
+    /// finalization (prepare still works, so ops can inspect the memo first).
+    #[serde(default = "default_solana_anchor_authority")]
+    pub anchor_authority_address: String,
 }
 
 impl Default for SolanaConfig {
@@ -159,6 +163,7 @@ impl Default for SolanaConfig {
             max_supported_transaction_version: default_solana_max_supported_transaction_version(),
             treasury_address: default_solana_treasury_address(),
             withdrawal_fee_bps: default_solana_withdrawal_fee_bps(),
+            anchor_authority_address: default_solana_anchor_authority(),
         }
     }
 }
@@ -240,6 +245,9 @@ fn default_solana_max_supported_transaction_version() -> u8 {
 }
 fn default_solana_treasury_address() -> String {
     "8Cs7qHZ9qz6M3HfZt9H6FBq7toCPKp4KUG8H9xE6V4V3".to_string()
+}
+fn default_solana_anchor_authority() -> String {
+    String::new()
 }
 fn default_solana_withdrawal_fee_bps() -> u16 {
     180

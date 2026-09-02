@@ -322,6 +322,8 @@ async fn main() -> anyhow::Result<()> {
             "/v1/auth/keys/share/:key_id",
             axum::routing::delete(handlers::share_keys::revoke),
         )
+        .route("/v1/ledger/anchors", get(handlers::anchors::list))
+        .route("/v1/ledger/proof/:entry_id", get(handlers::anchors::proof))
         .route("/v1/admin/mint", post(handlers::admin::mint))
         .route(
             "/v1/admin/migrate-share-keys",
@@ -330,6 +332,18 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/admin/refund-expired-share-keys",
             post(handlers::admin::refund_expired_share_keys),
+        )
+        .route(
+            "/v1/admin/ledger/anchors/prepare",
+            post(handlers::anchors::prepare),
+        )
+        .route(
+            "/v1/admin/ledger/anchors/finalize",
+            post(handlers::anchors::finalize),
+        )
+        .route(
+            "/v1/admin/ledger/anchors/abandon",
+            post(handlers::anchors::abandon),
         )
         .route(
             "/v1/admin/providers",

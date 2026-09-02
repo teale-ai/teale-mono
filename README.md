@@ -113,3 +113,4 @@ source repos; consolidated here under `docs/`).
 - `docs/openrouter-application-rehearsal.md` — submission draft
 - `docs/openrouter-oncall-runbook.md` — first-2-weeks playbook
 - `docs/protocol.md` — relay + cluster wire protocol spec
+- `docs/ledger-verifiability.md` — Solana-anchored credit ledger (merkle roots, no token)
