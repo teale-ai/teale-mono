@@ -128,6 +128,7 @@ let package = Package(
         .target(
             name: "AuthKit",
             dependencies: [
+                "GatewayKit",
                 "SharedTypes",
                 .product(name: "Supabase", package: "supabase-swift"),
             ],
