@@ -1178,7 +1178,7 @@ mod anchor_tests {
         assert_eq!(base58_decode("1").unwrap(), vec![0u8]);
         assert_eq!(base58_decode("11").unwrap(), vec![0u8, 0u8]);
         assert_eq!(base58_decode("2").unwrap(), vec![1u8]);
-        assert_eq!(base58_decode("2g").unwrap(), vec![98u8]);
+        assert_eq!(base58_decode("2g").unwrap(), vec![97u8]);
         // The memo program id is a real 32-byte program address.
         assert_eq!(
             base58_decode(crate::anchoring::MEMO_PROGRAM_ID)

@@ -95,7 +95,7 @@ fn push_len_prefixed(out: &mut Vec<u8>, s: &str) {
 }
 
 pub fn entry_hash(row: &LedgerRow) -> [u8; 32] {
-    Sha256::digest(&encode_entry(row)).into()
+    Sha256::digest(encode_entry(row)).into()
 }
 
 /// Chain hash binds each row to every row before it: editing, deleting, or
@@ -127,7 +127,7 @@ pub fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     }
     let mut level: Vec<[u8; 32]> = leaves.to_vec();
     while level.len() > 1 {
-        let mut next = Vec::with_capacity((level.len() + 1) / 2);
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
         let mut i = 0;
         while i < level.len() {
             if i + 1 < level.len() {
@@ -159,7 +159,11 @@ pub fn merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<ProofStep> {
     let mut level: Vec<[u8; 32]> = leaves.to_vec();
     let mut idx = index;
     while level.len() > 1 {
-        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+        let sibling_idx = if idx.is_multiple_of(2) {
+            idx + 1
+        } else {
+            idx - 1
+        };
         if sibling_idx < level.len() {
             steps.push(ProofStep {
                 sibling: hex::encode(level[sibling_idx]),
@@ -167,7 +171,7 @@ pub fn merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<ProofStep> {
             });
         }
         // Promote odd nodes unchanged, matching merkle_root.
-        let mut next = Vec::with_capacity((level.len() + 1) / 2);
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
         let mut i = 0;
         while i < level.len() {
             if i + 1 < level.len() {
@@ -689,7 +693,7 @@ mod tests {
     fn memo_format_is_stable() {
         let memo = anchor_memo(1, 100, 100, &[0xAB; 32], &[0xCD; 32]);
         assert!(memo.starts_with("TEALE:ANCHOR:V1:1:100:100:"));
-        assert_eq!(memo.matches(':').count(), 6);
+        assert_eq!(memo.matches(':').count(), 7);
         assert_eq!(memo.len(), "TEALE:ANCHOR:V1:1:100:100:".len() + 64 + 1 + 64);
     }
 }
