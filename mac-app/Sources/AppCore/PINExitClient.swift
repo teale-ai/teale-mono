@@ -217,7 +217,7 @@ public final class PINExitClient: @unchecked Sendable {
             // has not pruned it yet. Reusing it sends socksOpen into the
             // void - evict and fall through to a fresh dial.
             PINExitServer.log("exit client: cached WAN connection to \(member.nodePubkey.prefix(12)) is dead, redialing")
-            await wanManager.disconnectPeer(nodeID: member.nodePubkey)
+            await wanManager.disconnectPeer(member.nodePubkey)
         }
         // WANManager connect (discovery-based: direct attempt, relay fallback).
         let connectTask = Task { try? await wanManager.connectToPeer(nodeID: member.nodePubkey) }
@@ -409,7 +409,7 @@ public final class PINExitClient: @unchecked Sendable {
         transportLock.unlock()
         guard let route, let wanManager else { return }
         if owned { await old?.cancel() } else if old != nil {
-            await wanManager.disconnectPeer(nodeID: route.member.nodePubkey)
+            await wanManager.disconnectPeer(route.member.nodePubkey)
         }
         let members = await pinService.manager.exitMembers(
             pinId: route.pinId, excludingDeviceId: selfDeviceId)
