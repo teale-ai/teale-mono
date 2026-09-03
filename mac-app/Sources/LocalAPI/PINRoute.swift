@@ -71,6 +71,9 @@ enum PINRoute {
                     let msg = "data: {\"error\": \"\(error.localizedDescription)\"}\n\n"
                     try? await writer.write(.init(string: msg))
                 }
+                // Hummingbird does NOT end the body when the closure returns;
+                // without finish() clients hang forever after [DONE].
+                try? await writer.finish(nil)
             }
             return Response(
                 status: .ok,

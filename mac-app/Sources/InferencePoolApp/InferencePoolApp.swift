@@ -15,6 +15,8 @@ struct TealeApp: App {
         // which incorrectly reports "expensive" connections and blocks downloads
         setenv("CI_DISABLE_NETWORK_MONITOR", "1", 1)
 
+        Self.installStderrLog()
+
         // Run as a regular foreground app so the companion window gets focus.
         NSApplication.shared.setActivationPolicy(.regular)
 
@@ -33,6 +35,24 @@ struct TealeApp: App {
            url.path == "/callback",
            let authManager = appState.authManager {
             Task { await authManager.handleOAuthCallback(url: url) }
+        }
+    }
+
+    /// Redirect stderr to a persistent log file. All diagnostics ([WAN],
+    /// [PINChat], [PINLocal], engine errors) go to stderr, which is lost when
+    /// the app is launched via `open -a` - leaving GUI-launched machines like
+    /// Taylor's MBP with no logs at all.
+    private static func installStderrLog() {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/Teale", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let logURL = dir.appendingPathComponent("teale-stderr.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            handle.seekToEndOfFile()
+            dup2(handle.fileDescriptor, FileHandle.standardError.fileDescriptor)
         }
     }
 
