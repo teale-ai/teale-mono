@@ -59,16 +59,13 @@ Decentralized AI inference on Apple Silicon. Native macOS MenuBarExtra app that 
 - Agent UI: conversation list, message bubbles, directory view
 
 ### Phase 8 — Authentication & Device Management (Complete)
-- AuthKit module: Supabase integration for user auth and device management
-- Sign in with Apple + Phone/SMS OTP (no passwords)
+- AuthKit module: gateway-native passwordless email auth (code + magic link, tsess_ sessions)
 - Anonymous mode: app works without account, local wallet only
-- Device registration: devices auto-register to Supabase on sign-in
-- Device management view: list devices, remove, transfer ownership
-- Device transfer: atomic transfer via Supabase RPC, future credits go to new owner
 - Auth gate on both macOS and iOS apps (login screen on first launch)
 - Account section in Settings with sign-in/sign-out
-- Supabase schema: profiles, devices, device_transfers tables with RLS
-- SQL migration at supabase/migrations/001_auth_schema.sql
+- Supabase (Apple / phone / OAuth sign-in, device registry, transfer RPC) was
+  removed in 2026.09 after the Supabase project was decommissioned; the
+  device registry returns with gateway account endpoints.
 
 ## Architecture
 

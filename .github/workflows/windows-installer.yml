@@ -149,18 +149,23 @@ jobs:
           TEALE_SUPABASE_ANON_KEY: ${{ secrets.TEALE_SUPABASE_ANON_KEY }}
           TEALE_SUPABASE_REDIRECT_URL: ${{ secrets.TEALE_SUPABASE_REDIRECT_URL }}
         run: |
-          [xml]$supabasePlist = Get-Content "mac-app\Sources\AuthKit\Resources\Supabase.plist"
+          # The mac-app Supabase.plist was removed with the app's Supabase
+          # auth; teale-node still reads its config from Actions secrets.
           $plistValues = @{}
-          $plistNodes = @(
-            $supabasePlist.plist.dict.ChildNodes |
-              Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element }
-          )
+          $plistPath = "mac-app\Sources\AuthKit\Resources\Supabase.plist"
+          if (Test-Path $plistPath) {
+            [xml]$supabasePlist = Get-Content $plistPath
+            $plistNodes = @(
+              $supabasePlist.plist.dict.ChildNodes |
+                Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element }
+            )
 
-          for ($i = 0; $i -lt $plistNodes.Count - 1; $i++) {
-            if ($plistNodes[$i].Name -ne "key") {
-              continue
+            for ($i = 0; $i -lt $plistNodes.Count - 1; $i++) {
+              if ($plistNodes[$i].Name -ne "key") {
+                continue
+              }
+              $plistValues[$plistNodes[$i].InnerText] = $plistNodes[$i + 1].InnerText
             }
-            $plistValues[$plistNodes[$i].InnerText] = $plistNodes[$i + 1].InnerText
           }
 
           $supabaseUrl = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_URL)) {
@@ -184,10 +189,10 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($supabaseUrl)) {
-            throw "Missing Supabase URL in Actions secrets and mac-app/Sources/AuthKit/Resources/Supabase.plist"
+            throw "Missing Supabase URL in Actions secrets (TEALE_SUPABASE_URL)"
           }
           if ([string]::IsNullOrWhiteSpace($supabaseAnonKey)) {
-            throw "Missing Supabase anon key in Actions secrets and mac-app/Sources/AuthKit/Resources/Supabase.plist"
+            throw "Missing Supabase anon key in Actions secrets (TEALE_SUPABASE_ANON_KEY)"
           }
 
           $config = @{
@@ -197,8 +202,6 @@ jobs:
           }
 
           $config | ConvertTo-Json -Compress | Set-Content "node\installer\supabase-config.json" -Encoding UTF8
-
-          python scripts\validate-supabase-config.py --json node\installer\supabase-config.json
 
       - name: Install Inno Setup
         shell: pwsh

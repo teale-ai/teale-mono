@@ -83,18 +83,6 @@ final class DesktopCompanionBridge {
             if let text = message.message {
                 print("[DesktopCompanion] \(text)")
             }
-        case "authSession":
-            guard
-                let accessToken = message.accessToken,
-                let refreshToken = message.refreshToken,
-                let authManager
-            else { return }
-            Task {
-                try? await authManager.adoptSession(
-                    accessToken: accessToken,
-                    refreshToken: refreshToken
-                )
-            }
         case "authSignOut":
             guard let authManager else { return }
             Task { await authManager.signOut() }
@@ -155,32 +143,6 @@ final class DesktopCompanionBridge {
                 }
                 """
                 webView?.evaluateJavaScript(script, completionHandler: nil)
-            }
-        }
-
-        guard let authManager else { return }
-        Task {
-            guard let session = await authManager.currentSessionTokens() else { return }
-            let payload: [String: String] = [
-                "accessToken": session.accessToken,
-                "refreshToken": session.refreshToken,
-            ]
-            guard
-                let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
-                let json = String(data: data, encoding: .utf8)
-            else {
-                return
-            }
-            await MainActor.run {
-                let script = """
-                if (typeof window.__tealeHydrateNativeSession === "function") {
-                  window.__tealeHydrateNativeSession(\(json));
-                } else {
-                  window.__TEALE_DESKTOP_CONFIG__ = window.__TEALE_DESKTOP_CONFIG__ || {};
-                  window.__TEALE_DESKTOP_CONFIG__.nativeSession = \(json);
-                }
-                """
-                self.webView?.evaluateJavaScript(script, completionHandler: nil)
             }
         }
     }

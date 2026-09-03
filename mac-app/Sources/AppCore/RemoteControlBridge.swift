@@ -95,12 +95,14 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     }
 
     private func authSnapshot() -> RemoteAuthConfigSnapshot {
-        let config = SupabaseConfig.default
-        return RemoteAuthConfigSnapshot(
-            configured: config != nil,
-            supabaseURL: config?.url.absoluteString,
-            supabaseAnonKey: config?.anonKey,
-            redirectURL: config?.redirectURL?.absoluteString
+        // Supabase auth is removed (the project behind it is gone);
+        // email/gateway auth is the sign-in story. Report not-configured so
+        // the desktop companion never initializes its legacy Supabase path.
+        RemoteAuthConfigSnapshot(
+            configured: false,
+            supabaseURL: nil,
+            supabaseAnonKey: nil,
+            redirectURL: nil
         )
     }
 
@@ -675,46 +677,10 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     }
 
     func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot {
-        guard let config = SupabaseConfig.default else {
-            throw GatewayAuthError.network("supabase auth is not configured")
-        }
-
-        let user = try await desktopSupabaseUserLookup(
-            config: config,
-            accessToken: access_token
-        )
-        let devices = try await desktopSupabaseDevicesLookup(
-            config: config,
-            accessToken: access_token,
-            userID: user.id
-        )
-
-        return DesktopCompanionAuthSessionSnapshot(
-            user: DesktopCompanionAuthUserSnapshot(
-                id: user.id,
-                phone: user.phone,
-                email: user.email,
-                app_metadata: nil,
-                user_metadata: nil,
-                identities: user.identities.map {
-                    DesktopCompanionAuthIdentitySnapshot(
-                        id: $0.id,
-                        provider: $0.provider,
-                        identity_data: $0.identity_data,
-                        email: $0.email
-                    )
-                }
-            ),
-            identities: user.identities.map {
-                DesktopCompanionAuthIdentitySnapshot(
-                    id: $0.id,
-                    provider: $0.provider,
-                    identity_data: $0.identity_data,
-                    email: $0.email
-                )
-            },
-            devices: devices
-        )
+        // Supabase-backed session validation is removed with the Supabase
+        // backend. The desktop companion signs in with gateway email login
+        // (desktop_request_email_code / desktop_verify_email_code) instead.
+        throw GatewayAuthError.network("Supabase auth has been removed; sign in with gateway email login")
     }
 
     func desktop_network_models() async throws -> [DesktopCompanionNetworkModelSnapshot] {
@@ -1031,55 +997,6 @@ extension RemoteControlBridge: DesktopCompanionControlling {
             return try await perform(with: refreshed)
         }
     }
-
-    private func desktopSupabaseUserLookup(
-        config: SupabaseConfig,
-        accessToken: String
-    ) async throws -> DesktopSupabaseUserLookupResponse {
-        var request = URLRequest(url: config.url.appending(path: "auth/v1/user"))
-        request.httpMethod = "GET"
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GatewayAuthError.network("non-http supabase response")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
-        }
-        return try JSONDecoder().decode(DesktopSupabaseUserLookupResponse.self, from: data)
-    }
-
-    private func desktopSupabaseDevicesLookup(
-        config: SupabaseConfig,
-        accessToken: String,
-        userID: String
-    ) async throws -> [DesktopCompanionSupabaseDeviceSnapshot] {
-        var components = URLComponents(url: config.url.appending(path: "rest/v1/devices"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [
-            URLQueryItem(
-                name: "select",
-                value: "id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active"
-            ),
-            URLQueryItem(name: "user_id", value: "eq.\(userID)"),
-            URLQueryItem(name: "order", value: "last_seen.desc"),
-        ]
-        guard let url = components?.url else {
-            throw GatewayAuthError.network("invalid supabase devices url")
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GatewayAuthError.network("non-http supabase devices response")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw GatewayAuthError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
-        }
-        return try JSONDecoder().decode([DesktopCompanionSupabaseDeviceSnapshot].self, from: data)
-    }
 }
 
 private struct EmptyGatewayResponse: Decodable {}
@@ -1106,20 +1023,6 @@ private struct DesktopGatewayMetrics: Decodable {
     let tps_p50: Float?
     let ttft_ms_avg: UInt32?
     let tps_avg: Float?
-}
-
-private struct DesktopSupabaseUserLookupResponse: Decodable {
-    let id: String
-    let phone: String?
-    let email: String?
-    let identities: [DesktopSupabaseIdentity]
-}
-
-private struct DesktopSupabaseIdentity: Decodable {
-    let id: String?
-    let provider: String
-    let identity_data: [String: String]?
-    let email: String?
 }
 
 private extension String {

@@ -230,6 +230,7 @@ public final class AppState {
     // UI State
     public var selectedModel: ModelDescriptor?
     public var engineStatus: EngineStatus = .idle
+    private var serverTruthTask: Task<Void, Never>?
     public var downloadedModelIDs: Set<String> = []
     /// Models currently being downloaded (modelID -> progress 0..1)
     public var activeDownloads: [String: Double] = [:]
@@ -511,15 +512,11 @@ public final class AppState {
         self.wanManager = WANManager()
         self.pinService = try? PINService(
             gatewayBaseURL: URL(string: "https://gateway.teale.com")!)
-        if let config = SupabaseConfig.default {
-            self.authManager = AuthManager(config: config)
-        } else {
-            self.authManager = nil
-        }
+        self.authManager = AuthManager()
         self.agentManager = AgentManager()
 
         // Chat — stable local user ID for ChatKit messaging.
-        // Upgraded to the authenticated user ID once Supabase auth resolves.
+        // Upgraded to the authenticated user ID once gateway auth resolves.
         let chatUserID: UUID
         if let raw = UserDefaults.standard.string(forKey: "teale.chatUserID"),
            let uuid = UUID(uuidString: raw) {
@@ -1307,6 +1304,56 @@ public final class AppState {
         )
         Task.detached {
             try? await server.start()
+        }
+
+        startServerTruthReconciliation()
+    }
+
+    /// Starts the 60s server-truth reconciliation loop. Only meaningful for
+    /// connect-only rapid-mlx (the inference server is managed outside the
+    /// app - brew services, launchd, hand-rolled nohup - so app state can
+    /// drift from what the server is actually serving). Idempotent.
+    private func startServerTruthReconciliation() {
+        serverTruthTask?.cancel()
+        serverTruthTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                self.reconcileRapidMLXServerTruth()
+            }
+        }
+    }
+
+    /// One reconciliation tick: probe the externally managed rapid-mlx
+    /// server and make advertised state follow server truth.
+    ///
+    /// - Server serving a model: adopt the provider's fresh status and
+    ///   re-advertise when the advertised model set changed (covers the
+    ///   operator swapping models out-of-band).
+    /// - Server unreachable: clear the advertisement so the gateway stops
+    ///   routing inference to a dead backend. The advertisement stays
+    ///   cleared until a later tick finds the server healthy again.
+    private func reconcileRapidMLXServerTruth() {
+        guard inferenceBackend == .rapidMLX, !rapidMLXManageSubprocess else { return }
+        // Never clobber a load in flight (same transient-state rule as
+        // syncAdvertisedLoadedModels).
+        if case .loadingModel = engineStatus { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.rapidMLXProvider.refreshFromServer()
+                let serverStatus = await self.rapidMLXProvider.status
+                let serverAdvertised = self.advertisedLoadedModels(for: serverStatus)
+                guard serverAdvertised != self.advertisedLoadedModels(for: self.engineStatus) else { return }
+                Self.wanLog("server-truth: rapid-mlx serving \(serverAdvertised); updating engine status and re-advertising")
+                self.engineStatus = serverStatus
+                self.syncAdvertisedLoadedModels()
+            } catch {
+                guard !self.advertisedLoadedModels(for: self.engineStatus).isEmpty else { return }
+                Self.wanLog("server-truth: rapid-mlx server unreachable (\(error.localizedDescription)); clearing advertisement")
+                self.engineStatus = .idle
+                self.syncAdvertisedLoadedModels()
+            }
         }
     }
 

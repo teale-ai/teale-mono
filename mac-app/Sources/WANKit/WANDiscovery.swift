@@ -340,6 +340,10 @@ public actor WANDiscoveryService {
                     FileHandle.standardError.write(Data("[WAN] Periodic re-register OK (models: \(caps.loadedModels))\n".utf8))
                 } catch {
                     FileHandle.standardError.write(Data("[WAN] Periodic re-register FAILED: \(error.localizedDescription)\n".utf8))
+                    // A failed re-register means the relay path is suspect;
+                    // nudge the reconnect machinery in case its task wedged
+                    // with no socket error surfacing.
+                    await self.relayClient.ensureConnected()
                 }
             }
         }

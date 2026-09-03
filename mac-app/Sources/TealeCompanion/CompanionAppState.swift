@@ -191,11 +191,9 @@ final class CompanionAppState {
 
     @MainActor
     func initialize() async {
-        if let config = SupabaseConfig.default {
-            let manager = AuthManager(config: config)
-            self.authManager = manager
-            await manager.checkSession()
-        }
+        let manager = AuthManager()
+        self.authManager = manager
+        await manager.checkSession()
 
         // Wire AI inference routing (dual-mode: local MLX or remote Mac node).
         let inferenceStream: @Sendable (ChatCompletionRequest) -> AsyncThrowingStream<String, Error> = { [weak self] request in

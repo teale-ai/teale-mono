@@ -168,7 +168,7 @@ public struct LoginView: View {
             email = normalizedEmail
             try await authManager.signInWithEmailOTP(email: email)
             showCodeField = true
-            statusMessage = "Code request accepted. If no email arrives, check the Supabase Auth email template and SMTP delivery settings."
+            statusMessage = "Code request accepted. If no email arrives, check spam and try again."
         } catch {
             errorMessage = error.localizedDescription
         }
