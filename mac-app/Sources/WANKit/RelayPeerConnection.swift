@@ -194,8 +194,12 @@ public actor RelayPeerConnection {
 
         let jsonData: Data
         if let session = noiseSession {
-            // E2E encrypted: decrypt before decoding
-            guard let decrypted = try? session.decrypt(data) else { return }
+            // E2E encrypted: decrypt before decoding. Log failures - a silent
+            // drop here makes a healthy-looking lane drop all inbound data.
+            guard let decrypted = try? session.decrypt(data) else {
+                FileHandle.standardError.write(Data("[WAN] RelayPeerConnection: failed to decrypt \(data.count) bytes for session \(sessionID.prefix(8))... - dropping\n".utf8))
+                return
+            }
             jsonData = decrypted
         } else {
             // Plaintext fallback

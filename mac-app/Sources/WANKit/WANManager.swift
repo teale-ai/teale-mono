@@ -174,6 +174,17 @@ private final class LockedTable<Value>: @unchecked Sendable {
         return storage.count
     }
 
+    /// Atomically returns the existing value for `key`, or stores and returns
+    /// `make()` when absent. `make` runs under the lock - keep it trivial.
+    func value(forKey key: String, orMake make: () -> Value) -> (value: Value, inserted: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storage[key] { return (existing, false) }
+        let made = make()
+        storage[key] = made
+        return (made, true)
+    }
+
     var values: [Value] {
         lock.lock()
         defer { lock.unlock() }
@@ -620,7 +631,28 @@ public final class WANManager: @unchecked Sendable {
 
     // MARK: - Message Handling
 
+    /// One listener loop per (node, connection object). The crossed
+    /// relay-fallback dial (offer handler + incoming relayOpen sharing one
+    /// sessionID) can register the same connection twice; WAN transport
+    /// connections broadcast to every subscriber, so a second loop would
+    /// double-dispatch every inbound message.
+    private var listeningConnections = LockedTable<ObjectIdentifier>()
+
     private func startListening(to peer: ConnectedWANPeer) {
+        let objectID: ObjectIdentifier
+        switch peer.connection {
+        case .direct(let connection): objectID = ObjectIdentifier(connection)
+        case .relayed(let connection): objectID = ObjectIdentifier(connection)
+        }
+        let nodeID = peer.peerInfo.nodeID
+        let (marked, inserted) = listeningConnections.value(forKey: nodeID) { objectID }
+        if !inserted {
+            // A listener is already recorded for this node. Same connection
+            // object: it is already listening - skip. Different object: the
+            // old loop exits when its (cancelled) connection's stream ends.
+            guard marked != objectID else { return }
+            listeningConnections[nodeID] = objectID
+        }
         Task { [weak self] in
             let messages = await peer.connection.incomingMessages
             for await message in messages {
@@ -629,7 +661,9 @@ public final class WANManager: @unchecked Sendable {
             }
             // Connection ended — attempt reconnect after a delay
             guard let self else { return }
-            let nodeID = peer.peerInfo.nodeID
+            if self.listeningConnections[nodeID] == objectID {
+                self.listeningConnections[nodeID] = nil
+            }
             guard self.connectedPeers[nodeID]?.connectionID == peer.connectionID else { return }
             self.lastKnownPeersByNodeID[nodeID] = peer.peerInfo
             self.connectedPeers.removeValue(forKey: nodeID)
@@ -872,6 +906,51 @@ public final class WANManager: @unchecked Sendable {
         // session is still recorded for the same node, replace it so the new
         // request gets a relayReady instead of timing out behind stale state.
         if let existing = connectedPeers[payload.fromNodeID] {
+            // Resume, not a new dial: RelayClient.resumeRelaySessions re-sends
+            // relayOpen with the SAME sessionID after the far side's relay
+            // WebSocket reconnects. Cancelling the existing connection here
+            // kills every in-flight stream on it (exit-lane EgressStreams,
+            // heartbeat transport) while the far side keeps its own connection
+            // object - the lane then dies one-way: our sends throw
+            // peerDisconnected into a swallowed try?, heartbeats fail 3x, and
+            // we drop the peer. Accept idempotently instead: relayConnection()
+            // returns the existing object, relayReady is re-sent, and the
+            // session (and its streams) survive the flap.
+            if case .relayed(let relayConn) = existing.connection,
+               relayConn.sessionID == payload.sessionID,
+               await !relayConn.isClosed {
+                do {
+                    let connection = try await relayClient!.acceptRelayedSession(
+                        fromNodeID: payload.fromNodeID,
+                        sessionID: payload.sessionID
+                    )
+                    if connection === relayConn {
+                        // True duplicate/resume: RelayClient still holds the
+                        // same connection object. Keep everything, just re-ack.
+                        wanLog("Duplicate relayOpen for live relay session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))...; re-acking, keeping existing connection")
+                        connectedPeers[payload.fromNodeID]?.lastHeartbeat = Date()
+                        return
+                    }
+                    // RelayClient recreated the connection object under the
+                    // same sessionID (our own WebSocket flapped too and the
+                    // session was suspended locally). Swap the peer entry to
+                    // the live object. finishLocally, not cancel: cancel would
+                    // relayClose the fresh mapping, which shares the sessionID.
+                    wanLog("relayOpen for session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))... arrived after local suspend; re-pointing peer connection")
+                    await relayConn.finishLocally()
+                    var updated = existing
+                    updated.connection = .relayed(connection)
+                    updated.connectionType = .relayed
+                    updated.lastHeartbeat = Date()
+                    connectedPeers[payload.fromNodeID] = updated
+                    startListening(to: updated)
+                    updateState()
+                    return
+                } catch {
+                    FileHandle.standardError.write(Data("[WAN] Failed to re-ack relayOpen from \(payload.fromNodeID.prefix(16)): \(error)\n".utf8))
+                    return
+                }
+            }
             let staleness = Date().timeIntervalSince(existing.lastHeartbeat)
             if existing.connectionType == .direct && staleness < 10 && !reconnectingNodeIDs.contains(payload.fromNodeID) {
                 wanLog("Ignoring relayOpen from \(payload.fromNodeID.prefix(16))...; healthy direct connection exists")

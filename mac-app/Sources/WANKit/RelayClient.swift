@@ -835,12 +835,16 @@ public actor RelayClient {
                     toNodeID: session.remoteNodeID,
                     sessionID: session.sessionID
                 )
-                try await send(.relayOpen(payload))
-                // Re-register the connection so incoming relayData is routed correctly
+                // Re-register BEFORE sending relayOpen: if the peer's own
+                // resume relayOpen (or any relayData) races in between, the
+                // session must already map to THIS connection object or the
+                // peer's idempotent re-ack would recreate and diverge it.
                 relayedConnections[session.sessionID] = session.connection
+                try await send(.relayOpen(payload))
                 FileHandle.standardError.write(Data("[WAN] Resumed relay session \(session.sessionID.prefix(8))... to \(session.remoteNodeID.prefix(16))...\n".utf8))
             } catch {
                 FileHandle.standardError.write(Data("[WAN] Failed to resume relay session \(session.sessionID.prefix(8))...: \(error.localizedDescription)\n".utf8))
+                relayedConnections.removeValue(forKey: session.sessionID)
                 await session.connection.finishLocally()
             }
         }
