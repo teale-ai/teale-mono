@@ -381,6 +381,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(handlers::health::health))
         .route("/metrics", get(handlers::metrics::metrics))
         .route("/privacy", get(handlers::privacy::privacy))
+        .route("/terms", get(handlers::terms::terms))
         // Public catalog — just metadata + live TTFT/TPS; safe to expose
         // unauthenticated so share links and curl-based tinkering work.
         // Served at both `/` (root landing page) and `/v1/models` (OpenAI

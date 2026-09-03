@@ -1,0 +1,78 @@
+Teale Gateway — Terms of Service
+Last updated: 2026-09-03.
+
+Summary
+-------
+These terms govern use of the Teale inference gateway at gateway.teale.com
+(the "Service"), operated by Hou Ventures LLC ("Teale", "we", "us"). The
+Service provides OpenAI-compatible inference endpoints that route requests
+to a distributed pool of supply nodes. By calling the API you accept these
+terms. If you use the Service on behalf of an organization, you represent
+that you are authorized to bind that organization.
+
+The Service
+-----------
+- We route inference requests to third-party and first-party supply nodes
+  selected by our scheduler. Model availability is dynamic: models appear
+  in /v1/models only while enough healthy supply serves them.
+- We may change, suspend, or discontinue models, endpoints, or rate limits
+  at any time, with or without notice.
+- The Service is provided "as is" and "as available". We do not warrant
+  uptime, latency, throughput, or fitness for a particular purpose, and we
+  make no guarantee that any model or endpoint will remain available.
+
+Acceptable use
+--------------
+You agree not to use the Service to:
+  - violate any law or third-party right;
+  - generate malware, spam, or content that facilitates harm;
+  - probe, attack, or degrade the Service or its supply nodes;
+  - resell access without our written consent;
+  - circumvent rate limits, authentication, or usage accounting.
+We may suspend or revoke access for violations without notice.
+
+Your content
+------------
+- You retain all rights to your prompts and completions. We claim no
+  ownership over request or response content.
+- Handling of request data is described in our Privacy Policy
+  (https://gateway.teale.com/privacy): we do not train on your content,
+  we do not retain prompt or completion bodies, and we retain operational
+  metadata only, for up to 90 days.
+- You are responsible for the legality of the content you send and for
+  your use of generated output, including compliance with the license
+  terms of the underlying open-weight models.
+
+Billing
+-------
+Paid usage is metered per token as reported in each response's usage
+block. Billing is invoiced per the commercial agreement or platform
+(e.g. OpenRouter) through which you obtained access. Cancelled requests
+are billed only for tokens already delivered; engine-level failures are
+not billed.
+
+Liability
+---------
+To the maximum extent permitted by law, Teale's aggregate liability for
+any claim arising from the Service is limited to the amounts you paid us
+for the Service in the three months preceding the claim. We are not
+liable for indirect, incidental, consequential, or punitive damages,
+including lost profits or lost data.
+
+Termination
+------------
+Either party may stop using or providing the Service at any time.
+Sections on liability, billing, and acceptable use survive termination.
+
+Changes
+-------
+We may update these terms by posting a new version at this URL with a
+revised "Last updated" date. Continued use after an update constitutes
+acceptance.
+
+Governing law
+-------------
+These terms are governed by the laws of the State of Texas, USA, without
+regard to conflict-of-law rules.
+
+Contact: taylor@teale.com

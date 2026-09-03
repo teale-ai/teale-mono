@@ -18,6 +18,7 @@ pub mod models;
 pub mod network;
 pub mod pins;
 pub mod privacy;
+pub mod terms;
 pub mod providers_public;
 pub mod share_keys;
 pub mod try_page;
