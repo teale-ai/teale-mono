@@ -140,6 +140,68 @@ struct ConnectedWANPeer: Sendable {
 // MARK: - WAN Manager
 
 @Observable
+
+/// Lock-protected string-keyed table. WANManager is @unchecked Sendable and
+/// its peer tables are read and written from relay callbacks, heartbeat and
+/// health-check tasks, discovery handlers, and PINExitClient's dial polling -
+/// unsynchronized Dictionary access is memory-unsafe (observed as a
+/// main-thread EXC_BAD_ACCESS at launch once the exit-route resume path added
+/// a concurrent reader).
+private final class LockedTable<Value>: @unchecked Sendable {
+    private var storage: [String: Value] = [:]
+    private let lock = NSLock()
+
+    subscript(key: String) -> Value? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage[key]
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            if let newValue {
+                storage[key] = newValue
+            } else {
+                storage.removeValue(forKey: key)
+            }
+        }
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.count
+    }
+
+    var values: [Value] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(storage.values)
+    }
+
+    /// Consistent point-in-time copy for iteration (the loop body may safely
+    /// mutate the table).
+    var snapshot: [(String, Value)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(storage)
+    }
+
+    @discardableResult
+    func removeValue(forKey key: String) -> Value? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.removeValue(forKey: key)
+    }
+
+    func removeAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.removeAll()
+    }
+}
+
 public final class WANManager: @unchecked Sendable {
     // Public state
     public private(set) var state: WANState = WANState()
@@ -163,8 +225,8 @@ public final class WANManager: @unchecked Sendable {
     private var listener: NWListener?
 
     // Connections
-    private var connectedPeers: [String: ConnectedWANPeer] = [:]  // nodeID -> peer
-    private var lastKnownPeersByNodeID: [String: WANPeerInfo] = [:]
+    private let connectedPeers = LockedTable<ConnectedWANPeer>()  // nodeID -> peer
+    private let lastKnownPeersByNodeID = LockedTable<WANPeerInfo>()
 
     // Tasks
     private var heartbeatTask: Task<Void, Never>?
@@ -344,7 +406,7 @@ public final class WANManager: @unchecked Sendable {
         listenerTask?.cancel()
 
         // Disconnect all peers
-        for (_, peer) in connectedPeers {
+        for (_, peer) in connectedPeers.snapshot {
             await peer.connection.cancel()
         }
         connectedPeers.removeAll()
@@ -948,7 +1010,7 @@ public final class WANManager: @unchecked Sendable {
                     isGenerating: false
                 )
 
-                for (nodeID, peer) in self.connectedPeers {
+                for (nodeID, peer) in self.connectedPeers.snapshot {
                     do {
                         try await peer.connection.send(.heartbeat(heartbeat))
                         self.connectedPeers[nodeID]?.consecutiveHeartbeatFailures = 0
@@ -989,7 +1051,7 @@ public final class WANManager: @unchecked Sendable {
                 let now = Date()
                 var disconnected: [String] = []
 
-                for (nodeID, peer) in self.connectedPeers {
+                for (nodeID, peer) in self.connectedPeers.snapshot {
                     let secondsSinceHeartbeat = now.timeIntervalSince(peer.lastHeartbeat)
                     if secondsSinceHeartbeat > 90 {
                         // Peer is dead

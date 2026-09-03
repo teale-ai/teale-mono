@@ -1264,15 +1264,23 @@ public final class AppState {
             wanMgr.onSocksMessage = { [weak exitServer] message, transport, peerNodeID in
                 await exitServer?.handle(message, on: transport, from: peerNodeID)
             }
-            // Resume a persisted consumer route after netmaps load.
+            // Resume a persisted consumer route after netmaps load. Retries:
+            // the first signed-netmap sync can lag launch by tens of
+            // seconds, and a single shot left the route silently off.
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
-                guard let self else { return }
-                let settings = await pinService.manager.settings()
-                if let pinId = settings.exitRoutePinId {
-                    try? await self.pinExitClient?.start(
-                        pinId: pinId, deviceId: settings.exitRouteDeviceId,
-                        listenPort: 17890, wanManager: wanMgr)
+                for attempt in 1...20 {
+                    try? await Task.sleep(nanoseconds: 15 * 1_000_000_000)
+                    guard let self else { return }
+                    let settings = await pinService.manager.settings()
+                    guard let pinId = settings.exitRoutePinId else { return }
+                    do {
+                        try await self.pinExitClient?.start(
+                            pinId: pinId, deviceId: settings.exitRouteDeviceId,
+                            listenPort: 17890, wanManager: wanMgr)
+                        return
+                    } catch {
+                        PINExitServer.log("exit route resume attempt \(attempt) failed: \(error.localizedDescription)")
+                    }
                 }
             }
             let engineStatusProvider = { @Sendable [weak self] () async -> [String] in
