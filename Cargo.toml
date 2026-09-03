@@ -1,5 +1,5 @@
 [workspace]
-members = ["node", "node/teale-tray", "protocol", "gateway", "stress"]
+members = ["node", "node/teale-tray", "protocol", "gateway", "stress", "cli"]
 resolver = "2"
 
 [workspace.package]
