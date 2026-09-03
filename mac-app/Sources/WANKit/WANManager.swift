@@ -872,6 +872,51 @@ public final class WANManager: @unchecked Sendable {
         // session is still recorded for the same node, replace it so the new
         // request gets a relayReady instead of timing out behind stale state.
         if let existing = connectedPeers[payload.fromNodeID] {
+            // Resume, not a new dial: RelayClient.resumeRelaySessions re-sends
+            // relayOpen with the SAME sessionID after the far side's relay
+            // WebSocket reconnects. Cancelling the existing connection here
+            // kills every in-flight stream on it (exit-lane EgressStreams,
+            // heartbeat transport) while the far side keeps its own connection
+            // object - the lane then dies one-way: our sends throw
+            // peerDisconnected into a swallowed try?, heartbeats fail 3x, and
+            // we drop the peer. Accept idempotently instead: relayConnection()
+            // returns the existing object, relayReady is re-sent, and the
+            // session (and its streams) survive the flap.
+            if case .relayed(let relayConn) = existing.connection,
+               relayConn.sessionID == payload.sessionID,
+               await !relayConn.isClosed {
+                do {
+                    let connection = try await relayClient!.acceptRelayedSession(
+                        fromNodeID: payload.fromNodeID,
+                        sessionID: payload.sessionID
+                    )
+                    if connection === relayConn {
+                        // True duplicate/resume: RelayClient still holds the
+                        // same connection object. Keep everything, just re-ack.
+                        wanLog("Duplicate relayOpen for live relay session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))...; re-acking, keeping existing connection")
+                        connectedPeers[payload.fromNodeID]?.lastHeartbeat = Date()
+                        return
+                    }
+                    // RelayClient recreated the connection object under the
+                    // same sessionID (our own WebSocket flapped too and the
+                    // session was suspended locally). Swap the peer entry to
+                    // the live object. finishLocally, not cancel: cancel would
+                    // relayClose the fresh mapping, which shares the sessionID.
+                    wanLog("relayOpen for session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))... arrived after local suspend; re-pointing peer connection")
+                    await relayConn.finishLocally()
+                    var updated = existing
+                    updated.connection = .relayed(connection)
+                    updated.connectionType = .relayed
+                    updated.lastHeartbeat = Date()
+                    connectedPeers[payload.fromNodeID] = updated
+                    startListening(to: updated)
+                    updateState()
+                    return
+                } catch {
+                    FileHandle.standardError.write(Data("[WAN] Failed to re-ack relayOpen from \(payload.fromNodeID.prefix(16)): \(error)\n".utf8))
+                    return
+                }
+            }
             let staleness = Date().timeIntervalSince(existing.lastHeartbeat)
             if existing.connectionType == .direct && staleness < 10 && !reconnectingNodeIDs.contains(payload.fromNodeID) {
                 wanLog("Ignoring relayOpen from \(payload.fromNodeID.prefix(16))...; healthy direct connection exists")

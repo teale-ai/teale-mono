@@ -131,8 +131,12 @@ public final class PINExitServer: @unchecked Sendable {
         let stream = EgressStream(conn: conn)
         await registry.add(payload.streamID, stream)
         Self.log("opened stream \(payload.streamID) -> \(payload.destHost):\(payload.destPort) for \(peerNodeID.prefix(12)) pin=\(payload.pinId.prefix(8))")
-        try? await transport.send(.socksOpenResult(SocksOpenResultPayload(
-            streamID: payload.streamID, ok: true)))
+        do {
+            try await transport.send(.socksOpenResult(SocksOpenResultPayload(
+                streamID: payload.streamID, ok: true)))
+        } catch {
+            Self.log("FAILED to send socksOpenResult for \(payload.streamID): \(error.localizedDescription)")
+        }
 
         // Egress -> consumer shuttle; teardown on destination close.
         let registry = self.registry
@@ -142,7 +146,10 @@ public final class PINExitServer: @unchecked Sendable {
                 do {
                     try await transport.send(.socksData(SocksDataPayload(
                         streamID: payload.streamID, data: data)))
-                } catch { break }
+                } catch {
+                    Self.log("FAILED to send socksData for \(payload.streamID) (\(data.count) bytes): \(error.localizedDescription)")
+                    break
+                }
             }
             await registry.remove(payload.streamID)
             try? await transport.send(.socksClose(SocksClosePayload(
