@@ -1144,7 +1144,15 @@ extension RemoteControlBridge: PINControlling {
                     let request = try JSONDecoder().decode(
                         ChatCompletionRequest.self, from: requestBody)
                     Self.pinLog("request decoded model=\(request.model ?? model)")
-                    let stream = try await PINChatClient.stream(
+                    let stream: AsyncThrowingStream<ChatCompletionChunk, Error>
+                    if await appState.servesModelLocally(model) {
+                        // This device is itself a serving member for the
+                        // model: serve locally rather than Noise-dialing our
+                        // own endpoints (which hangs until the dial timeout).
+                        Self.pinLog("self provides \(model); serving locally")
+                        stream = await appState.generateLocalCompletionStream(request: request)
+                    } else {
+                        stream = try await PINChatClient.stream(
                         service: service,
                         identity: identity,
                         model: model,
@@ -1171,7 +1179,8 @@ extension RemoteControlBridge: PINControlling {
                             Self.pinLog("WAN peer \(nodeID.prefix(16)) unavailable after connect attempt")
                             return nil
                         }
-                    )
+                        )
+                    }
                     let encoder = JSONEncoder()
                     for try await chunk in stream {
                         if let data = try? encoder.encode(chunk),

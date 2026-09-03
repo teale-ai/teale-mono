@@ -51,7 +51,7 @@ public enum PINChatClient {
 
         for _ in 0..<maxAttempts {
             guard let candidate = await nextCandidate(
-                service: service, model: model, excluding: tried)
+                service: service, model: model, excluding: tried, selfNodeID: identity.nodeID)
             else { break }
             tried.append(candidate.member.nodePubkey)
             do {
@@ -73,7 +73,7 @@ public enum PINChatClient {
     }
 
     private static func nextCandidate(
-        service: PINService, model: String, excluding: [String]
+        service: PINService, model: String, excluding: [String], selfNodeID: String
     ) async -> Candidate? {
         // Prefer the current signed netmap. This keeps prompt-bearing
         // requests off the gateway hot path and makes LAN/offline PINs usable.
@@ -89,8 +89,14 @@ public enum PINChatClient {
         // the local SSE endpoint can fail fast instead of appearing hung.
         for pin in await service.manager.snapshot() where pin.membership == "active" {
             guard let netmap = pin.netmap?.netmap else { continue }
+            // The gateway intentionally allows self-selection ("Requester's
+            // own device may serve itself"), but Noise-dialing our own static
+            // key hangs until the dial timeout. Skip self here; the local
+            // endpoint short-circuits self-provision before we get here.
             if let choice = try? await scheduleWithTimeout(
-                service: service, pinId: pin.pinId, model: model, excluding: excluding),
+                service: service, pinId: pin.pinId, model: model,
+                excluding: excluding + [selfNodeID]),
+                choice.nodePubkey != selfNodeID,
                 let member = netmap.members.first(where: { $0.deviceId == choice.deviceId }) {
                 log("selected gateway PIN provider \(member.displayName ?? member.nodePubkey) for \(model)")
                 return Candidate(pinId: pin.pinId, member: member)
