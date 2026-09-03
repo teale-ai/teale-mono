@@ -386,9 +386,13 @@ public final class AppState {
         }
     }
 
-    public var language: AppLanguage = AppLanguage(
-        rawValue: UserDefaults.standard.string(forKey: "teale.language") ?? "en"
-    ) ?? .english {
+    public var language: AppLanguage = {
+        if let stored = UserDefaults.standard.string(forKey: "teale.language"),
+           let lang = AppLanguage(rawValue: stored) {
+            return lang
+        }
+        return AppLanguage.systemPreferred
+    }() {
         didSet { UserDefaults.standard.set(language.rawValue, forKey: "teale.language") }
     }
 
