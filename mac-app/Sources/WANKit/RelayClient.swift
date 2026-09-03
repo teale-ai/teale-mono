@@ -653,6 +653,16 @@ public actor RelayClient {
 
                 _receiveLoop()
             } catch {
+                // Stale-socket guard: this receive failure belongs to the
+                // socket captured at loop entry. If the current socket has
+                // since been replaced (fresh connect, or the send/ping path
+                // already declared the old one dead), tearing down state
+                // here would kill the NEW healthy connection and schedule a
+                // duplicate reconnect.
+                guard webSocketTask === ws else {
+                    FileHandle.standardError.write(Data("[WAN] Ignoring receive failure from stale WebSocket (already replaced)\n".utf8))
+                    return
+                }
                 let msg = "[WAN] Relay WebSocket disconnected: \(error.localizedDescription)"
                 FileHandle.standardError.write(Data((msg + "\n").utf8))
                 isConnected = false
@@ -669,6 +679,24 @@ public actor RelayClient {
     }
 
     // MARK: - Reconnection with exponential backoff
+
+    /// Nudge the reconnect machinery from outside the socket error paths
+    /// (e.g. the periodic re-register failure handler in WANDiscovery).
+    /// If a reconnect task exists but the socket is still down, that task
+    /// may be wedged with no further progress possible from the outside;
+    /// cancel it and start a fresh cycle. If the client is simply idle
+    /// and disconnected, this schedules a reconnect that the
+    /// reconnectTask == nil guard in scheduleReconnect would otherwise
+    /// suppress only when a task is already running.
+    public func ensureConnected() {
+        guard !isConnected else { return }
+        if let wedged = reconnectTask {
+            FileHandle.standardError.write(Data("[WAN] ensureConnected: cancelling wedged reconnect task and starting fresh\n".utf8))
+            wedged.cancel()
+            reconnectTask = nil
+        }
+        scheduleReconnect()
+    }
 
     private func scheduleReconnect() {
         guard reconnectTask == nil else { return }
@@ -818,13 +846,27 @@ public actor RelayClient {
         }
     }
 
+    /// Last time a pong completion arrived. sendPing's handler is the
+    /// pongReceiveHandler - on a dead-but-quiet socket (dead NAT mapping,
+    /// silent network drop) it simply never fires, with no error, so the
+    /// consecutive-failure counter alone can never trip. The watchdog
+    /// below treats 90s of completion silence as a failed connection.
+    private var lastPongAt = Date()
+
     /// Periodic WebSocket ping to keep the connection alive through NAT/firewalls.
     private func startPingLoop() {
         pingTask?.cancel()
+        lastPongAt = Date()
         pingTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 25 * 1_000_000_000)
                 guard !Task.isCancelled, let self else { return }
+                let silence = Date().timeIntervalSince(await self.lastPongAt)
+                if silence > 90 {
+                    FileHandle.standardError.write(Data("[WAN] No WebSocket pong for \(Int(silence))s; declaring connection dead\n".utf8))
+                    await self.notePingSilence()
+                    continue
+                }
                 let ws = await self.webSocketTask
                 ws?.sendPing { [weak self] error in
                     guard let self else { return }
@@ -839,8 +881,13 @@ public actor RelayClient {
         }
     }
 
+    private func notePingSilence() {
+        handleDeadConnection(reason: "no pong for 90s")
+    }
+
     private func resetPingFailures() {
         consecutivePingFailures = 0
+        lastPongAt = Date()
     }
 }
 
