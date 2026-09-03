@@ -125,7 +125,7 @@ struct TealeApp: App {
         MenuBarExtra {
             CompanionMenuBarView()
             .environment(appState)
-            .frame(width: 360, height: 344)
+            .frame(width: 360, height: 400)
         } label: {
             Label("Teale", systemImage: "brain.head.profile")
         }
@@ -133,11 +133,102 @@ struct TealeApp: App {
     }
 }
 
-// MARK: - Menu Bar (Windows-parity supply controls)
+// MARK: - Menu Bar (mirrors the simplified home view)
+
+/// Polls the same localhost desktop/PIN APIs the simplified home view
+/// uses, so the menu bar shows identical numbers. No auth: the server
+/// binds 127.0.0.1 unless network access is enabled.
+@MainActor
+final class MenuBarViewModel: ObservableObject {
+    @Published var earnedCredits: Int64 = 0
+    @Published var ratePerMinute: Int64 = 0
+    @Published var serving = false
+    @Published var supplyEnabled = true
+    @Published var supplyDetail = ""
+    @Published var pinSummary = ""
+    @Published var exitRouting: String?
+    @Published var fetchedAt = Date()
+
+    private var pollTask: Task<Void, Never>?
+    private let port: Int
+
+    init(port: Int) {
+        self.port = port
+    }
+
+    func start() {
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refresh()
+                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+            }
+        }
+    }
+
+    private func get(_ path: String) async -> [String: Any]? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)"),
+            let (data, _) = try? await URLSession.shared.data(from: url),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json
+    }
+
+    func refresh() async {
+        if let snapshot = await get("/v1/desktop/app") {
+            let wallet = snapshot["wallet"] as? [String: Any] ?? [:]
+            earnedCredits = (wallet["gateway_total_earned_credits"] as? NSNumber)?.int64Value
+                ?? (wallet["gateway_total_earned_credits"] as? Int64) ?? earnedCredits
+            serving = (snapshot["service_state"] as? String) == "serving"
+            ratePerMinute = serving
+                ? ((wallet["availability_rate_credits_per_minute"] as? NSNumber)?.int64Value ?? 0)
+                : 0
+            supplyEnabled = (snapshot["supply_enabled"] as? Bool) ?? supplyEnabled
+            supplyDetail = supplyEnabled
+                ? ((snapshot["state_reason"] as? String) ?? (snapshot["service_state"] as? String) ?? "")
+                : "Off. This machine is not serving inference."
+            fetchedAt = Date()
+        }
+        if let overview = await get("/v1/app/pins") {
+            let networks = overview["networks"] as? [[String: Any]] ?? []
+            let active = networks.filter { ($0["membership"] as? String) == "active" }.count
+            let settings = overview["settings"] as? [String: Any] ?? [:]
+            let offering = (settings["exitNodePins"] as? [String])?.count ?? 0
+            var parts: [String] = []
+            parts.append(active == 1 ? "1 network" : "\(active) networks")
+            if offering > 0 {
+                parts.append(offering == 1 ? "exit offered to 1" : "exit offered to \(offering)")
+            }
+            pinSummary = parts.joined(separator: " · ")
+        }
+        if let status = await get("/v1/app/pins/exit/status"),
+            (status["state"] as? String) == "listening" {
+            let via = status["viaDevice"] as? String ?? "exit node"
+            let host = status["host"] as? String ?? "127.0.0.1"
+            let portNum = (status["port"] as? NSNumber)?.intValue ?? 0
+            exitRouting = "routing via \(via) · \(host):\(portNum)"
+        } else {
+            exitRouting = nil
+        }
+    }
+
+    func setSupply(_ enabled: Bool) async {
+        supplyEnabled = enabled
+        guard let url = URL(string: "http://127.0.0.1:\(port)/v1/desktop/app/supply") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        _ = try? await URLSession.shared.data(for: request)
+        await refresh()
+    }
+}
 
 struct CompanionMenuBarView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openWindow) private var openWindow
+    @StateObject private var model = MenuBarViewModel(port: 11435)
+    @AppStorage("teale.menuBarEarningsUnit") private var earningsUnit = "credits"
 
     var body: some View {
         ZStack {
@@ -164,24 +255,70 @@ struct CompanionMenuBarView: View {
                     .fill(TealeDesign.border)
                     .frame(height: 1)
 
-                TealeStats {
-                    TealeStatRow(
-                        label: "State",
-                        value: appState.companionState.displayText,
-                        valueColor: appState.companionState.chipColor
-                    )
-                    TealeStatRow(
-                        label: "Model",
-                        value: appState.engineStatus.currentModel?.name ?? "No model loaded"
-                    )
-                    TealeStatRow(
-                        label: "Wallet",
-                        value: appState.wallet.balance.description
-                    )
-                    TealeStatRow(
-                        label: "Version",
-                        value: BuildVersion.display
-                    )
+                // earnings - ticks up with availability, like the home view
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(earningsDisplay)
+                                .font(TealeDesign.mono)
+                                .foregroundStyle(TealeDesign.text)
+                            Spacer()
+                            Picker("", selection: $earningsUnit) {
+                                Text("credits").tag("credits")
+                                Text("USD").tag("usd")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 120)
+                        }
+                        Text(model.serving
+                            ? "accruing ~\(formattedRate) credits/min from availability"
+                            : "turn on supply inference to start earning")
+                            .font(TealeDesign.monoTiny)
+                            .foregroundStyle(TealeDesign.muted)
+                    }
+                }
+
+                Rectangle()
+                    .fill(TealeDesign.border)
+                    .frame(height: 1)
+
+                // supply inference
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("supply inference")
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.text)
+                        Text(model.supplyDetail)
+                            .font(TealeDesign.monoTiny)
+                            .foregroundStyle(TealeDesign.muted)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { model.supplyEnabled },
+                        set: { enabled in Task { await model.setSupply(enabled) } }
+                    ))
+                    .toggleStyle(.switch)
+                    .tint(TealeDesign.teale)
+                    .labelsHidden()
+                }
+
+                // private inference networks
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("private inference network(s)")
+                            .font(TealeDesign.mono)
+                            .foregroundStyle(TealeDesign.text)
+                        Text(model.pinSummary.isEmpty ? "none yet" : model.pinSummary)
+                            .font(TealeDesign.monoTiny)
+                            .foregroundStyle(TealeDesign.muted)
+                        if let routing = model.exitRouting {
+                            Text(routing)
+                                .font(TealeDesign.monoTiny)
+                                .foregroundStyle(TealeDesign.teale)
+                        }
+                    }
+                    Spacer()
                 }
 
                 Spacer()
@@ -196,6 +333,20 @@ struct CompanionMenuBarView: View {
             .padding(14)
         }
         .preferredColorScheme(.dark)
+        .onAppear { model.start() }
+    }
+
+    private var earningsDisplay: String {
+        let elapsed = max(0, Date().timeIntervalSince(model.fetchedAt))
+        let earned = model.earnedCredits + Int64((Double(model.ratePerMinute) / 60.0) * elapsed)
+        if earningsUnit == "usd" {
+            return String(format: "$%.4f USD", Double(earned) / 1_000_000.0)
+        }
+        return "\(earned.formatted()) credits"
+    }
+
+    private var formattedRate: String {
+        model.ratePerMinute.formatted()
     }
 
     private func openMainWindow() {
