@@ -154,6 +154,7 @@ mod tests {
                 wg_pubkey: "cd".repeat(32),
                 display_name: Some("Alice's PC".into()),
                 serves_models: true,
+                offers_exit: true,
                 disabled: false,
                 endpoints: vec![PinEndpoint {
                     kind: "lan".into(),
