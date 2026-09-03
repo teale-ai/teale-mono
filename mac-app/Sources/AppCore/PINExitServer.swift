@@ -180,7 +180,7 @@ public final class PINExitServer: @unchecked Sendable {
     /// Receive up to `max` bytes; nil when the connection closed.
     private static func recv(_ conn: NWConnection, max: Int) async -> Data? {
         await withCheckedContinuation { cont in
-            conn.receive(minimum: 1, maximum: max) { content, _, isComplete, error in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: max) { content, _, isComplete, error in
                 if let content, !content.isEmpty {
                     cont.resume(returning: content)
                 } else {

@@ -392,7 +392,7 @@ public final class PINExitClient: @unchecked Sendable {
 
     private static func recv(_ conn: NWConnection, max: Int) async -> Data? {
         await withCheckedContinuation { cont in
-            conn.receive(minimum: 1, maximum: max) { content, _, _, _ in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: max) { content, _, _, _ in
                 if let content, !content.isEmpty {
                     cont.resume(returning: content)
                 } else {
