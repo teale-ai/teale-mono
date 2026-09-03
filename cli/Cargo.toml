@@ -1,0 +1,17 @@
+[package]
+name = "teale-cli"
+description = "teale - command line for the Teale desktop app and supply node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "teale"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json.workspace = true
+tokio.workspace = true
