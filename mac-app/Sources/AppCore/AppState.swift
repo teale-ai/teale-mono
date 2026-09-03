@@ -1407,7 +1407,10 @@ public final class AppState {
                 self.engineStatus = serverStatus
                 self.syncAdvertisedLoadedModels()
             } catch {
-                guard !self.advertisedLoadedModels(for: self.engineStatus).isEmpty else { return }
+                if self.advertisedLoadedModels(for: self.engineStatus).isEmpty {
+                    Self.wanLog("server-truth: rapid-mlx server unreachable (\(error.localizedDescription)); advertisement already empty")
+                    return
+                }
                 Self.wanLog("server-truth: rapid-mlx server unreachable (\(error.localizedDescription)); clearing advertisement")
                 self.engineStatus = .idle
                 self.syncAdvertisedLoadedModels()

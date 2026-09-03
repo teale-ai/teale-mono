@@ -159,6 +159,9 @@ enum ChatCompletionsRoute {
                 let errorMsg = "data: {\"error\": \"\(error.localizedDescription)\"}\n\n"
                 try await writer.write(.init(string: errorMsg))
             }
+            // Hummingbird does NOT end the body when the closure returns;
+            // without finish() clients hang forever after [DONE].
+            try? await writer.finish(nil)
         }
 
         return Response(
@@ -321,6 +324,7 @@ enum ChatCompletionsRoute {
                 let errorMsg = "data: {\"error\": \"gateway stream failed: \(error.localizedDescription)\"}\n\n"
                 try await writer.write(.init(string: errorMsg))
             }
+            try? await writer.finish(nil)
         }
 
         return Response(
