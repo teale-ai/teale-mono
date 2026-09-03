@@ -5,6 +5,7 @@ import PrivacyFilterKit
 public protocol DesktopCompanionControlling: AnyObject {
     func desktop_snapshot() async throws -> DesktopCompanionAppSnapshot
     func desktop_set_privacy_filter_mode(_ mode: PrivacyFilterMode) async throws -> DesktopCompanionAppSnapshot
+    func desktop_set_supply_enabled(_ enabled: Bool) async throws -> DesktopCompanionAppSnapshot
     func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot
     func desktop_request_email_code(_ request: DesktopCompanionEmailCodeRequest) async throws -> DesktopCompanionEmailCodeRequestResponse
     func desktop_verify_email_code(_ request: DesktopCompanionEmailCodeVerifyRequest) async throws -> DesktopCompanionEmailCodeVerifyResponse
@@ -200,6 +201,7 @@ public struct DesktopCompanionAppSnapshot: Codable, Sendable {
     public var loaded_model_id: String?
     public var models: [DesktopCompanionModelSnapshot]
     public var active_transfer: DesktopCompanionTransferSnapshot?
+    public var supply_enabled: Bool
 
     public init(
         app_version: String,
@@ -213,7 +215,8 @@ public struct DesktopCompanionAppSnapshot: Codable, Sendable {
         wallet_transactions: [DesktopCompanionWalletTransactionSnapshot],
         loaded_model_id: String?,
         models: [DesktopCompanionModelSnapshot],
-        active_transfer: DesktopCompanionTransferSnapshot?
+        active_transfer: DesktopCompanionTransferSnapshot?,
+        supply_enabled: Bool = true
     ) {
         self.app_version = app_version
         self.service_state = service_state
@@ -227,6 +230,7 @@ public struct DesktopCompanionAppSnapshot: Codable, Sendable {
         self.loaded_model_id = loaded_model_id
         self.models = models
         self.active_transfer = active_transfer
+        self.supply_enabled = supply_enabled
     }
 }
 

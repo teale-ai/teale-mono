@@ -16,6 +16,7 @@ private enum DesktopCompanionConfig {
     static let routes: [String: String] = [
         "snapshot": "/v1/desktop/app",
         "privacyFilterMode": "/v1/desktop/app/privacy-filter/mode",
+        "supplySet": "/v1/desktop/app/supply",
         "chatCompletions": "/v1/chat/completions",
         "authSession": "/v1/desktop/app/auth/session",
         "networkModels": "/v1/desktop/app/network/models",

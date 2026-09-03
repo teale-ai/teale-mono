@@ -181,6 +181,13 @@ public actor LocalHTTPServer {
             return try await DesktopCompanionRoute.snapshot(controller: desktopController)
         }
 
+        router.post("/v1/desktop/app/supply") { request, _ -> Response in
+            return try await DesktopCompanionRoute.setSupplyEnabled(
+                request: request,
+                controller: desktopController
+            )
+        }
+
         router.post("/v1/desktop/app/privacy-filter/mode") { request, _ -> Response in
             return try await DesktopCompanionRoute.setPrivacyFilterMode(
                 request: request,
