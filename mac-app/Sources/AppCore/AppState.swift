@@ -1676,6 +1676,22 @@ public final class AppState {
         return nil
     }
 
+    /// True when this device currently advertises `model` as servable (engine
+    /// or adopted server-truth). Used by PIN chat to short-circuit
+    /// self-provision locally instead of Noise-dialing its own endpoints.
+    public func servesModelLocally(_ model: String) -> Bool {
+        advertisedLoadedModels(for: engineStatus).contains(model)
+    }
+
+    /// Stream a completion from this device's own serving provider (the same
+    /// path the WAN inference lane uses, including externally-managed
+    /// rapid-mlx stacks adopted via server-truth).
+    public func generateLocalCompletionStream(
+        request: ChatCompletionRequest
+    ) -> AsyncThrowingStream<ChatCompletionChunk, Error> {
+        currentServingProvider().generate(request: request)
+    }
+
     private func advertisedLoadedModels(for status: EngineStatus) -> [String] {
         let descriptor: ModelDescriptor?
         switch status {
