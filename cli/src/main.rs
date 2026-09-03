@@ -6,6 +6,7 @@
 //! 127.0.0.1:11435, then teale-node on 127.0.0.1:11437.
 
 mod api;
+mod mcp;
 mod pin_cmds;
 
 use anyhow::Result;
@@ -60,6 +61,8 @@ enum Command {
     /// Manage Private Inference Networks and exit routing.
     #[command(subcommand)]
     Pin(pin_cmds::PinCommand),
+    /// Run a stdio MCP server so agents can drive Teale natively.
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -123,6 +126,7 @@ async fn main() -> Result<()> {
         Command::Peers => peers(&api).await,
         Command::Settings(cmd) => settings(&api, cmd).await,
         Command::Pin(cmd) => pin_cmds::run(&api, cmd).await,
+        Command::Mcp => mcp::serve(api).await,
     }
 }
 
