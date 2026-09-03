@@ -545,6 +545,7 @@ mod tests {
             wg_pubkey: wg.repeat(32),
             display_name: None,
             serves_models: serves,
+            offers_exit: false,
             disabled,
             endpoints: vec![],
             loaded_models: models.iter().map(|s| s.to_string()).collect(),

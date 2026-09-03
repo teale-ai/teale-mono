@@ -35,6 +35,10 @@ pub struct PinNetmapMember {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub serves_models: bool,
+    /// This member offers itself as a SOCKS5 exit node for the network
+    /// (Phase 1 exit-node data plane). Independent of `serves_models`.
+    #[serde(default)]
+    pub offers_exit: bool,
     pub disabled: bool,
     #[serde(default)]
     pub endpoints: Vec<PinEndpoint>,

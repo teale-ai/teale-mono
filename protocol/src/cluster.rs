@@ -25,6 +25,11 @@ pub enum ClusterMessage {
     LoadModel(LoadModelPayload),
     ModelLoaded(ModelLoadedPayload),
     ModelLoadError(ModelLoadErrorPayload),
+    // PIN exit-node data plane (Phase 1): SOCKS5-over-Noise byte streams.
+    SocksOpen(SocksOpenPayload),
+    SocksOpenResult(SocksOpenResultPayload),
+    SocksData(SocksDataPayload),
+    SocksClose(SocksClosePayload),
     Unknown { kind: String, raw: Value },
 }
 
@@ -83,6 +88,10 @@ impl ClusterMessage {
         );
         try_variant!("inferenceError", InferenceErrorPayload, InferenceError);
         try_variant!("loadModel", LoadModelPayload, LoadModel);
+        try_variant!("socksOpen", SocksOpenPayload, SocksOpen);
+        try_variant!("socksOpenResult", SocksOpenResultPayload, SocksOpenResult);
+        try_variant!("socksData", SocksDataPayload, SocksData);
+        try_variant!("socksClose", SocksClosePayload, SocksClose);
         try_variant!("modelLoaded", ModelLoadedPayload, ModelLoaded);
         try_variant!("modelLoadError", ModelLoadErrorPayload, ModelLoadError);
 
@@ -109,6 +118,10 @@ impl ClusterMessage {
             Self::InferenceComplete(p) => serde_json::json!({ "inferenceComplete": { "_0": p } }),
             Self::InferenceError(p) => serde_json::json!({ "inferenceError": { "_0": p } }),
             Self::LoadModel(p) => serde_json::json!({ "loadModel": { "_0": p } }),
+            Self::SocksOpen(p) => serde_json::json!({ "socksOpen": { "_0": p } }),
+            Self::SocksOpenResult(p) => serde_json::json!({ "socksOpenResult": { "_0": p } }),
+            Self::SocksData(p) => serde_json::json!({ "socksData": { "_0": p } }),
+            Self::SocksClose(p) => serde_json::json!({ "socksClose": { "_0": p } }),
             Self::ModelLoaded(p) => serde_json::json!({ "modelLoaded": { "_0": p } }),
             Self::ModelLoadError(p) => serde_json::json!({ "modelLoadError": { "_0": p } }),
             Self::Unknown { raw, .. } => raw.clone(),
@@ -209,6 +222,53 @@ pub struct InferenceChunkPayload {
     #[serde(rename = "requestID")]
     pub request_id: String,
     pub chunk: Value,
+}
+
+/// Open an exit-node byte stream (consumer → exit provider). The provider
+/// validates the sender's active membership in `pin_id` and that it offers
+/// exit for that network, then dials `dest_host:dest_port`. DNS resolves
+/// on the EXIT side — consumers send hostnames (SOCKS5 ATYP=3), so local
+/// DNS poisoning never affects them.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocksOpenPayload {
+    pub pin_id: String,
+    #[serde(rename = "streamID")]
+    pub stream_id: String,
+    pub dest_host: String,
+    pub dest_port: u16,
+}
+
+/// Provider's answer to `SocksOpen` (provider → consumer).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocksOpenResultPayload {
+    #[serde(rename = "streamID")]
+    pub stream_id: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Stream payload in either direction. `data` is base64 (Swift `Data`
+/// Codable encoding). Keep plaintext chunks small — the transport
+/// fragments at ~1100 bytes.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocksDataPayload {
+    #[serde(rename = "streamID")]
+    pub stream_id: String,
+    pub data: String,
+}
+
+/// Half-close / teardown in either direction.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocksClosePayload {
+    #[serde(rename = "streamID")]
+    pub stream_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

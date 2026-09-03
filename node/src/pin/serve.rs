@@ -308,6 +308,7 @@ mod tests {
                     wg_pubkey: wg,
                     display_name: None,
                     serves_models: serves,
+                    offers_exit: false,
                     disabled,
                     endpoints: vec![],
                     loaded_models: vec!["qwen3-4b".into()],

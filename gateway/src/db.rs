@@ -605,6 +605,15 @@ const MIGRATIONS: &[&str] = &[
 
     ALTER TABLE account_email_codes ADD COLUMN link_token_hash TEXT;
     "#,
+    // 019_pin_member_offers_exit.sql — a member device offers itself as a
+    // SOCKS5 exit node for this network (Phase 1 exit-node data plane).
+    // Device-sovereign: set by the device on /sync; surfaced in the signed
+    // netmap so consumers can pick an exit. Independent of serves_models —
+    // a relay-only device (e.g. a MacBook Air behind NAT) can be a
+    // dedicated exit provider.
+    r#"
+    ALTER TABLE pin_members ADD COLUMN offers_exit INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {

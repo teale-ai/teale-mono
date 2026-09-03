@@ -22,6 +22,7 @@ fn main() {
                 wg_pubkey: "ef".repeat(32),
                 display_name: Some("Front Desk PC".into()),
                 serves_models: true,
+                offers_exit: false,
                 disabled: false,
                 endpoints: vec![
                     PinEndpoint {
@@ -42,6 +43,7 @@ fn main() {
                 wg_pubkey: String::new(),
                 display_name: None,
                 serves_models: false,
+                offers_exit: false,
                 disabled: true,
                 endpoints: vec![],
                 loaded_models: vec![],
