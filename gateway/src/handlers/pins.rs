@@ -1083,6 +1083,7 @@ mod tests {
                 loaded_models: vec!["advertised-model".into()],
                 known_generation,
                 model_policy_status: vec![],
+                offers_exit: None,
             }),
         )
         .await
@@ -1235,6 +1236,7 @@ mod tests {
                     applied_state: "loaded".into(),
                     error: None,
                 }],
+                offers_exit: None,
             }),
         )
         .await
