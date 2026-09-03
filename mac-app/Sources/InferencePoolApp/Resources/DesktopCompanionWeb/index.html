@@ -10,7 +10,9 @@
   <body>
     <main class="page">
       <header class="title">
-        <button class="nav-link active" data-view-button="home" type="button" data-i18n="nav.home">teale</button>
+        <button class="nav-link simple-back" data-view-button="simple" type="button">simple</button>
+        <span class="sep simple-back">|</span>
+        <button class="nav-link" data-view-button="home" type="button" data-i18n="nav.home">teale</button>
         <span class="sep">|</span>
         <button class="nav-link" data-view-button="supply" type="button" data-i18n="nav.supply">supply</button>
         <span class="sep">|</span>
@@ -53,6 +55,7 @@
                   <option value="es">Español</option>
                   <option value="pt-BR">Português (Brasil)</option>
                   <option value="fil-PH">Filipino (Philippines)</option>
+                  <option value="zh-Hans">简体中文</option>
                 </select>
               </label>
               <label class="settings-field">
@@ -83,7 +86,55 @@
 
       <hr class="rule" />
 
-      <section class="view view-active" data-view="home">
+      <section class="view view-active" data-view="simple">
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.earnings.prompt">earnings</span></p>
+          <div class="card">
+            <dl class="stats">
+              <dt data-i18n="simple.earnings.label">Earnings</dt>
+              <dd id="simple-earnings">$0.00 USD</dd>
+            </dl>
+            <p class="note" id="simple-earnings-note">based on 0 credits</p>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.supply.prompt">supply inference</span></p>
+          <div class="card">
+            <label class="toggle-row">
+              <span class="toggle-text">
+                <span data-i18n="simple.supply.title">Supply Inference</span>
+                <small id="simple-supply-detail">Starting</small>
+              </span>
+              <input type="checkbox" id="simple-supply-toggle" checked />
+            </label>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.vpn.prompt">vpn exit node</span></p>
+          <div class="card">
+            <label class="toggle-row disabled">
+              <span class="toggle-text">
+                <span data-i18n="simple.vpn.title">VPN Exit Node</span>
+                <small data-i18n="simple.vpn.note">Coming soon - PINs only. Only peers you approve by PIN can route traffic through this machine.</small>
+              </span>
+              <input type="checkbox" id="simple-vpn-toggle" disabled />
+            </label>
+          </div>
+        </section>
+
+        <section class="section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.settings.prompt">settings</span></p>
+          <div class="card">
+            <div class="actions">
+              <button id="simple-settings-button" class="action" type="button" data-i18n="simple.settings.open">Open settings and advanced tabs</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" data-view="home">
         <section class="section">
           <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="home.prompt.overview">overview</span></p>
           <div class="card">

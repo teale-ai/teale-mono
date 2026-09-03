@@ -667,12 +667,21 @@ extension RemoteControlBridge: DesktopCompanionControlling {
             },
             loaded_model_id: loadedModel?.openrouterId ?? loadedModel?.id,
             models: models,
-            active_transfer: desktopActiveTransferSnapshot()
+            active_transfer: desktopActiveTransferSnapshot(),
+            supply_enabled: appState.supplyEnabled
         )
     }
 
     func desktop_set_privacy_filter_mode(_ mode: PrivacyFilterMode) async throws -> DesktopCompanionAppSnapshot {
         appState.privacyFilterMode = mode
+        return try await desktop_snapshot()
+    }
+
+    func desktop_set_supply_enabled(_ enabled: Bool) async throws -> DesktopCompanionAppSnapshot {
+        await appState.setSupplyEnabled(enabled)
+        if enabled {
+            await appState.resumePreferredSupplyModel()
+        }
         return try await desktop_snapshot()
     }
 

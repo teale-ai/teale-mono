@@ -896,3 +896,42 @@ footer {
   border-color: #a03030;
   color: #ff8787;
 }
+
+/* simplified home view */
+body.simple-mode .nav-link,
+body.simple-mode .sep {
+  display: none;
+}
+body.simple-mode .cursor {
+  display: none;
+}
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+.toggle-row.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.toggle-row .toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.toggle-row .toggle-text small {
+  color: #6f8b88;
+}
+.toggle-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #35c3b4;
+  flex-shrink: 0;
+}
+.note {
+  color: #6f8b88;
+  font-size: 12px;
+  margin: 8px 0 0;
+}

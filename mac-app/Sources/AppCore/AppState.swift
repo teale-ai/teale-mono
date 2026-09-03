@@ -43,6 +43,15 @@ public final class AppState {
         static let wanRelayURL = "teale.wanRelayURL"
         static let installNodeID = "teale.installNodeID"
         static let lastLoadedModelID = "teale.lastLoadedModelID"
+        static let supplyEnabled = "teale.supplyEnabled"
+    }
+
+    /// Master supply switch for the simplified home screen. Persisted so the
+    /// user's choice survives relaunch; gates startup auto-load of the last
+    /// model. Turning supply off unloads the model, and the server-truth
+    /// reconciliation then clears the gateway advertisement automatically.
+    public var supplyEnabled: Bool = UserDefaults.standard.object(forKey: Preferences.supplyEnabled) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(supplyEnabled, forKey: Preferences.supplyEnabled) }
     }
 
     private static let stableNodeIDKey = "teale.stable_node_id"
@@ -764,7 +773,7 @@ public final class AppState {
         await refreshDownloadedModels()
 
         // Reload the last loaded model (skip on first-ever launch)
-        if let lastModelID = UserDefaults.standard.string(forKey: Preferences.lastLoadedModelID) {
+        if supplyEnabled, let lastModelID = UserDefaults.standard.string(forKey: Preferences.lastLoadedModelID) {
             if inferenceBackend == .llamaCpp,
                lastModelID.hasPrefix("gguf-") {
                 // Scan for GGUF models and try to auto-load the last one
@@ -1189,6 +1198,51 @@ public final class AppState {
         engineStatus = .idle
         UserDefaults.standard.removeObject(forKey: Preferences.lastLoadedModelID)
         syncAdvertisedLoadedModels()
+    }
+
+    /// Master supply switch used by the simplified home screen. Turning supply
+    /// off unloads the model (which also clears the gateway advertisement via
+    /// server-truth sync) and suppresses startup auto-load. Turning it on only
+    /// re-arms the flag; the caller loads a model when enabling.
+    public func setSupplyEnabled(_ enabled: Bool) async {
+        supplyEnabled = enabled
+        contributeCompute = enabled
+        if !enabled {
+            await unloadModel()
+        }
+    }
+
+    /// Load the best supply model for this machine. Prefers the
+    /// highest-demand model, then the largest model that fits; uses an
+    /// already-downloaded copy when one exists, otherwise downloads the pick
+    /// (which auto-loads on completion).
+    public func resumePreferredSupplyModel() async {
+        switch engineStatus {
+        case .ready, .generating, .loadingModel:
+            return
+        default:
+            break
+        }
+        let preferred = demandTracker.modelsByDemand.first?.model
+            ?? modelManager.catalog.topModels(for: hardware, limit: 1).first
+        if let model = preferred, downloadedModelIDs.contains(model.id) {
+            await loadModel(model)
+            return
+        }
+        if let fallback = modelManager.catalog.availableModels(for: hardware)
+            .filter({ downloadedModelIDs.contains($0.id) })
+            .max(by: { lhs, rhs in
+                if lhs.requiredRAMGB != rhs.requiredRAMGB {
+                    return lhs.requiredRAMGB < rhs.requiredRAMGB
+                }
+                return lhs.popularityRank > rhs.popularityRank
+            }) {
+            await loadModel(fallback)
+            return
+        }
+        if let model = preferred {
+            await downloadModel(model)
+        }
     }
 
     public func startServer() async {

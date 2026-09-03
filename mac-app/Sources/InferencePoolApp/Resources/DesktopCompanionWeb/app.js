@@ -7,6 +7,7 @@ const ROUTES = {
   modelLoad: "/v1/app/models/load",
   modelDownload: "/v1/app/models/download",
   modelUnload: "/v1/app/models/unload",
+  supplySet: "/v1/desktop/app/supply",
   authSession: "/v1/desktop/app/auth/session",
   accountSummary: "/v1/desktop/app/account",
   accountApiKeys: "/v1/desktop/app/account/api-keys",
@@ -50,6 +51,11 @@ const els = {
   homeModel: document.getElementById("home-model"),
   homeBalance: document.getElementById("home-balance"),
   homeAccount: document.getElementById("home-account"),
+  simpleEarnings: document.getElementById("simple-earnings"),
+  simpleEarningsNote: document.getElementById("simple-earnings-note"),
+  simpleSupplyToggle: document.getElementById("simple-supply-toggle"),
+  simpleSupplyDetail: document.getElementById("simple-supply-detail"),
+  simpleSettingsButton: document.getElementById("simple-settings-button"),
   homeNetworkDevices: document.getElementById("home-network-devices"),
   homeNetworkRam: document.getElementById("home-network-ram"),
   homeNetworkModels: document.getElementById("home-network-models"),
@@ -170,7 +176,7 @@ const CHAT_STORAGE_KEY = "teale.chat.v1";
 const OAUTH_CALLBACK_STORAGE_KEY = "__teale_pending_oauth_callback";
 const OAUTH_PROVIDER_STORAGE_KEY = "__teale_pending_oauth_provider";
 const SHARE_STORY_TEXT = "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.";
-const SUPPORTED_LANGUAGES = new Set(["en", "es", "pt-BR", "fil-PH"]);
+const SUPPORTED_LANGUAGES = new Set(["en", "es", "pt-BR", "fil-PH", "zh-Hans"]);
 const translations = {
   en: {
     "nav.home": "teale",
@@ -179,6 +185,18 @@ const translations = {
     "nav.wallet": "wallet",
     "nav.account": "account",
     "language.label": "language",
+    "view.simple.description": "supply inference like a vpn - everything else is automatic",
+    "simple.earnings.prompt": "earnings",
+    "simple.earnings.label": "Earnings",
+    "simple.earnings.note": "based on {{credits}} credits",
+    "simple.supply.prompt": "supply inference",
+    "simple.supply.title": "Supply Inference",
+    "simple.supply.off": "Off. This machine is not serving inference.",
+    "simple.vpn.prompt": "vpn exit node",
+    "simple.vpn.title": "VPN Exit Node",
+    "simple.vpn.note": "Coming soon - PINs only. Only peers you approve by PIN can route traffic through this machine.",
+    "simple.settings.prompt": "settings",
+    "simple.settings.open": "Open settings and advanced tabs",
     "view.home.description": "supply and demand distributed ai inference",
     "view.supply.description": "earn teale credits by supplying ai inference to users around the world",
     "view.demand.description": "use local models for free or buy and spend credits for more powerful models",
@@ -293,6 +311,18 @@ const translations = {
     "nav.wallet": "钱包",
     "nav.account": "账户",
     "language.label": "语言",
+    "view.simple.description": "像 VPN 一样供应推理 - 其他一切自动完成",
+    "simple.earnings.prompt": "收益",
+    "simple.earnings.label": "收益",
+    "simple.earnings.note": "基于 {{credits}} credits",
+    "simple.supply.prompt": "供应推理",
+    "simple.supply.title": "供应推理",
+    "simple.supply.off": "已关闭。本机当前不提供推理服务。",
+    "simple.vpn.prompt": "VPN 出口节点",
+    "simple.vpn.title": "VPN 出口节点",
+    "simple.vpn.note": "即将推出 - 仅限 PIN 验证的对等节点。只有你通过 PIN 批准的对等节点才能经由本机路由流量。",
+    "simple.settings.prompt": "设置",
+    "simple.settings.open": "打开设置与高级标签页",
     "view.home.description": "分布式 AI 推理供给与需求",
     "view.supply.description": "通过为全球用户提供 AI 推理来赚取 Teale credits",
     "view.demand.description": "免费使用本地模型，或购买并花费 credits 使用更强大的模型",
@@ -848,7 +878,7 @@ function viewDescription(view) {
   return t(`view.${view}.description`);
 }
 
-let activeView = "home";
+let activeView = "simple";
 let intervalHandle = null;
 let lastSnapshot = null;
 let supabaseClient = null;
@@ -3064,6 +3094,7 @@ async function getJsonMaybeMissing(path) {
 
 function setActiveView(view) {
   activeView = view;
+  document.body.classList.toggle("simple-mode", view === "simple");
   for (const button of els.viewButtons) {
     button.classList.toggle("active", button.dataset.viewButton === view);
   }
@@ -4628,6 +4659,24 @@ function maybeFallbackToBundledApp(error) {
   window.location.replace(ROUTES.bundledApp);
 }
 
+function renderSimple(snapshot) {
+  if (!els.simpleEarnings) {
+    return;
+  }
+  const earned = snapshot?.wallet?.gateway_total_earned_credits ?? 0;
+  els.simpleEarnings.textContent = `${formatUsdValue(creditsToUsd(earned) ?? 0)} USD`;
+  els.simpleEarningsNote.textContent = t("simple.earnings.note", {
+    credits: formatCredits(earned),
+  });
+  const enabled = snapshot?.supply_enabled ?? Boolean(snapshot?.loaded_model_id);
+  if (document.activeElement !== els.simpleSupplyToggle) {
+    els.simpleSupplyToggle.checked = Boolean(enabled);
+  }
+  els.simpleSupplyDetail.textContent = enabled
+    ? (snapshot?.state_reason || labelForState(snapshot?.service_state))
+    : t("simple.supply.off");
+}
+
 function renderHome(snapshot) {
   const walletView = deviceWalletBalance();
   els.homeStatus.textContent = labelForState(snapshot?.service_state);
@@ -4730,6 +4779,7 @@ function render(snapshot) {
   }
   els.headerRefresh.disabled = walletRefreshInFlight || !snapshot?.wallet?.current_device_id;
   renderPrivacyFilter(snapshot);
+  renderSimple(snapshot);
   renderHome(snapshot);
   renderSupply(snapshot);
   renderDemand(snapshot);
@@ -4824,6 +4874,22 @@ els.unloadButton.addEventListener("click", async () => {
 });
 
 els.supplyWalletLink.addEventListener("click", () => setActiveView("wallet"));
+
+els.simpleSupplyToggle?.addEventListener("change", async () => {
+  const enabled = els.simpleSupplyToggle.checked;
+  els.simpleSupplyToggle.disabled = true;
+  try {
+    await post(ROUTES.supplySet, { enabled });
+    await refresh();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    els.simpleSupplyToggle.disabled = false;
+    render(lastSnapshot);
+  }
+});
+
+els.simpleSettingsButton?.addEventListener("click", () => setActiveView("home"));
 
 els.authGithubButton.addEventListener("click", () => startOAuth("github"));
 els.authGoogleButton.addEventListener("click", () => startOAuth("google"));
@@ -5200,7 +5266,7 @@ window.__tealeHydrateNativeSession = async (session) => {
 };
 
 applyTranslations();
-setActiveView("home");
+setActiveView("simple");
 loadStoredOAuthCallback();
 refresh().catch((error) => {
   consecutiveSnapshotFailures += 1;

@@ -23,6 +23,21 @@ enum DesktopCompanionRoute {
         }
     }
 
+    static func setSupplyEnabled(
+        request: Request,
+        controller: (any DesktopCompanionControlling)?
+    ) async throws -> Response {
+        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
+        struct Payload: Decodable { let enabled: Bool }
+        do {
+            let body = try await request.body.collect(upTo: 1_048_576)
+            let payload = try JSONDecoder().decode(Payload.self, from: body)
+            return try jsonResponse(try await controller.desktop_set_supply_enabled(payload.enabled))
+        } catch {
+            return errorResponse(message: error.localizedDescription)
+        }
+    }
+
     static func authSession(
         request: Request,
         controller: (any DesktopCompanionControlling)?
