@@ -135,7 +135,7 @@ fn overview_networks(overview: &Value) -> Vec<(String, String, String)> {
 
 /// Resolve --net (name or id, unambiguous prefix ok) or default to the
 /// sole network.
-async fn resolve_net(api: &LocalApi, net: Option<&str>) -> Result<String> {
+pub async fn resolve_net(api: &LocalApi, net: Option<&str>) -> Result<String> {
     let overview = api.call("GET", "/v1/app/pins", None).await?;
     let nets = overview_networks(&overview);
     match net {
