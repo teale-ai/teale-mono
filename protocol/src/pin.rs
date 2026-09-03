@@ -37,7 +37,9 @@ pub struct PinNetmapMember {
     pub serves_models: bool,
     /// This member offers itself as a SOCKS5 exit node for the network
     /// (Phase 1 exit-node data plane). Independent of `serves_models`.
-    #[serde(default)]
+    /// Omitted from serialization when false so netmaps signed before
+    /// this field existed still verify against their canonical bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub offers_exit: bool,
     pub disabled: bool,
     #[serde(default)]
