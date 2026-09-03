@@ -174,6 +174,17 @@ private final class LockedTable<Value>: @unchecked Sendable {
         return storage.count
     }
 
+    /// Atomically returns the existing value for `key`, or stores and returns
+    /// `make()` when absent. `make` runs under the lock - keep it trivial.
+    func value(forKey key: String, orMake make: () -> Value) -> (value: Value, inserted: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = storage[key] { return (existing, false) }
+        let made = make()
+        storage[key] = made
+        return (made, true)
+    }
+
     var values: [Value] {
         lock.lock()
         defer { lock.unlock() }
@@ -620,7 +631,28 @@ public final class WANManager: @unchecked Sendable {
 
     // MARK: - Message Handling
 
+    /// One listener loop per (node, connection object). The crossed
+    /// relay-fallback dial (offer handler + incoming relayOpen sharing one
+    /// sessionID) can register the same connection twice; WAN transport
+    /// connections broadcast to every subscriber, so a second loop would
+    /// double-dispatch every inbound message.
+    private var listeningConnections = LockedTable<ObjectIdentifier>()
+
     private func startListening(to peer: ConnectedWANPeer) {
+        let objectID: ObjectIdentifier
+        switch peer.connection {
+        case .direct(let connection): objectID = ObjectIdentifier(connection)
+        case .relayed(let connection): objectID = ObjectIdentifier(connection)
+        }
+        let nodeID = peer.peerInfo.nodeID
+        let (marked, inserted) = listeningConnections.value(forKey: nodeID) { objectID }
+        if !inserted {
+            // A listener is already recorded for this node. Same connection
+            // object: it is already listening - skip. Different object: the
+            // old loop exits when its (cancelled) connection's stream ends.
+            guard marked != objectID else { return }
+            listeningConnections[nodeID] = objectID
+        }
         Task { [weak self] in
             let messages = await peer.connection.incomingMessages
             for await message in messages {
@@ -629,7 +661,9 @@ public final class WANManager: @unchecked Sendable {
             }
             // Connection ended — attempt reconnect after a delay
             guard let self else { return }
-            let nodeID = peer.peerInfo.nodeID
+            if self.listeningConnections[nodeID] == objectID {
+                self.listeningConnections[nodeID] = nil
+            }
             guard self.connectedPeers[nodeID]?.connectionID == peer.connectionID else { return }
             self.lastKnownPeersByNodeID[nodeID] = peer.peerInfo
             self.connectedPeers.removeValue(forKey: nodeID)
