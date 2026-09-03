@@ -43,6 +43,21 @@ public enum WANTransportConnection: Sendable {
             await connection.cancel()
         }
     }
+
+    /// Cheap liveness probe: a direct transport must still be .connected; a
+    /// relayed transport dies when its relay session is closed or dropped
+    /// (the WANManager peer table can outlive the session underneath it).
+    public var isLive: Bool {
+        get async {
+            switch self {
+            case .direct(let connection):
+                if case .connected = await connection.connectionState { return true }
+                return false
+            case .relayed(let connection):
+                return await !connection.isClosed
+            }
+        }
+    }
 }
 
 public actor RelayPeerConnection {
@@ -53,7 +68,7 @@ public actor RelayPeerConnection {
     /// Broadcast subscribers — each call to `incomingMessages` creates a new subscription.
     /// All subscribers receive every message (fan-out, not competing consumers).
     private var subscribers: [UUID: AsyncStream<ClusterMessage>.Continuation] = [:]
-    private var isClosed = false
+    public private(set) var isClosed = false
 
     /// Noise session for E2E encryption over the relay (nil = plaintext fallback for legacy peers)
     private var noiseSession: NoiseSession?

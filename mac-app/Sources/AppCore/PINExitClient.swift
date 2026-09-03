@@ -66,6 +66,13 @@ public final class PINExitClient: @unchecked Sendable {
     /// True when we dialed the transport ourselves (cancel on stop); false
     /// when it belongs to WANManager's peer table.
     private var ownsTransport = false
+    /// Guards transport/ownsTransport/route: start/stop run under
+    /// lifecycleLock, but SOCKS client handlers read and redial concurrently.
+    private let transportLock = NSLock()
+    /// Active route + dialer, kept so a dead transport can be redialed
+    /// without a full stop/start cycle.
+    private var route: (pinId: String, member: PinNetmapMember)?
+    private var wanManagerRef: WANManager?
     private var activeStreams: [UUID: LocalStream] = [:]
     private let streamsLock = NSLock()
     /// Serialized start/stop.
@@ -111,8 +118,12 @@ public final class PINExitClient: @unchecked Sendable {
 
         do {
             let (conn, owned) = try await dial(member: member, wanManager: wanManager)
+            transportLock.lock()
             transport = conn
             ownsTransport = owned
+            route = (pinId: pinId, member: member)
+            wanManagerRef = wanManager
+            transportLock.unlock()
         } catch {
             await stateBox.set(Status(
                 state: "failed", pinId: pinId, viaDevice: viaName, host: nil, port: nil,
@@ -130,8 +141,13 @@ public final class PINExitClient: @unchecked Sendable {
             await stateBox.set(Status(
                 state: "failed", pinId: pinId, viaDevice: viaName, host: nil, port: nil,
                 error: "could not bind local proxy: \(error.localizedDescription)"))
-            if ownsTransport { await transport?.cancel() }
+            transportLock.lock()
+            let boundTransport = transport
+            let boundOwned = ownsTransport
             transport = nil
+            ownsTransport = false
+            transportLock.unlock()
+            if boundOwned { await boundTransport?.cancel() }
             throw error
         }
         let pinIdCopy = pinId
@@ -171,9 +187,15 @@ public final class PINExitClient: @unchecked Sendable {
         activeStreams.removeAll()
         streamsLock.unlock()
         for (_, s) in streams { await s.close() }
-        if ownsTransport { await transport?.cancel() }
+        transportLock.lock()
+        let oldTransport = transport
+        let oldOwned = ownsTransport
         transport = nil
         ownsTransport = false
+        route = nil
+        wanManagerRef = nil
+        transportLock.unlock()
+        if oldOwned { await oldTransport?.cancel() }
         await stateBox.set(.off)
     }
 
@@ -187,8 +209,15 @@ public final class PINExitClient: @unchecked Sendable {
         member: PinNetmapMember, wanManager: WANManager
     ) async throws -> (WANTransportConnection, Bool) {
         if let existing = await wanManager.connectedPeers(byNodeID: member.nodePubkey) {
-            PINExitServer.log("exit client: reusing WAN connection to \(member.nodePubkey.prefix(12))")
-            return (existing, false)
+            if await existing.isLive {
+                PINExitServer.log("exit client: reusing WAN connection to \(member.nodePubkey.prefix(12))")
+                return (existing, false)
+            }
+            // Stale peer-table entry: the relay session died but WANManager
+            // has not pruned it yet. Reusing it sends socksOpen into the
+            // void - evict and fall through to a fresh dial.
+            PINExitServer.log("exit client: cached WAN connection to \(member.nodePubkey.prefix(12)) is dead, redialing")
+            await wanManager.disconnectPeer(member.nodePubkey)
         }
         // WANManager connect (discovery-based: direct attempt, relay fallback).
         let connectTask = Task { try? await wanManager.connectToPeer(nodeID: member.nodePubkey) }
@@ -241,7 +270,6 @@ public final class PINExitClient: @unchecked Sendable {
 
     private func handleSocksClient(_ inbound: NWConnection, pinId: String) async {
         inbound.start(queue: .global(qos: .userInitiated))
-        guard let transport else { inbound.cancel(); return }
         do {
             // Greeting: VER NMETHODS METHODS...
             guard let greeting = try await Self.readExactly(inbound, 2),
@@ -285,13 +313,22 @@ public final class PINExitClient: @unchecked Sendable {
             guard let portB = try await Self.readExactly(inbound, 2) else { inbound.cancel(); return }
             let destPort = UInt16(portB[0]) << 8 | UInt16(portB[1])
 
-            // Open the stream on the exit node.
+            // Open the stream on the exit node, redialing once if the
+            // cached transport died under us.
             let streamID = UUID()
-            try await transport.send(.socksOpen(SocksOpenPayload(
-                pinId: pinId, streamID: streamID, destHost: host, destPort: destPort)))
+            let transport: WANTransportConnection
             do {
-                try await awaitOpenResult(streamID: streamID, on: transport)
+                transport = try await openStream(
+                    streamID: streamID, pinId: pinId, host: host, port: destPort)
+                var s = await stateBox.get()
+                if s.error != nil {
+                    s.error = nil
+                    await stateBox.set(s)
+                }
             } catch {
+                var s = await stateBox.get()
+                s.error = "last open failed: \(error.localizedDescription)"
+                await stateBox.set(s)
                 try? await Self.sendRaw(inbound, Self.socksReply(0x01))
                 inbound.cancel()
                 return
@@ -322,6 +359,73 @@ public final class PINExitClient: @unchecked Sendable {
             startMessagePump(for: streamID, local: local, on: transport)
         } catch {
             inbound.cancel()
+        }
+    }
+
+    private func currentTransport() -> WANTransportConnection? {
+        transportLock.lock()
+        defer { transportLock.unlock() }
+        return transport
+    }
+
+    /// Send socksOpen and await the result, redialing the exit once when the
+    /// cached transport is dead (relay sessions drop silently - the peer
+    /// table entry outlives the session, and a "listening" status alone said
+    /// nothing about it).
+    private func openStream(
+        streamID: UUID, pinId: String, host: String, port: UInt16
+    ) async throws -> WANTransportConnection {
+        var lastError: Error = ExitError.openFailed("no route to exit node")
+        for attempt in 1...2 {
+            guard let transport = currentTransport() else {
+                if attempt < 2 { await redial(); continue }
+                throw lastError
+            }
+            do {
+                try await transport.send(.socksOpen(SocksOpenPayload(
+                    pinId: pinId, streamID: streamID, destHost: host, destPort: port)))
+                try await awaitOpenResult(streamID: streamID, on: transport)
+                return transport
+            } catch {
+                lastError = error
+                PINExitServer.log("exit client: open attempt \(attempt) failed: \(error.localizedDescription)")
+                if attempt < 2 { await redial() }
+            }
+        }
+        throw lastError
+    }
+
+    /// Drop the cached transport (evicting WANManager's stale peer-table
+    /// entry when we don't own it) and dial the route's exit member again.
+    /// Re-reads the netmap so a provider that changed endpoints is found.
+    private func redial() async {
+        transportLock.lock()
+        let route = self.route
+        let wanManager = self.wanManagerRef
+        let old = transport
+        let owned = ownsTransport
+        transport = nil
+        ownsTransport = false
+        transportLock.unlock()
+        guard let route, let wanManager else { return }
+        if owned { await old?.cancel() } else if old != nil {
+            await wanManager.disconnectPeer(route.member.nodePubkey)
+        }
+        let members = await pinService.manager.exitMembers(
+            pinId: route.pinId, excludingDeviceId: selfDeviceId)
+        let member = members.first { $0.deviceId == route.member.deviceId }
+            ?? members.first { $0.nodePubkey == route.member.nodePubkey }
+            ?? route.member
+        do {
+            let (conn, newOwned) = try await dial(member: member, wanManager: wanManager)
+            transportLock.lock()
+            transport = conn
+            ownsTransport = newOwned
+            self.route = (pinId: route.pinId, member: member)
+            transportLock.unlock()
+            PINExitServer.log("exit client: redialed \(member.nodePubkey.prefix(12))")
+        } catch {
+            PINExitServer.log("exit client: redial failed: \(error.localizedDescription)")
         }
     }
 
@@ -360,7 +464,7 @@ public final class PINExitClient: @unchecked Sendable {
     private func awaitOpenResult(streamID: UUID, on transport: WANTransportConnection) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                try await Task.sleep(nanoseconds: 15 * 1_000_000_000)
                 throw ExitError.openFailed("exit node did not answer")
             }
             group.addTask {

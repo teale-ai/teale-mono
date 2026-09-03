@@ -279,6 +279,10 @@ public actor PINManager {
     private var pinnedGatewayKey: String?
     private var state: [String: PinMembershipState] = [:]
     private var settingsValue: LocalPinSettings
+    /// Modification date of local-settings.json at our last read/write, so a
+    /// sibling process (the GUI app and the fleet-supply process share the
+    /// file) rewrites get picked up instead of stale-until-restart.
+    private var settingsFileModDate: Date?
     /// Latest policy reconciliation rows: (pinId, modelId, appliedState, error)
     private var policyStatus: [(String, String, String, String?)] = []
     /// Pending usage records (persisted as JSONL alongside outbox batches).
@@ -314,6 +318,7 @@ public actor PINManager {
                 LocalPinSettings.self,
                 from: Data(contentsOf: dataDir.appendingPathComponent("local-settings.json"))
             )) ?? LocalPinSettings()
+        settingsFileModDate = Self.settingsFileModDate(dataDir: dataDir)
         usagePendingCount = Self.countLines(dataDir.appendingPathComponent("usage/records.jsonl"))
         state = Self.loadCachedNetmaps(dataDir: dataDir, pinnedGatewayKey: pinnedGatewayKey)
     }
@@ -569,15 +574,47 @@ public actor PINManager {
 
     // MARK: Settings
 
-    public func settings() -> LocalPinSettings { settingsValue }
+    public func settings() -> LocalPinSettings {
+        reloadSettingsIfChanged()
+        return settingsValue
+    }
 
     @discardableResult
     public func updateSettings(_ mutate: (inout LocalPinSettings) -> Void) -> LocalPinSettings {
+        // Read-before-write: a sibling process may have written newer
+        // settings since our last load; mutating stale state would clobber
+        // them (last-writer-wins per update is acceptable; per-launch is not).
+        reloadSettingsIfChanged()
         mutate(&settingsValue)
         if let bytes = try? JSONEncoder().encode(settingsValue) {
-            try? bytes.write(to: dataDir.appendingPathComponent("local-settings.json"))
+            // Atomic: a concurrent reader must never see a partial file.
+            try? bytes.write(
+                to: dataDir.appendingPathComponent("local-settings.json"),
+                options: .atomic)
         }
+        settingsFileModDate = Self.settingsFileModDate(dataDir: dataDir)
         return settingsValue
+    }
+
+    private static func settingsFileModDate(dataDir: URL) -> Date? {
+        let file = dataDir.appendingPathComponent("local-settings.json")
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: file.path) else {
+            return nil
+        }
+        return attrs[.modificationDate] as? Date
+    }
+
+    /// Re-read local-settings.json when another process wrote it after our
+    /// last load. A mid-write partial file fails decode and is ignored.
+    private func reloadSettingsIfChanged() {
+        let mod = Self.settingsFileModDate(dataDir: dataDir)
+        guard let mod, mod != settingsFileModDate else { return }
+        let file = dataDir.appendingPathComponent("local-settings.json")
+        if let reloaded = try? JSONDecoder().decode(
+            LocalPinSettings.self, from: Data(contentsOf: file)) {
+            settingsValue = reloaded
+        }
+        settingsFileModDate = mod
     }
 
     public func recordPolicyStatus(_ rows: [(String, String, String, String?)]) {
