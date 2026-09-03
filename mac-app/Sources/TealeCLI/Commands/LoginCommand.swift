@@ -9,12 +9,7 @@ struct Login: AsyncParsableCommand {
     )
 
     func run() async throws {
-        guard let config = SupabaseConfig.default else {
-            print("Auth not configured. You can still use `teale up` without an account.")
-            throw ExitCode.failure
-        }
-
-        let authManager = await MainActor.run { AuthManager(config: config) }
+        let authManager = await MainActor.run { AuthManager() }
         await authManager.checkSession()
 
         let state = await MainActor.run { authManager.authState }

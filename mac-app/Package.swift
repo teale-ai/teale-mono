@@ -20,7 +20,6 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.12"),
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.0.0"),
-        .package(url: "https://github.com/supabase/supabase-swift", from: "2.0.0"),
         .package(url: "https://github.com/p2p-org/solana-swift", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
@@ -130,10 +129,6 @@ let package = Package(
             dependencies: [
                 "GatewayKit",
                 "SharedTypes",
-                .product(name: "Supabase", package: "supabase-swift"),
-            ],
-            resources: [
-                .process("Resources"),
             ]
         ),
 

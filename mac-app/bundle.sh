@@ -68,7 +68,7 @@ elif [ ! -d "${METALLIB_BUNDLE}" ]; then
     echo "WARNING: Metal shader bundle not found — inference will not work"
 fi
 
-# Copy SwiftPM/Xcode resource bundles such as AuthKit's bundled Supabase config.
+# Copy SwiftPM/Xcode resource bundles.
 find "${DERIVED_DATA}/Build/Products/Release" -maxdepth 1 -name '*.bundle' -type d | while read -r bundle; do
     cp -R "${bundle}" "${RESOURCES_DIR}/"
 done
@@ -78,10 +78,6 @@ cp Sources/InferencePoolApp/Info.plist "${CONTENTS_DIR}/Info.plist"
 if [ -f "Sources/InferencePoolApp/AppIcon.icns" ]; then
     cp Sources/InferencePoolApp/AppIcon.icns "${RESOURCES_DIR}/AppIcon.icns"
     echo "  Included app icon"
-fi
-if [ -f "Supabase.plist" ]; then
-    cp "Supabase.plist" "${RESOURCES_DIR}/Supabase.plist"
-    echo "  Included app-level Supabase.plist"
 fi
 
 # Embed the Developer ID provisioning profile if present. Required by AMFI to

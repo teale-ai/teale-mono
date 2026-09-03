@@ -512,15 +512,11 @@ public final class AppState {
         self.wanManager = WANManager()
         self.pinService = try? PINService(
             gatewayBaseURL: URL(string: "https://gateway.teale.com")!)
-        if let config = SupabaseConfig.default {
-            self.authManager = AuthManager(config: config)
-        } else {
-            self.authManager = nil
-        }
+        self.authManager = AuthManager()
         self.agentManager = AgentManager()
 
         // Chat — stable local user ID for ChatKit messaging.
-        // Upgraded to the authenticated user ID once Supabase auth resolves.
+        // Upgraded to the authenticated user ID once gateway auth resolves.
         let chatUserID: UUID
         if let raw = UserDefaults.standard.string(forKey: "teale.chatUserID"),
            let uuid = UUID(uuidString: raw) {
