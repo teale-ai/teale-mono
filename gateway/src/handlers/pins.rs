@@ -478,6 +478,10 @@ pub struct SyncReq {
     loaded_models: Vec<String>,
     #[serde(default)]
     known_generation: Option<i64>,
+    /// Device-sovereign: this device offers itself as a SOCKS5 exit node
+    /// for this network. `None` = leave the stored value untouched.
+    #[serde(default)]
+    offers_exit: Option<bool>,
     /// (modelId, appliedState, error) reconciliation reports.
     #[serde(default)]
     model_policy_status: Vec<ModelPolicyStatusReq>,
@@ -548,6 +552,10 @@ pub async fn sync(
         &req.wg_pubkey,
     )
     .map_err(GatewayError::Other)?;
+    if let Some(offers_exit) = req.offers_exit {
+        pins::set_member_offers_exit(pool, &pin_id, &device_id, offers_exit)
+            .map_err(GatewayError::Other)?;
+    }
     if !req.model_policy_status.is_empty() {
         let statuses: Vec<(String, String, Option<String>)> = req
             .model_policy_status
@@ -1075,6 +1083,7 @@ mod tests {
                 loaded_models: vec!["advertised-model".into()],
                 known_generation,
                 model_policy_status: vec![],
+                offers_exit: None,
             }),
         )
         .await
@@ -1227,6 +1236,7 @@ mod tests {
                     applied_state: "loaded".into(),
                     error: None,
                 }],
+                offers_exit: None,
             }),
         )
         .await

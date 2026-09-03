@@ -56,6 +56,7 @@ pub struct PinMember {
     pub status: String,
     pub serves_models: bool,
     pub allow_remote_models: bool,
+    pub offers_exit: bool,
     pub endpoints: String,
     pub loaded_models: String,
     pub requested_at: i64,
@@ -498,7 +499,7 @@ pub fn members(pool: &DbPool, pin_id: &str) -> anyhow::Result<Vec<PinMember>> {
     let conn = pool.lock();
     let mut stmt = conn.prepare(
         "SELECT pin_id, device_id, node_pubkey, wg_pubkey, display_name, status, serves_models,
-                allow_remote_models, endpoints, loaded_models, requested_at, approved_by,
+                allow_remote_models, offers_exit, endpoints, loaded_models, requested_at, approved_by,
                 joined_at, last_seen
          FROM pin_members
          WHERE pin_id = ? AND status != 'removed'
@@ -515,12 +516,13 @@ pub fn members(pool: &DbPool, pin_id: &str) -> anyhow::Result<Vec<PinMember>> {
                 status: row.get(5)?,
                 serves_models: row.get::<_, i64>(6)? != 0,
                 allow_remote_models: row.get::<_, i64>(7)? != 0,
-                endpoints: row.get(8)?,
-                loaded_models: row.get(9)?,
-                requested_at: row.get(10)?,
-                approved_by: row.get(11)?,
-                joined_at: row.get(12)?,
-                last_seen: row.get(13)?,
+                offers_exit: row.get::<_, i64>(8)? != 0,
+                endpoints: row.get(9)?,
+                loaded_models: row.get(10)?,
+                requested_at: row.get(11)?,
+                approved_by: row.get(12)?,
+                joined_at: row.get(13)?,
+                last_seen: row.get(14)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -533,6 +535,29 @@ pub fn touch_member_last_seen(pool: &DbPool, pin_id: &str, device_id: &str) -> a
         "UPDATE pin_members SET last_seen = ? WHERE pin_id = ? AND device_id = ?",
         params![unix_now(), pin_id, device_id],
     )?;
+    Ok(())
+}
+
+/// Set a member's exit-node offering. A change bumps the netmap
+/// generation so peers re-fetch and see the new exit set.
+pub fn set_member_offers_exit(
+    pool: &DbPool,
+    pin_id: &str,
+    device_id: &str,
+    offers_exit: bool,
+) -> anyhow::Result<()> {
+    let conn = pool.lock();
+    let changed = conn.execute(
+        "UPDATE pin_members SET offers_exit = ?
+         WHERE pin_id = ? AND device_id = ? AND offers_exit != ?",
+        params![offers_exit as i64, pin_id, device_id, offers_exit as i64],
+    )?;
+    if changed > 0 {
+        conn.execute(
+            "UPDATE pins SET netmap_generation = netmap_generation + 1 WHERE pin_id = ?",
+            params![pin_id],
+        )?;
+    }
     Ok(())
 }
 
@@ -600,6 +625,7 @@ pub fn build_netmap(
                 wg_pubkey: m.wg_pubkey,
                 display_name: m.display_name,
                 serves_models: m.serves_models,
+                offers_exit: m.offers_exit,
                 disabled,
                 // Disabled devices stay listed (peers must recognize and
                 // reject them) but their endpoints are withheld.

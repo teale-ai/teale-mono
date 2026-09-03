@@ -270,6 +270,7 @@ mod tests {
             wg_pubkey: wg.into(),
             display_name: None,
             serves_models: true,
+            offers_exit: false,
             disabled: false,
             endpoints,
             loaded_models: models.iter().map(|s| s.to_string()).collect(),
