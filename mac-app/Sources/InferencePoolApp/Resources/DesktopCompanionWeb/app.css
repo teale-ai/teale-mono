@@ -996,6 +996,31 @@ body.simple-mode .cursor {
 .simple-pin-row small {
   color: #6f8b88;
 }
+.pin-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pin-add-button {
+  min-width: 30px;
+  padding: 1px 10px;
+  font-size: 15px;
+  line-height: 1.4;
+}
+.simple-pin-add-panel {
+  margin-top: 10px;
+}
+.simple-pin-mode {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.pin-mode {
+  opacity: 0.5;
+}
+.pin-mode.active {
+  opacity: 1;
+}
 .simple-pin-form {
   display: flex;
   gap: 8px;

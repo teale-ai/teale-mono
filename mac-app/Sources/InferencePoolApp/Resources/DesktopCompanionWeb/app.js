@@ -59,10 +59,12 @@ const els = {
   simpleSettingsButton: document.getElementById("simple-settings-button"),
   simplePinList: document.getElementById("simple-pin-list"),
   simplePinEmpty: document.getElementById("simple-pin-empty"),
-  simplePinCreateName: document.getElementById("simple-pin-create-name"),
-  simplePinCreate: document.getElementById("simple-pin-create"),
-  simplePinJoinCode: document.getElementById("simple-pin-join-code"),
-  simplePinJoin: document.getElementById("simple-pin-join"),
+  simplePinAdd: document.getElementById("simple-pin-add"),
+  simplePinAddPanel: document.getElementById("simple-pin-add-panel"),
+  simplePinModeCreate: document.getElementById("simple-pin-mode-create"),
+  simplePinModeJoin: document.getElementById("simple-pin-mode-join"),
+  simplePinAddInput: document.getElementById("simple-pin-add-input"),
+  simplePinAddSubmit: document.getElementById("simple-pin-add-submit"),
   homeNetworkDevices: document.getElementById("home-network-devices"),
   homeNetworkRam: document.getElementById("home-network-ram"),
   homeNetworkModels: document.getElementById("home-network-models"),
@@ -200,7 +202,6 @@ const translations = {
     "simple.supply.off": "Off. This machine is not serving inference.",
     "simple.pins.prompt": "private inference network(s)",
     "simple.pins.empty": "No networks yet - create one or join with a code.",
-    "simple.pins.exitNote": "Exit-node toggles save your preference now; routing activates when the exit-node backend ships.",
     "simple.pins.exit": "exit node",
     "simple.pins.namePh": "new network name",
     "simple.pins.codePh": "join code",
@@ -330,7 +331,6 @@ const translations = {
     "simple.supply.off": "已关闭。本机当前不提供推理服务。",
     "simple.pins.prompt": "私有推理网络",
     "simple.pins.empty": "还没有网络 - 创建一个，或用邀请码加入。",
-    "simple.pins.exitNote": "出口节点开关现在保存你的偏好；路由功能将在出口节点后端上线后生效。",
     "simple.pins.exit": "出口节点",
     "simple.pins.namePh": "新网络名称",
     "simple.pins.codePh": "邀请码",
@@ -4984,16 +4984,63 @@ els.simplePinList?.addEventListener("change", async (event) => {
   }
 });
 
-els.simplePinCreate?.addEventListener("click", async () => {
-  const name = (els.simplePinCreateName.value || "").trim();
-  if (!name) {
+let simplePinAddMode = "create";
+
+function applySimplePinAddMode() {
+  const create = simplePinAddMode === "create";
+  els.simplePinModeCreate?.classList.toggle("active", create);
+  els.simplePinModeJoin?.classList.toggle("active", !create);
+  if (els.simplePinAddInput) {
+    els.simplePinAddInput.dataset.i18nPlaceholder = create ? "simple.pins.namePh" : "simple.pins.codePh";
+    els.simplePinAddInput.placeholder = t(els.simplePinAddInput.dataset.i18nPlaceholder);
+  }
+  if (els.simplePinAddSubmit) {
+    els.simplePinAddSubmit.dataset.i18n = create ? "simple.pins.create" : "simple.pins.join";
+    els.simplePinAddSubmit.textContent = t(els.simplePinAddSubmit.dataset.i18n);
+  }
+}
+
+els.simplePinAdd?.addEventListener("click", () => {
+  if (!els.simplePinAddPanel) {
+    return;
+  }
+  els.simplePinAddPanel.hidden = !els.simplePinAddPanel.hidden;
+  if (!els.simplePinAddPanel.hidden) {
+    applySimplePinAddMode();
+    els.simplePinAddInput?.focus();
+  }
+});
+
+els.simplePinModeCreate?.addEventListener("click", () => {
+  simplePinAddMode = "create";
+  applySimplePinAddMode();
+  els.simplePinAddInput?.focus();
+});
+
+els.simplePinModeJoin?.addEventListener("click", () => {
+  simplePinAddMode = "join";
+  applySimplePinAddMode();
+  els.simplePinAddInput?.focus();
+});
+
+els.simplePinAddSubmit?.addEventListener("click", async () => {
+  const value = (els.simplePinAddInput.value || "").trim();
+  if (!value) {
     return;
   }
   try {
-    const created = await pinApi("POST", "/v1/app/pins/create", { name });
-    els.simplePinCreateName.value = "";
-    if (created?.joinCode) {
-      alert(`Network created. PIN: ${created.joinCode} - share it wifi-password-style; you approve each join.`);
+    if (simplePinAddMode === "create") {
+      const created = await pinApi("POST", "/v1/app/pins/create", { name: value });
+      if (created?.joinCode) {
+        alert(`Network created. PIN: ${created.joinCode} - share it wifi-password-style; you approve each join.`);
+      }
+    } else {
+      await pinApi("POST", "/v1/app/pins/join", { code: value });
+      alert("Join request submitted. An admin has to approve this device before it becomes active.");
+    }
+    els.simplePinAddInput.value = "";
+    if (els.simplePinAddPanel) {
+      els.simplePinAddPanel.hidden = true;
     }
     await refreshPinNetworks();
   } catch (error) {
@@ -5001,18 +5048,10 @@ els.simplePinCreate?.addEventListener("click", async () => {
   }
 });
 
-els.simplePinJoin?.addEventListener("click", async () => {
-  const code = (els.simplePinJoinCode.value || "").trim();
-  if (!code) {
-    return;
-  }
-  try {
-    await pinApi("POST", "/v1/app/pins/join", { code });
-    els.simplePinJoinCode.value = "";
-    alert("Join request submitted. An admin has to approve this device before it becomes active.");
-    await refreshPinNetworks();
-  } catch (error) {
-    alert(error.message);
+els.simplePinAddInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    els.simplePinAddSubmit?.click();
   }
 });
 
