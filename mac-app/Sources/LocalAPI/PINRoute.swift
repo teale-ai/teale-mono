@@ -16,6 +16,12 @@ public protocol PINControlling: Sendable {
     func pinUpdateLocalSettings(_ body: Data) async throws -> Data
     /// Authenticated passthrough to gateway /v1/pins/<subpath>.
     func pinProxy(method: String, subpath: String, body: Data?) async throws -> (Int, Data)
+    /// Exit-node consumer control. start body: {pinId, deviceId?};
+    /// returns the consumer status JSON ({state, pinId, viaDevice, host,
+    /// port, error}).
+    func pinExitStart(_ body: Data) async throws -> Data
+    func pinExitStop() async throws -> Data
+    func pinExitStatus() async throws -> Data
     /// Stream a completion from a PIN provider. Yields SSE `data:` lines
     /// (chunk JSON, then `[DONE]`); the prompt travels device-to-device.
     func pinChatStream(model: String, requestBody: Data) -> AsyncThrowingStream<String, Error>
@@ -80,6 +86,19 @@ enum PINRoute {
                 headers: [.contentType: "text/event-stream", .cacheControl: "no-cache"],
                 body: responseBody
             )
+        }
+        router.post("/v1/app/pins/exit/start") { request, _ -> Response in
+            guard let controller else { return Self.unavailable() }
+            let body = try await request.body.collect(upTo: 1_048_576)
+            return Self.json(try await controller.pinExitStart(Data(buffer: body)))
+        }
+        router.post("/v1/app/pins/exit/stop") { _, _ -> Response in
+            guard let controller else { return Self.unavailable() }
+            return Self.json(try await controller.pinExitStop())
+        }
+        router.get("/v1/app/pins/exit/status") { _, _ -> Response in
+            guard let controller else { return Self.unavailable() }
+            return Self.json(try await controller.pinExitStatus())
         }
         router.get("/v1/app/pins/settings/local") { _, _ -> Response in
             guard let controller else { return Self.unavailable() }

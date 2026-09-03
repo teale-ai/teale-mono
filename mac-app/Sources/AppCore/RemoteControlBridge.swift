@@ -1111,6 +1111,10 @@ extension RemoteControlBridge: PINControlling {
             if let v = patch["dinContribute"] as? Bool { settings.dinContribute = v }
             if let v = patch["exitNodePins"] as? [String] { settings.exitNodePins = v }
         }
+        if patch["exitNodePins"] != nil {
+            // Push the new offering state to the gateway now, not in a minute.
+            service.syncNow()
+        }
         if let dinContribute = patch["dinContribute"] as? Bool {
             await MainActor.run { appState.contributeCompute = dinContribute }
         }
@@ -1126,6 +1130,50 @@ extension RemoteControlBridge: PINControlling {
         }
         return try await service.manager.proxy(
             method: method, path: "/v1/pins\(subpath)", body: json)
+    }
+
+    func pinExitStart(_ body: Data) async throws -> Data {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        guard let pinId = json["pinId"] as? String, !pinId.isEmpty else {
+            throw RemoteControlError.invalidSetting("`pinId` is required")
+        }
+        let deviceId = json["deviceId"] as? String
+        let client = await MainActor.run { appState.pinExitClient }
+        guard let client else { throw RemoteControlError.unsupported }
+        try await client.start(
+            pinId: pinId, deviceId: deviceId, listenPort: 17890,
+            wanManager: await MainActor.run { appState.wanManager })
+        // Persist so the route resumes across restarts.
+        _ = await service.manager.updateSettings { settings in
+            settings.exitRoutePinId = pinId
+            settings.exitRouteDeviceId = deviceId
+        }
+        return try JSONEncoder().encode(await client.status())
+    }
+
+    func pinExitStop() async throws -> Data {
+        guard let service = await pinService else {
+            throw RemoteControlError.unsupported
+        }
+        let client = await MainActor.run { appState.pinExitClient }
+        guard let client else { throw RemoteControlError.unsupported }
+        await client.stop()
+        _ = await service.manager.updateSettings { settings in
+            settings.exitRoutePinId = nil
+            settings.exitRouteDeviceId = nil
+        }
+        return try JSONEncoder().encode(await client.status())
+    }
+
+    func pinExitStatus() async throws -> Data {
+        let client = await MainActor.run { appState.pinExitClient }
+        guard let client else {
+            return try JSONEncoder().encode(PINExitClient.Status.off)
+        }
+        return try JSONEncoder().encode(await client.status())
     }
 
     // `nonisolated`: satisfies the synchronous, nonisolated `PINControlling`

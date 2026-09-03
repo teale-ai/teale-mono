@@ -487,6 +487,19 @@
                   <label class="pin-toggle"><input id="pin-din-equal" type="checkbox" /> Treat DIN requests with equal priority (default: private network first)</label>
                 </dd>
               </dl>
+              <dl class="stats">
+                <dt>Exit node</dt>
+                <dd>
+                  <label class="pin-toggle"><input id="pin-offer-exit" type="checkbox" /> Offer this machine as an exit node for this network</label>
+                  <div class="simple-pin-form">
+                    <select id="pin-exit-device"></select>
+                    <button id="pin-exit-start" class="action" type="button">Start routing</button>
+                    <button id="pin-exit-stop" class="action" type="button" hidden>Stop</button>
+                  </div>
+                  <small id="pin-exit-status">Not routing traffic. Pick an exit device to route this machine's traffic through it.</small>
+                  <small id="pin-exit-hint" hidden></small>
+                </dd>
+              </dl>
               <div class="actions">
                 <button id="pin-leave" class="action danger" type="button">Leave network</button>
               </div>

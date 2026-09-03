@@ -22,10 +22,28 @@ public struct PinNetmapMember: Codable, Sendable, Equatable {
     public let wgPubkey: String
     public let displayName: String?
     public let servesModels: Bool
+    /// This member offers itself as a SOCKS5 exit node for the network.
+    /// Independent of servesModels - a relay-only device can be a
+    /// dedicated exit provider. Absent on older gateways: decode as false.
+    public let offersExit: Bool
     public let disabled: Bool
     public let endpoints: [PinEndpoint]
     public let loadedModels: [String]
     public let lastSeen: Int64?
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try c.decode(String.self, forKey: .deviceId)
+        nodePubkey = try c.decode(String.self, forKey: .nodePubkey)
+        wgPubkey = try c.decodeIfPresent(String.self, forKey: .wgPubkey) ?? ""
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        servesModels = try c.decodeIfPresent(Bool.self, forKey: .servesModels) ?? true
+        offersExit = try c.decodeIfPresent(Bool.self, forKey: .offersExit) ?? false
+        disabled = try c.decodeIfPresent(Bool.self, forKey: .disabled) ?? false
+        endpoints = try c.decodeIfPresent([PinEndpoint].self, forKey: .endpoints) ?? []
+        loadedModels = try c.decodeIfPresent([String].self, forKey: .loadedModels) ?? []
+        lastSeen = try c.decodeIfPresent(Int64.self, forKey: .lastSeen)
+    }
 }
 
 public struct PinNetmap: Codable, Sendable, Equatable {
@@ -198,15 +216,23 @@ public struct LocalPinSettings: Codable, Sendable, Equatable {
     /// ships, the toggle persists the preference but routes no traffic.
     public var exitNodePins: [String]
 
-    public init(allowRemoteModels: Bool = true, dinPriorityEqual: Bool = false, dinContribute: Bool = true, exitNodePins: [String] = []) {
+    /// Consumer side: route traffic through an exit node of this PIN
+    /// (nil = not routing). `exitRouteDeviceId` pins a specific provider;
+    /// nil means auto-pick any active exit member.
+    public var exitRoutePinId: String?
+    public var exitRouteDeviceId: String?
+
+    public init(allowRemoteModels: Bool = true, dinPriorityEqual: Bool = false, dinContribute: Bool = true, exitNodePins: [String] = [], exitRoutePinId: String? = nil, exitRouteDeviceId: String? = nil) {
         self.allowRemoteModels = allowRemoteModels
         self.dinPriorityEqual = dinPriorityEqual
         self.dinContribute = dinContribute
         self.exitNodePins = exitNodePins
+        self.exitRoutePinId = exitRoutePinId
+        self.exitRouteDeviceId = exitRouteDeviceId
     }
 
     enum CodingKeys: String, CodingKey {
-        case allowRemoteModels, dinPriorityEqual, dinContribute, exitNodePins
+        case allowRemoteModels, dinPriorityEqual, dinContribute, exitNodePins, exitRoutePinId, exitRouteDeviceId
     }
 
     public init(from decoder: Decoder) throws {
@@ -215,6 +241,8 @@ public struct LocalPinSettings: Codable, Sendable, Equatable {
         dinPriorityEqual = try c.decodeIfPresent(Bool.self, forKey: .dinPriorityEqual) ?? false
         dinContribute = try c.decodeIfPresent(Bool.self, forKey: .dinContribute) ?? true
         exitNodePins = try c.decodeIfPresent([String].self, forKey: .exitNodePins) ?? []
+        exitRoutePinId = try c.decodeIfPresent(String.self, forKey: .exitRoutePinId)
+        exitRouteDeviceId = try c.decodeIfPresent(String.self, forKey: .exitRouteDeviceId)
     }
 }
 
@@ -356,7 +384,11 @@ public actor PINManager {
 
     /// One sync round for every membership. Advertises endpoints + loaded
     /// models + policy status; verifies and caches any returned netmap.
-    public func syncOnce(endpoints: [PinEndpoint], loadedModels: [String]) async throws -> Int {
+    public func syncOnce(
+        endpoints: [PinEndpoint], loadedModels: [String],
+        exitPinIds: Set<String>? = nil
+    ) async throws -> Int {
+        let exitPins = exitPinIds ?? Set(settingsValue.exitNodePins)
         let memberships = try await fetchMemberships()
         let known = Set(memberships.map(\.pinId))
         state = state.filter { known.contains($0.key) }
@@ -373,6 +405,7 @@ public actor PINManager {
                 "loadedModels": loadedModels,
                 "knownGeneration": knownGeneration as Any,
                 "modelPolicyStatus": statusRows,
+                "offersExit": exitPins.contains(membership.pinId),
             ]
             let data = try requireOK(
                 try await request("POST", "/v1/pins/\(membership.pinId)/sync", body: body))
@@ -458,6 +491,28 @@ public actor PINManager {
 
     public func snapshot() -> [PinMembershipState] {
         state.values.sorted { $0.name < $1.name }
+    }
+
+    /// Membership lookup scoped to ONE pin - exit-node authorization keys
+    /// on the pin in the open request, not any shared pin.
+    public func member(pinId: String, nodePubkey: String) -> PinNetmapMember? {
+        guard let pin = state[pinId], pin.membership == "active",
+            let netmap = pin.netmap?.netmap
+        else { return nil }
+        return netmap.members.first {
+            !$0.disabled && $0.nodePubkey.lowercased() == nodePubkey.lowercased()
+        }
+    }
+
+    /// Active, non-disabled members of a pin offering exit, excluding one
+    /// device (usually self).
+    public func exitMembers(pinId: String, excludingDeviceId: String?) -> [PinNetmapMember] {
+        guard let pin = state[pinId], pin.membership == "active",
+            let netmap = pin.netmap?.netmap
+        else { return [] }
+        return netmap.members.filter {
+            $0.offersExit && !$0.disabled && $0.deviceId != excludingDeviceId
+        }
     }
 
     public func memberForWgKey(_ wgKeyHex: String) -> (String, PinNetmapMember)? {

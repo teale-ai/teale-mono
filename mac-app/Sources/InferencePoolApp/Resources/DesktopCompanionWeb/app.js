@@ -5434,6 +5434,12 @@ const pinEls = {
   joinCodeReveal: document.getElementById("pin-join-code-reveal"),
   rotateCode: document.getElementById("pin-rotate-code"),
   allowRemoteModels: document.getElementById("pin-allow-remote-models"),
+  offerExit: document.getElementById("pin-offer-exit"),
+  exitDevice: document.getElementById("pin-exit-device"),
+  exitStart: document.getElementById("pin-exit-start"),
+  exitStop: document.getElementById("pin-exit-stop"),
+  exitStatus: document.getElementById("pin-exit-status"),
+  exitHint: document.getElementById("pin-exit-hint"),
   dinContribute: document.getElementById("pin-din-contribute"),
   dinEqual: document.getElementById("pin-din-equal"),
   leave: document.getElementById("pin-leave"),
@@ -5445,6 +5451,7 @@ let pinActiveTab = "devices";
 let pinMembersCache = [];
 let pinPolicyCache = [];
 let pinRefreshTimer = null;
+let pinExitStatusCache = null;
 
 /// window.confirm is a no-op in some webview shells; use two-step buttons.
 const pinArmedButtons = new WeakMap();
@@ -5606,6 +5613,73 @@ async function refreshPinDetail() {
   if (pinActiveTab === "devices") await refreshPinMembers(id, isStaff, isAdmin);
   if (pinActiveTab === "models") await refreshPinModels(id, isStaff);
   if (pinActiveTab === "usage") await refreshPinUsage(id);
+
+  // The exit section needs the member list even when the devices tab
+  // isn't the one being shown.
+  if (pinActiveTab !== "devices") {
+    try {
+      const members = await pinApi("GET", `/v1/app/pins/${id}/members`);
+      pinMembersCache = Array.isArray(members) ? members : [];
+    } catch (_) { /* tolerate */ }
+  }
+  try {
+    pinExitStatusCache = await pinApi("GET", "/v1/app/pins/exit/status");
+  } catch (_) {
+    pinExitStatusCache = null;
+  }
+  renderPinExitSection();
+}
+
+function renderPinExitSection() {
+  if (!pinEls.offerExit) return;
+  const settings = pinOverview?.settings || {};
+  const exitPins = new Set(settings.exitNodePins || []);
+  if (document.activeElement !== pinEls.offerExit) {
+    pinEls.offerExit.checked = exitPins.has(pinSelectedId);
+  }
+  // Exit providers for this network from the gateway member list
+  // (offersExit surfaces once the gateway deploys that field).
+  const selfId = pinOverview?.deviceId;
+  const providers = pinMembersCache.filter(
+    (m) => m.offersExit && m.status === "active" && m.deviceId !== selfId);
+  pinEls.exitDevice.innerHTML = "";
+  if (providers.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "no exit providers in this network";
+    pinEls.exitDevice.appendChild(opt);
+  } else {
+    const any = document.createElement("option");
+    any.value = "";
+    any.textContent = "any exit device";
+    pinEls.exitDevice.appendChild(any);
+    for (const m of providers) {
+      const opt = document.createElement("option");
+      opt.value = m.deviceId;
+      opt.textContent = m.displayName || `${m.deviceId.slice(0, 12)}…`;
+      pinEls.exitDevice.appendChild(opt);
+    }
+  }
+  const st = pinExitStatusCache;
+  const routingHere = st && st.state === "listening" && st.pinId === pinSelectedId;
+  pinEls.exitStart.hidden = Boolean(routingHere);
+  pinEls.exitStop.hidden = !routingHere;
+  if (routingHere) {
+    pinEls.exitStatus.textContent = `Routing traffic via ${st.viaDevice || "exit node"}.`;
+    pinEls.exitHint.hidden = false;
+    pinEls.exitHint.textContent =
+      `SOCKS5 proxy: ${st.host}:${st.port} - set it in System Settings > Network > Details > Proxies > SOCKS proxy, or in your browser. Hostnames resolve on the exit side.`;
+  } else if (st && st.state === "connecting" && st.pinId === pinSelectedId) {
+    pinEls.exitStatus.textContent = `Connecting to ${st.viaDevice || "exit node"}…`;
+    pinEls.exitHint.hidden = true;
+  } else if (st && st.state === "failed" && st.pinId === pinSelectedId) {
+    pinEls.exitStatus.textContent = `Routing failed: ${st.error || "unknown error"}`;
+    pinEls.exitHint.hidden = true;
+  } else {
+    pinEls.exitStatus.textContent =
+      "Not routing traffic. Pick an exit device to route this machine's traffic through it.";
+    pinEls.exitHint.hidden = true;
+  }
 }
 
 async function refreshPinMembers(id, isStaff, isAdmin) {
@@ -5870,6 +5944,56 @@ if (pinEls.joinButton) {
   pinEls.allowRemoteModels.addEventListener("change", pushLocalSettings);
   pinEls.dinContribute.addEventListener("change", pushLocalSettings);
   pinEls.dinEqual.addEventListener("change", pushLocalSettings);
+
+  pinEls.offerExit?.addEventListener("change", async () => {
+    const settings = pinOverview?.settings || {};
+    const exitPins = new Set(settings.exitNodePins || []);
+    if (pinEls.offerExit.checked) {
+      exitPins.add(pinSelectedId);
+    } else {
+      exitPins.delete(pinSelectedId);
+    }
+    pinEls.offerExit.disabled = true;
+    try {
+      await pinApi("POST", "/v1/app/pins/settings/local", { exitNodePins: Array.from(exitPins) });
+      await refreshPinNetworks();
+      pinStatus("Exit-node offering updated.");
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    } finally {
+      pinEls.offerExit.disabled = false;
+      renderPinExitSection();
+    }
+  });
+
+  pinEls.exitStart?.addEventListener("click", async () => {
+    pinEls.exitStart.disabled = true;
+    try {
+      const body = { pinId: pinSelectedId };
+      if (pinEls.exitDevice.value) body.deviceId = pinEls.exitDevice.value;
+      pinExitStatusCache = await pinApi("POST", "/v1/app/pins/exit/start", body);
+      pinStatus("Routing started.");
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+      try { pinExitStatusCache = await pinApi("GET", "/v1/app/pins/exit/status"); } catch (_) { /* tolerate */ }
+    } finally {
+      pinEls.exitStart.disabled = false;
+      renderPinExitSection();
+    }
+  });
+
+  pinEls.exitStop?.addEventListener("click", async () => {
+    pinEls.exitStop.disabled = true;
+    try {
+      pinExitStatusCache = await pinApi("POST", "/v1/app/pins/exit/stop", {});
+      pinStatus("Routing stopped.");
+    } catch (error) {
+      pinStatus(String(error.message || error), true);
+    } finally {
+      pinEls.exitStop.disabled = false;
+      renderPinExitSection();
+    }
+  });
 
   pinEls.leave.addEventListener("click", async () => {
     if (!pinSelectedId) return;

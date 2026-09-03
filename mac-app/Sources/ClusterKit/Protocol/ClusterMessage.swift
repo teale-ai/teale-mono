@@ -42,6 +42,62 @@ public enum ClusterMessage: Codable, Sendable {
     // PTN (Private TealeNet) membership
     case ptnJoinRequest(PTNJoinRequestTransportPayload)
     case ptnJoinResponse(PTNJoinResponseTransportPayload)
+
+    // PIN exit-node data plane (Phase 1): SOCKS5-over-Noise byte streams.
+    case socksOpen(SocksOpenPayload)
+    case socksOpenResult(SocksOpenResultPayload)
+    case socksData(SocksDataPayload)
+    case socksClose(SocksClosePayload)
+}
+
+// MARK: - PIN Exit-Node Stream Payloads
+
+/// Open an exit-node byte stream (consumer → exit provider). The provider
+/// validates active membership in `pinId` and its own per-pin exit opt-in,
+/// then dials `destHost:destPort`. DNS resolves on the EXIT side - send
+/// hostnames (SOCKS5 ATYP=3) so consumer-side DNS poisoning is irrelevant.
+public struct SocksOpenPayload: Codable, Sendable {
+    public var pinId: String
+    public var streamID: UUID
+    public var destHost: String
+    public var destPort: UInt16
+    public init(pinId: String, streamID: UUID, destHost: String, destPort: UInt16) {
+        self.pinId = pinId
+        self.streamID = streamID
+        self.destHost = destHost
+        self.destPort = destPort
+    }
+}
+
+public struct SocksOpenResultPayload: Codable, Sendable {
+    public var streamID: UUID
+    public var ok: Bool
+    public var error: String?
+    public init(streamID: UUID, ok: Bool, error: String? = nil) {
+        self.streamID = streamID
+        self.ok = ok
+        self.error = error
+    }
+}
+
+/// Stream payload in either direction. Keep chunks small - the transport
+/// fragments at ~1100 bytes of plaintext.
+public struct SocksDataPayload: Codable, Sendable {
+    public var streamID: UUID
+    public var data: Data
+    public init(streamID: UUID, data: Data) {
+        self.streamID = streamID
+        self.data = data
+    }
+}
+
+public struct SocksClosePayload: Codable, Sendable {
+    public var streamID: UUID
+    public var reason: String?
+    public init(streamID: UUID, reason: String? = nil) {
+        self.streamID = streamID
+        self.reason = reason
+    }
 }
 
 // MARK: - Group Key Exchange Payload (transport wrapper)
