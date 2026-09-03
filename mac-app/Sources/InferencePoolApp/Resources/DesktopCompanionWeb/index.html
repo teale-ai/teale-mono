@@ -113,18 +113,22 @@
         </section>
 
         <section class="section">
-          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.pins.prompt">private inference network(s)</span></p>
+          <div class="pin-section-header">
+            <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.pins.prompt">private inference network(s)</span></p>
+            <button id="simple-pin-add" class="action pin-add-button" type="button" aria-label="add network">+</button>
+          </div>
           <div class="card">
             <div id="simple-pin-list"></div>
             <p class="note" id="simple-pin-empty" data-i18n="simple.pins.empty">No networks yet - create one or join with a code.</p>
-            <p class="note" data-i18n="simple.pins.exitNote">Exit-node toggles save your preference now; routing activates when the exit-node backend ships.</p>
-            <div class="simple-pin-form">
-              <input id="simple-pin-create-name" type="text" data-i18n-placeholder="simple.pins.namePh" placeholder="new network name" />
-              <button id="simple-pin-create" class="action" type="button" data-i18n="simple.pins.create">Create</button>
-            </div>
-            <div class="simple-pin-form">
-              <input id="simple-pin-join-code" type="text" data-i18n-placeholder="simple.pins.codePh" placeholder="join code" />
-              <button id="simple-pin-join" class="action" type="button" data-i18n="simple.pins.join">Join</button>
+            <div id="simple-pin-add-panel" class="simple-pin-add-panel" hidden>
+              <div class="simple-pin-mode">
+                <button id="simple-pin-mode-create" class="action pin-mode active" type="button" data-i18n="simple.pins.create">Create</button>
+                <button id="simple-pin-mode-join" class="action pin-mode" type="button" data-i18n="simple.pins.join">Join</button>
+              </div>
+              <div class="simple-pin-form">
+                <input id="simple-pin-add-input" type="text" data-i18n-placeholder="simple.pins.namePh" placeholder="new network name" autocomplete="off" spellcheck="false" />
+                <button id="simple-pin-add-submit" class="action" type="button" data-i18n="simple.pins.create">Create</button>
+              </div>
             </div>
           </div>
         </section>
