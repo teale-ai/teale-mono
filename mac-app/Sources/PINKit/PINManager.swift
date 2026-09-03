@@ -193,15 +193,20 @@ public struct LocalPinSettings: Codable, Sendable, Equatable {
     public var allowRemoteModels: Bool
     public var dinPriorityEqual: Bool
     public var dinContribute: Bool
+    /// PIN ids this device offers itself as a VPN exit node for. Device-
+    /// sovereign; the Phase 1 exit-node data plane reads this. Until that
+    /// ships, the toggle persists the preference but routes no traffic.
+    public var exitNodePins: [String]
 
-    public init(allowRemoteModels: Bool = true, dinPriorityEqual: Bool = false, dinContribute: Bool = true) {
+    public init(allowRemoteModels: Bool = true, dinPriorityEqual: Bool = false, dinContribute: Bool = true, exitNodePins: [String] = []) {
         self.allowRemoteModels = allowRemoteModels
         self.dinPriorityEqual = dinPriorityEqual
         self.dinContribute = dinContribute
+        self.exitNodePins = exitNodePins
     }
 
     enum CodingKeys: String, CodingKey {
-        case allowRemoteModels, dinPriorityEqual, dinContribute
+        case allowRemoteModels, dinPriorityEqual, dinContribute, exitNodePins
     }
 
     public init(from decoder: Decoder) throws {
@@ -209,6 +214,7 @@ public struct LocalPinSettings: Codable, Sendable, Equatable {
         allowRemoteModels = try c.decodeIfPresent(Bool.self, forKey: .allowRemoteModels) ?? true
         dinPriorityEqual = try c.decodeIfPresent(Bool.self, forKey: .dinPriorityEqual) ?? false
         dinContribute = try c.decodeIfPresent(Bool.self, forKey: .dinContribute) ?? true
+        exitNodePins = try c.decodeIfPresent([String].self, forKey: .exitNodePins) ?? []
     }
 }
 

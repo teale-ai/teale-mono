@@ -1109,6 +1109,7 @@ extension RemoteControlBridge: PINControlling {
             if let v = patch["allowRemoteModels"] as? Bool { settings.allowRemoteModels = v }
             if let v = patch["dinPriorityEqual"] as? Bool { settings.dinPriorityEqual = v }
             if let v = patch["dinContribute"] as? Bool { settings.dinContribute = v }
+            if let v = patch["exitNodePins"] as? [String] { settings.exitNodePins = v }
         }
         if let dinContribute = patch["dinContribute"] as? Bool {
             await MainActor.run { appState.contributeCompute = dinContribute }

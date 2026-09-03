@@ -53,9 +53,16 @@ const els = {
   homeAccount: document.getElementById("home-account"),
   simpleEarnings: document.getElementById("simple-earnings"),
   simpleEarningsNote: document.getElementById("simple-earnings-note"),
+  simpleEarningsUnit: document.getElementById("simple-earnings-unit"),
   simpleSupplyToggle: document.getElementById("simple-supply-toggle"),
   simpleSupplyDetail: document.getElementById("simple-supply-detail"),
   simpleSettingsButton: document.getElementById("simple-settings-button"),
+  simplePinList: document.getElementById("simple-pin-list"),
+  simplePinEmpty: document.getElementById("simple-pin-empty"),
+  simplePinCreateName: document.getElementById("simple-pin-create-name"),
+  simplePinCreate: document.getElementById("simple-pin-create"),
+  simplePinJoinCode: document.getElementById("simple-pin-join-code"),
+  simplePinJoin: document.getElementById("simple-pin-join"),
   homeNetworkDevices: document.getElementById("home-network-devices"),
   homeNetworkRam: document.getElementById("home-network-ram"),
   homeNetworkModels: document.getElementById("home-network-models"),
@@ -185,16 +192,20 @@ const translations = {
     "nav.wallet": "wallet",
     "nav.account": "account",
     "language.label": "language",
-    "view.simple.description": "supply inference like a vpn - everything else is automatic",
+    "view.simple.description": "Teale.com - Make real money supplying inference with idle machines",
     "simple.earnings.prompt": "earnings",
-    "simple.earnings.label": "Earnings",
-    "simple.earnings.note": "based on {{credits}} credits",
+    "simple.earnings.serving": "accruing ~{{rate}} credits/min from availability",
+    "simple.earnings.idle": "turn on supply inference to start earning",
     "simple.supply.prompt": "supply inference",
-    "simple.supply.title": "Supply Inference",
     "simple.supply.off": "Off. This machine is not serving inference.",
-    "simple.vpn.prompt": "vpn exit node",
-    "simple.vpn.title": "VPN Exit Node",
-    "simple.vpn.note": "Coming soon - PINs only. Only peers you approve by PIN can route traffic through this machine.",
+    "simple.pins.prompt": "private inference network(s)",
+    "simple.pins.empty": "No networks yet - create one or join with a code.",
+    "simple.pins.exitNote": "Exit-node toggles save your preference now; routing activates when the exit-node backend ships.",
+    "simple.pins.exit": "exit node",
+    "simple.pins.namePh": "new network name",
+    "simple.pins.codePh": "join code",
+    "simple.pins.create": "Create",
+    "simple.pins.join": "Join",
     "simple.settings.prompt": "settings",
     "simple.settings.open": "Open settings and advanced tabs",
     "view.home.description": "supply and demand distributed ai inference",
@@ -311,16 +322,20 @@ const translations = {
     "nav.wallet": "钱包",
     "nav.account": "账户",
     "language.label": "语言",
-    "view.simple.description": "像 VPN 一样供应推理 - 其他一切自动完成",
+    "view.simple.description": "Teale.com - Make real money supplying inference with idle machines",
     "simple.earnings.prompt": "收益",
-    "simple.earnings.label": "收益",
-    "simple.earnings.note": "基于 {{credits}} credits",
+    "simple.earnings.serving": "正在以约 {{rate}} credits/分钟 的可用性速率累积",
+    "simple.earnings.idle": "开启供应推理即可开始赚取",
     "simple.supply.prompt": "供应推理",
-    "simple.supply.title": "供应推理",
     "simple.supply.off": "已关闭。本机当前不提供推理服务。",
-    "simple.vpn.prompt": "VPN 出口节点",
-    "simple.vpn.title": "VPN 出口节点",
-    "simple.vpn.note": "即将推出 - 仅限 PIN 验证的对等节点。只有你通过 PIN 批准的对等节点才能经由本机路由流量。",
+    "simple.pins.prompt": "私有推理网络",
+    "simple.pins.empty": "还没有网络 - 创建一个，或用邀请码加入。",
+    "simple.pins.exitNote": "出口节点开关现在保存你的偏好；路由功能将在出口节点后端上线后生效。",
+    "simple.pins.exit": "出口节点",
+    "simple.pins.namePh": "新网络名称",
+    "simple.pins.codePh": "邀请码",
+    "simple.pins.create": "创建",
+    "simple.pins.join": "加入",
     "simple.settings.prompt": "设置",
     "simple.settings.open": "打开设置与高级标签页",
     "view.home.description": "分布式 AI 推理供给与需求",
@@ -3111,7 +3126,7 @@ function setActiveView(view) {
       console.error("home chat model refresh failed", error);
     });
   }
-  if (view === "networks") {
+  if (view === "networks" || view === "simple") {
     refreshPinNetworks().catch((error) => {
       console.error("pin refresh failed", error);
     });
@@ -4659,15 +4674,25 @@ function maybeFallbackToBundledApp(error) {
   window.location.replace(ROUTES.bundledApp);
 }
 
+let lastSnapshotAt = 0;
+
 function renderSimple(snapshot) {
   if (!els.simpleEarnings) {
     return;
   }
-  const earned = snapshot?.wallet?.gateway_total_earned_credits ?? 0;
-  els.simpleEarnings.textContent = `${formatUsdValue(creditsToUsd(earned) ?? 0)} USD`;
-  els.simpleEarningsNote.textContent = t("simple.earnings.note", {
-    credits: formatCredits(earned),
-  });
+  const wallet = snapshot?.wallet || {};
+  const serving = snapshot?.service_state === "serving";
+  const ratePerMin = serving ? (wallet.availability_rate_credits_per_minute ?? 0) : 0;
+  const base = wallet.gateway_total_earned_credits ?? 0;
+  const elapsedSecs = Math.max(0, (Date.now() - lastSnapshotAt) / 1000);
+  const earned = Math.floor(base + (ratePerMin / 60) * elapsedSecs);
+  els.simpleEarnings.textContent = formatDisplayCredits(earned, true);
+  if (els.simpleEarningsUnit) {
+    els.simpleEarningsUnit.checked = displayUnit === "usd";
+  }
+  els.simpleEarningsNote.textContent = serving
+    ? t("simple.earnings.serving", { rate: formatCredits(ratePerMin) })
+    : t("simple.earnings.idle");
   const enabled = snapshot?.supply_enabled ?? Boolean(snapshot?.loaded_model_id);
   if (document.activeElement !== els.simpleSupplyToggle) {
     els.simpleSupplyToggle.checked = Boolean(enabled);
@@ -4675,6 +4700,47 @@ function renderSimple(snapshot) {
   els.simpleSupplyDetail.textContent = enabled
     ? (snapshot?.state_reason || labelForState(snapshot?.service_state))
     : t("simple.supply.off");
+}
+
+function renderSimplePins() {
+  if (!els.simplePinList) {
+    return;
+  }
+  const networks = new Map();
+  for (const net of pinOverview?.networks || []) {
+    networks.set(net.pinId, { pinId: net.pinId, name: net.name, membership: net.membership });
+  }
+  for (const staff of pinOverview?.staff || []) {
+    const existing = networks.get(staff.pinId) || { pinId: staff.pinId, name: staff.name };
+    existing.role = staff.role;
+    networks.set(staff.pinId, existing);
+  }
+  const rows = Array.from(networks.values());
+  els.simplePinList.innerHTML = "";
+  if (els.simplePinEmpty) {
+    els.simplePinEmpty.hidden = rows.length > 0;
+  }
+  const exitPins = new Set(pinOverview?.settings?.exitNodePins || []);
+  for (const net of rows) {
+    const row = document.createElement("div");
+    row.className = "simple-pin-row";
+    const name = document.createElement("span");
+    name.className = "simple-pin-name";
+    name.textContent = net.name + (net.membership && net.membership !== "active" ? ` (${net.membership})` : "");
+    const exitLabel = document.createElement("small");
+    exitLabel.textContent = t("simple.pins.exit");
+    const toggle = document.createElement("label");
+    toggle.className = "switch";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = exitPins.has(net.pinId);
+    input.dataset.pinExit = net.pinId;
+    const slider = document.createElement("span");
+    slider.className = "slider";
+    toggle.append(input, slider);
+    row.append(name, exitLabel, toggle);
+    els.simplePinList.append(row);
+  }
 }
 
 function renderHome(snapshot) {
@@ -4768,6 +4834,7 @@ function renderWallet(snapshot) {
 
 function render(snapshot) {
   lastSnapshot = snapshot;
+  lastSnapshotAt = Date.now();
   if (walletRefreshInFlight) {
     setBusyButton(els.headerRefresh, t("wallet.action.refreshing", { fallback: "Refreshing..." }));
   } else {
@@ -4890,6 +4957,64 @@ els.simpleSupplyToggle?.addEventListener("change", async () => {
 });
 
 els.simpleSettingsButton?.addEventListener("click", () => setActiveView("home"));
+
+els.simpleEarningsUnit?.addEventListener("change", () => {
+  setDisplayUnit(els.simpleEarningsUnit.checked ? "usd" : "credits");
+});
+
+els.simplePinList?.addEventListener("change", async (event) => {
+  const pinId = event.target?.dataset?.pinExit;
+  if (!pinId) {
+    return;
+  }
+  const current = new Set(pinOverview?.settings?.exitNodePins || []);
+  if (event.target.checked) {
+    current.add(pinId);
+  } else {
+    current.delete(pinId);
+  }
+  event.target.disabled = true;
+  try {
+    await pinApi("POST", "/v1/app/pins/settings/local", { exitNodePins: Array.from(current) });
+    await refreshPinNetworks();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    renderSimplePins();
+  }
+});
+
+els.simplePinCreate?.addEventListener("click", async () => {
+  const name = (els.simplePinCreateName.value || "").trim();
+  if (!name) {
+    return;
+  }
+  try {
+    const created = await pinApi("POST", "/v1/app/pins/create", { name });
+    els.simplePinCreateName.value = "";
+    if (created?.joinCode) {
+      alert(`Network created. PIN: ${created.joinCode} - share it wifi-password-style; you approve each join.`);
+    }
+    await refreshPinNetworks();
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+els.simplePinJoin?.addEventListener("click", async () => {
+  const code = (els.simplePinJoinCode.value || "").trim();
+  if (!code) {
+    return;
+  }
+  try {
+    await pinApi("POST", "/v1/app/pins/join", { code });
+    els.simplePinJoinCode.value = "";
+    alert("Join request submitted. An admin has to approve this device before it becomes active.");
+    await refreshPinNetworks();
+  } catch (error) {
+    alert(error.message);
+  }
+});
 
 els.authGithubButton.addEventListener("click", () => startOAuth("github"));
 els.authGoogleButton.addEventListener("click", () => startOAuth("google"));
@@ -5383,6 +5508,7 @@ async function refreshPinNetworks() {
   pinOverview = overview;
   renderPinNetworkList();
   renderPinLocalSettings();
+  renderSimplePins();
   if (pinSelectedId) {
     const stillKnown =
       (overview.networks || []).some((n) => n.pinId === pinSelectedId) ||
@@ -5760,7 +5886,7 @@ if (pinEls.joinButton) {
 
   // Poll while the networks view is active.
   pinRefreshTimer = setInterval(() => {
-    if (activeView === "networks") {
+    if (activeView === "networks" || activeView === "simple") {
       refreshPinNetworks().catch(() => {});
     }
   }, 30000);
