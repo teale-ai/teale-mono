@@ -90,37 +90,42 @@
         <section class="section">
           <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.earnings.prompt">earnings</span></p>
           <div class="card">
-            <dl class="stats">
-              <dt data-i18n="simple.earnings.label">Earnings</dt>
-              <dd id="simple-earnings">$0.00 USD</dd>
-            </dl>
-            <p class="note" id="simple-earnings-note">based on 0 credits</p>
+            <div class="simple-earnings-row">
+              <span id="simple-earnings" class="simple-earnings-value">0 credits</span>
+              <span class="simple-earnings-unit">
+                <span class="unit-option">credits</span>
+                <label class="switch"><input type="checkbox" id="simple-earnings-unit" /><span class="slider"></span></label>
+                <span class="unit-option">USD</span>
+              </span>
+            </div>
+            <p class="note" id="simple-earnings-note"></p>
           </div>
         </section>
 
         <section class="section">
           <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.supply.prompt">supply inference</span></p>
           <div class="card">
-            <label class="toggle-row">
-              <span class="toggle-text">
-                <span data-i18n="simple.supply.title">Supply Inference</span>
-                <small id="simple-supply-detail">Starting</small>
-              </span>
-              <input type="checkbox" id="simple-supply-toggle" checked />
-            </label>
+            <div class="toggle-row">
+              <small id="simple-supply-detail">Starting</small>
+              <label class="switch"><input type="checkbox" id="simple-supply-toggle" checked /><span class="slider"></span></label>
+            </div>
           </div>
         </section>
 
         <section class="section">
-          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.vpn.prompt">vpn exit node</span></p>
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="simple.pins.prompt">private inference network(s)</span></p>
           <div class="card">
-            <label class="toggle-row disabled">
-              <span class="toggle-text">
-                <span data-i18n="simple.vpn.title">VPN Exit Node</span>
-                <small data-i18n="simple.vpn.note">Coming soon - PINs only. Only peers you approve by PIN can route traffic through this machine.</small>
-              </span>
-              <input type="checkbox" id="simple-vpn-toggle" disabled />
-            </label>
+            <div id="simple-pin-list"></div>
+            <p class="note" id="simple-pin-empty" data-i18n="simple.pins.empty">No networks yet - create one or join with a code.</p>
+            <p class="note" data-i18n="simple.pins.exitNote">Exit-node toggles save your preference now; routing activates when the exit-node backend ships.</p>
+            <div class="simple-pin-form">
+              <input id="simple-pin-create-name" type="text" data-i18n-placeholder="simple.pins.namePh" placeholder="new network name" />
+              <button id="simple-pin-create" class="action" type="button" data-i18n="simple.pins.create">Create</button>
+            </div>
+            <div class="simple-pin-form">
+              <input id="simple-pin-join-code" type="text" data-i18n-placeholder="simple.pins.codePh" placeholder="join code" />
+              <button id="simple-pin-join" class="action" type="button" data-i18n="simple.pins.join">Join</button>
+            </div>
           </div>
         </section>
 
