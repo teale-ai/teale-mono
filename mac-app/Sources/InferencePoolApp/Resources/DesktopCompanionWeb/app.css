@@ -1001,7 +1001,8 @@ body.simple-mode .cursor {
   gap: 8px;
   margin-top: 10px;
 }
-.simple-pin-form input {
+.simple-pin-form input,
+.simple-pin-form select {
   flex: 1;
   background: #02080a;
   border: 1px solid #2f4a45;

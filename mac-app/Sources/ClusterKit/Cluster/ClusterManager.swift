@@ -427,6 +427,11 @@ public final class ClusterManager: @unchecked Sendable {
         case .ptnJoinRequest, .ptnJoinResponse:
             // Handled by TealeNetKit's PTN membership layer
             break
+
+        case .socksOpen, .socksOpenResult, .socksData, .socksClose:
+            // PIN exit-node streams ride the WAN/PIN lane, never the LAN
+            // cluster transport.
+            break
         }
     }
 

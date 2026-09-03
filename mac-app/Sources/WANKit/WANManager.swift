@@ -192,6 +192,10 @@ public final class WANManager: @unchecked Sendable {
     }
     public var onPTNJoinRequest: ((PTNJoinRequestTransportPayload, WANTransportConnection) async -> Void)?
 
+    /// PIN exit-node data plane: socksOpen/socksOpenResult/socksData/
+    /// socksClose, forwarded untouched with the transport they arrived on.
+    public var onSocksMessage: ((ClusterMessage, WANTransportConnection, String) async -> Void)?
+
     public init() {}
 
     // MARK: - Enable / Disable
@@ -655,6 +659,9 @@ public final class WANManager: @unchecked Sendable {
         case .inferenceChunk, .inferenceComplete, .inferenceError:
             // Handled by WANProvider
             break
+
+        case .socksOpen, .socksOpenResult, .socksData, .socksClose:
+            await onSocksMessage?(message, peer.connection, peer.peerInfo.nodeID)
 
         case .ptnJoinRequest(let payload):
             await onPTNJoinRequest?(payload, peer.connection)

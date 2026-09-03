@@ -106,6 +106,10 @@ public final class AppState {
     /// Private Inference Networks (PIN) control-plane runtime; nil only if
     /// the WAN identity could not be derived.
     public let pinService: PINService?
+    /// PIN exit-node data plane: provider (SOCKS5-over-Noise egress) and
+    /// consumer (local SOCKS5 listener routing through a PIN exit).
+    public private(set) var pinExitServer: PINExitServer?
+    public private(set) var pinExitClient: PINExitClient?
 
     // WAN P2P
     public let wanManager: WANManager
@@ -1250,6 +1254,27 @@ public final class AppState {
         isServerRunning = true
         let wanMgr = self.wanManager
         if let pinService {
+            // Exit-node data plane: serve streams for PINs this device
+            // opted into (LocalPinSettings.exitNodePins), route local
+            // traffic when an exit route is configured.
+            let exitServer = PINExitServer(pinService: pinService)
+            self.pinExitServer = exitServer
+            self.pinExitClient = PINExitClient(
+                pinService: pinService, selfDeviceId: GatewayIdentity.shared.deviceID)
+            wanMgr.onSocksMessage = { [weak exitServer] message, transport, peerNodeID in
+                await exitServer?.handle(message, on: transport, from: peerNodeID)
+            }
+            // Resume a persisted consumer route after netmaps load.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 10 * 1_000_000_000)
+                guard let self else { return }
+                let settings = await pinService.manager.settings()
+                if let pinId = settings.exitRoutePinId {
+                    try? await self.pinExitClient?.start(
+                        pinId: pinId, deviceId: settings.exitRouteDeviceId,
+                        listenPort: 17890, wanManager: wanMgr)
+                }
+            }
             let engineStatusProvider = { @Sendable [weak self] () async -> [String] in
                 await MainActor.run { [weak self] in
                     guard let self else { return [] }

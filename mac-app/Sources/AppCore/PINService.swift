@@ -48,8 +48,10 @@ public final class PINService: @unchecked Sendable {
                 let currentEndpoints = await endpoints()
                 let models = await loadedModels()
                 do {
+                    let exitPins = Set(await manager.settings().exitNodePins)
                     _ = try await manager.syncOnce(
-                        endpoints: currentEndpoints, loadedModels: models)
+                        endpoints: currentEndpoints, loadedModels: models,
+                        exitPinIds: exitPins)
                 } catch {
                     // Offline is normal; cached netmaps keep the LAN working.
                 }
@@ -114,6 +116,15 @@ public final class PINService: @unchecked Sendable {
             }
         }
         await manager.recordPolicyStatus(results)
+    }
+
+    /// Push an out-of-cycle sync (e.g. exit toggles just changed) so the
+    /// gateway/netmap see the new state within seconds, not a minute.
+    public func syncNow() {
+        Task { [manager] in
+            let exitPins = Set(await manager.settings().exitNodePins)
+            _ = try? await manager.syncOnce(endpoints: [], loadedModels: [], exitPinIds: exitPins)
+        }
     }
 
     public func stop() {
