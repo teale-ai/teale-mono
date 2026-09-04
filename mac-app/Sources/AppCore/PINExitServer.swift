@@ -29,6 +29,18 @@ public final class PINExitServer: @unchecked Sendable {
         func close() { conn.cancel() }
     }
 
+    /// One log line per unknown streamID (cross-talk on shared transports is
+    /// per-chunk; unthrottled it would flood stderr on every transfer).
+    private actor UnknownStreamLogCache {
+        private var seen = Set<UUID>()
+        func shouldLog(_ id: UUID) -> Bool {
+            if seen.contains(id) { return false }
+            if seen.count > 512 { seen.removeAll() }
+            seen.insert(id)
+            return true
+        }
+    }
+
     private actor StreamRegistry {
         private var streams: [UUID: EgressStream] = [:]
         func add(_ id: UUID, _ stream: EgressStream) { streams[id] = stream }
@@ -53,6 +65,7 @@ public final class PINExitServer: @unchecked Sendable {
 
     private let pinService: PINService
     private let registry = StreamRegistry()
+    private let unknownStreamLogCache = UnknownStreamLogCache()
     private var reaperTask: Task<Void, Never>?
 
     public init(pinService: PINService) {
@@ -82,8 +95,17 @@ public final class PINExitServer: @unchecked Sendable {
                         streamID: payload.streamID, reason: "egress write failed")))
                 }
             } else {
-                try? await transport.send(.socksClose(SocksClosePayload(
-                    streamID: payload.streamID, reason: "unknown stream")))
+                // NEVER answer "unknown stream" with socksClose. Provider and
+                // consumer share the peer transport (broadcast): on a node
+                // that both offers and consumes exit routes, the consumer
+                // side's inbound socksData lands HERE - and the close reply
+                // cancels the peer's LIVE destination connection (the .0036
+                // deterministic HTTPS death: first server flight triggered
+                // "unknown stream" socksClose -> ECANCELED on the egress).
+                // A truly orphaned stream is reaped by idle reaping.
+                if await unknownStreamLogCache.shouldLog(payload.streamID) {
+                    Self.log("ignoring socksData for unknown stream \(payload.streamID) - likely consumer-role traffic on a shared transport")
+                }
             }
         case .socksClose(let payload):
             await registry.remove(payload.streamID)
@@ -204,10 +226,16 @@ public final class PINExitServer: @unchecked Sendable {
     private static func recv(_ conn: NWConnection, max: Int) async -> (data: Data?, error: Error?)? {
         await withCheckedContinuation { cont in
             conn.receive(minimumIncompleteLength: 1, maximumLength: max) { content, _, isComplete, error in
-                if let error {
-                    cont.resume(returning: (data: nil, error: error))
-                } else if let content, !content.isEmpty {
+                if let content, !content.isEmpty {
+                    // Content wins: a final chunk arriving WITH an error
+                    // (server RST after the body, unclean TLS close) is still
+                    // valid data. The NEXT receive surfaces the error/close.
+                    if let error {
+                        PINExitServer.log("recv delivered \(content.count) bytes alongside error: \(error.localizedDescription)")
+                    }
                     cont.resume(returning: (data: content, error: nil))
+                } else if let error {
+                    cont.resume(returning: (data: nil, error: error))
                 } else if isComplete {
                     cont.resume(returning: nil)
                 } else {
