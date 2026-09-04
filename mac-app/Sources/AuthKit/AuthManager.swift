@@ -140,6 +140,20 @@ public final class AuthManager {
         }
     }
 
+    /// Adopt a `tsess_…` session minted outside the native login window -
+    /// e.g. the companion web UI's email-code verify, which is proxied
+    /// through the local daemon (RemoteControlBridge). Persists the token
+    /// first so a later launch signs in even if the identity fetch fails.
+    public func adoptGatewaySession(token: String) async {
+        try? gatewayTokenStore.store(key: Self.gatewayTokenKey, value: Data(token.utf8))
+        do {
+            let info = try await gatewaySessions.fetchSession(token: token)
+            finishGatewaySignIn(accountUserID: info.accountUserID, email: info.email)
+        } catch {
+            // Token is persisted; the next launch's checkSession() adopts it.
+        }
+    }
+
     // MARK: - Email Code Login
 
     /// Send a login code to an email address.

@@ -274,6 +274,54 @@ private final class DesktopCompanionNavigationDelegate: NSObject, WKNavigationDe
     }
 }
 
+/// WKWebView drops window.alert()/confirm() calls unless a UIDelegate
+/// presents them. The companion UI surfaces every error through alert()
+/// (22 call sites in app.js), which meant failures - including a failed
+/// sign-in code verify - were completely invisible ("nothing happened").
+/// Present them as real sheets instead.
+private final class DesktopCompanionUIDelegate: NSObject, WKUIDelegate {
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = "Teale"
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        if let window = webView.window {
+            alert.beginSheetModal(for: window) { _ in completionHandler() }
+        } else {
+            alert.runModal()
+            completionHandler()
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = "Teale"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let respond = { (button: NSApplication.ModalResponse) in
+            completionHandler(button == .alertFirstButtonReturn)
+        }
+        if let window = webView.window {
+            alert.beginSheetModal(for: window, completionHandler: respond)
+        } else {
+            respond(alert.runModal())
+        }
+    }
+}
+
 private struct DesktopCompanionWebContainer: NSViewRepresentable {
     let appState: AppState
 
@@ -297,6 +345,7 @@ private struct DesktopCompanionWebContainer: NSViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator.navigationDelegate
+        webView.uiDelegate = context.coordinator.uiDelegate
         webView.setValue(false, forKey: "drawsBackground")
         // Allow Safari → Develop → <hostname> → Teale to attach a Web
         // Inspector to the bundled UI. Required for diagnosing rendering
@@ -318,6 +367,7 @@ private struct DesktopCompanionWebContainer: NSViewRepresentable {
         let ipcHandler = DesktopCompanionIPCHandler()
         let schemeHandler = DesktopCompanionSchemeHandler()
         let navigationDelegate = DesktopCompanionNavigationDelegate()
+        let uiDelegate = DesktopCompanionUIDelegate()
         private var attemptedRemoteDesktopLoad = false
 
         init(appState: AppState) {
