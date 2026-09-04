@@ -47,6 +47,10 @@ private struct FileAuthStorage: @unchecked Sendable {
 public final class AuthManager {
     public private(set) var authState: AuthState = .signedOut
     public private(set) var currentUser: UserProfile?
+    /// The raw gateway account id of the current session (`270e…` UUID or
+    /// `email:{addr}`). `currentUser.id` is a derived local UUID and must NOT
+    /// be sent back to the gateway as an account id.
+    public private(set) var gatewayAccountUserID: String?
     public private(set) var devices: [DeviceRecord] = []
     public private(set) var currentDeviceID: UUID?
 
@@ -83,9 +87,13 @@ public final class AuthManager {
                 }
                 finishGatewaySignIn(accountUserID: info.accountUserID, email: info.email)
                 return
-            } catch {
-                // Dead or unreachable session: drop it and fall through.
+            } catch let GatewaySessionError.http(code, _) where code == 401 || code == 403 {
+                // Definitively rejected server-side: drop the token.
                 try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
+            } catch {
+                // Network error, timeout, or 5xx: KEEP the token - a transient
+                // failure must not sign the user out (this previously deleted
+                // the persisted session on any 5s timeout).
             }
         }
 
@@ -197,6 +205,7 @@ public final class AuthManager {
             createdAt: Date()
         )
         currentUser = profile
+        gatewayAccountUserID = accountUserID
         authState = .signedIn(profile)
         UserDefaults.standard.set(true, forKey: Self.anonymousKey)
     }
@@ -232,6 +241,7 @@ public final class AuthManager {
             try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
         }
         currentUser = nil
+        gatewayAccountUserID = nil
         devices = []
         currentDeviceID = nil
         authState = .anonymous
