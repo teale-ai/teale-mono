@@ -194,6 +194,18 @@ function handleMessage(ws: ServerWebSocket<unknown>, rawMessage: string | Buffer
 
   const [kind, rawPayload] = entry as [string, any];
 
+  // Any message from a registered socket proves liveness - refresh lastSeen.
+  // Clients that register once per connection (the Rust gateway) otherwise
+  // look stale forever while their socket is healthy, and Swift clients
+  // prune peers older than 600s.
+  const senderNodeID = sockets.get(ws);
+  if (senderNodeID) {
+    const senderPeer = peers.get(senderNodeID);
+    if (senderPeer && senderPeer.ws === ws) {
+      senderPeer.lastSeenReferenceSeconds = nowReferenceSeconds();
+    }
+  }
+
   // Support both flat JSON and Swift's auto-synthesized {"_0": {...}} wrapper format.
   const payload = rawPayload?._0 ?? rawPayload;
 
