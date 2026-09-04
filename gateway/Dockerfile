@@ -13,6 +13,7 @@ COPY protocol protocol
 COPY node node
 COPY gateway gateway
 COPY stress stress
+COPY cli cli
 
 RUN cargo build --release -p teale-gateway
 
