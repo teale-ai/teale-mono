@@ -344,6 +344,11 @@ public struct DesktopCompanionEmailCodeVerifyRequest: Codable, Sendable {
 public struct DesktopCompanionEmailCodeVerifyResponse: Codable, Sendable {
     public var accountUserID: String
     public var email: String
+
+    public init(accountUserID: String, email: String) {
+        self.accountUserID = accountUserID
+        self.email = email
+    }
 }
 
 public struct DesktopCompanionAccountDeviceSnapshot: Codable, Sendable {
