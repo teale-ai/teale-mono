@@ -25,6 +25,12 @@ public actor MLXProvider: InferenceProvider {
 
     /// Don't retain the cache for prompts beyond this size (idle memory).
     private static let maxReusableTokens = 32768
+
+    /// Prompt tokens evaluated per prefill step. mlx-swift-lm defaults to
+    /// 512; 2048 cuts kernel-launch/eval round-trips ~4x on long prompts
+    /// (first turn, cache misses, long pastes) for a measurable TTFT win.
+    /// Pure batching of identical math - no quality impact.
+    private static let prefillStepSize = 2048
     /// Minimum prefix length worth reusing.
     private static let minReusablePrefix = 32
 
@@ -249,7 +255,10 @@ public actor MLXProvider: InferenceProvider {
                 }
             }
 
-            let parameters = GenerateParameters(temperature: temperature)
+            let parameters = GenerateParameters(
+                temperature: temperature,
+                prefillStepSize: Self.prefillStepSize
+            )
             let cacheBox = UncheckedSendableBox(cache)
             let inputBox = UncheckedSendableBox(inputToEval)
             let (stream, usedCache) = try await container.perform { context in
