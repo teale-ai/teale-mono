@@ -11,6 +11,28 @@ public actor MLXProvider: InferenceProvider {
     private var currentDescriptor: ModelDescriptor?
     private var _status: EngineStatus = .idle
 
+    // MARK: Prompt-prefix KV cache
+
+    /// KV cache + the exact token sequence it represents, retained across
+    /// requests. Chat clients resend the full conversation each turn, so the
+    /// next prompt almost always shares a long prefix with the previous one;
+    /// reusing the cache skips re-prefilling those tokens (the dominant
+    /// latency cost on long conversations). Correctness does not depend on
+    /// how the client built the prompt: we only reuse the longest EXACT
+    /// token-prefix match, and trim the cache back to it.
+    private var reusableCache: [KVCache]?
+    private var reusableTokens: [Int] = []
+
+    /// Don't retain the cache for prompts beyond this size (idle memory).
+    private static let maxReusableTokens = 32768
+    /// Minimum prefix length worth reusing.
+    private static let minReusablePrefix = 32
+
+    private func dropReusableCache() {
+        reusableCache = nil
+        reusableTokens = []
+    }
+
     public var status: EngineStatus {
         _status
     }
@@ -37,6 +59,8 @@ public actor MLXProvider: InferenceProvider {
     public func loadModel(_ descriptor: ModelDescriptor, onProgress: LoadProgressCallback?) async throws {
         if let current = currentDescriptor, current.id != descriptor.id {
             await unloadModel()
+        } else {
+            dropReusableCache()
         }
 
         // Check available memory before loading to avoid Jetsam kill
@@ -142,6 +166,7 @@ public actor MLXProvider: InferenceProvider {
     public func unloadModel() async {
         _status = .idle
         currentDescriptor = nil
+        dropReusableCache()
 
         // Release the container first, then yield to let MLX finish
         // any pending GPU work before clearing the cache
@@ -199,30 +224,91 @@ public actor MLXProvider: InferenceProvider {
         // Prepare input and generate
         let userInput = UserInput(messages: messages, tools: mlxToolSpecs(from: request.tools))
         do {
-            try await withError {
-                let lmInput = try await container.prepare(input: userInput)
-                let parameters = GenerateParameters(temperature: temperature)
-                let stream = try await container.generate(input: lmInput, parameters: parameters)
+            let lmInput = try await container.prepare(input: userInput)
+            let promptTokens: [Int] = lmInput.text.tokens.asArray(Int.self)
 
-                generationLoop: for await generation in stream {
-                    if Task.isCancelled { break }
-                    switch generation {
-                    case .chunk(let text):
-                        tokenCount += 1
-                        continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
-                        if tokenCount >= maxTokens { break generationLoop }
-                    case .info:
-                        break
-                    case .toolCall(let toolCall):
-                        continuation.yield(makeToolCallChunk(id: chatId, model: modelName, toolCall: toolCall))
-                        continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "tool_calls"))
-                        continuation.finish()
-                        _status = .ready(descriptor)
-                        return
-                    }
+            // Reuse the retained KV cache for the longest exact token prefix
+            // shared with the previous request, and prefill only the suffix.
+            var cache: [KVCache]? = nil
+            var inputToEval = lmInput
+            var reusedPrefix = 0
+            if let existing = reusableCache, !reusableTokens.isEmpty {
+                let limit = min(promptTokens.count, reusableTokens.count)
+                var prefix = 0
+                while prefix < limit && promptTokens[prefix] == reusableTokens[prefix] {
+                    prefix += 1
+                }
+                if prefix >= Self.minReusablePrefix && prefix < promptTokens.count {
+                    trimPromptCache(existing, numTokens: reusableTokens.count - prefix)
+                    cache = existing
+                    reusedPrefix = prefix
+                    inputToEval = LMInput(tokens: MLXArray(Array(promptTokens[prefix...])))
+                    print("[MLXProvider] prompt-cache hit: reusing \(prefix) of \(promptTokens.count) prompt tokens")
+                } else {
+                    dropReusableCache()
                 }
             }
+
+            let parameters = GenerateParameters(temperature: temperature)
+            let cacheBox = UncheckedSendableBox(cache)
+            let inputBox = UncheckedSendableBox(inputToEval)
+            let (stream, usedCache) = try await container.perform { context in
+                let activeCache = cacheBox.value ?? context.model.newCache(parameters: parameters)
+                let stream = MLXLMCommon.generate(
+                    input: inputBox.value,
+                    cache: activeCache,
+                    parameters: parameters,
+                    context: context
+                )
+                return (stream, UncheckedSendableBox(activeCache))
+            }
+
+            var completionInfo: GenerateCompletionInfo? = nil
+            var toolCallReturned = false
+
+            generationLoop: for await generation in stream {
+                if Task.isCancelled { break }
+                switch generation {
+                case .chunk(let text):
+                    tokenCount += 1
+                    continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
+                    if tokenCount >= maxTokens { break generationLoop }
+                case .info(let info):
+                    completionInfo = info
+                case .toolCall(let toolCall):
+                    continuation.yield(makeToolCallChunk(id: chatId, model: modelName, toolCall: toolCall))
+                    continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "tool_calls"))
+                    continuation.finish()
+                    toolCallReturned = true
+                    break generationLoop
+                }
+            }
+
+            // Retain the cache for the next request, trimmed back to exactly
+            // the prompt (generation appended its tokens on top). On
+            // cancellation or missing stats, drop it - an untracked cache is
+            // never safe to reuse.
+            if !Task.isCancelled, let info = completionInfo {
+                trimPromptCache(usedCache.value, numTokens: info.generationTokenCount)
+                if promptTokens.count <= Self.maxReusableTokens {
+                    reusableCache = usedCache.value
+                    reusableTokens = promptTokens
+                } else {
+                    dropReusableCache()
+                }
+                if reusedPrefix > 0 {
+                    print("[MLXProvider] prompt-cache: prefilled \(info.promptTokenCount) instead of \(promptTokens.count) tokens (\(String(format: "%.0f", info.promptTime * 1000))ms prefill)")
+                }
+            } else {
+                dropReusableCache()
+            }
+
+            if toolCallReturned {
+                _status = .ready(descriptor)
+                return
+            }
         } catch {
+            dropReusableCache()
             throw InferenceError.generationFailed(describeMLXError(error))
         }
 
@@ -309,6 +395,16 @@ public actor MLXProvider: InferenceProvider {
             return ""
         }
     }
+}
+
+// MARK: - Sendable box
+
+/// Crosses non-Sendable values (LMInput, [KVCache]) through ModelContainer's
+/// @Sendable perform closure. Safety: MLXProvider is an actor and generation
+/// is serialized, so only one generation touches these at a time.
+private final class UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }
 
 // MARK: - Errors
