@@ -18,9 +18,11 @@ pub async fn pool(State(state): State<AppState>) -> Result<Json<Value>, GatewayE
         .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
     let conn = db.lock();
     let (total_minted, remaining): (i64, i64) = conn
-        .query_row("SELECT total_minted, remaining FROM mint_pool WHERE id = 1", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT total_minted, remaining FROM mint_pool WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap_or((0, 0));
     let ops_balance: i64 = conn
         .query_row(
