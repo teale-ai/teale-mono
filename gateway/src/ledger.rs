@@ -4495,7 +4495,8 @@ pub fn reconcile_availability_sessions(
         // Recycle accrued ops fees back into the pool when it drops below
         // the target buffer. Only while the network is paying out (we are
         // inside total_needed > 0) - never to a dead network, per Taylor.
-        let recycle_target = (total_needed * POOL_RECYCLE_TARGET_TICKS).max(POOL_RECYCLE_MIN_TARGET);
+        let recycle_target =
+            (total_needed * POOL_RECYCLE_TARGET_TICKS).max(POOL_RECYCLE_MIN_TARGET);
         if remaining < recycle_target {
             let ops_balance: i64 = tx
                 .query_row(
@@ -4517,11 +4518,7 @@ pub fn reconcile_availability_sessions(
                 tx.execute(
                     "INSERT INTO ledger (device_id, type, amount, timestamp, note)
                      VALUES ('__ops__', 'POOL_RECYCLE', ?, ?, ?)",
-                    params![
-                        -swept,
-                        now,
-                        "recycled ops fees into availability mint pool"
-                    ],
+                    params![-swept, now, "recycled ops fees into availability mint pool"],
                 )?;
                 remaining += swept;
                 report.recycled_credits += swept;
@@ -7812,7 +7809,9 @@ mod tests {
         {
             let conn = pool.lock();
             let remaining: i64 = conn
-                .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| r.get(0))
+                .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             let ops: i64 = conn
                 .query_row(
@@ -7826,7 +7825,9 @@ mod tests {
             assert_eq!(ops, 0);
             // 4910 remaining covers < 1h at 100/tick -> low flag on
             let low: i64 = conn
-                .query_row("SELECT low_pool FROM pool_status WHERE id = 1", [], |r| r.get(0))
+                .query_row("SELECT low_pool FROM pool_status WHERE id = 1", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(low, 1);
         }
@@ -7847,7 +7848,9 @@ mod tests {
         {
             let conn = pool.lock();
             let remaining: i64 = conn
-                .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| r.get(0))
+                .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(remaining, 10);
         }
