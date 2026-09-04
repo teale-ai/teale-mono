@@ -727,19 +727,53 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         try await desktopGatewayJSON(method: "GET", path: "/v1/keys")
     }
 
+    // The companion email-code flow proxies the SESSION-MINTING passwordless
+    // endpoints (/v1/auth/email/*), not the legacy /v1/account/email-code/*:
+    // the legacy verify returned only {accountUserID, email} - no credential -
+    // so the web UI faked a signed-in state that never persisted and the
+    // native AuthManager stayed signed out ("entered the code, nothing
+    // happened"). Response shapes seen by the bundled app.js are unchanged.
     func desktop_request_email_code(_ request: DesktopCompanionEmailCodeRequest) async throws -> DesktopCompanionEmailCodeRequestResponse {
         try await desktopGatewayJSON(
             method: "POST",
-            path: "/v1/account/email-code/request",
+            path: "/v1/auth/email/request",
             body: request
         )
     }
 
+    private struct GatewayEmailVerifyRequest: Encodable {
+        let email: String
+        let code: String
+        let deviceId: String?
+        let deviceName: String?
+    }
+
+    private struct GatewayEmailVerifyResponse: Decodable {
+        let sessionToken: String
+        let accountUserID: String
+        let email: String
+    }
+
     func desktop_verify_email_code(_ request: DesktopCompanionEmailCodeVerifyRequest) async throws -> DesktopCompanionEmailCodeVerifyResponse {
-        try await desktopGatewayJSON(
+        let verified: GatewayEmailVerifyResponse = try await desktopGatewayJSON(
             method: "POST",
-            path: "/v1/account/email-code/verify",
-            body: request
+            path: "/v1/auth/email/verify",
+            body: GatewayEmailVerifyRequest(
+                email: request.email,
+                code: request.code,
+                deviceId: GatewayIdentity.shared.deviceID,
+                deviceName: ProcessInfo.processInfo.hostName
+            )
+        )
+        // Sign the app itself in: persist the session token (shared auth
+        // file, so a sibling GUI/fleet-supply process picks it up on its
+        // next launch's checkSession) and flip this process's AuthManager.
+        if let authManager = appState.authManager {
+            await authManager.adoptGatewaySession(token: verified.sessionToken)
+        }
+        return DesktopCompanionEmailCodeVerifyResponse(
+            accountUserID: verified.accountUserID,
+            email: verified.email
         )
     }
 

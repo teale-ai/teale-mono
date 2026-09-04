@@ -5114,15 +5114,26 @@ els.authEmailVerifyButton.addEventListener("click", async () => {
     postNativeSessionSync(null);
     clearAuthErrorState();
     clearPendingOAuthProvider();
-    await refreshAccountState();
-    await ensureGatewayAccountLink();
-    await refreshAccountState();
+    // Render the signed-in state BEFORE the account-link chain: the verify
+    // already minted + persisted a real gateway session daemon-side, so a
+    // failure below must not read as "sign-in failed".
+    renderAuthState();
+    try {
+      await refreshAccountState();
+      await ensureGatewayAccountLink();
+      await refreshAccountState();
+    } catch (linkError) {
+      console.warn("post-verify account sync failed", linkError);
+      els.authNote.textContent = `Signed in, but account sync failed: ${linkError.message}`;
+    }
     renderAccountWallet();
     renderAccountApiKeys();
     renderAuthState();
     renderAccountDevices();
     renderHome(lastSnapshot);
   } catch (error) {
+    els.authUser.textContent = error.message;
+    els.authNote.textContent = error.message;
     alert(error.message);
   } finally {
     els.authEmailVerifyButton.disabled = false;
