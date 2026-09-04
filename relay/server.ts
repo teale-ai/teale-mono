@@ -42,12 +42,35 @@ const referenceDateSeconds = Date.parse("2001-01-01T00:00:00Z") / 1000;
 const peers = new Map<string, RelayPeer>();
 const sockets = new WeakMap<ServerWebSocket<unknown>, string>();
 
+// Delivery telemetry. Bun's ServerWebSocket.send() returns 0 when the message
+// was DROPPED (connection issue) and -1 when enqueued under backpressure.
+// Silent drops here corrupt relayed byte streams (socks tunnels) invisibly.
+const stats = {
+  sent: 0,
+  dropped: 0,
+  backpressured: 0,
+  lastDropAt: "",
+  lastDropTo: "",
+};
+
 function nowReferenceSeconds(): number {
   return Date.now() / 1000 - referenceDateSeconds;
 }
 
 function send(ws: ServerWebSocket<unknown>, message: RelayMessage) {
-  ws.send(JSON.stringify(message));
+  const result = ws.send(JSON.stringify(message));
+  stats.sent++;
+  if (result === 0) {
+    stats.dropped++;
+    stats.lastDropAt = new Date().toISOString();
+    stats.lastDropTo = sockets.get(ws)?.substring(0, 16) ?? "unknown";
+    console.log(`[send] DROPPED message to ${stats.lastDropTo}... kind=${Object.keys(message)[0]} buffered=${ws.getBufferedAmount()}`);
+  } else if (result === -1) {
+    stats.backpressured++;
+    if (stats.backpressured % 100 === 1) {
+      console.log(`[send] backpressure enqueuing to ${sockets.get(ws)?.substring(0, 16) ?? "unknown"}... buffered=${ws.getBufferedAmount()} count=${stats.backpressured}`);
+    }
+  }
 }
 
 function peerInfo(peer: RelayPeer) {
@@ -233,7 +256,8 @@ const server = Bun.serve({
     if (url.pathname === "/health") {
       return Response.json({
         ok: true,
-        peers: peers.size
+        peers: peers.size,
+        stats
       });
     }
 

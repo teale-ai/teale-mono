@@ -141,17 +141,31 @@ public final class PINExitServer: @unchecked Sendable {
         // Egress -> consumer shuttle; teardown on destination close.
         let registry = self.registry
         Task {
+            var totalBytes = 0
             while true {
-                guard let data = await Self.recv(conn, max: 8192) else { break }
+                guard let result = await Self.recv(conn, max: 8192) else { break }
+                if let recvError = result.error {
+                    // A mid-stream receive error masquerades as a clean FIN
+                    // unless logged: consumer sees a truncated stream with no
+                    // sender-side error anywhere.
+                    Self.log("stream \(payload.streamID): destination recv error after \(totalBytes) bytes: \(recvError.localizedDescription)")
+                    break
+                }
+                guard let data = result.data else {
+                    Self.log("stream \(payload.streamID): destination FIN after \(totalBytes) bytes")
+                    break
+                }
+                totalBytes += data.count
                 do {
                     try await transport.send(.socksData(SocksDataPayload(
                         streamID: payload.streamID, data: data)))
                 } catch {
-                    Self.log("FAILED to send socksData for \(payload.streamID) (\(data.count) bytes): \(error.localizedDescription)")
+                    Self.log("FAILED to send socksData for \(payload.streamID) (\(data.count) bytes, \(totalBytes) total): \(error.localizedDescription)")
                     break
                 }
             }
             await registry.remove(payload.streamID)
+            Self.log("closed stream \(payload.streamID) after \(totalBytes) bytes egress->consumer")
             try? await transport.send(.socksClose(SocksClosePayload(
                 streamID: payload.streamID, reason: "destination closed")))
         }
@@ -184,14 +198,20 @@ public final class PINExitServer: @unchecked Sendable {
         }
     }
 
-    /// Receive up to `max` bytes; nil when the connection closed.
-    private static func recv(_ conn: NWConnection, max: Int) async -> Data? {
+    /// Receive up to `max` bytes. Returns nil on FIN; (data: nil, error: nil)
+    /// is a non-final empty completion. A receive ERROR is surfaced, never
+    /// silently folded into "destination closed".
+    private static func recv(_ conn: NWConnection, max: Int) async -> (data: Data?, error: Error?)? {
         await withCheckedContinuation { cont in
             conn.receive(minimumIncompleteLength: 1, maximumLength: max) { content, _, isComplete, error in
-                if let content, !content.isEmpty {
-                    cont.resume(returning: content)
-                } else {
+                if let error {
+                    cont.resume(returning: (data: nil, error: error))
+                } else if let content, !content.isEmpty {
+                    cont.resume(returning: (data: content, error: nil))
+                } else if isComplete {
                     cont.resume(returning: nil)
+                } else {
+                    cont.resume(returning: (data: nil, error: nil))
                 }
             }
         }
