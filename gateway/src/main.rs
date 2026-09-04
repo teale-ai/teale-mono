@@ -139,8 +139,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(pool_for_drip) = pool.clone() {
         let registry_for_drip = registry.clone();
         let catalog_for_drip = catalog_models.clone();
+        let metrics_for_drip = state.model_metrics.clone();
         ledger::spawn_drip_loop(pool_for_drip, move || {
-            registry_for_drip
+            // Base rates as before, then reallocated toward real demand
+            // (ledger::apply_demand_weighting keeps the per-tick total
+            // unchanged - it reallocates, it does not emit more).
+            let recipients: Vec<ledger::DripRecipient> = registry_for_drip
                 .snapshot_devices()
                 .into_iter()
                 .filter(|d| !d.is_quarantined() && d.capabilities.is_available)
@@ -179,7 +183,11 @@ async fn main() -> anyhow::Result<()> {
                         model_id,
                     })
                 })
-                .collect()
+                .collect();
+            let demand_counts = metrics_for_drip.request_counts(
+                std::time::Duration::from_secs(ledger::DRIP_DEMAND_WINDOW_SECS),
+            );
+            ledger::apply_demand_weighting(recipients, &demand_counts, &catalog_for_drip)
         });
         tracing::info!(
             "spawned availability drip loop ({}s)",

@@ -39,6 +39,23 @@ impl ModelMetricsTracker {
         Self::default()
     }
 
+    /// Per-model request counts over the trailing `max_age` window, keyed by
+    /// the raw model id passed to `record`. Used by the availability drip to
+    /// weight pool payouts toward models with real recent demand.
+    pub fn request_counts(&self, max_age: Duration) -> Vec<(String, usize)> {
+        let cutoff = Instant::now()
+            .checked_sub(max_age)
+            .unwrap_or_else(Instant::now);
+        self.rings
+            .iter()
+            .filter_map(|entry| {
+                let ring = entry.value().lock().ok()?;
+                let count = ring.iter().filter(|sample| sample.at >= cutoff).count();
+                (count > 0).then(|| (entry.key().clone(), count))
+            })
+            .collect()
+    }
+
     /// Record one successful real client completion.
     ///
     /// `total_duration_ms` is measured from gateway request arrival to the final
