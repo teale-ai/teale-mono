@@ -181,6 +181,7 @@ let package = Package(
         .target(
             name: "LocalAPI",
             dependencies: [
+                "GatewayKit",
                 "PINKit",
                 "SharedTypes",
                 "InferenceEngine",
