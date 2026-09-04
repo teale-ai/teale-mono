@@ -1,4 +1,5 @@
 import Foundation
+import GatewayKit
 import Hummingbird
 import PrivacyFilterKit
 
@@ -19,7 +20,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_set_privacy_filter_mode(payload.mode))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -34,7 +35,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_set_supply_enabled(payload.enabled))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -49,7 +50,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_auth_session(access_token: payload.accessToken))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -58,7 +59,7 @@ enum DesktopCompanionRoute {
         do {
             return try jsonResponse(try await controller.desktop_network_models())
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -67,7 +68,7 @@ enum DesktopCompanionRoute {
         do {
             return try jsonResponse(try await controller.desktop_network_stats())
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -76,7 +77,7 @@ enum DesktopCompanionRoute {
         do {
             return try jsonResponse(try await controller.desktop_account_summary())
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -85,7 +86,7 @@ enum DesktopCompanionRoute {
         do {
             return try jsonResponse(try await controller.desktop_account_api_keys())
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -99,7 +100,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(DesktopCompanionAccountLinkRequest.self, from: body)
             return try jsonResponse(try await controller.desktop_link_account(payload))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -113,7 +114,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(DesktopCompanionEmailCodeRequest.self, from: body)
             return try jsonResponse(try await controller.desktop_request_email_code(payload))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -127,7 +128,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(DesktopCompanionEmailCodeVerifyRequest.self, from: body)
             return try jsonResponse(try await controller.desktop_verify_email_code(payload))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -142,7 +143,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_create_account_api_key(label: payload.label))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -157,7 +158,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_revoke_account_api_key(key_id: payload.keyID))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -172,7 +173,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_sweep_account_device(device_id: payload.deviceID))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -187,7 +188,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(Payload.self, from: body)
             return try jsonResponse(try await controller.desktop_remove_account_device(device_id: payload.deviceID))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -201,7 +202,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(DesktopCompanionWalletSendRequest.self, from: body)
             return try jsonResponse(try await controller.desktop_send_account_wallet(payload))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -212,7 +213,7 @@ enum DesktopCompanionRoute {
         do {
             return try jsonResponse(try await controller.desktop_refresh_wallet())
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -226,7 +227,7 @@ enum DesktopCompanionRoute {
             let payload = try JSONDecoder().decode(DesktopCompanionWalletSendRequest.self, from: body)
             return try jsonResponse(try await controller.desktop_send_device_wallet(payload))
         } catch {
-            return errorResponse(message: error.localizedDescription)
+            return errorResponse(error)
         }
     }
 
@@ -239,7 +240,24 @@ enum DesktopCompanionRoute {
         )
     }
 
-    private static func errorResponse(message: String) -> Response {
+    /// Gateway failures carry the upstream status and body in
+    /// GatewayAuthError.http - surface the gateway's own error message and
+    /// answer 502 so the UI shows the real cause (e.g. "gateway email sender
+    /// is not configured") instead of a generic 400.
+    private static func errorResponse(_ error: Error) -> Response {
+        if case let GatewayAuthError.http(status, body) = error {
+            struct UpstreamError: Decodable {
+                struct Detail: Decodable { let message: String? }
+                let error: Detail?
+            }
+            let upstream = (try? JSONDecoder().decode(UpstreamError.self, from: Data(body.utf8)))?.error?.message
+            let detail = upstream ?? String(body.prefix(200))
+            return errorResponse(message: "Gateway error (HTTP \(status)): \(detail)", status: .badGateway)
+        }
+        return errorResponse(error)
+    }
+
+    private static func errorResponse(message: String, status: HTTPResponse.Status = .badRequest) -> Response {
         struct ErrorEnvelope: Encodable {
             struct ErrorPayload: Encodable {
                 let message: String
@@ -252,7 +270,7 @@ enum DesktopCompanionRoute {
         let data = (try? JSONEncoder().encode(error))
             ?? Data("{\"error\":{\"message\":\"\(message)\",\"type\":\"invalid_request_error\"}}".utf8)
         return Response(
-            status: .badRequest,
+            status: status,
             headers: [.contentType: "application/json"],
             body: .init(byteBuffer: .init(data: data))
         )

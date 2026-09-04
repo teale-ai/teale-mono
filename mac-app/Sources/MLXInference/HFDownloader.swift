@@ -49,6 +49,7 @@ public struct HFTokenizerLoader: MLXLMCommon.TokenizerLoader, Sendable {
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
         Self.sanitizeTokenizerConfig(in: directory)
+        Self.sanitizeChatTemplate(in: directory)
         let tokenizer = try await AutoTokenizer.from(modelFolder: directory, hubApi: tealeHubApi)
         return TokenizerAdapter(tokenizer)
     }
@@ -66,6 +67,41 @@ public struct HFTokenizerLoader: MLXLMCommon.TokenizerLoader, Sendable {
         json["tokenizer_class"] = "Qwen2Tokenizer"
         guard let patched = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]) else { return }
         try? patched.write(to: configURL)
+    }
+
+    /// Qwen3-family chat templates find the last user message with a reverse slice,
+    /// `messages[::-1]`. swift-jinja 1.3 (via swift-transformers 0.1.x) mis-evaluates
+    /// negative-stride slices with omitted bounds: it strides from index 0 DOWN to
+    /// count-1, which is empty for 2+ messages (and accidentally correct for one).
+    /// The template then raises "No user query found in messages." and every
+    /// multi-message conversation fails. Rewrite the slice to the equivalent
+    /// `messages|reverse` filter, which swift-jinja implements correctly.
+    private static func sanitizeChatTemplate(in directory: URL) {
+        let broken = "messages[::-1]"
+        let fixed = "messages|reverse"
+
+        let templateURL = directory.appendingPathComponent("chat_template.jinja")
+        if let template = try? String(contentsOf: templateURL, encoding: .utf8),
+           template.contains(broken) {
+            try? template.replacingOccurrences(of: broken, with: fixed)
+                .write(to: templateURL, atomically: true, encoding: .utf8)
+        }
+
+        let configURL = directory.appendingPathComponent("tokenizer_config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return }
+        var changed = false
+        for key in ["chat_template", "chatTemplate"] {
+            if let embedded = json[key] as? String, embedded.contains(broken) {
+                json[key] = embedded.replacingOccurrences(of: broken, with: fixed)
+                changed = true
+            }
+        }
+        if changed,
+           let patched = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]) {
+            try? patched.write(to: configURL)
+        }
     }
 }
 
