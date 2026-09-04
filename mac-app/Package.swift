@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .executable(name: "Teale", targets: ["Teale"]),
         .executable(name: "teale", targets: ["TealeCLI"]),
+        .executable(name: "teale-eval", targets: ["TealeEval"]),
         .executable(name: "TealeCompanion", targets: ["TealeCompanion"]),
         .library(name: "TealeSDK", targets: ["TealeSDK", "TealeSDKUI"]),
     ],
@@ -256,6 +257,17 @@ let package = Package(
             exclude: ["Info.plist", "InferencePool.entitlements"],
             resources: [
                 .process("Resources"),
+            ]
+        ),
+
+        // MARK: - TealeEval (KV-quantization eval harness)
+        .executableTarget(
+            name: "TealeEval",
+            dependencies: [
+                "MLXInference",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ]
         ),
 
