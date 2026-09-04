@@ -321,7 +321,7 @@ pub(crate) fn prepare_chat_request_excluding(
             required_ctx,
             auto_profile,
             &required_supported_parameters,
-            &eligible_supply,
+            eligible_supply,
             (floor.small, floor.large),
             &excluded_with_hidden,
         )
@@ -337,7 +337,7 @@ pub(crate) fn prepare_chat_request_excluding(
                 required_ctx,
                 auto_profile,
                 &[],
-                &eligible_supply,
+                eligible_supply,
                 (floor.small, floor.large),
                 &excluded_with_hidden,
             )
