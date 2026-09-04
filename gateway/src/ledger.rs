@@ -1138,6 +1138,75 @@ pub fn availability_credits_per_tick(prompt_price_usd: f64, completion_price_usd
     ((combined_price / hermes_reference).round() as i64).max(1)
 }
 
+/// Demand weighting window for the availability drip: recent real client
+/// completions per model, looked at over the trailing hour.
+pub const DRIP_DEMAND_WINDOW_SECS: u64 = 3600;
+
+/// Weight applied to a device's base tick rate for a model with zero recent
+/// demand (bootstrap floor). The other 95% of the weight follows real demand.
+pub const DRIP_DEAD_MODEL_FLOOR: f64 = 0.05;
+
+/// Reallocate the availability drip toward models with real recent demand.
+///
+/// The per-tick TOTAL payout is unchanged (sum of base rates in, same total
+/// out, modulo rounding) - this reallocates, it does not emit more. Devices
+/// available for in-demand models earn more; devices on models nobody
+/// requests fall to the 5% floor. When the network has seen zero requests in
+/// the window (cold start), recipients pass through at flat base rates so
+/// bootstrap supply is still rewarded.
+///
+/// `demand_counts` maps raw request model ids to trailing-window request
+/// counts; a device's demand is the sum of counts whose id matches its
+/// catalog entry (id or aliases), or its own raw model id when uncatalogued.
+pub fn apply_demand_weighting(
+    recipients: Vec<DripRecipient>,
+    demand_counts: &[(String, usize)],
+    catalog: &[crate::catalog::CatalogModel],
+) -> Vec<DripRecipient> {
+    let total_demand: usize = demand_counts.iter().map(|(_, n)| n).sum();
+    if total_demand == 0 {
+        return recipients;
+    }
+    let base_total: i64 = recipients.iter().map(|r| r.credits.max(0)).sum();
+    if base_total <= 0 {
+        return recipients;
+    }
+
+    let weights: Vec<f64> = recipients
+        .iter()
+        .map(|r| {
+            let catalog_model = r
+                .model_id
+                .as_deref()
+                .and_then(|mid| catalog.iter().find(|m| m.matches(mid)));
+            let model_demand: usize = demand_counts
+                .iter()
+                .filter(|(key, _)| match catalog_model {
+                    Some(m) => m.matches(key),
+                    None => r.model_id.as_deref() == Some(key.as_str()),
+                })
+                .map(|(_, n)| *n)
+                .sum();
+            let share = model_demand as f64 / total_demand as f64;
+            r.credits.max(0) as f64
+                * (DRIP_DEAD_MODEL_FLOOR + (1.0 - DRIP_DEAD_MODEL_FLOOR) * share)
+        })
+        .collect();
+    let weight_total: f64 = weights.iter().sum();
+    if weight_total <= 0.0 {
+        return recipients;
+    }
+
+    recipients
+        .into_iter()
+        .zip(weights)
+        .map(|(mut r, w)| {
+            r.credits = ((base_total as f64 * w / weight_total).round() as i64).max(0);
+            r
+        })
+        .collect()
+}
+
 /// Credit cost in Teale credits for a completed chat turn, driven by the
 /// per-token USD prices in `models.yaml`. Returned as an integer ≥1.
 ///
@@ -7530,5 +7599,96 @@ mod tests {
         let key = get_api_key(&pool, "acc-4", &minted.public.key_id).unwrap();
         assert!(key.disabled);
         assert_eq!(key.usage_credits, 25);
+    }
+
+    #[test]
+    fn demand_weighting_reallocates_without_changing_total() {
+        fn catalog_model(id: &str, aliases: &[&str]) -> crate::catalog::CatalogModel {
+            crate::catalog::CatalogModel {
+                id: id.to_string(),
+                display_name: id.to_string(),
+                owned_by: "test".to_string(),
+                context_length: 8192,
+                max_output_tokens: 4096,
+                params_b: 8.0,
+                pricing_prompt: "0.0000001".to_string(),
+                pricing_completion: "0.0000002".to_string(),
+                quantization: None,
+                supported_parameters: vec![],
+                description: None,
+                aliases: aliases.iter().map(|a| a.to_string()).collect(),
+                is_virtual: false,
+                routing_tags: vec![],
+                estimated_ttft_ms: None,
+                estimated_tps: None,
+            }
+        }
+        let catalog = vec![
+            catalog_model("hot/model", &["hot-alias"]),
+            catalog_model("cold/model", &[]),
+        ];
+        let recipients = vec![
+            DripRecipient {
+                device_id: "a".into(),
+                credits: 10,
+                model_id: Some("hot/model".into()),
+            },
+            DripRecipient {
+                device_id: "b".into(),
+                credits: 10,
+                model_id: Some("cold/model".into()),
+            },
+            DripRecipient {
+                device_id: "c".into(),
+                credits: 4,
+                model_id: Some("uncatalogued-x".into()),
+            },
+        ];
+        // hot/model sees 90 requests (10 via its alias), cold/model 0, uncatalogued-x 10.
+        let demand = vec![
+            ("hot/model".to_string(), 80usize),
+            ("hot-alias".to_string(), 10usize),
+            ("uncatalogued-x".to_string(), 10usize),
+        ];
+        let out = apply_demand_weighting(recipients, &demand, &catalog);
+        let total_in = 10 + 10 + 4;
+        let total_out: i64 = out.iter().map(|r| r.credits).sum();
+        // total is reallocated, not inflated (allow ±2 rounding drift)
+        assert!(
+            (total_out - total_in).abs() <= 2,
+            "total {} -> {}",
+            total_in,
+            total_out
+        );
+        let hot = out.iter().find(|r| r.device_id == "a").unwrap().credits;
+        let cold = out.iter().find(|r| r.device_id == "b").unwrap().credits;
+        let uncatalogued = out.iter().find(|r| r.device_id == "c").unwrap().credits;
+        // hot (90% of demand) earns much more than its 10-credit base share;
+        // cold (0 demand) falls to ~the 5% floor; uncatalogued matches by raw id.
+        assert!(hot > 15, "hot={}", hot);
+        assert!(cold <= 2, "cold={}", cold);
+        assert!(uncatalogued > 0, "uncatalogued={}", uncatalogued);
+
+        // zero demand anywhere: flat pass-through (bootstrap behavior)
+        let flat = apply_demand_weighting(
+            vec![
+                DripRecipient {
+                    device_id: "a".into(),
+                    credits: 10,
+                    model_id: Some("hot/model".into()),
+                },
+                DripRecipient {
+                    device_id: "b".into(),
+                    credits: 10,
+                    model_id: Some("cold/model".into()),
+                },
+            ],
+            &[],
+            &catalog,
+        );
+        assert_eq!(
+            flat.iter().map(|r| r.credits).collect::<Vec<_>>(),
+            vec![10, 10]
+        );
     }
 }
