@@ -254,7 +254,7 @@ public actor MLXProvider: InferenceProvider {
             let inputBox = UncheckedSendableBox(inputToEval)
             let (stream, usedCache) = try await container.perform { context in
                 let activeCache = cacheBox.value ?? context.model.newCache(parameters: parameters)
-                let stream = MLXLMCommon.generate(
+                let stream = try MLXLMCommon.generate(
                     input: inputBox.value,
                     cache: activeCache,
                     parameters: parameters,
