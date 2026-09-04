@@ -184,9 +184,9 @@ async fn main() -> anyhow::Result<()> {
                     })
                 })
                 .collect();
-            let demand_counts = metrics_for_drip.request_counts(
-                std::time::Duration::from_secs(ledger::DRIP_DEMAND_WINDOW_SECS),
-            );
+            let demand_counts = metrics_for_drip.request_counts(std::time::Duration::from_secs(
+                ledger::DRIP_DEMAND_WINDOW_SECS,
+            ));
             ledger::apply_demand_weighting(recipients, &demand_counts, &catalog_for_drip)
         });
         tracing::info!(

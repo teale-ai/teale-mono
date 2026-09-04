@@ -1210,7 +1210,8 @@ pub fn apply_demand_weighting(
                 .map(|(_, n)| *n)
                 .sum();
             let share = model_demand as f64 / total_demand as f64;
-            r.credits.max(0) as f64 * (DRIP_DEAD_MODEL_FLOOR + (1.0 - DRIP_DEAD_MODEL_FLOOR) * share)
+            r.credits.max(0) as f64
+                * (DRIP_DEAD_MODEL_FLOOR + (1.0 - DRIP_DEAD_MODEL_FLOOR) * share)
         })
         .collect();
     let weight_total: f64 = weights.iter().sum();
@@ -7712,11 +7713,26 @@ mod tests {
                 estimated_tps: None,
             }
         }
-        let catalog = vec![catalog_model("hot/model", &["hot-alias"]), catalog_model("cold/model", &[])];
+        let catalog = vec![
+            catalog_model("hot/model", &["hot-alias"]),
+            catalog_model("cold/model", &[]),
+        ];
         let recipients = vec![
-            DripRecipient { device_id: "a".into(), credits: 10, model_id: Some("hot/model".into()) },
-            DripRecipient { device_id: "b".into(), credits: 10, model_id: Some("cold/model".into()) },
-            DripRecipient { device_id: "c".into(), credits: 4, model_id: Some("uncatalogued-x".into()) },
+            DripRecipient {
+                device_id: "a".into(),
+                credits: 10,
+                model_id: Some("hot/model".into()),
+            },
+            DripRecipient {
+                device_id: "b".into(),
+                credits: 10,
+                model_id: Some("cold/model".into()),
+            },
+            DripRecipient {
+                device_id: "c".into(),
+                credits: 4,
+                model_id: Some("uncatalogued-x".into()),
+            },
         ];
         // hot/model sees 90 requests (10 via its alias), cold/model 0, uncatalogued-x 10.
         let demand = vec![
@@ -7728,7 +7744,12 @@ mod tests {
         let total_in = 10 + 10 + 4;
         let total_out: i64 = out.iter().map(|r| r.credits).sum();
         // total is reallocated, not inflated (allow ±2 rounding drift)
-        assert!((total_out - total_in).abs() <= 2, "total {} -> {}", total_in, total_out);
+        assert!(
+            (total_out - total_in).abs() <= 2,
+            "total {} -> {}",
+            total_in,
+            total_out
+        );
         let hot = out.iter().find(|r| r.device_id == "a").unwrap().credits;
         let cold = out.iter().find(|r| r.device_id == "b").unwrap().credits;
         let uncatalogued = out.iter().find(|r| r.device_id == "c").unwrap().credits;
@@ -7741,15 +7762,25 @@ mod tests {
         // zero demand anywhere: flat pass-through (bootstrap behavior)
         let flat = apply_demand_weighting(
             vec![
-                DripRecipient { device_id: "a".into(), credits: 10, model_id: Some("hot/model".into()) },
-                DripRecipient { device_id: "b".into(), credits: 10, model_id: Some("cold/model".into()) },
+                DripRecipient {
+                    device_id: "a".into(),
+                    credits: 10,
+                    model_id: Some("hot/model".into()),
+                },
+                DripRecipient {
+                    device_id: "b".into(),
+                    credits: 10,
+                    model_id: Some("cold/model".into()),
+                },
             ],
             &[],
             &catalog,
         );
-        assert_eq!(flat.iter().map(|r| r.credits).collect::<Vec<_>>(), vec![10, 10]);
+        assert_eq!(
+            flat.iter().map(|r| r.credits).collect::<Vec<_>>(),
+            vec![10, 10]
+        );
     }
-
 
     #[test]
     fn ops_fee_recycling_tops_up_pool_only_while_paying_out() {
