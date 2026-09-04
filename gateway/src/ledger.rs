@@ -7873,5 +7873,4 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0);
     }
-
 }
