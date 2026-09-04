@@ -900,6 +900,10 @@ let supabaseClient = null;
 let supabaseAuthKey = null;
 let authSession = null;
 let authUser = null;
+// True when authUser came from the daemon's gateway email session (not
+// Supabase). The 1s snapshot poll must preserve it.
+let authUserIsGatewayNative = false;
+let authUserGatewayNativeAt = 0;
 let pendingNativeSession = normalizeNativeSession(DESKTOP_CONFIG.nativeSession || null);
 let authIdentities = [];
 let accountDevices = [];
@@ -1311,6 +1315,7 @@ async function restorePersistedSupabaseSession() {
 function resetAccountAuthState() {
   authSession = null;
   authUser = null;
+  authUserIsGatewayNative = false;
   authIdentities = [];
   linkedSupabaseUserId = null;
   linkedGatewayAccountStateKey = null;
@@ -4002,13 +4007,64 @@ function renderAuthState() {
   els.authNote.textContent = t("auth.note.emailSignedIn");
 }
 
+function gatewayNativeAuthUser(accountUserID, email) {
+  return {
+    id: accountUserID,
+    email: email || null,
+    phone: null,
+    user_metadata: { email: email || null },
+    app_metadata: { providers: ["email"] },
+    identities: email
+      ? [{ id: email, provider: "email", email, identity_data: { email, sub: accountUserID } }]
+      : [],
+  };
+}
+
 async function ensureAuthClient(authConfig) {
   if (!authConfig?.configured) {
     supabaseClient = null;
     supabaseAuthKey = null;
     authSession = null;
+    // Gateway-native email sign-in: the daemon owns the session (minted by
+    // the verify route, persisted by the native AuthManager) and reports it
+    // on every snapshot. Hydrate from it instead of wiping - the old
+    // unconditional reset ran on every 1s poll and was the "signed in, then
+    // reverted to signed out a second later" bug.
+    const gatewayAccountUserID = authConfig?.gateway_account_user_id || null;
+    if (gatewayAccountUserID) {
+      if (!authUser || authUser.id !== gatewayAccountUserID || !authUserIsGatewayNative) {
+        authUser = gatewayNativeAuthUser(gatewayAccountUserID, authConfig.gateway_email);
+        authIdentities = authUser.identities;
+        authUserIsGatewayNative = true;
+        authUserGatewayNativeAt = Date.now();
+        clearAuthErrorState();
+        renderAccountWallet();
+        renderAuthState();
+        renderAccountApiKeys();
+        renderAccountDevices();
+        refreshAccountState()
+          .then(() => ensureGatewayAccountLink())
+          .then(() => refreshAccountState())
+          .then(() => {
+            renderAccountWallet();
+            renderAccountApiKeys();
+            renderAuthState();
+            renderAccountDevices();
+          })
+          .catch((error) => console.warn("gateway account sync failed", error));
+      }
+      return;
+    }
+    if (authUserIsGatewayNative && authUser && Date.now() - authUserGatewayNativeAt < 15000) {
+      // Verify round-trip just completed JS-side but the daemon's AuthManager
+      // is still adopting the session (identity fetch in flight). Don't wipe
+      // a seconds-old sign-in; the snapshot will carry the gateway identity
+      // once adoption lands.
+      return;
+    }
     authUser = null;
     authIdentities = [];
+    authUserIsGatewayNative = false;
     linkedSupabaseUserId = null;
     linkedGatewayAccountStateKey = null;
     accountDevices = [];
@@ -5097,19 +5153,9 @@ els.authEmailVerifyButton.addEventListener("click", async () => {
     els.authEmailVerifyButton.disabled = true;
     const verified = await post(ROUTES.accountEmailCodeVerify, { email, code: token });
     authSession = null;
-    authUser = {
-      id: verified.accountUserID,
-      email: verified.email,
-      phone: null,
-      user_metadata: { email: verified.email },
-      app_metadata: { providers: ["email"] },
-      identities: [{
-        id: verified.email,
-        provider: "email",
-        email: verified.email,
-        identity_data: { email: verified.email, sub: verified.accountUserID },
-      }],
-    };
+    authUser = gatewayNativeAuthUser(verified.accountUserID, verified.email);
+    authUserIsGatewayNative = true;
+    authUserGatewayNativeAt = Date.now();
     authIdentities = authUser.identities;
     postNativeSessionSync(null);
     clearAuthErrorState();
@@ -5142,6 +5188,11 @@ els.authEmailVerifyButton.addEventListener("click", async () => {
 
 els.authSignoutButton.addEventListener("click", async () => {
   if (!supabaseClient) {
+    if (authUserIsGatewayNative) {
+      // Revoke the daemon-held gateway session too (native shell runs
+      // AuthManager.signOut: server-side revoke + token-file removal).
+      postNativeMessage({ type: "authSignOut" });
+    }
     resetAccountAuthState();
     return;
   }

@@ -60,24 +60,36 @@ public struct RemoteAuthConfigSnapshot: Codable, Sendable {
     public var supabaseURL: String?
     public var supabaseAnonKey: String?
     public var redirectURL: String?
+    /// Gateway-native email sign-in (tsess_ account session) held by this
+    /// daemon's AuthManager. The companion web UI hydrates its signed-in
+    /// state from these fields on every snapshot poll - without them the
+    /// Supabase-era reset wiped the JS auth state ~1s after sign-in.
+    public var gatewayAccountUserID: String?
+    public var gatewayEmail: String?
 
     enum CodingKeys: String, CodingKey {
         case configured
         case supabaseURL = "supabase_url"
         case supabaseAnonKey = "supabase_anon_key"
         case redirectURL = "redirect_url"
+        case gatewayAccountUserID = "gateway_account_user_id"
+        case gatewayEmail = "gateway_email"
     }
 
     public init(
         configured: Bool,
         supabaseURL: String?,
         supabaseAnonKey: String?,
-        redirectURL: String?
+        redirectURL: String?,
+        gatewayAccountUserID: String? = nil,
+        gatewayEmail: String? = nil
     ) {
         self.configured = configured
         self.supabaseURL = supabaseURL
         self.supabaseAnonKey = supabaseAnonKey
         self.redirectURL = redirectURL
+        self.gatewayAccountUserID = gatewayAccountUserID
+        self.gatewayEmail = gatewayEmail
     }
 }
 

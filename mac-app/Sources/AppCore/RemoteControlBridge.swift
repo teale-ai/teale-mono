@@ -97,12 +97,23 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     private func authSnapshot() -> RemoteAuthConfigSnapshot {
         // Supabase auth is removed (the project behind it is gone);
         // email/gateway auth is the sign-in story. Report not-configured so
-        // the desktop companion never initializes its legacy Supabase path.
-        RemoteAuthConfigSnapshot(
+        // the desktop companion never initializes its legacy Supabase path,
+        // but DO report the daemon's gateway-native session so the web UI
+        // can hydrate (and keep) its signed-in state.
+        var gatewayAccountUserID: String?
+        var gatewayEmail: String?
+        if let authManager = appState.authManager,
+           case .signedIn(let profile) = authManager.authState {
+            gatewayAccountUserID = authManager.gatewayAccountUserID ?? profile.id.uuidString
+            gatewayEmail = profile.email
+        }
+        return RemoteAuthConfigSnapshot(
             configured: false,
             supabaseURL: nil,
             supabaseAnonKey: nil,
-            redirectURL: nil
+            redirectURL: nil,
+            gatewayAccountUserID: gatewayAccountUserID,
+            gatewayEmail: gatewayEmail
         )
     }
 
