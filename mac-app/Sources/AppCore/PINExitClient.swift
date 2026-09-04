@@ -350,7 +350,10 @@ public final class PINExitClient: @unchecked Sendable {
                     do {
                         try await transport.send(.socksData(SocksDataPayload(
                             streamID: streamID, data: data)))
-                    } catch { break }
+                    } catch {
+                        PINExitServer.log("exit client: local->exit send FAILED for \(streamID): \(error.localizedDescription)")
+                        break
+                    }
                 }
                 try? await transport.send(.socksClose(SocksClosePayload(
                     streamID: streamID, reason: "client closed")))
@@ -435,21 +438,26 @@ public final class PINExitClient: @unchecked Sendable {
     ) {
         Task { [weak self] in
             guard let self else { return }
+            var totalBytes = 0
             let messages = await transport.incomingMessages
             for await message in messages {
                 switch message {
                 case .socksData(let payload) where payload.streamID == streamID:
+                    totalBytes += payload.data.count
                     do { try await local.send(payload.data) } catch {
+                        PINExitServer.log("exit client: local send FAILED for \(streamID) after \(totalBytes) bytes: \(error.localizedDescription)")
                         await self.dropStream(streamID)
                         return
                     }
                 case .socksClose(let payload) where payload.streamID == streamID:
+                    PINExitServer.log("exit client: stream \(streamID) closed by exit (\(payload.reason ?? "no reason")) after \(totalBytes) bytes exit->local")
                     await self.dropStream(streamID)
                     return
                 default:
                     break
                 }
             }
+            PINExitServer.log("exit client: transport ended under stream \(streamID) after \(totalBytes) bytes exit->local")
             await self.dropStream(streamID)
         }
     }
