@@ -48,6 +48,20 @@ mkdir -p "${RESOURCES_DIR}"
 cp "${BINARY}" "${MACOS_DIR}/Teale"
 strip "${MACOS_DIR}/Teale"
 
+# Bundle the teale CLI (Rust) when the caller prebuilt it. The release
+# workflow builds it from the repo-root workspace and points
+# TEALE_CLI_BINARY at the binary; local ad-hoc builds skip it.
+TEALE_CLI_BUNDLED=0
+if [ -n "${TEALE_CLI_BINARY:-}" ] && [ -f "${TEALE_CLI_BINARY}" ]; then
+    cp "${TEALE_CLI_BINARY}" "${MACOS_DIR}/teale"
+    strip "${MACOS_DIR}/teale" 2>/dev/null || true
+    chmod 755 "${MACOS_DIR}/teale"
+    TEALE_CLI_BUNDLED=1
+    echo "  Bundled teale CLI into Contents/MacOS/teale"
+else
+    echo "  NOTE: TEALE_CLI_BINARY not set — .app will not contain the teale CLI"
+fi
+
 RELEASE_PRODUCTS_DIR="${DERIVED_DATA}/Build/Products/Release"
 
 # Copy SwiftPM resource bundles, including the MLX metal library bundle.
@@ -104,8 +118,13 @@ BUILD_VERSION="${BUILD_DATE}-${BUILD_TIME}-${GIT_HASH}"
 if [ "${SIGNING_IDENTITY}" = "-" ]; then
     codesign --force --deep --sign - "${APP_DIR}"
 else
-    # Inside-out signing: nested bundles first, then outer app.
+    # Inside-out signing: nested executables and bundles first, then outer app.
     # --options runtime (Hardened Runtime) and --timestamp are required for notarization.
+    if [ "${TEALE_CLI_BUNDLED}" -eq 1 ]; then
+        codesign --force --sign "${SIGNING_IDENTITY}" \
+            --timestamp --options runtime \
+            "${MACOS_DIR}/teale"
+    fi
     for nested in "${RESOURCES_DIR}"/*.bundle; do
         [ -d "${nested}" ] && codesign --force --sign "${SIGNING_IDENTITY}" \
             --timestamp --options runtime "${nested}"

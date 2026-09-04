@@ -83,6 +83,47 @@ offer_rapid_mlx_install() {
     esac
 }
 
+# ── teale CLI symlink ──
+#
+# The release bundles the teale CLI inside the app at Contents/MacOS/teale.
+# Link it into /usr/local/bin so `teale` is on PATH. /usr/local/bin is
+# root-owned on a stock macOS install, so use sudo when it is not writable
+# (sudo reads the password from /dev/tty, which works under `curl … | sh`).
+# In genuinely headless contexts, fall back to ~/.local/bin with a PATH hint.
+install_cli_symlink() {
+    CLI="$APP_DIR/Contents/MacOS/teale"
+    if [ ! -x "$CLI" ]; then
+        return 0   # older build without a bundled CLI
+    fi
+
+    TARGET_DIR="/usr/local/bin"
+    LINK="$TARGET_DIR/teale"
+
+    if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$CLI" ]; then
+        echo "  teale CLI already linked at $LINK"
+        return 0
+    fi
+
+    echo ""
+    if { [ -d "$TARGET_DIR" ] && [ -w "$TARGET_DIR" ]; } || [ -w /usr/local ]; then
+        mkdir -p "$TARGET_DIR" && ln -sf "$CLI" "$LINK"
+    elif [ -e /dev/tty ]; then
+        echo "  Linking the teale CLI to $LINK (may ask for your password)..."
+        if ! sudo mkdir -p "$TARGET_DIR" || ! sudo ln -sf "$CLI" "$LINK"; then
+            echo "  Could not link into $TARGET_DIR. To do it later:"
+            echo "    sudo ln -sf $CLI $LINK"
+            return 0
+        fi
+    else
+        mkdir -p "$HOME/.local/bin" && ln -sf "$CLI" "$HOME/.local/bin/teale"
+        echo "  teale CLI linked at ~/.local/bin/teale"
+        echo "  (add ~/.local/bin to your PATH, or run: sudo ln -sf $CLI $LINK)"
+        return 0
+    fi
+
+    echo "  teale CLI linked at $LINK - try: teale status"
+}
+
 # ── Download from GitHub Releases ──
 
 LATEST=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
@@ -111,6 +152,8 @@ if [ -n "$LATEST" ]; then
 
         echo ""
         echo "  Teale $LATEST installed."
+
+        install_cli_symlink
 
         offer_rapid_mlx_install
 
@@ -152,6 +195,8 @@ if [ -d ".build/Teale.app" ]; then
 
     echo ""
     echo "  Teale installed."
+
+    install_cli_symlink
 
     offer_rapid_mlx_install
 
