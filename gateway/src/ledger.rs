@@ -84,6 +84,10 @@ pub enum LedgerType {
     /// Off-ramp marker for provider payouts. Internal-only in v1 (no real
     /// USDC settlement), parity with `account_wallets.usdc_cents`.
     ProviderPayout,
+    /// Negative `__ops__` row: accrued ops fees swept back into the
+    /// availability mint pool. Liability-neutral (the credits settled once
+    /// as OPS_FEE); this is recycling, not emission.
+    PoolRecycle,
 }
 
 impl LedgerType {
@@ -101,6 +105,7 @@ impl LedgerType {
             LedgerType::AdminMint => "ADMIN_MINT",
             LedgerType::ProviderEarn => "PROVIDER_EARN",
             LedgerType::ProviderPayout => "PROVIDER_PAYOUT",
+            LedgerType::PoolRecycle => "POOL_RECYCLE",
         }
     }
 }
@@ -370,6 +375,8 @@ struct ActiveAvailabilitySession {
 pub struct AvailabilityReconcileReport {
     pub credited_devices: usize,
     pub finalized_sessions: usize,
+    /// Ops-fee credits recycled into the mint pool this tick.
+    pub recycled_credits: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1145,6 +1152,21 @@ pub const DRIP_DEMAND_WINDOW_SECS: u64 = 3600;
 /// Weight applied to a device's base tick rate for a model with zero recent
 /// demand (bootstrap floor). The other 95% of the weight follows real demand.
 pub const DRIP_DEAD_MODEL_FLOOR: f64 = 0.05;
+
+/// Ops-fee recycling (Taylor's call, Sep 5 2026): when the mint pool drops
+/// below a buffer of this many ticks at the current tick cost, sweep accrued
+/// `__ops__` fees back into the pool, capped at what `__ops__` actually
+/// holds. Recycling is liability-neutral - the credits already settled once
+/// as the 5% ops fee. There is deliberately NO auto-emission: if both the
+/// pool and `__ops__` run dry, the drip skips and `pool_status.low_pool`
+/// flips on, which the external watch surfaces to the operator so he can
+/// decide on contributing real USDC.
+pub const POOL_RECYCLE_TARGET_TICKS: i64 = 86_400;
+/// The pool is flagged "low" when it covers fewer than this many ticks at
+/// the current tick cost (~1h). Surfaced via GET /v1/pool.
+pub const POOL_LOW_TICKS: i64 = 3_600;
+/// Floor on the recycle target so a quiet network still keeps a buffer.
+const POOL_RECYCLE_MIN_TARGET: i64 = 1_000_000;
 
 /// Reallocate the availability drip toward models with real recent demand.
 ///
@@ -4464,13 +4486,75 @@ pub fn reconcile_availability_sessions(
         .map(|recipient| recipient.credits.max(0))
         .sum();
     if total_needed > 0 {
-        let remaining: i64 =
+        let mut remaining: i64 =
             tx.query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
                 r.get(0)
             })?;
+
+        // Recycle accrued ops fees back into the pool when it drops below
+        // the target buffer. Only while the network is paying out (we are
+        // inside total_needed > 0) - never to a dead network, per Taylor.
+        let recycle_target = (total_needed * POOL_RECYCLE_TARGET_TICKS).max(POOL_RECYCLE_MIN_TARGET);
+        if remaining < recycle_target {
+            let ops_balance: i64 = tx
+                .query_row(
+                    "SELECT balance FROM balances WHERE device_id = '__ops__'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let swept = ops_balance.min(recycle_target - remaining).max(0);
+            if swept > 0 {
+                tx.execute(
+                    "UPDATE balances SET balance = balance - ? WHERE device_id = '__ops__'",
+                    params![swept],
+                )?;
+                tx.execute(
+                    "UPDATE mint_pool SET remaining = remaining + ? WHERE id = 1",
+                    params![swept],
+                )?;
+                tx.execute(
+                    "INSERT INTO ledger (device_id, type, amount, timestamp, note)
+                     VALUES ('__ops__', 'POOL_RECYCLE', ?, ?, ?)",
+                    params![
+                        -swept,
+                        now,
+                        "recycled ops fees into availability mint pool"
+                    ],
+                )?;
+                remaining += swept;
+                report.recycled_credits += swept;
+                tracing::info!(
+                    swept,
+                    remaining,
+                    "recycled ops fees into availability mint pool"
+                );
+            }
+        }
+
+        let low_pool = remaining < total_needed * POOL_LOW_TICKS;
+        if low_pool {
+            tracing::warn!(
+                remaining,
+                total_needed,
+                "availability mint pool is LOW (<1h of drip at current rate) - operator top-up needed"
+            );
+        }
+        tx.execute(
+            "INSERT INTO pool_status (id, updated_at, remaining, tick_total, recycled_credits, low_pool)
+             VALUES (1, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                 updated_at = excluded.updated_at,
+                 remaining = excluded.remaining,
+                 tick_total = excluded.tick_total,
+                 recycled_credits = excluded.recycled_credits,
+                 low_pool = excluded.low_pool",
+            params![now, remaining, total_needed, report.recycled_credits, low_pool as i64],
+        )?;
+
         if remaining < total_needed {
             tracing::warn!(
-                "mint_pool remaining ({}) < drip amount ({}), skipping",
+                "mint_pool remaining ({}) < drip amount ({}) even after ops-fee recycling, skipping",
                 remaining,
                 total_needed
             );
@@ -4540,6 +4624,12 @@ pub fn spawn_drip_loop(pool: DbPool, snapshot: impl Fn() -> Vec<DripRecipient> +
             let recipients = snapshot();
             match reconcile_availability_sessions(&pool, &recipients) {
                 Ok(report) => {
+                    if report.recycled_credits > 0 {
+                        tracing::info!(
+                            "availability reconcile: recycled {} ops-fee credits into mint pool",
+                            report.recycled_credits
+                        );
+                    }
                     if report.credited_devices > 0 || report.finalized_sessions > 0 {
                         tracing::debug!(
                             "availability reconcile: credited {} devices, finalized {} sessions",
@@ -7658,6 +7748,96 @@ mod tests {
             &catalog,
         );
         assert_eq!(flat.iter().map(|r| r.credits).collect::<Vec<_>>(), vec![10, 10]);
+    }
+
+
+    #[test]
+    fn ops_fee_recycling_tops_up_pool_only_while_paying_out() {
+        let pool = open_in_memory().unwrap();
+        {
+            let conn = pool.lock();
+            // Drain the seed pool and fund __ops__ with accrued fees.
+            conn.execute("UPDATE mint_pool SET remaining = 10 WHERE id = 1", [])
+                .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO balances (device_id) VALUES ('__ops__')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE balances SET balance = 5000 WHERE device_id = '__ops__'",
+                [],
+            )
+            .unwrap();
+        }
+        let recipients = vec![DripRecipient {
+            device_id: "d1".into(),
+            credits: 100,
+            model_id: Some("m".into()),
+        }];
+        let report = reconcile_availability_sessions(&pool, &recipients).unwrap();
+        assert_eq!(report.credited_devices, 1);
+        assert_eq!(report.recycled_credits, 5000);
+        {
+            let conn = pool.lock();
+            let remaining: i64 = conn
+                .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| r.get(0))
+                .unwrap();
+            let ops: i64 = conn
+                .query_row(
+                    "SELECT balance FROM balances WHERE device_id = '__ops__'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // recycled 5000 into the pool, then paid the 100-credit tick
+            assert_eq!(remaining, 10 + 5000 - 100);
+            assert_eq!(ops, 0);
+            // 4910 remaining covers < 1h at 100/tick -> low flag on
+            let low: i64 = conn
+                .query_row("SELECT low_pool FROM pool_status WHERE id = 1", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(low, 1);
+        }
+        let entries = list_transactions(&pool, "__ops__", 5);
+        assert!(entries
+            .iter()
+            .any(|e| e.type_ == "POOL_RECYCLE" && e.amount == -5000));
+
+        // Both dry: the drip skips (no emission, ever).
+        {
+            let conn = pool.lock();
+            conn.execute("UPDATE mint_pool SET remaining = 10 WHERE id = 1", [])
+                .unwrap();
+        }
+        let report = reconcile_availability_sessions(&pool, &recipients).unwrap();
+        assert_eq!(report.credited_devices, 0);
+        assert_eq!(report.recycled_credits, 0);
+        {
+            let conn = pool.lock();
+            let remaining: i64 = conn
+                .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(remaining, 10);
+        }
+
+        // Network idle (no payout): no sweep, no status write.
+        {
+            let conn = pool.lock();
+            conn.execute("DELETE FROM pool_status", []).unwrap();
+            conn.execute(
+                "UPDATE balances SET balance = 5000 WHERE device_id = '__ops__'",
+                [],
+            )
+            .unwrap();
+        }
+        let report = reconcile_availability_sessions(&pool, &[]).unwrap();
+        assert_eq!(report.recycled_credits, 0);
+        let conn = pool.lock();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pool_status", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
 }
