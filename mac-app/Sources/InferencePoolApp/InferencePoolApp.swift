@@ -148,6 +148,9 @@ final class MenuBarViewModel: ObservableObject {
     @Published var pinSummary = ""
     @Published var exitRouting: String?
     @Published var fetchedAt = Date()
+    // When the gateway wallet total was last synced; the earnings display
+    // interpolates from this anchor so it never rubber-bands between polls.
+    @Published var syncedAt: Date?
 
     private var pollTask: Task<Void, Never>?
     private let port: Int
@@ -179,6 +182,9 @@ final class MenuBarViewModel: ObservableObject {
             let wallet = snapshot["wallet"] as? [String: Any] ?? [:]
             earnedCredits = (wallet["gateway_total_earned_credits"] as? NSNumber)?.int64Value
                 ?? (wallet["gateway_total_earned_credits"] as? Int64) ?? earnedCredits
+            if let syncedSecs = (wallet["gateway_synced_at"] as? NSNumber)?.doubleValue {
+                syncedAt = Date(timeIntervalSince1970: syncedSecs)
+            }
             serving = (snapshot["service_state"] as? String) == "serving"
             ratePerMinute = serving
                 ? ((wallet["availability_rate_credits_per_minute"] as? NSNumber)?.int64Value ?? 0)
@@ -337,7 +343,12 @@ struct CompanionMenuBarView: View {
     }
 
     private var earningsDisplay: String {
-        let elapsed = max(0, Date().timeIntervalSince(model.fetchedAt))
+        // Anchor to the wallet sync time, not the poll time: the synced base
+        // only moves on gateway sync, so a fetch-time anchor snaps the count
+        // back whenever a poll lands without a new sync. Cap the horizon so
+        // a dead sync reads as stale, not as runaway accrual.
+        let anchor = model.syncedAt ?? model.fetchedAt
+        let elapsed = min(max(0, Date().timeIntervalSince(anchor)), 600)
         let earned = model.earnedCredits + Int64((Double(model.ratePerMinute) / 60.0) * elapsed)
         if earningsUnit == "usd" {
             return String(format: "$%.4f USD", Double(earned) / 1_000_000.0)

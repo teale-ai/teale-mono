@@ -4674,7 +4674,6 @@ function maybeFallbackToBundledApp(error) {
   window.location.replace(ROUTES.bundledApp);
 }
 
-let lastSnapshotAt = 0;
 
 function renderSimple(snapshot) {
   if (!els.simpleEarnings) {
@@ -4684,7 +4683,15 @@ function renderSimple(snapshot) {
   const serving = snapshot?.service_state === "serving";
   const ratePerMin = serving ? (wallet.availability_rate_credits_per_minute ?? 0) : 0;
   const base = wallet.gateway_total_earned_credits ?? 0;
-  const elapsedSecs = Math.max(0, (Date.now() - lastSnapshotAt) / 1000);
+  // Interpolate from the wallet's gateway sync time, not the last render:
+  // the snapshot refreshes every 1s but the synced base only moves on
+  // gateway sync, so anchoring to render time makes the counter freeze
+  // between syncs. Cap the horizon so a dead sync reads as stale, not
+  // as runaway accrual.
+  const syncedAtSecs = wallet.gateway_synced_at ?? null;
+  const elapsedSecs = syncedAtSecs
+    ? Math.min(Math.max(0, Date.now() / 1000 - syncedAtSecs), 600)
+    : 0;
   const earned = Math.floor(base + (ratePerMin / 60) * elapsedSecs);
   els.simpleEarnings.textContent = formatDisplayCredits(earned, true);
   if (els.simpleEarningsUnit) {
@@ -4834,7 +4841,6 @@ function renderWallet(snapshot) {
 
 function render(snapshot) {
   lastSnapshot = snapshot;
-  lastSnapshotAt = Date.now();
   if (walletRefreshInFlight) {
     setBusyButton(els.headerRefresh, t("wallet.action.refreshing", { fallback: "Refreshing..." }));
   } else {
