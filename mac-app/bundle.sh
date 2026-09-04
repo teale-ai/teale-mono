@@ -51,13 +51,21 @@ strip "${MACOS_DIR}/Teale"
 # Bundle the teale CLI (Rust) when the caller prebuilt it. The release
 # workflow builds it from the repo-root workspace and points
 # TEALE_CLI_BINARY at the binary; local ad-hoc builds skip it.
+# NOTE: bundled as "teale-cli", not "teale" - macOS ships on
+# case-insensitive APFS by default, where "teale" and "Teale" (the app
+# binary) are the same file and the copy would silently overwrite the
+# app. The /usr/local/bin/teale symlink points at teale-cli.
 TEALE_CLI_BUNDLED=0
 if [ -n "${TEALE_CLI_BINARY:-}" ] && [ -f "${TEALE_CLI_BINARY}" ]; then
-    cp "${TEALE_CLI_BINARY}" "${MACOS_DIR}/teale"
-    strip "${MACOS_DIR}/teale" 2>/dev/null || true
-    chmod 755 "${MACOS_DIR}/teale"
+    cp "${TEALE_CLI_BINARY}" "${MACOS_DIR}/teale-cli"
+    strip "${MACOS_DIR}/teale-cli" 2>/dev/null || true
+    chmod 755 "${MACOS_DIR}/teale-cli"
+    if cmp -s "${MACOS_DIR}/Teale" "${MACOS_DIR}/teale-cli"; then
+        echo "ERROR: Contents/MacOS/teale-cli overwrote the Teale app binary (case-insensitive filesystem collision)"
+        exit 1
+    fi
     TEALE_CLI_BUNDLED=1
-    echo "  Bundled teale CLI into Contents/MacOS/teale"
+    echo "  Bundled teale CLI into Contents/MacOS/teale-cli"
 else
     echo "  NOTE: TEALE_CLI_BINARY not set — .app will not contain the teale CLI"
 fi
@@ -123,7 +131,7 @@ else
     if [ "${TEALE_CLI_BUNDLED}" -eq 1 ]; then
         codesign --force --sign "${SIGNING_IDENTITY}" \
             --timestamp --options runtime \
-            "${MACOS_DIR}/teale"
+            "${MACOS_DIR}/teale-cli"
     fi
     for nested in "${RESOURCES_DIR}"/*.bundle; do
         [ -d "${nested}" ] && codesign --force --sign "${SIGNING_IDENTITY}" \

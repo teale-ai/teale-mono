@@ -85,13 +85,15 @@ offer_rapid_mlx_install() {
 
 # ── teale CLI symlink ──
 #
-# The release bundles the teale CLI inside the app at Contents/MacOS/teale.
+# The release bundles the teale CLI inside the app at
+# Contents/MacOS/teale-cli (named teale-cli because case-insensitive APFS
+# collides "teale" with the "Teale" app binary).
 # Link it into /usr/local/bin so `teale` is on PATH. /usr/local/bin is
 # root-owned on a stock macOS install, so use sudo when it is not writable
 # (sudo reads the password from /dev/tty, which works under `curl … | sh`).
 # In genuinely headless contexts, fall back to ~/.local/bin with a PATH hint.
 install_cli_symlink() {
-    CLI="$APP_DIR/Contents/MacOS/teale"
+    CLI="$APP_DIR/Contents/MacOS/teale-cli"
     if [ ! -x "$CLI" ]; then
         return 0   # older build without a bundled CLI
     fi

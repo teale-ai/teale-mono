@@ -116,10 +116,10 @@ jobs:
 
           ## `teale` CLI
 
-          The `teale` command-line tool (status, supply, models, wallet, PINs, exit routing, `teale mcp` for agents) is bundled inside the app at `Teale.app/Contents/MacOS/teale` and shipped standalone as `teale-macos-arm64` below. The one-command installer above symlinks it to `/usr/local/bin/teale` so it is on your PATH; DMG installers can do the same with:
+          The `teale` command-line tool (status, supply, models, wallet, PINs, exit routing, `teale mcp` for agents) is bundled inside the app at `Teale.app/Contents/MacOS/teale-cli` (named `teale-cli` because case-insensitive APFS collides `teale` with the `Teale` app binary) and shipped standalone as `teale-macos-arm64` below. The one-command installer above symlinks it to `/usr/local/bin/teale` so it is on your PATH; DMG installers can do the same with:
 
           ```
-          sudo ln -sf /Applications/Teale.app/Contents/MacOS/teale /usr/local/bin/teale
+          sudo ln -sf /Applications/Teale.app/Contents/MacOS/teale-cli /usr/local/bin/teale
           ```
 
           ## Backends
