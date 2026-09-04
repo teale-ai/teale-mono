@@ -158,6 +158,7 @@ pub async fn chat_completions(
         let prepared =
             prepare_chat_request_excluding(&state, &headers, &principal, req.clone(), &excluded)?;
         let was_virtual = prepared.was_virtual_resolution;
+        let tools_lane_fallback = prepared.tools_lane_fallback;
         let attempted_model = prepared.catalog_model.id.clone();
 
         let result: Result<Response, GatewayError> = if prepared.streaming {
@@ -185,7 +186,15 @@ pub async fn chat_completions(
         };
 
         match result {
-            Ok(response) => return Ok(response),
+            Ok(mut response) => {
+                if tools_lane_fallback {
+                    response.headers_mut().insert(
+                        header::HeaderName::from_static("x-teale-degraded"),
+                        axum::http::HeaderValue::from_static("tools-lane-exhausted"),
+                    );
+                }
+                return Ok(response);
+            }
             Err(err) if should_cascade(&err, was_virtual, &excluded) => {
                 warn!(
                     failed_model = %attempted_model,
@@ -221,6 +230,11 @@ pub(crate) struct PreparedChatRequest {
     pub required_ctx: u32,
     pub preferred_node_ids: Vec<String>,
     pub streaming: bool,
+    /// True when a virtual resolution required parameters (tools/tool_choice)
+    /// but no tools-advertising model had healthy supply, so resolution fell
+    /// back to the generic pool. Surfaced to the caller as a response header
+    /// so agent harnesses can tell their tool loop may degrade.
+    pub tools_lane_fallback: bool,
     /// True when the requested model was a virtual one (e.g. `teale/auto`) and
     /// the gateway resolved it to a concrete model. The caller can use this to
     /// decide whether a dispatch failure is recoverable by re-resolving with
@@ -269,6 +283,7 @@ pub(crate) fn prepare_chat_request_excluding(
     // from the inbound messages + max_tokens, then ask the catalog for the
     // smallest concrete model that fits and has healthy supply. Resolution
     // is strict per project policy — no silent downgrade; on miss we 503.
+    let mut tools_lane_fallback = false;
     if catalog_model.is_virtual {
         let required_ctx = estimate_required_context(&parsed);
         let auto_profile = infer_auto_route_profile(headers, &parsed);
@@ -278,39 +293,68 @@ pub(crate) fn prepare_chat_request_excluding(
             Vec::with_capacity(excluded_models.len() + HIDDEN_MODEL_IDS.len());
         excluded_with_hidden.extend(excluded_models.iter().cloned());
         excluded_with_hidden.extend(HIDDEN_MODEL_IDS.iter().map(|id| (*id).to_string()));
-        let resolved = resolve_auto(
+        // Match the post-resolution floor check (`loaded_count` below):
+        // count only devices that have the model loaded right now, not
+        // ones whose only claim is `Swappable`. Otherwise resolve_auto
+        // can pick a model with theoretical-only supply (weights on
+        // disk, RAM available) and the floor check then 503s the
+        // request even though a different model with actual loaded
+        // supply would have served it.
+        let eligible_supply = |id: &str, need_ctx: u32| -> u32 {
+            registry
+                .eligible_devices(id)
+                .into_iter()
+                .filter(|device| {
+                    crate::registry::model_matches_any(id, &device.capabilities.loaded_models)
+                })
+                .filter(|device| {
+                    device
+                        .capabilities
+                        .effective_context
+                        .map(|have| have >= need_ctx)
+                        .unwrap_or(true)
+                })
+                .count() as u32
+        };
+        let mut resolved = resolve_auto(
             &state.catalog,
             required_ctx,
             auto_profile,
             &required_supported_parameters,
-            |id, need_ctx| {
-                // Match the post-resolution floor check (`loaded_count` below):
-                // count only devices that have the model loaded right now, not
-                // ones whose only claim is `Swappable`. Otherwise resolve_auto
-                // can pick a model with theoretical-only supply (weights on
-                // disk, RAM available) and the floor check then 503s the
-                // request even though a different model with actual loaded
-                // supply would have served it.
-                registry
-                    .eligible_devices(id)
-                    .into_iter()
-                    .filter(|device| {
-                        crate::registry::model_matches_any(id, &device.capabilities.loaded_models)
-                    })
-                    .filter(|device| {
-                        device
-                            .capabilities
-                            .effective_context
-                            .map(|have| have >= need_ctx)
-                            .unwrap_or(true)
-                    })
-                    .count() as u32
-            },
+            eligible_supply,
             (floor.small, floor.large),
             &excluded_with_hidden,
         )
-        .cloned()
-        .ok_or_else(|| {
+        .cloned();
+        if resolved.is_none() && !required_supported_parameters.is_empty() {
+            // Tools-lane failover: no model advertising the required
+            // parameters (tools/tool_choice) has healthy loaded supply (e.g.
+            // the sole tools-capable supplier wedged). teale/auto's contract
+            // is best-available routing — re-resolve against the full pool
+            // instead of 503ing the request.
+            resolved = resolve_auto(
+                &state.catalog,
+                required_ctx,
+                auto_profile,
+                &[],
+                eligible_supply,
+                (floor.small, floor.large),
+                &excluded_with_hidden,
+            )
+            .cloned();
+            if resolved.is_some() {
+                tools_lane_fallback = true;
+                warn!(
+                    virtual_id = %catalog_model.id,
+                    required_params = ?required_supported_parameters,
+                    "teale/auto: no tools-capable supply; failing over to the generic pool"
+                );
+                metrics::REQUESTS_TOTAL
+                    .with_label_values(&[&catalog_model.id, "tools_lane_fallback"])
+                    .inc();
+            }
+        }
+        let resolved = resolved.ok_or_else(|| {
             metrics::REQUESTS_TOTAL
                 .with_label_values(&[&catalog_model.id, "no_supply"])
                 .inc();
@@ -431,6 +475,7 @@ pub(crate) fn prepare_chat_request_excluding(
         preferred_node_ids,
         streaming,
         was_virtual_resolution,
+        tools_lane_fallback,
     })
 }
 
@@ -1976,6 +2021,100 @@ pricing_completion: "0.00000020"
         let prepared = prepare_chat_request(&state, &HeaderMap::new(), &principal, req)
             .expect("should resolve to the actually-loaded model");
         assert_eq!(prepared.catalog_model.id, big.id);
+    }
+
+    #[tokio::test]
+    async fn teale_auto_tools_falls_back_to_generic_pool_when_tools_lane_empty() {
+        // Regression: teale/auto + tools array deterministically resolved to
+        // the smallest tools-advertising model; when its sole supplier wedged,
+        // the dispatch-failure cascade found no other tools-capable supply and
+        // the request 503d with model_unavailable even though healthy supply
+        // for other models existed. Resolution now fails over to the generic
+        // pool and flags the degradation instead of erroring.
+        use crate::auth::{AuthPrincipal, PrincipalKind};
+        use axum::http::HeaderMap;
+
+        let config = dispatch_test_config(15);
+        let mut tools_model = concrete("test/tools-only", 30.0, 262144);
+        tools_model.supported_parameters = vec!["tools".into(), "tool_choice".into()];
+        let plain = concrete("test/plain", 8.0, 32768);
+        let state = dispatch_test_state_with_catalog(
+            config,
+            vec![virtual_auto(), tools_model.clone(), plain.clone()],
+        );
+        // Only the plain (non-tools) model has loaded supply.
+        state.registry.upsert_device(
+            "node-A".into(),
+            "Tailor 16".into(),
+            dispatch_caps(&[&plain.id], &[]),
+        );
+
+        let mut req = req_with_system("system", Some(64));
+        req.tools = Some(serde_json::json!([{
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {"type": "object"}}
+        }]));
+        let principal = AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: "internal".into(),
+            },
+        };
+        let prepared = prepare_chat_request(
+            &state,
+            &HeaderMap::new(),
+            &principal,
+            serde_json::to_value(req).unwrap(),
+        )
+        .expect("should fail over to the generic pool instead of 503ing");
+        assert_eq!(prepared.catalog_model.id, plain.id);
+        assert!(prepared.tools_lane_fallback);
+    }
+
+    #[tokio::test]
+    async fn teale_auto_tools_prefers_tools_capable_supply_when_present() {
+        // Control: when a tools-advertising model has healthy loaded supply,
+        // resolution must NOT fall back to the generic pool.
+        use crate::auth::{AuthPrincipal, PrincipalKind};
+        use axum::http::HeaderMap;
+
+        let config = dispatch_test_config(15);
+        let mut tools_model = concrete("test/tools-only", 30.0, 262144);
+        tools_model.supported_parameters = vec!["tools".into(), "tool_choice".into()];
+        let plain = concrete("test/plain", 8.0, 32768);
+        let state = dispatch_test_state_with_catalog(
+            config,
+            vec![virtual_auto(), tools_model.clone(), plain.clone()],
+        );
+        state.registry.upsert_device(
+            "node-A".into(),
+            "Tailor 16".into(),
+            dispatch_caps(&[&plain.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-B".into(),
+            "Tailor 64".into(),
+            dispatch_caps(&[&tools_model.id], &[]),
+        );
+
+        let mut req = req_with_system("system", Some(64));
+        req.tools = Some(serde_json::json!([{
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {"type": "object"}}
+        }]));
+        let principal = AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: "internal".into(),
+            },
+        };
+        let prepared = prepare_chat_request(
+            &state,
+            &HeaderMap::new(),
+            &principal,
+            serde_json::to_value(req).unwrap(),
+        )
+        .expect("should resolve to the tools-capable model");
+        assert_eq!(prepared.catalog_model.id, tools_model.id);
+        assert!(!prepared.tools_lane_fallback);
     }
 
     #[tokio::test]
