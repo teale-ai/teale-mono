@@ -90,11 +90,23 @@ enum PINRoute {
         router.post("/v1/app/pins/exit/start") { request, _ -> Response in
             guard let controller else { return Self.unavailable() }
             let body = try await request.body.collect(upTo: 1_048_576)
-            return Self.json(try await controller.pinExitStart(Data(buffer: body)))
+            do {
+                return Self.json(try await controller.pinExitStart(Data(buffer: body)))
+            } catch let error as RemoteControlError {
+                return Self.error(error.httpStatus, error.errorDescription ?? "exit start failed")
+            } catch {
+                return Self.error(500, error.localizedDescription)
+            }
         }
         router.post("/v1/app/pins/exit/stop") { _, _ -> Response in
             guard let controller else { return Self.unavailable() }
-            return Self.json(try await controller.pinExitStop())
+            do {
+                return Self.json(try await controller.pinExitStop())
+            } catch let error as RemoteControlError {
+                return Self.error(error.httpStatus, error.errorDescription ?? "exit stop failed")
+            } catch {
+                return Self.error(500, error.localizedDescription)
+            }
         }
         router.get("/v1/app/pins/exit/status") { _, _ -> Response in
             guard let controller else { return Self.unavailable() }
@@ -130,6 +142,16 @@ enum PINRoute {
             }
         }
     }
+
+extension RemoteControlError {
+    fileprivate var httpStatus: Int {
+        switch self {
+        case .invalidSetting: return 400
+        case .unsupported: return 409
+        case .modelNotFound, .modelNotDownloaded: return 404
+        }
+    }
+}
 
     private static func mapStatus(_ code: Int) -> HTTPResponse.Status {
         switch code {
