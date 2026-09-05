@@ -1,0 +1,25 @@
+name: gateway-log-capture
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "capture window in seconds"
+        required: false
+        default: "240"
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: capture gateway logs
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          timeout "${{ github.event.inputs.seconds }}" flyctl logs -a teale-gateway > gateway-logs.txt 2>&1 || true
+          echo "captured $(wc -l < gateway-logs.txt) lines"
+          grep -c 'streaming inference dispatched' gateway-logs.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-logs-${{ github.run_id }}
+          path: gateway-logs.txt
+          retention-days: 3
