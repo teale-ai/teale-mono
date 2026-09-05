@@ -143,16 +143,6 @@ enum PINRoute {
         }
     }
 
-extension RemoteControlError {
-    fileprivate var httpStatus: Int {
-        switch self {
-        case .invalidSetting: return 400
-        case .unsupported: return 409
-        case .modelNotFound, .modelNotDownloaded: return 404
-        }
-    }
-}
-
     private static func mapStatus(_ code: Int) -> HTTPResponse.Status {
         switch code {
         case 200..<300: return .ok
@@ -182,3 +172,14 @@ extension RemoteControlError {
         error(409, "no private network runtime")
     }
 }
+
+extension RemoteControlError {
+    fileprivate var httpStatus: Int {
+        switch self {
+        case .invalidSetting: return 400
+        case .unsupported: return 409
+        case .modelNotFound, .modelNotDownloaded: return 404
+        }
+    }
+}
+
