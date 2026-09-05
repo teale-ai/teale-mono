@@ -7401,6 +7401,12 @@ mod tests {
             "TreasuryWallet11111111111111111111111111111",
         )
         .unwrap();
+        pool.lock()
+            .execute(
+                "UPDATE account_wallets SET solana_enabled = 1, solana_address = 'TreasuryWallet11111111111111111111111111111' WHERE account_user_id = 'user-123'",
+                [],
+            )
+            .unwrap();
 
         let pending = submit_account_withdrawal(
             &pool,
@@ -7466,6 +7472,12 @@ mod tests {
             "TreasuryWallet11111111111111111111111111111",
         )
         .unwrap();
+        pool.lock()
+            .execute(
+                "UPDATE account_wallets SET solana_enabled = 1, solana_address = 'TreasuryWallet11111111111111111111111111111' WHERE account_user_id = 'user-123'",
+                [],
+            )
+            .unwrap();
 
         let pending = submit_account_withdrawal(
             &pool,
@@ -7532,7 +7544,7 @@ mod tests {
         // Simulate earned (never deposited) credits.
         pool.lock()
             .execute(
-                "UPDATE account_wallets SET balance_credits = 5_000_000, solana_enabled = 1, solana_address = 'EarnWallet5555555555555555555555555555555' WHERE account_user_id = 'user-123'",
+                "UPDATE account_wallets SET balance_credits = 5000000, solana_enabled = 1, solana_address = 'EarnWallet5555555555555555555555555555555' WHERE account_user_id = 'user-123'",
                 [],
             )
             .unwrap();
