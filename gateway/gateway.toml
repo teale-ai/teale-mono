@@ -71,5 +71,5 @@ usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 commitment = "finalized"
 request_timeout_seconds = 15
 max_supported_transaction_version = 0
-treasury_address = "8Cs7qHZ9qz6M3HfZt9H6FBq7toCPKp4KUG8H9xE6V4V3"
+treasury_address = "HwGY6RJKzAxoRjeqWYvmnZGu4AC8oyEzqFrpGgqAKzhA"
 withdrawal_fee_bps = 180
