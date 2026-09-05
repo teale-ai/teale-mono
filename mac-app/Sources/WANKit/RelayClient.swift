@@ -772,6 +772,7 @@ public actor RelayClient {
             guard let connection = relayedConnections[payload.sessionID] else {
                 pendingRelayedData[payload.sessionID, default: []].append(payload.data)
                 FileHandle.standardError.write(Data("[WAN] relayData: no connection for session \(payload.sessionID.prefix(8))... (known sessions: \(relayedConnections.keys.map { String($0.prefix(8)) }))\n".utf8))
+                scheduleUnknownSessionClose(sessionID: payload.sessionID, fromNodeID: payload.fromNodeID)
                 return
             }
             await connection.receiveRelayedClusterMessage(payload.data)
@@ -798,6 +799,36 @@ public actor RelayClient {
         default:
             break
         }
+    }
+
+    /// Sessions we recently saw data for without a matching local session;
+    /// coalesces repeat frames so each unknown session gets one grace check.
+    private var unknownSessionChecks: Set<String> = []
+
+    /// Unknown-session teardown. Data can legitimately arrive before the
+    /// local session registers (open/data race), so wait out a grace window
+    /// first. If the session still does not exist, the sender's session is a
+    /// ghost (e.g. this node restarted and lost it): answer with relayClose
+    /// so the sender tears it down and redials instead of streaming into the
+    /// void forever. Without this, the receiving side only logged and
+    /// dropped, and the sender's session stayed green indefinitely (ghost
+    /// session F2E63F37 wedged an exit route, Sep 5 2026).
+    private func scheduleUnknownSessionClose(sessionID: String, fromNodeID: String) {
+        guard !fromNodeID.isEmpty, fromNodeID != config.identity.nodeID else { return }
+        guard unknownSessionChecks.insert(sessionID).inserted else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await self?.closeIfStillUnknown(sessionID: sessionID, fromNodeID: fromNodeID)
+        }
+    }
+
+    private func closeIfStillUnknown(sessionID: String, fromNodeID: String) async {
+        unknownSessionChecks.remove(sessionID)
+        // A session that registered during the grace window is legitimate.
+        guard relayedConnections[sessionID] == nil else { return }
+        pendingRelayedData.removeValue(forKey: sessionID)
+        FileHandle.standardError.write(Data("[WAN] relayData for never-registered session \(sessionID.prefix(8))... from \(fromNodeID.prefix(16))... - answering relayClose so the sender redials\n".utf8))
+        await closeRelayedSession(sessionID: sessionID, toNodeID: fromNodeID, notifyRemote: true)
     }
 
     private func waitForRelayReady(fromNodeID: String, sessionID: String, timeoutSeconds: TimeInterval) async throws {
