@@ -3,5 +3,6 @@ public enum BuildVersion {
     public static let commit = "140da8e"
     public static let date = "2026-07-06 21:02 UTC"
     public static let branch = "taylorhou/pin-network-naming"
+    public static let releaseTag = ""
     public static let display = "140da8e (2026-07-06 21:02 UTC)"
 }

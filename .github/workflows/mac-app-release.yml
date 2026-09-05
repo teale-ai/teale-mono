@@ -59,6 +59,7 @@ jobs:
         env:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
           TEALE_CLI_BINARY: ${{ github.workspace }}/target/release/teale
+          TEALE_RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: ./bundle.sh
 
       - name: Verify signed .app
