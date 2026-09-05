@@ -274,6 +274,7 @@ public actor MLXProvider: InferenceProvider {
 
             var completionInfo: GenerateCompletionInfo? = nil
             var toolCallReturned = false
+            var hitMaxTokens = false
 
             generationLoop: for await generation in stream {
                 if Task.isCancelled { break }
@@ -281,7 +282,7 @@ public actor MLXProvider: InferenceProvider {
                 case .chunk(let text):
                     tokenCount += 1
                     continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
-                    if tokenCount >= maxTokens { break generationLoop }
+                    if tokenCount >= maxTokens { hitMaxTokens = true; break generationLoop }
                 case .info(let info):
                     completionInfo = info
                 case .toolCall(let toolCall):
@@ -295,17 +296,23 @@ public actor MLXProvider: InferenceProvider {
 
             // Retain the cache for the next request, trimmed back to exactly
             // the prompt (generation appended its tokens on top). On
-            // cancellation or missing stats, drop it - an untracked cache is
-            // never safe to reuse.
-            if !Task.isCancelled, let info = completionInfo {
-                trimPromptCache(usedCache.value, numTokens: info.generationTokenCount)
+            // cancellation or unknown generation length, drop it - an
+            // untracked cache is never safe to reuse. A maxTokens-capped
+            // generation DOES have a known length (we counted the chunks,
+            // and no EOS was evaluated before the break), so it keeps its
+            // cache instead of forcing a full re-prefill next turn - the
+            // common case for clients that always pass max_tokens.
+            let generatedCount: Int? = completionInfo?.generationTokenCount
+                ?? (hitMaxTokens ? tokenCount : nil)
+            if !Task.isCancelled, let generatedCount {
+                trimPromptCache(usedCache.value, numTokens: generatedCount)
                 if promptTokens.count <= Self.maxReusableTokens {
                     reusableCache = usedCache.value
                     reusableTokens = promptTokens
                 } else {
                     dropReusableCache()
                 }
-                if reusedPrefix > 0 {
+                if reusedPrefix > 0, let info = completionInfo {
                     print("[MLXProvider] prompt-cache: prefilled \(info.promptTokenCount) instead of \(promptTokens.count) tokens (\(String(format: "%.0f", info.promptTime * 1000))ms prefill)")
                 }
             } else {
