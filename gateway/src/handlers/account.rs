@@ -244,16 +244,14 @@ pub async fn deposit_treasury(
         .db
         .as_ref()
         .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
-    let account_user_id = ledger::account_user_id_for_device(pool, &requester_device_id)
-        .ok_or(GatewayError::BadRequest("device is not linked to an account".into()))?;
+    let account_user_id = ledger::account_user_id_for_device(pool, &requester_device_id).ok_or(
+        GatewayError::BadRequest("device is not linked to an account".into()),
+    )?;
     let expected_memo = ledger::treasury_deposit_memo(&account_user_id);
-    let verified = solana::verify_treasury_deposit(
-        &state.config.solana,
-        &req.tx_signature,
-        &expected_memo,
-    )
-    .await
-    .map_err(map_treasury_deposit_error)?;
+    let verified =
+        solana::verify_treasury_deposit(&state.config.solana, &req.tx_signature, &expected_memo)
+            .await
+            .map_err(map_treasury_deposit_error)?;
     let summary = ledger::record_account_treasury_deposit(
         pool,
         &requester_device_id,
