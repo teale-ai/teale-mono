@@ -60,12 +60,12 @@ class TurnResult:
         self.lane_header = None
         self.error = None
 
-def sse_turn(name, messages, stream=True, tools=None):
+def sse_turn(name, messages, stream=True, tools=None, tool_choice="auto"):
     r = TurnResult(name)
     body = {"model": MODEL, "messages": messages, "stream": stream}
     if tools:
         body["tools"] = tools
-        body["tool_choice"] = "auto"
+        body["tool_choice"] = tool_choice
     req = urllib.request.Request(BASE + "/chat/completions",
         data=json.dumps(body).encode(),
         headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
@@ -190,7 +190,7 @@ def main():
     # determinism, then a non-streaming control of the same messages: if the
     # control also loses the call, the loss is upstream of SSE (template /
     # model / parser); if the control works, suspect the streaming path.
-    msgs.append({"role": "user", "content": "Add 37 and 5."})
+    msgs.append({"role": "user", "content": "Use the add_numbers tool to add 37 and 5."})
     t3 = sse_turn("t3-tool-call-2", msgs, stream=True, tools=TOOLS)
     ok &= report(t3, expect_tool=True)
     if t3.tool_loss:
@@ -199,6 +199,12 @@ def main():
             report(t3r, expect_tool=True)
         t3c = sse_turn("t3-nonstream-ctl", msgs, stream=False, tools=TOOLS)
         report(t3c, expect_tool=True)
+        # Forced tool_choice: the model MUST emit the call - exercises the
+        # node template+parser directly. Pass on a lost auto turn confirms
+        # the stack is healthy and the loss was model choice.
+        t3f = sse_turn("t3-forced-ctl", msgs, stream=True, tools=TOOLS,
+                       tool_choice={"type": "function", "function": {"name": "add_numbers"}})
+        report(t3f, expect_tool=True)
 
     # Turn 4: result -> final streamed text
     if t3.tool_calls:
