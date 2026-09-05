@@ -1,18 +1,13 @@
 {
   "name": "teale",
   "engine": "openai",
-  "host": "https://teale-gateway.fly.dev/v1",
+  "api_key_env": "TEALE_API_KEY",
+  "base_url": "https://teale-gateway.fly.dev/v1",
   "models": [
     {
       "name": "qwen/qwen3.6-35b-a3b",
-      "context_window": 32768,
-      "supports_tools": true,
-      "supports_vision": false
+      "context_limit": 32768
     }
   ],
-  "auth": {
-    "type": "header",
-    "header_name": "Authorization",
-    "header_value": "Bearer ${TEALE_API_KEY}"
-  }
+  "requires_auth": true
 }

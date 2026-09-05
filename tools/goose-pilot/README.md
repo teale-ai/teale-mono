@@ -13,7 +13,8 @@ The CLI only lists keys; creation needs an account session:
 
 ## 2. goose provider
 
-Copy `teale.json` to `~/.config/goose/providers/teale.json`, then:
+Copy `teale.json` to `~/.config/goose/custom_providers/teale.json`
+(goose >= 1.49 custom-provider schema), then:
 
 ```
 export TEALE_API_KEY=<minted key>
