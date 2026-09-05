@@ -244,7 +244,9 @@ jobs:
       - name: Upload Teale.exe
         uses: actions/upload-artifact@v7
         with:
-          name: Teale-${{ github.ref_name }}-unsigned
+          # ref_name can contain slashes on branch builds (feat/foo) -
+          # artifact names forbid them, so use a safe run label instead.
+          name: Teale-run-${{ github.run_id }}-unsigned
           path: |
             node/installer/output/Teale.exe
             node/installer/output/checksums.txt

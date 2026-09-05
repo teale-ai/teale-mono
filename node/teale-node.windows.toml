@@ -35,6 +35,17 @@ supabase_url = ""
 supabase_anon_key = ""
 supabase_redirect_url = "teale://auth/callback"
 
+# Employee-machine protection (#167). The node throttles supply to 0 (the
+# gateway stops routing work to it) while average CPU use over the window
+# exceeds the threshold. Uncomment idle_only to supply only after the user
+# has been away from keyboard/mouse for idle_after_secs.
+[power]
+pause_on_cpu_busy = true
+cpu_busy_threshold_pct = 70
+cpu_busy_window_secs = 180
+# idle_only = false
+# idle_after_secs = 300
+
 [node]
 display_name = "WIN-HOSTNAME"
 # Leave gpu_backend unset so teale-node can auto-detect and protect older

@@ -305,6 +305,9 @@ pub(crate) struct LegacyStatusDTO {
     credits_today: i64,
     on_ac: bool,
     paused_reason: Option<String>,
+    /// 0-100, mirrors the heartbeat field the gateway scheduler sees. 0
+    /// means the node is self-throttled (CPU-busy / idle-only gating).
+    throttle_level: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -680,7 +683,14 @@ impl StatusState {
             requests_today: self.live_requests_today(),
             credits_today: self.live_credits_today(state, current_model_id.as_deref()),
             on_ac,
-            paused_reason: state.legacy_paused_reason().map(str::to_string),
+            paused_reason: state
+                .legacy_paused_reason()
+                .map(str::to_string)
+                .or_else(|| {
+                    let throttled = self.node_state.throttle_level.load(Ordering::SeqCst) == 0;
+                    (throttled && on_ac).then(|| "system-busy".to_string())
+                }),
+            throttle_level: self.node_state.throttle_level.load(Ordering::SeqCst),
         }
     }
 

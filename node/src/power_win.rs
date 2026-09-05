@@ -19,10 +19,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{info, warn};
+use windows::Win32::Foundation::FILETIME;
 use windows::Win32::System::Power::{
     GetSystemPowerStatus, SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS,
     ES_SYSTEM_REQUIRED, EXECUTION_STATE, SYSTEM_POWER_STATUS,
 };
+use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::System::Threading::GetSystemTimes;
 
 /// RAII handle — while this value is alive, Windows will not enter sleep
 /// because of user inactivity. Drop it to release the wake-lock (the OS
@@ -121,4 +124,145 @@ pub fn initial_ac_state() -> bool {
 #[inline(always)]
 fn _exec_state_bits() -> EXECUTION_STATE {
     ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
+}
+
+// ---------------------------------------------------------------------------
+// Employee-machine throttling (#167)
+//
+// Two signals, both cheap OS queries, polled every few seconds:
+//   1. CPU pressure via GetSystemTimes deltas over a sliding window. When
+//      average busy% crosses the configured threshold the node throttles to
+//      0, which the gateway scheduler already honors (routing score x
+//      throttle/100), so the machine simply stops being picked for work.
+//   2. User activity via GetLastInputInfo. In `idle_only` mode the node
+//      supplies only after the user has been away for `idle_after_secs`.
+//
+// Both feed the same throttle flag: 100 = full supply, 0 = paused.
+// ---------------------------------------------------------------------------
+
+use std::collections::VecDeque;
+use std::sync::atomic::AtomicU32;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+#[derive(Debug, Clone, Copy)]
+pub struct ThrottleConfig {
+    pub pause_on_cpu_busy: bool,
+    pub cpu_busy_threshold_pct: u32,
+    pub cpu_busy_window_secs: u64,
+    pub idle_only: bool,
+    pub idle_after_secs: u64,
+}
+
+fn filetime_to_u64(t: &FILETIME) -> u64 {
+    ((t.dwHighDateTime as u64) << 32) | (t.dwLowDateTime as u64)
+}
+
+/// (idle_ticks, busy_ticks) since boot. Ticks are 100ns units.
+fn cpu_tick_snapshot() -> Option<(u64, u64)> {
+    let mut idle = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // Safety: out-params only; GetSystemTimes writes into the three
+    // FILETIMEs and reports failure via the return value.
+    let ok = unsafe {
+        GetSystemTimes(
+            &mut idle as *mut _,
+            &mut kernel as *mut _,
+            &mut user as *mut _,
+        )
+    };
+    if !ok.as_bool() {
+        return None;
+    }
+    // Kernel time already includes idle time; subtract to get true busy.
+    let idle = filetime_to_u64(&idle);
+    let busy = filetime_to_u64(&kernel)
+        .saturating_add(filetime_to_u64(&user))
+        .saturating_sub(idle);
+    Some((idle, busy))
+}
+
+/// Seconds since the last keyboard/mouse input. `None` when the OS can't
+/// say (e.g. non-interactive session) - callers treat that as "active",
+/// which is the conservative choice for employee machines.
+pub fn seconds_since_last_input() -> Option<u64> {
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // Safety: cbSize is set correctly; GetLastInputInfo only writes dwTime.
+    let ok = unsafe { GetLastInputInfo(&mut info as *mut _) };
+    if !ok.as_bool() {
+        return None;
+    }
+    // GetTickCount wraps after ~49 days; wrapping_sub keeps deltas sane.
+    let now = unsafe { GetTickCount() };
+    Some((now.wrapping_sub(info.dwTime) as u64) / 1000)
+}
+
+/// Spawn the throttle poller. `shared` holds the throttle level the
+/// heartbeat advertises: 100 (full) or 0 (paused). Transitions are logged.
+pub fn spawn_throttle_poller(cfg: ThrottleConfig, shared: Arc<AtomicU32>) {
+    tokio::spawn(async move {
+        const POLL_SECONDS: u64 = 5;
+        let mut interval = tokio::time::interval(Duration::from_secs(POLL_SECONDS));
+        interval.tick().await; // skip immediate tick
+
+        let mut last: Option<(u64, u64)> = None;
+        // (idle_delta, busy_delta) samples inside the sliding window.
+        let mut window: VecDeque<(u64, u64, std::time::Instant)> = VecDeque::new();
+
+        loop {
+            interval.tick().await;
+
+            let mut reasons: Vec<&'static str> = Vec::new();
+
+            if cfg.pause_on_cpu_busy {
+                if let Some((idle, busy)) = cpu_tick_snapshot() {
+                    if let Some((prev_idle, prev_busy)) = last {
+                        let di = idle.saturating_sub(prev_idle);
+                        let db = busy.saturating_sub(prev_busy);
+                        window.push_back((di, db, std::time::Instant::now()));
+                    }
+                    last = Some((idle, busy));
+                }
+                let cutoff = std::time::Instant::now()
+                    .checked_sub(Duration::from_secs(cfg.cpu_busy_window_secs))
+                    .unwrap_or_else(std::time::Instant::now);
+                while matches!(window.front(), Some((_, _, t)) if *t < cutoff) {
+                    window.pop_front();
+                }
+                let idle_sum: u64 = window.iter().map(|(i, _, _)| *i).sum();
+                let busy_sum: u64 = window.iter().map(|(_, b, _)| *b).sum();
+                let total = idle_sum.saturating_add(busy_sum);
+                // Need a few samples before judging; stay supplying until then.
+                if window.len() >= 3 && total > 0 {
+                    let busy_pct = (busy_sum as f64 / total as f64) * 100.0;
+                    if busy_pct > cfg.cpu_busy_threshold_pct as f64 {
+                        reasons.push("cpu-busy");
+                    }
+                }
+            }
+
+            if cfg.idle_only {
+                match seconds_since_last_input() {
+                    Some(secs) if secs >= cfg.idle_after_secs => {}
+                    _ => reasons.push("user-active"),
+                }
+            }
+
+            let level: u32 = if reasons.is_empty() { 100 } else { 0 };
+            let previous = shared.swap(level, Ordering::SeqCst);
+            if previous != level {
+                if level == 0 {
+                    warn!(
+                        "Throttling supply to 0 ({}) - host machine takes priority",
+                        reasons.join("+")
+                    );
+                } else {
+                    info!("Throttle cleared - resuming full supply");
+                }
+            }
+        }
+    });
 }
