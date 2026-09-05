@@ -274,6 +274,21 @@ public actor LocalHTTPServer {
             )
         }
 
+        router.post("/v1/desktop/app/account/withdraw") { request, _ -> Response in
+            return try await DesktopCompanionRoute.requestWithdrawal(
+                request: request,
+                controller: desktopController
+            )
+        }
+
+        router.get("/v1/desktop/app/account/withdrawals") { _, _ -> Response in
+            return try await DesktopCompanionRoute.accountWithdrawals(controller: desktopController)
+        }
+
+        router.get("/v1/desktop/app/account/deposit-info") { _, _ -> Response in
+            return try await DesktopCompanionRoute.depositInfo(controller: desktopController)
+        }
+
         router.post("/v1/desktop/app/wallet/refresh") { _, _ -> Response in
             return try await DesktopCompanionRoute.refreshWallet(controller: desktopController)
         }

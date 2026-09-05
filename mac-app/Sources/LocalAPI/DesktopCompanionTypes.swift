@@ -19,6 +19,9 @@ public protocol DesktopCompanionControlling: AnyObject {
     func desktop_sweep_account_device(device_id: String) async throws -> DesktopCompanionAccountSweepResponse
     func desktop_remove_account_device(device_id: String) async throws -> DesktopCompanionAccountSnapshot
     func desktop_send_account_wallet(_ request: DesktopCompanionWalletSendRequest) async throws -> DesktopCompanionAccountSnapshot
+    func desktop_request_withdrawal(_ request: DesktopCompanionWithdrawalRequest) async throws -> DesktopCompanionWithdrawalRecord
+    func desktop_account_withdrawals() async throws -> DesktopCompanionWithdrawalsResponse
+    func desktop_deposit_info() async throws -> DesktopCompanionDepositInfo
     func desktop_refresh_wallet() async throws -> DesktopCompanionAppSnapshot
     func desktop_send_device_wallet(_ request: DesktopCompanionWalletSendRequest) async throws -> DesktopCompanionAppSnapshot
 }
@@ -485,6 +488,41 @@ public struct DesktopCompanionWalletSendRequest: Codable, Sendable {
     public var recipient: String
     public var amount: Int64
     public var memo: String?
+}
+
+public struct DesktopCompanionWithdrawalRequest: Codable, Sendable {
+    public var requestID: String
+    public var destinationAddress: String
+    public var amountUsdcCents: Int64
+}
+
+public struct DesktopCompanionWithdrawalRecord: Codable, Sendable {
+    public var withdrawalID: String
+    public var requestID: String
+    public var account_user_id: String
+    public var destinationAddress: String
+    public var amountUsdcCents: Int64
+    public var amountCredits: Int64
+    public var status: String
+    public var txSignature: String?
+    public var createdAt: Int64
+    public var completedAt: Int64?
+}
+
+public struct DesktopCompanionWithdrawalsResponse: Codable, Sendable {
+    public var withdrawals: [DesktopCompanionWithdrawalRecord]
+}
+
+public struct DesktopCompanionDepositInfo: Codable, Sendable {
+    public var treasuryAddress: String
+    public var memo: String
+    public var explorerUrl: String
+
+    public init(treasuryAddress: String, memo: String, explorerUrl: String) {
+        self.treasuryAddress = treasuryAddress
+        self.memo = memo
+        self.explorerUrl = explorerUrl
+    }
 }
 
 public struct DesktopCompanionAuthSessionSnapshot: Codable, Sendable {

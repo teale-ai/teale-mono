@@ -418,6 +418,12 @@ footer,
 }
 
 .model-row,
+.mono {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
 .ledger-row {
   display: grid;
   grid-template-columns: 1fr auto;
