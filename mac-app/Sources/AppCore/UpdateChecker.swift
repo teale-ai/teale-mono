@@ -34,6 +34,11 @@ public final class UpdateChecker {
 
     public var autoInstallEnabled: Bool {
         didSet {
+            // The machine-wide pin beats any per-user setting, including UI
+            // toggles mid-session.
+            if Self.systemAutoInstallDisabled, autoInstallEnabled {
+                autoInstallEnabled = false
+            }
             UserDefaults.standard.set(autoInstallEnabled, forKey: Self.autoInstallKey)
             guard autoInstallEnabled else { return }
             Task { [weak self] in
@@ -322,6 +327,14 @@ public final class UpdateChecker {
         reconcilePreparedUpdateState()
 
         guard !installing else { return false }
+        // The machine-wide pin is checked HERE too, not only at init/toggle:
+        // a GUI launched before the pin appeared holds autoInstallEnabled=true
+        // in memory, and the pin must still win (fleet evidence: pinned
+        // baseline auto-updated from a stale in-memory flag).
+        if !force, Self.systemAutoInstallDisabled {
+            lastError = "Automatic installs are disabled on this machine."
+            return false
+        }
         guard let downloadedTag, let archiveURL = downloadedArchiveURL else { return false }
         guard FileManager.default.fileExists(atPath: archiveURL.path) else {
             clearPreparedUpdate(deleteArchive: false)
@@ -394,9 +407,15 @@ public final class UpdateChecker {
             try? FileManager.default.removeItem(at: backup)
             try? FileManager.default.removeItem(at: tempDir)
 
+            // Relaunch the binary DIRECTLY: LaunchServices loses track of a
+            // ditto-swapped bundle (open -a / open <path> fail with -600
+            // procNotFound until LS re-registers), while exec'ing the new
+            // executable always works.
+            let exeName = (Bundle(url: currentApp)?.object(
+                forInfoDictionaryKey: "CFBundleExecutable") as? String) ?? "Teale"
             let relaunch = Process()
-            relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            relaunch.arguments = ["-n", currentApp.path]
+            relaunch.executableURL = currentApp
+                .appendingPathComponent("Contents/MacOS/\(exeName)")
             try relaunch.run()
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -532,7 +551,23 @@ public final class UpdateChecker {
         tag.replacingOccurrences(of: Self.releaseTagPrefix, with: "")
     }
 
+    /// Machine-wide kill switch for auto-install: if this file exists,
+    /// auto-install is OFF for every user and every Teale process on the
+    /// machine. UserDefaults domains are per-user, so a pin written over
+    /// SSH never reaches the console user's GUI - a pinned canary/baseline
+    /// machine then silently updates and the perf gate breaks.
+    /// `sudo touch /Library/Application Support/Teale/disable-auto-install`
+    private static let systemDisableAutoInstallPath =
+        "/Library/Application Support/Teale/disable-auto-install"
+
+    static var systemAutoInstallDisabled: Bool {
+        FileManager.default.fileExists(atPath: systemDisableAutoInstallPath)
+    }
+
     private static func persistedBool(for key: String, defaultValue: Bool) -> Bool {
+        if key == autoInstallKey && systemAutoInstallDisabled {
+            return false
+        }
         if UserDefaults.standard.object(forKey: key) == nil {
             return defaultValue
         }
