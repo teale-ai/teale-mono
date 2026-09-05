@@ -17,13 +17,13 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use parking_lot::Mutex as PlMutex;
-use tokio::sync::Mutex;
 use teale_protocol::cluster::{
     SocksClosePayload, SocksDataPayload, SocksOpenPayload, SocksOpenResultPayload,
 };
 use teale_protocol::ClusterMessage;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use super::transport::PeerConnection;
