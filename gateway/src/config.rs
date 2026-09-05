@@ -244,7 +244,7 @@ fn default_solana_max_supported_transaction_version() -> u8 {
     0
 }
 fn default_solana_treasury_address() -> String {
-    "8Cs7qHZ9qz6M3HfZt9H6FBq7toCPKp4KUG8H9xE6V4V3".to_string()
+    "HwGY6RJKzAxoRjeqWYvmnZGu4AC8oyEzqFrpGgqAKzhA".to_string()
 }
 fn default_solana_anchor_authority() -> String {
     String::new()
