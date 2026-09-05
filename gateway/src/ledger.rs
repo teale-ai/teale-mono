@@ -2119,6 +2119,25 @@ fn list_transactions_with_options(
     .unwrap_or_default()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct MintPoolSnapshot {
+    pub total_minted: i64,
+    pub remaining: i64,
+}
+
+pub fn mint_pool_snapshot(pool: &DbPool) -> anyhow::Result<MintPoolSnapshot> {
+    let conn = pool.lock();
+    let (total_minted, remaining): (i64, i64) = conn.query_row(
+        "SELECT total_minted, remaining FROM mint_pool WHERE id = 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(MintPoolSnapshot {
+        total_minted,
+        remaining,
+    })
+}
+
 pub fn network_ledger_totals(pool: &DbPool) -> anyhow::Result<NetworkLedgerTotals> {
     let conn = pool.lock();
     let (total_credits_earned, total_credits_spent): (i64, i64) = conn.query_row(
