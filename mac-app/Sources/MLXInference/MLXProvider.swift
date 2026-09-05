@@ -92,6 +92,15 @@ public actor MLXProvider: InferenceProvider {
             throw InferenceError.generationFailed(msg)
         }
 
+        // Cap MLX's Metal allocation cache at half of physical RAM. Without
+        // a limit the cache defaults to the memory limit and grows for the
+        // lifetime of the process: hours of serving + a retained 32k-token
+        // KV cache pile up cached allocations until the machine swaps and
+        // decode throughput falls off a cliff. Per mlx-swift docs, LM
+        // workloads recycle same-size buffers, so a bounded cache costs no
+        // speed; this only binds in the pathological growth case.
+        Memory.cacheLimit = Int(ProcessInfo.processInfo.physicalMemory / 2)
+
         _status = .loadingModel(descriptor)
         onProgress?(LoadProgress(phase: .verifying, fractionCompleted: 0))
 
