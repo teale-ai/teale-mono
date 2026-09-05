@@ -243,6 +243,10 @@ public actor RapidMLXProvider: InferenceProvider {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Loopback hop: compression only burns CPU on both sides (URLSession
+        // adds Accept-Encoding: gzip/deflate/br by default and transparently
+        // decompresses). Ask for identity so token chunks stream untouched.
+        urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         urlRequest.timeoutInterval = 600
 
         var proxiedRequest = request
