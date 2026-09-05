@@ -210,8 +210,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/network", get(handlers::network::network))
-        .route("/v1/pool", get(handlers::network::pool_status))
-        .route("/v1/solvency", get(handlers::solvency::solvency))
         .route("/v1/account/link", post(handlers::account::link_account))
         .route(
             "/v1/account/email-code/request",
@@ -415,6 +413,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(handlers::models::list_models))
         .route("/v1/models", get(handlers::models::list_models))
         .route("/v1/network/stats", get(handlers::network::network_stats))
+        // Mint-pool status and proof-of-reserves are aggregate economics,
+        // like network/stats - public so the site panel and monitors can
+        // read them unauthenticated.
+        .route("/v1/pool", get(handlers::network::pool_status))
+        .route("/v1/solvency", get(handlers::solvency::solvency))
         .route(
             "/v1/providers",
             get(handlers::providers_public::list_providers),
