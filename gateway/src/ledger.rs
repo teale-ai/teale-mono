@@ -2444,7 +2444,6 @@ fn format_recipient_note(sender_label: &str, memo: Option<&str>) -> String {
     }
 }
 
-
 /// Canonical form for account ids. UUID-shaped ids are uppercased so the
 /// same account can never split across case variants - SQLite TEXT PRIMARY
 /// KEYs compare case-sensitively, and Apple Foundation's uuidString emits
