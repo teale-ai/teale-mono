@@ -305,8 +305,20 @@ public actor LlamaCppProvider: InferenceProvider {
         proxiedRequest.stream = true
         urlRequest.httpBody = try JSONEncoder().encode(proxiedRequest)
 
+        // TEALE_SSE_TIMING=1: timestamped stderr markers around the upstream
+        // POST, to split server-side latency from daemon-side stalls.
+        let sseT0 = Date()
+        let sseTiming = ProcessInfo.processInfo.environment["TEALE_SSE_TIMING"] != nil
+        func sseStamp(_ label: String) {
+            guard sseTiming else { return }
+            let ms = Int(Date().timeIntervalSince(sseT0) * 1000)
+            FileHandle.standardError.write(Data("[sse-timing] +\(ms)ms llama-provider: \(label)\n".utf8))
+        }
+        sseStamp("posting to llama-server")
+
         do {
             let (bytes, response) = try await session.bytes(for: urlRequest)
+            sseStamp("upstream headers received")
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw LlamaCppError.invalidResponse
             }
@@ -316,7 +328,11 @@ public actor LlamaCppProvider: InferenceProvider {
             }
 
             var tokenCount = 0
+            var lineCount = 0
             for try await line in bytes.lines {
+                if lineCount == 0 { sseStamp("first upstream line") }
+                if lineCount % 100 == 0 { sseStamp("line \(lineCount)") }
+                lineCount += 1
                 guard line.hasPrefix("data: ") else { continue }
                 let payload = String(line.dropFirst(6))
 
@@ -333,6 +349,7 @@ public actor LlamaCppProvider: InferenceProvider {
                 continuation.yield(chunk)
             }
 
+            sseStamp("upstream lines done (\(lineCount) lines, \(tokenCount) tokens)")
             _status = .ready(descriptor)
             continuation.finish()
         } catch {

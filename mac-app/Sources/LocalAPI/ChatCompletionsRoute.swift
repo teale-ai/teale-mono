@@ -122,11 +122,24 @@ enum ChatCompletionsRoute {
         let completedHandler = onCompleted
         let restorer = prepared.makeStreamingRestorer()
 
+        // TEALE_SSE_TIMING=1: timestamped stderr markers at every handoff in
+        // the streaming path, for hunting stall/buffering bugs in the field.
+        let sseT0 = Date()
+        let sseTiming = ProcessInfo.processInfo.environment["TEALE_SSE_TIMING"] != nil
+        func sseStamp(_ label: String) {
+            guard sseTiming else { return }
+            let ms = Int(Date().timeIntervalSince(sseT0) * 1000)
+            FileHandle.standardError.write(Data("[sse-timing] +\(ms)ms route: \(label)\n".utf8))
+        }
+        sseStamp("stream created")
+
         let responseBody = ResponseBody(contentLength: nil) { writer in
             var tokenCount = 0
             var lastChunk: ChatCompletionChunk?
             do {
                 for try await chunk in stream {
+                    if tokenCount == 0 { sseStamp("first upstream chunk") }
+                    if tokenCount % 50 == 0 { sseStamp("chunk \(tokenCount)") }
                     tokenCount += 1
                     var chunk = chunk
                     if let restorer {
@@ -154,7 +167,9 @@ enum ChatCompletionsRoute {
                     }
                 }
                 try await writer.write(.init(string: "data: [DONE]\n\n"))
+                sseStamp("upstream loop done, \(tokenCount) chunks, [DONE] written")
                 await completedHandler?(tokenCount)
+                sseStamp("completedHandler returned")
             } catch {
                 let errorMsg = "data: {\"error\": \"\(error.localizedDescription)\"}\n\n"
                 try await writer.write(.init(string: errorMsg))
@@ -162,6 +177,7 @@ enum ChatCompletionsRoute {
             // Hummingbird does NOT end the body when the closure returns;
             // without finish() clients hang forever after [DONE].
             try? await writer.finish(nil)
+            sseStamp("writer finished")
         }
 
         return Response(
