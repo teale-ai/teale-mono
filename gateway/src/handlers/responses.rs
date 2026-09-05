@@ -37,13 +37,9 @@ pub async fn responses(
 ) -> Result<Response, GatewayError> {
     let streaming = req.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let chat_body = translate_request(&req)?;
-    let response = super::chat::chat_completions(
-        State(state),
-        headers,
-        Extension(principal),
-        Json(chat_body),
-    )
-    .await?;
+    let response =
+        super::chat::chat_completions(State(state), headers, Extension(principal), Json(chat_body))
+            .await?;
     if streaming {
         Ok(translate_stream(response))
     } else {
@@ -127,10 +123,7 @@ fn translate_request(req: &Value) -> Result<Value, GatewayError> {
     }
     // The usage chunk gives `response.completed` real token counts.
     if req.get("stream").and_then(Value::as_bool).unwrap_or(false) {
-        map.insert(
-            "stream_options".to_string(),
-            json!({"include_usage": true}),
-        );
+        map.insert("stream_options".to_string(), json!({"include_usage": true}));
     }
     Ok(chat)
 }
@@ -139,10 +132,7 @@ fn translate_input_item(item: &Value, messages: &mut Vec<Value>) -> Result<(), G
     let item_type = item.get("type").and_then(Value::as_str);
     match item_type {
         Some("message") | None if item.get("role").is_some() => {
-            let role = item
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("user");
+            let role = item.get("role").and_then(Value::as_str).unwrap_or("user");
             let content = match item.get("content") {
                 Some(Value::String(text)) => text.clone(),
                 Some(Value::Array(parts)) => {
@@ -188,7 +178,10 @@ fn translate_input_item(item: &Value, messages: &mut Vec<Value>) -> Result<(), G
             }));
         }
         Some("function_call_output") => {
-            let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or_default();
+            let call_id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let output = match item.get("output") {
                 Some(Value::String(s)) => s.clone(),
                 Some(other) => other.to_string(),
@@ -465,7 +458,11 @@ impl StreamState {
                 .to_string(),
             ),
         );
-        let status = if self.finished { "completed" } else { "incomplete" };
+        let status = if self.finished {
+            "completed"
+        } else {
+            "incomplete"
+        };
         self.out.push_back(
             Event::default().event("response.completed").data(
                 json!({
@@ -542,9 +539,7 @@ fn translate_stream(response: Response) -> Response {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn strip_cr(line: &[u8]) -> &[u8] {
