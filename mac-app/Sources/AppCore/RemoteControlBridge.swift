@@ -1271,7 +1271,9 @@ extension RemoteControlBridge: PINControlling {
                         ChatCompletionRequest.self, from: requestBody)
                     Self.pinLog("request decoded model=\(request.model ?? model)")
                     let stream: AsyncThrowingStream<ChatCompletionChunk, Error>
-                    if await appState.servesModelLocally(model) {
+                    let localHit = await appState.servesModelLocally(model)
+                    Self.pinLog("route decision model=\(model) local=\(localHit) \(await appState.servingDecisionContext())")
+                    if localHit {
                         // This device is itself a serving member for the
                         // model: serve locally rather than Noise-dialing our
                         // own endpoints (which hangs until the dial timeout).
@@ -1327,7 +1329,17 @@ extension RemoteControlBridge: PINControlling {
         }
     }
 
+    nonisolated private static let pinLogStart = Date()
+    nonisolated private static let pinLogWallFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     nonisolated private static func pinLog(_ message: String) {
-        FileHandle.standardError.write(Data("[PINLocal] \(message)\n".utf8))
+        let now = Date()
+        let elapsedMs = Int(now.timeIntervalSince(pinLogStart) * 1000)
+        let wall = pinLogWallFormatter.string(from: now)
+        FileHandle.standardError.write(Data("[PINLocal] \(wall) +\(elapsedMs)ms \(message)\n".utf8))
     }
 }
