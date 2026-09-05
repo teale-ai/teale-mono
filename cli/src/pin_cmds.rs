@@ -147,7 +147,14 @@ pub async fn resolve_net(api: &LocalApi, net: Option<&str>) -> Result<String> {
             match matches.len() {
                 1 => Ok(matches[0].0.clone()),
                 0 => bail!("no network matches '{query}'"),
-                _ => bail!("'{query}' is ambiguous; use the full network id"),
+                _ => bail!(
+                    "'{query}' is ambiguous; use the full network id: {}",
+                    matches
+                        .iter()
+                        .map(|(id, name, _)| format!("{name} ({id})"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             }
         }
         None => match nets.len() {
