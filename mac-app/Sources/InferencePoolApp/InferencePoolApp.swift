@@ -26,8 +26,31 @@ struct TealeApp: App {
         Self.patchAppMenuTitle("Teale")
 
         let state = AppState()
+        Self.enableFleetSupplyModeIfRequested()
         state.updateChecker.startAutomaticChecks()
         _appState = State(initialValue: state)
+    }
+
+    /// `--fleet-supply`: fleet Macs boot this binary headless via LaunchAgent
+    /// (fleet-deploy-mac.sh) and must join the network without UI toggles.
+    /// Until this landed the flag was silently ignored, so fleet boxes booted
+    /// with WAN off and never registered with the relay - they only served
+    /// while a wan-enabled process (teale-cli up/serve, or a UI toggle)
+    /// happened to be alive.
+    ///
+    /// Implemented by persisting the toggle prefs rather than setting the
+    /// in-memory properties: the auto-updater relaunches the bare binary
+    /// with no arguments (UpdateChecker), while AppState's initializeAsync
+    /// restores these prefs and enables WAN/cluster through the normal
+    /// didSet path on every boot - one enable, no double-toggle, and the
+    /// intent survives relaunches that drop argv.
+    private static func enableFleetSupplyModeIfRequested() {
+        guard CommandLine.arguments.dropFirst().contains("--fleet-supply") else { return }
+        FileHandle.standardError.write(Data(
+            "[Fleet] --fleet-supply: persisting wanEnabled/clusterEnabled so boot restore joins the network\n".utf8))
+        UserDefaults.standard.set(true, forKey: "teale.fleetSupply")
+        UserDefaults.standard.set(true, forKey: "teale.clusterEnabled")
+        UserDefaults.standard.set(true, forKey: "teale.wanEnabled")
     }
 
     /// The app binary ignores CLI arguments and boots the full SwiftUI app,
