@@ -34,6 +34,11 @@ public final class UpdateChecker {
 
     public var autoInstallEnabled: Bool {
         didSet {
+            // The machine-wide pin beats any per-user setting, including UI
+            // toggles mid-session.
+            if Self.systemAutoInstallDisabled, autoInstallEnabled {
+                autoInstallEnabled = false
+            }
             UserDefaults.standard.set(autoInstallEnabled, forKey: Self.autoInstallKey)
             guard autoInstallEnabled else { return }
             Task { [weak self] in
@@ -532,7 +537,23 @@ public final class UpdateChecker {
         tag.replacingOccurrences(of: Self.releaseTagPrefix, with: "")
     }
 
+    /// Machine-wide kill switch for auto-install: if this file exists,
+    /// auto-install is OFF for every user and every Teale process on the
+    /// machine. UserDefaults domains are per-user, so a pin written over
+    /// SSH never reaches the console user's GUI - a pinned canary/baseline
+    /// machine then silently updates and the perf gate breaks.
+    /// `sudo touch /Library/Application Support/Teale/disable-auto-install`
+    private static let systemDisableAutoInstallPath =
+        "/Library/Application Support/Teale/disable-auto-install"
+
+    static var systemAutoInstallDisabled: Bool {
+        FileManager.default.fileExists(atPath: systemDisableAutoInstallPath)
+    }
+
     private static func persistedBool(for key: String, defaultValue: Bool) -> Bool {
+        if key == autoInstallKey && systemAutoInstallDisabled {
+            return false
+        }
         if UserDefaults.standard.object(forKey: key) == nil {
             return defaultValue
         }
