@@ -250,7 +250,6 @@ mod tests {
     use crate::config::Config;
     use crate::db::open_in_memory;
     use crate::ledger;
-use crate::solana;
     use crate::model_metrics::ModelMetricsTracker;
     use crate::registry::Registry;
     use crate::relay_client::RelayHandle;

@@ -803,12 +803,12 @@ pub async fn verify_treasury_payout(
         tx_signature: tx_signature.to_string(),
         destination_address: expected_destination.to_string(),
         gross_amount_usdc_cents,
-        destination_amount_micro_usdc: net_micro_usdc.try_into().map_err(|_| {
-            TreasuryPayoutError::Rpc("verified payout overflowed i64".into())
-        })?,
-        treasury_retained_micro_usdc: fee_micro_usdc.try_into().map_err(|_| {
-            TreasuryPayoutError::Rpc("verified fee overflowed i64".into())
-        })?,
+        destination_amount_micro_usdc: net_micro_usdc
+            .try_into()
+            .map_err(|_| TreasuryPayoutError::Rpc("verified payout overflowed i64".into()))?,
+        treasury_retained_micro_usdc: fee_micro_usdc
+            .try_into()
+            .map_err(|_| TreasuryPayoutError::Rpc("verified fee overflowed i64".into()))?,
     })
 }
 

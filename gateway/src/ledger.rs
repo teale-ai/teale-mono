@@ -7419,8 +7419,8 @@ mod tests {
         let before = account_onchain_summary_for_device(&pool, "device-a").unwrap();
         assert_eq!(before.balance_credits, 75_000_000); // $100 deposit - $25 held
 
-        let record = complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-1")
-            .unwrap();
+        let record =
+            complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-1").unwrap();
         assert_eq!(record.status, "submitted");
         assert_eq!(record.tx_signature.as_deref(), Some("sol-payout-1"));
         let after = account_onchain_summary_for_device(&pool, "device-a").unwrap();
@@ -7428,8 +7428,8 @@ mod tests {
         assert_eq!(after.withdrawn_usdc_cents_total, 2_500);
 
         // Idempotent same-signature replay.
-        let replay = complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-1")
-            .unwrap();
+        let replay =
+            complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-1").unwrap();
         assert_eq!(replay.status, "submitted");
         // Different signature conflicts.
         assert!(matches!(
