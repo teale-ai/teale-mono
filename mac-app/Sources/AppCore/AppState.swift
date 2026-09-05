@@ -1793,6 +1793,7 @@ public final class AppState {
                 )
 
                 guard let self else { return }
+                try Self.acquireWANProcessLock()
                 try await self.wanManager.enable(config: config, localDeviceInfo: deviceInfo)
 
                 // Check if relay actually connected — enable() doesn't throw on relay failure
@@ -1882,6 +1883,40 @@ public final class AppState {
         }
         // Physical LAN first (fast, same-subnet), then Tailscale overlay.
         return lan + tailscale
+    }
+
+    /// File descriptor holding the WAN single-instance lock, -1 when not held.
+    nonisolated(unsafe) private static var wanProcessLockFD: Int32 = -1
+
+    /// GUI and fleet-supply share one WAN identity (GatewayIdentity) and
+    /// therefore one relay nodeID. Two live processes on one machine fight
+    /// over the relay registration (the relay replaces the old socket per
+    /// nodeID with a 1012 close): every flap routes inbound replies to
+    /// whichever socket registered last, blackholing the other process's
+    /// sessions - the exit-lane half-duplex wedge. Take an exclusive flock
+    /// in the shared data dir; the loser refuses WAN with a clear error.
+    /// flock releases automatically on process death, so there is no
+    /// stale-lock state to clean up.
+    nonisolated static func acquireWANProcessLock() throws {
+        if wanProcessLockFD >= 0 { return }
+        let dir = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        )[0].appendingPathComponent("Teale", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("wan-process.lock").path
+        let fd = open(path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return }  // no filesystem, no lock - don't block WAN on that
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            let holder = (try? String(contentsOfFile: path, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+            close(fd)
+            throw WANError.relayConnectionFailed(
+                "another Teale process on this Mac already serves this identity (pid \(holder)) - quit the Teale app or the fleet-supply process before enabling supply here")
+        }
+        ftruncate(fd, 0)
+        let holder = "\(ProcessInfo.processInfo.processIdentifier)"
+        _ = holder.withCString { write(fd, $0, strlen($0)) }
+        wanProcessLockFD = fd
     }
 
     nonisolated static func canonicalWANIdentity() throws -> WANNodeIdentity {

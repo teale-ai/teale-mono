@@ -926,24 +926,46 @@ public final class WANManager: @unchecked Sendable {
                     )
                     if connection === relayConn {
                         // True duplicate/resume: RelayClient still holds the
-                        // same connection object. Keep everything, just re-ack.
-                        wanLog("Duplicate relayOpen for live relay session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))...; re-acking, keeping existing connection")
-                        connectedPeers[payload.fromNodeID]?.lastHeartbeat = Date()
+                        // same connection object. Keep it only while the lane
+                        // provably carries inbound traffic: lastHeartbeat is
+                        // fed by the peer's 15s heartbeats, so a stale value
+                        // means the return direction of this lane is dead
+                        // (the half-duplex wedge from the exit-node
+                        // blackhole). Keeping a wedged session immortalizes
+                        // it - close it so the peer redials with a fresh
+                        // sessionID and Noise handshake.
+                        let staleness = Date().timeIntervalSince(existing.lastHeartbeat)
+                        if staleness < 60 {
+                            // Do NOT refresh lastHeartbeat here: a relayOpen
+                            // is relay-level traffic, not session traffic -
+                            // refreshing would mask a demux-dead session
+                            // (relayData undeliverable) behind healthy-
+                            // looking resume churn.
+                            wanLog("Duplicate relayOpen for live relay session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))...; re-acking, keeping existing connection")
+                            return
+                        }
+                        wanLog("Duplicate relayOpen for STALE relay session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))... (no inbound for \(Int(staleness))s); closing so the peer redials fresh")
+                        await relayConn.cancel()
+                        connectedPeers.removeValue(forKey: payload.fromNodeID)
+                        updateState()
                         return
                     }
                     // RelayClient recreated the connection object under the
-                    // same sessionID (our own WebSocket flapped too and the
-                    // session was suspended locally). Swap the peer entry to
-                    // the live object. finishLocally, not cancel: cancel would
-                    // relayClose the fresh mapping, which shares the sessionID.
-                    wanLog("relayOpen for session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))... arrived after local suspend; re-pointing peer connection")
+                    // same sessionID (local suspend window). The new object
+                    // has NO Noise session while the far side keeps the old
+                    // keys - re-pointing to it desyncs encryption
+                    // permanently. The session is unrecoverable: close it
+                    // both ways and let the far side redial with a fresh
+                    // sessionID and handshake. finishLocally the old object
+                    // first so a pending resumeRelaySessions skips it.
+                    wanLog("relayOpen for session \(payload.sessionID.prefix(8)) from \(payload.fromNodeID.prefix(16))... arrived after local suspend; Noise keys unrecoverable, closing session for fresh redial")
                     await relayConn.finishLocally()
-                    var updated = existing
-                    updated.connection = .relayed(connection)
-                    updated.connectionType = .relayed
-                    updated.lastHeartbeat = Date()
-                    connectedPeers[payload.fromNodeID] = updated
-                    startListening(to: updated)
+                    await relayClient!.closeRelayedSession(
+                        sessionID: payload.sessionID,
+                        toNodeID: payload.fromNodeID,
+                        notifyRemote: true
+                    )
+                    connectedPeers.removeValue(forKey: payload.fromNodeID)
                     updateState()
                     return
                 } catch {
