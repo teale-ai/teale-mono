@@ -2136,6 +2136,7 @@ pub fn mint_pool_snapshot(pool: &DbPool) -> anyhow::Result<MintPoolSnapshot> {
         total_minted,
         remaining,
     })
+}
 
 pub struct SolvencyLiabilities {
     /// Credits held by devices (supplier earnings not yet swept to accounts),
