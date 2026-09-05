@@ -172,6 +172,28 @@ pub async fn network(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+/// GET /v1/pool - public mint-pool status. The pool funds availability
+/// rewards (the drip); when it runs low, supply stops earning unless
+/// recycling or a real USDC contribution refills it. `lowPool` is a coarse
+/// flag: under 10% of total minted remaining.
+pub async fn pool_status(State(state): State<AppState>) -> Json<Value> {
+    let snapshot = state
+        .db
+        .as_ref()
+        .and_then(|pool| ledger::mint_pool_snapshot(pool).ok());
+    match snapshot {
+        Some(s) => Json(json!({
+            "mintPoolTotalMinted": s.total_minted,
+            "mintPoolRemaining": s.remaining,
+            "mintPoolRemainingUsd": s.remaining as f64 / 1_000_000.0,
+            "lowPool": s.remaining * 10 < s.total_minted,
+        })),
+        None => Json(json!({
+            "error": "mint pool unavailable",
+        })),
+    }
+}
+
 pub async fn network_stats(State(state): State<AppState>) -> Json<Value> {
     let totals = state
         .db

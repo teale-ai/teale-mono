@@ -210,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/network", get(handlers::network::network))
+        .route("/v1/pool", get(handlers::network::pool_status))
         .route("/v1/account/link", post(handlers::account::link_account))
         .route(
             "/v1/account/email-code/request",
