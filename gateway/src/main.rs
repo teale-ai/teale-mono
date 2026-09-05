@@ -387,6 +387,7 @@ async fn main() -> anyhow::Result<()> {
     // Public routes — no auth. SSE stream does bearer check in-handler.
     let public = Router::new()
         .route("/health", get(handlers::health::health))
+        .route("/v1/pool", get(handlers::pool::pool))
         .route("/metrics", get(handlers::metrics::metrics))
         .route("/privacy", get(handlers::privacy::privacy))
         // Public catalog — just metadata + live TTFT/TPS; safe to expose

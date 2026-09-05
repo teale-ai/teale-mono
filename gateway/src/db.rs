@@ -26,6 +26,17 @@ const MIGRATIONS: &[&str] = &[
         remaining INTEGER NOT NULL
     );
 
+    -- Latest availability-drip pool snapshot, written each reconcile tick.
+    -- Powers GET /v1/pool and the operator low-pool alert watch.
+    CREATE TABLE IF NOT EXISTS pool_status (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        updated_at INTEGER NOT NULL,
+        remaining INTEGER NOT NULL,
+        tick_total INTEGER NOT NULL,
+        recycled_credits INTEGER NOT NULL,
+        low_pool INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS devices (
         device_id TEXT PRIMARY KEY,
         username TEXT,
