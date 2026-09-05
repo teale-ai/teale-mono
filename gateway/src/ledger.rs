@@ -3392,6 +3392,127 @@ pub fn record_account_onchain_deposit(
     account_onchain_summary(pool, &account_user_id)
 }
 
+/// Memo that binds a treasury deposit to an account: `teale:deposit:<account_user_id>`.
+/// The app shows this exact string next to the treasury address; the gateway
+/// requires it as the transaction's Memo-program instruction.
+pub const TREASURY_DEPOSIT_MEMO_PREFIX: &str = "teale:deposit:";
+
+pub fn treasury_deposit_memo(account_user_id: &str) -> String {
+    format!("{TREASURY_DEPOSIT_MEMO_PREFIX}{account_user_id}")
+}
+
+/// Record a custodial deposit: USDC sent to the treasury with the account's
+/// deposit memo, already verified on-chain by `solana::verify_treasury_deposit`.
+/// Credits the account at the published rate. Idempotent on tx_signature -
+/// an identical replay returns the summary without double-crediting, a
+/// mismatched replay is a conflict.
+pub fn record_account_treasury_deposit(
+    pool: &DbPool,
+    requester_device_id: &str,
+    tx_signature: &str,
+    amount_usdc_cents: i64,
+    source_address: Option<&str>,
+    treasury_address: &str,
+) -> Result<AccountOnchainSnapshot, AccountOnchainError> {
+    if amount_usdc_cents <= 0 {
+        return Err(AccountOnchainError::InvalidUsdcAmount);
+    }
+    let amount_credits = credits_from_usdc_cents(amount_usdc_cents)
+        .map_err(|_| AccountOnchainError::InvalidUsdcAmount)?;
+
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let Some(account_user_id) = account_user_id_for_device_locked(&tx, requester_device_id) else {
+        return Err(AccountOnchainError::AccountNotLinked);
+    };
+    // Ensures the account wallet row exists.
+    let _ = load_account_wallet_state_locked(&tx, &account_user_id)?;
+
+    let existing: Option<(String, String, i64)> = tx
+        .query_row(
+            "SELECT account_user_id, solana_address, amount_usdc_cents
+             FROM account_onchain_deposits
+             WHERE tx_signature = ?",
+            [tx_signature],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+
+    match existing {
+        Some((existing_account, existing_address, existing_amount)) => {
+            if existing_account != account_user_id
+                || existing_address != treasury_address
+                || existing_amount != amount_usdc_cents
+            {
+                return Err(AccountOnchainError::DepositConflict);
+            }
+        }
+        None => {
+            let deposit_id = format!("dep_{}", uuid::Uuid::new_v4().simple());
+            tx.execute(
+                "INSERT INTO account_onchain_deposits
+                    (deposit_id, account_user_id, tx_signature, solana_address,
+                     source_address, amount_usdc_cents, amount_credits, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    deposit_id,
+                    account_user_id.as_str(),
+                    tx_signature,
+                    treasury_address,
+                    source_address,
+                    amount_usdc_cents,
+                    amount_credits,
+                    now,
+                ],
+            )?;
+            tx.execute(
+                "UPDATE account_wallets
+                 SET balance_credits = balance_credits + ?,
+                     usdc_cents = usdc_cents + ?,
+                     deposited_usdc_cents_total = deposited_usdc_cents_total + ?,
+                     updated_at = ?
+                 WHERE account_user_id = ?",
+                params![
+                    amount_credits,
+                    amount_usdc_cents,
+                    amount_usdc_cents,
+                    now,
+                    account_user_id.as_str(),
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO account_ledger
+                    (account_user_id, asset, amount, type, timestamp, device_id, note)
+                 VALUES (?, 'usdc', ?, 'ONCHAIN_DEPOSIT_IN', ?, ?, ?)",
+                params![
+                    account_user_id.as_str(),
+                    amount_usdc_cents,
+                    now,
+                    requester_device_id,
+                    format!("treasury deposit {tx_signature}"),
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO account_ledger
+                    (account_user_id, asset, amount, type, timestamp, device_id, note)
+                 VALUES (?, 'credits', ?, 'ONCHAIN_DEPOSIT_CREDIT', ?, ?, ?)",
+                params![
+                    account_user_id.as_str(),
+                    amount_credits,
+                    now,
+                    requester_device_id,
+                    format!("credited from treasury deposit {tx_signature}"),
+                ],
+            )?;
+        }
+    }
+
+    tx.commit()?;
+    drop(conn);
+    account_onchain_summary(pool, &account_user_id)
+}
+
 pub fn submit_account_withdrawal(
     pool: &DbPool,
     requester_device_id: &str,
@@ -6801,6 +6922,76 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn treasury_deposit_credits_account_and_is_idempotent() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                email: Some("treasury@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let summary = record_account_treasury_deposit(
+            &pool,
+            "device-a",
+            "sol-treasury-dep-1",
+            100_000, // $1,000.00
+            Some("SenderWallet1111111111111111111111111111111"),
+            "TreasuryWallet11111111111111111111111111111",
+        )
+        .unwrap();
+        assert_eq!(summary.balance_credits, 1_000_000_000); // 1M credits per $1
+        assert_eq!(summary.deposited_usdc_cents_total, 100_000);
+
+        // Identical replay: same summary, no double credit.
+        let replay = record_account_treasury_deposit(
+            &pool,
+            "device-a",
+            "sol-treasury-dep-1",
+            100_000,
+            Some("SenderWallet1111111111111111111111111111111"),
+            "TreasuryWallet11111111111111111111111111111",
+        )
+        .unwrap();
+        assert_eq!(replay.balance_credits, summary.balance_credits);
+
+        // Same signature, different amount: conflict, balance unchanged.
+        let err = record_account_treasury_deposit(
+            &pool,
+            "device-a",
+            "sol-treasury-dep-1",
+            50_000,
+            None,
+            "TreasuryWallet11111111111111111111111111111",
+        )
+        .unwrap_err();
+        assert!(matches!(err, AccountOnchainError::DepositConflict));
+        let after = account_onchain_summary_for_device(&pool, "device-a").unwrap();
+        assert_eq!(after.balance_credits, 1_000_000_000);
+    }
+
+    #[test]
+    fn treasury_deposit_requires_linked_account() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        let err = record_account_treasury_deposit(
+            &pool,
+            "device-a",
+            "sol-treasury-dep-2",
+            100,
+            None,
+            "TreasuryWallet11111111111111111111111111111",
+        )
+        .unwrap_err();
+        assert!(matches!(err, AccountOnchainError::AccountNotLinked));
     }
 
     #[test]

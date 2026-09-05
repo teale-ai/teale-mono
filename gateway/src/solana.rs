@@ -700,6 +700,126 @@ struct RpcUiTokenAmount {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedTreasuryDeposit {
+    pub tx_signature: String,
+    pub amount_usdc_cents: i64,
+    pub source_address: Option<String>,
+    pub memo: String,
+    pub fee_payer: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TreasuryDepositError {
+    #[error("txSignature is required")]
+    MissingSignature,
+    #[error("deposit transaction was not found on Solana")]
+    TransactionNotFound,
+    #[error("deposit transaction is not {required_status} yet")]
+    TransactionNotSettled { required_status: String },
+    #[error("deposit transaction failed on-chain")]
+    TransactionFailed,
+    #[error("deposit transaction carries no memo instruction - include the deposit memo shown in the app")]
+    NoMemoInstruction,
+    #[error("on-chain memo does not match this account's deposit memo")]
+    MemoMismatch,
+    #[error(transparent)]
+    Deposit(#[from] DepositVerificationError),
+    #[error("solana rpc error: {0}")]
+    Rpc(String),
+}
+
+/// Verify a custodial deposit: a settled, successful transaction that (a)
+/// credits the configured TREASURY with a whole-cent USDC amount and (b)
+/// carries a Memo-program instruction exactly equal to `expected_memo`
+/// (`teale:deposit:<account_user_id>`). Unlike `verify_memo_anchor` the fee
+/// payer is arbitrary - anyone may fund an account, the memo binds it.
+pub async fn verify_treasury_deposit(
+    config: &SolanaConfig,
+    tx_signature: &str,
+    expected_memo: &str,
+) -> Result<VerifiedTreasuryDeposit, TreasuryDepositError> {
+    let tx_signature = tx_signature.trim();
+    if tx_signature.is_empty() {
+        return Err(TreasuryDepositError::MissingSignature);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(config.request_timeout_seconds))
+        .build()
+        .map_err(|err| TreasuryDepositError::Rpc(err.to_string()))?;
+
+    let status = fetch_signature_status(&client, config, tx_signature).await?;
+    let Some(status) = status else {
+        return Err(TreasuryDepositError::TransactionNotFound);
+    };
+    if status.err.is_some() {
+        return Err(TreasuryDepositError::TransactionFailed);
+    }
+    if !commitment_satisfied(&config.commitment, status.confirmation_status.as_deref()) {
+        return Err(TreasuryDepositError::TransactionNotSettled {
+            required_status: config.commitment.clone(),
+        });
+    }
+
+    let tx = fetch_transaction(&client, config, tx_signature).await?;
+    let Some(tx) = tx else {
+        return Err(TreasuryDepositError::TransactionNotFound);
+    };
+
+    let message = tx
+        .transaction
+        .as_ref()
+        .and_then(|t| t.message.as_ref())
+        .ok_or(TreasuryDepositError::Rpc(
+            "transaction payload missing message".into(),
+        ))?;
+    let fee_payer = message
+        .account_keys
+        .as_ref()
+        .and_then(|keys| keys.first())
+        .and_then(|k| {
+            k.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| k.get("pubkey")?.as_str().map(|s| s.to_string()))
+        })
+        .ok_or(TreasuryDepositError::Rpc(
+            "transaction message has no account keys".into(),
+        ))?;
+
+    let memos: Vec<String> = message
+        .instructions
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter(|ix| ix.program_id.as_deref() == Some(crate::anchoring::MEMO_PROGRAM_ID))
+        .filter_map(|ix| ix.data.as_ref())
+        .filter_map(|data| base58_decode(data).ok())
+        .filter_map(|bytes| String::from_utf8(bytes).ok())
+        .collect();
+    if memos.is_empty() {
+        return Err(TreasuryDepositError::NoMemoInstruction);
+    }
+    if !memos.iter().any(|m| m == expected_memo) {
+        return Err(TreasuryDepositError::MemoMismatch);
+    }
+
+    let verified = extract_verified_deposit(
+        &tx,
+        config.treasury_address.as_str(),
+        &config.usdc_mint,
+        None,
+        None,
+    )?;
+
+    Ok(VerifiedTreasuryDeposit {
+        tx_signature: tx_signature.to_string(),
+        amount_usdc_cents: verified.amount_usdc_cents,
+        source_address: verified.source_address,
+        memo: expected_memo.to_string(),
+        fee_payer,
+    })
+}
+
 pub struct VerifiedMemoAnchor {
     pub tx_signature: String,
     pub memo: String,
