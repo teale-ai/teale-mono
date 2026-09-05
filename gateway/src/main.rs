@@ -231,6 +231,10 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::account::deposit_intent),
         )
         .route(
+            "/v1/account/wallet/deposit-treasury",
+            post(handlers::account::deposit_treasury),
+        )
+        .route(
             "/v1/account/wallet/withdraw",
             post(handlers::account::withdraw),
         )

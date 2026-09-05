@@ -226,6 +226,46 @@ pub async fn deposit_intent(
     Ok(Json(summary))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TreasuryDepositReq {
+    #[serde(rename = "txSignature")]
+    pub tx_signature: String,
+}
+
+/// Custodial deposit: USDC sent to the treasury with the account's deposit
+/// memo. The memo binds the payment to the account, so anyone can pay in.
+pub async fn deposit_treasury(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<TreasuryDepositReq>,
+) -> Result<Json<ledger::AccountOnchainSnapshot>, GatewayError> {
+    let requester_device_id = device_from_header(&state, &headers)?;
+    let pool = state
+        .db
+        .as_ref()
+        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
+    let account_user_id = ledger::account_user_id_for_device(pool, &requester_device_id)
+        .ok_or(GatewayError::BadRequest("device is not linked to an account".into()))?;
+    let expected_memo = ledger::treasury_deposit_memo(&account_user_id);
+    let verified = solana::verify_treasury_deposit(
+        &state.config.solana,
+        &req.tx_signature,
+        &expected_memo,
+    )
+    .await
+    .map_err(map_treasury_deposit_error)?;
+    let summary = ledger::record_account_treasury_deposit(
+        pool,
+        &requester_device_id,
+        &verified.tx_signature,
+        verified.amount_usdc_cents,
+        verified.source_address.as_deref(),
+        &state.config.solana.treasury_address,
+    )
+    .map_err(map_onchain_error)?;
+    Ok(Json(summary))
+}
+
 pub async fn withdraw(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -422,6 +462,21 @@ fn map_deposit_verification_error(err: DepositVerificationError) -> GatewayError
         | DepositVerificationError::FractionalCents
         | DepositVerificationError::UnexpectedDecimals { .. } => GatewayError::BadRequest(message),
         DepositVerificationError::Rpc(_) => GatewayError::Upstream(message),
+    }
+}
+
+fn map_treasury_deposit_error(err: solana::TreasuryDepositError) -> GatewayError {
+    use solana::TreasuryDepositError as E;
+    let message = err.to_string();
+    match err {
+        E::MissingSignature
+        | E::TransactionNotFound
+        | E::TransactionNotSettled { .. }
+        | E::TransactionFailed
+        | E::NoMemoInstruction
+        | E::MemoMismatch => GatewayError::BadRequest(message),
+        E::Deposit(inner) => map_deposit_verification_error(inner),
+        E::Rpc(_) => GatewayError::Upstream(message),
     }
 }
 
