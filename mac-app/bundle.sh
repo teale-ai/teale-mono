@@ -28,6 +28,7 @@ xcodebuild \
     -configuration Release \
     -derivedDataPath "${DERIVED_DATA}" \
     -destination 'platform=macOS' \
+    DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
     build \
     2>&1 | tail -5
 
