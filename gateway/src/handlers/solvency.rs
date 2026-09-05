@@ -5,11 +5,11 @@
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
 
+use crate::db::unix_now;
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::solana;
 use crate::state::AppState;
-use crate::db::unix_now;
 
 pub async fn solvency(State(state): State<AppState>) -> Result<Json<Value>, GatewayError> {
     let pool = state
