@@ -10,12 +10,12 @@ MARKER_FILE=/tmp/goose-e2e.txt
 MARKER=teale-goose-e2e-ok
 
 if ! command -v goose >/dev/null 2>&1; then
-  echo "goose not found. Install: brew install block/tap/goose"
+  echo "goose not found. Install: brew install block-goose-cli"
   exit 2
 fi
 
-mkdir -p ~/.config/goose/providers
-cp "$(dirname "$0")/teale.json" ~/.config/goose/providers/teale.json
+mkdir -p ~/.config/goose/custom_providers
+cp "$(dirname "$0")/teale.json" ~/.config/goose/custom_providers/teale.json
 
 export TEALE_API_KEY=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.goose-bot-api-key.json'))); print(d.get('secret') or d.get('key') or d.get('apiKey') or d.get('token') or '')")
 if [ -z "$TEALE_API_KEY" ]; then echo "KEY-EXTRACT-FAILED"; exit 2; fi
