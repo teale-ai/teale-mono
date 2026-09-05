@@ -89,6 +89,48 @@ pub struct LocalApi {
     json: bool,
 }
 
+/// Bearer key for the local API when it runs in authenticated mode (the Mac
+/// app requires one while "Allow Network Access" is on). Resolution order:
+/// TEALE_LOCAL_API_KEY env, then the app's api_keys.json (first active key).
+fn local_api_key() -> Option<String> {
+    if let Ok(k) = std::env::var("TEALE_LOCAL_API_KEY") {
+        let k = k.trim().to_string();
+        if !k.is_empty() {
+            return Some(k);
+        }
+    }
+    let candidates: Vec<std::path::PathBuf> = [
+        std::env::var_os("HOME").map(|h| {
+            std::path::PathBuf::from(h).join("Library/Application Support/Teale/api_keys.json")
+        }),
+        std::env::var_os("APPDATA").map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Teale")
+                .join("api_keys.json")
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for path in candidates {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(keys) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if let Some(key) = keys.as_array().and_then(|arr| {
+            arr.iter()
+                .find(|k| k["isActive"].as_bool().unwrap_or(false))
+                .and_then(|k| k["key"].as_str())
+                .map(|k| k.to_string())
+        }) {
+            return Some(key);
+        }
+    }
+    None
+}
+
 impl LocalApi {
     pub fn new(control_port: u16, json: bool) -> Self {
         Self {
@@ -108,6 +150,9 @@ impl LocalApi {
             "DELETE" => self.client.delete(&url),
             _ => bail!("bad method"),
         };
+        if let Some(key) = local_api_key() {
+            req = req.bearer_auth(key);
+        }
         if let Some(body) = body {
             req = req.json(&body);
         }
@@ -301,6 +346,22 @@ pub async fn run(command: PinCommand, control_port: u16, json: bool) -> Result<(
             });
         }
         PinCommand::Join { code } => {
+            // Join PINs are 10 chars from the Crockford-ish alphabet (dashes
+            // optional): XXXX-XXXX-XX. The gateway deliberately answers 202
+            // to everything (anti-oracle), so catch malformed input here -
+            // a wrong code otherwise fails silently.
+            const JOIN_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTVWXYZ23456789";
+            let normalized: String = code
+                .chars()
+                .filter(|c| *c != '-')
+                .map(|c| c.to_ascii_uppercase())
+                .collect();
+            if normalized.len() != 10 || !normalized.bytes().all(|b| JOIN_ALPHABET.contains(&b)) {
+                bail!(
+                    "'{code}' is not a join PIN (expected XXXX-XXXX-XX). \
+                     If that's a network id, ask the network admin for the current join PIN."
+                );
+            }
             let resp = api
                 .call(
                     "POST",
