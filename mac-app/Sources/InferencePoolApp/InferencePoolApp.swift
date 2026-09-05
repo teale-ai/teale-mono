@@ -11,6 +11,8 @@ struct TealeApp: App {
     @State private var appState: AppState
 
     init() {
+        Self.rejectCLIArguments()
+
         // Disable Hub library's NetworkMonitor offline mode detection
         // which incorrectly reports "expensive" connections and blocks downloads
         setenv("CI_DISABLE_NETWORK_MONITOR", "1", 1)
@@ -26,6 +28,28 @@ struct TealeApp: App {
         let state = AppState()
         state.updateChecker.startAutomaticChecks()
         _appState = State(initialValue: state)
+    }
+
+    /// The app binary ignores CLI arguments and boots the full SwiftUI app,
+    /// which reads as a HANG when someone runs `teale wallet balance` etc.
+    /// over SSH (fleet evidence: #199 - AppKit event loop, zero network
+    /// activity, looked like a network stall). Fail loudly instead and point
+    /// at the real CLI. Only bare-word subcommand matches count - launch
+    /// services / Xcode pass dash-prefixed args we must keep tolerating.
+    private static func rejectCLIArguments() {
+        let cliWords: Set<String> = [
+            "up", "down", "login", "serve", "status", "models", "chat",
+            "config", "pin", "apikeys", "api-keys", "wallet", "peers",
+            "agent", "gateway-token", "account",
+        ]
+        let args = CommandLine.arguments.dropFirst()
+        guard let hit = args.first(where: { cliWords.contains($0.lowercased()) }) else { return }
+        FileHandle.standardError.write(Data("""
+        teale: '\(hit)' is a command for the teale-cli binary, not the Teale app.
+        Use `teale-cli \(hit) ...` (the app binary always launches the GUI).
+
+        """.utf8))
+        exit(2)
     }
 
     private func handleIncomingURL(_ url: URL) {
