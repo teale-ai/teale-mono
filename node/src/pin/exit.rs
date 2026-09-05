@@ -78,7 +78,11 @@ impl ExitMeter {
                 warn!("exit meter: failed to persist usage record: {err:#}");
                 // Re-add so the bytes are not lost.
                 let mut map = self.inner.lock();
-                let key = (record.pin_id.clone(), record.consumer_device_id.clone(), record.day.clone());
+                let key = (
+                    record.pin_id.clone(),
+                    record.consumer_device_id.clone(),
+                    record.day.clone(),
+                );
                 let entry = map.entry(key).or_insert((0, 0));
                 entry.0 += bytes_in;
                 entry.1 += bytes_out;
@@ -108,8 +112,7 @@ impl ExitProvider {
         {
             let meter = meter.clone();
             tokio::spawn(async move {
-                let mut interval =
-                    tokio::time::interval(Duration::from_secs(METER_FLUSH_SECONDS));
+                let mut interval = tokio::time::interval(Duration::from_secs(METER_FLUSH_SECONDS));
                 interval.tick().await;
                 loop {
                     interval.tick().await;
@@ -162,7 +165,9 @@ impl ExitProvider {
                         match reader.read(&mut buf).await {
                             Ok(0) => break,
                             Ok(n) => {
-                                provider.meter.add(&pin_id, &consumer_device_id, 0, n as i64);
+                                provider
+                                    .meter
+                                    .add(&pin_id, &consumer_device_id, 0, n as i64);
                                 for chunk in buf[..n].chunks(SEND_CHUNK) {
                                     let msg = ClusterMessage::SocksData(SocksDataPayload {
                                         stream_id: sid.clone(),
@@ -205,7 +210,9 @@ impl ExitProvider {
                 error: Some("connect timed out".to_string()),
             },
         };
-        let _ = connection.send(&ClusterMessage::SocksOpenResult(result)).await;
+        let _ = connection
+            .send(&ClusterMessage::SocksOpenResult(result))
+            .await;
     }
 
     pub async fn handle_data(&self, data: SocksDataPayload) {
