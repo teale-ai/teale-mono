@@ -286,7 +286,10 @@ enum DesktopCompanionRoute {
             let detail = upstream ?? String(body.prefix(200))
             return errorResponse(message: "Gateway error (HTTP \(status)): \(detail)", status: .badGateway)
         }
-        return errorResponse(error)
+        // NOTE: must call the message: overload - calling errorResponse(error)
+        // here re-enters THIS function and recurses until the stack guard
+        // page faults (fleet SIGBUS, Teale-2026-09-05-030224.ips).
+        return errorResponse(message: error.localizedDescription)
     }
 
     private static func errorResponse(message: String, status: HTTPResponse.Status = .badRequest) -> Response {
