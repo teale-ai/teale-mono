@@ -781,6 +781,20 @@ public actor RelayClient {
             guard let connection = relayedConnections.removeValue(forKey: payload.sessionID) else { return }
             await connection.finishLocally()
 
+        case .error(let payload):
+            FileHandle.standardError.write(Data("[WAN] Relay error: \(payload.code) - \(payload.message)\n".utf8))
+            // peer_not_found means the relay has no live connection for the
+            // target node (e.g. the gateway restarted and re-registered on a
+            // fresh socket, or this client's session outlived the peer's).
+            // Fail every session aimed at that node so send paths throw, the
+            // peer is dropped, and a fresh session is dialed - otherwise
+            // sends keep "succeeding" into the void and the stale session
+            // never recovers (post-restart heartbeat blackhole).
+            if payload.code == "peer_not_found",
+               let targetNodeID = Self.extractPeerNodeID(from: payload.message) {
+                failRelaySessions(forRemoteNodeID: targetNodeID, with: WANError.peerDisconnected)
+            }
+
         default:
             break
         }
@@ -818,6 +832,33 @@ public actor RelayClient {
         for connection in relayed {
             Task { await connection.finishLocally() }
         }
+    }
+
+    /// Fail every session whose remote end is `nodeID` - the targeted
+    /// variant of failActiveRelaySessions, driven by the relay's
+    /// peer_not_found error for one unreachable peer while the socket and
+    /// the remaining sessions stay up.
+    private func failRelaySessions(forRemoteNodeID nodeID: String, with error: Error) {
+        let matching = relayedConnections.filter { $0.value.remoteNodeID == nodeID }
+        guard !matching.isEmpty else { return }
+        FileHandle.standardError.write(Data("[WAN] Failing \(matching.count) session(s) to unreachable peer \(nodeID.prefix(16))...\n".utf8))
+        for (sessionID, connection) in matching {
+            relayedConnections.removeValue(forKey: sessionID)
+            pendingRelayedData.removeValue(forKey: sessionID)
+            if let waiter = relayReadyWaiters.removeValue(forKey: sessionID) {
+                waiter.resume(throwing: error)
+            }
+            Task { await connection.finishLocally() }
+        }
+    }
+
+    /// Parse the target node id out of the relay's peer_not_found message
+    /// ("Peer <nodeID> is not connected", relay/server.ts forwardToTarget).
+    private static func extractPeerNodeID(from message: String) -> String? {
+        guard message.hasPrefix("Peer ") else { return nil }
+        let rest = message.dropFirst(5)
+        guard let end = rest.firstIndex(of: " ") else { return nil }
+        return String(rest[..<end])
     }
 
     /// Preserve active relay sessions during a temporary WebSocket disconnect.
