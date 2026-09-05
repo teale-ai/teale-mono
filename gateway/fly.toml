@@ -18,7 +18,7 @@ internal_port = 8080
 force_https = true
 auto_stop_machines = false
 auto_start_machines = true
-min_machines_running = 2   # HA redundancy — OR probe traffic hits both
+min_machines_running = 1   # per-machine SQLite volumes: a second machine boots onto a stale volume = split-brain; keep 1 until the HA story is real
 
 [[http_service.checks]]
 grace_period = "10s"

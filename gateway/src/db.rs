@@ -628,6 +628,65 @@ const MIGRATIONS: &[&str] = &[
      WHERE email = 'taylor@hou.vc'
        AND NOT EXISTS (SELECT 1 FROM account_wallets WHERE email = 'taylor@teale.com');
     "#,
+    // 021_merge_taylor_case_split_accounts.sql — one-shot merge of the
+    // founder's case-duplicated accounts into the canonical UPPERCASE row
+    // (the April-era account that owns the networks and holds the balance).
+    // Three rows collapse into one:
+    //   canonical  270E90AF-4661-4DF1-949B-1A0BA1F705EE (110,039,367 credits)
+    //   dupe       270e90af-4661-4df1-949b-1a0ba1f705ee (779,922 credits,
+    //              github taylorhou, the 5 current fleet devices)
+    //   email-acct email:taylor@hou.vc (89,292 credits, owns pins 0CTOPUS
+    //              2ba90751 + houdini 615b4d98, 3 api_keys, 1 session)
+    // Also reverses the bogus 100,000-credit welcome bonus (account_ledger
+    // id 104) that the case-split re-link minted onto the canonical row.
+    // Guarded: every statement is keyed to these exact ids, so it is a no-op
+    // on any other database. Pre-deploy backup: teale-backup-pre-021.db on
+    // the gateway volume (integrity-checked).
+    r#"
+    UPDATE OR IGNORE account_devices SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE account_sessions SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE api_keys SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE account_onchain_deposits SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE account_withdrawals SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE referral_codes SET owner_account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE owner_account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE referral_claims SET referred_account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE referred_account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE pins SET owner_account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE owner_account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE pin_roles SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    UPDATE OR IGNORE account_ledger SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+
+    UPDATE account_wallets SET
+        email = 'taylor@teale.com',
+        github_username = 'taylorhou',
+        balance_credits = balance_credits
+            + COALESCE((SELECT balance_credits FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee'), 0)
+            + COALESCE((SELECT balance_credits FROM account_wallets WHERE account_user_id = 'email:taylor@hou.vc'), 0)
+            - 100000,
+        usdc_cents = usdc_cents
+            + COALESCE((SELECT usdc_cents FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee'), 0)
+            + COALESCE((SELECT usdc_cents FROM account_wallets WHERE account_user_id = 'email:taylor@hou.vc'), 0),
+        updated_at = CAST(strftime('%s','now') AS INTEGER)
+     WHERE account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
+       AND EXISTS (SELECT 1 FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee');
+
+    INSERT INTO account_ledger (account_user_id, asset, amount, type, timestamp, device_id, note)
+     SELECT '270E90AF-4661-4DF1-949B-1A0BA1F705EE', 'credits', -100000, 'REVERSAL',
+            CAST(strftime('%s','now') AS INTEGER), NULL,
+            'Reversal of bogus welcome bonus (account_ledger id 104) minted by the case-split re-link'
+     WHERE EXISTS (SELECT 1 FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee');
+
+    DELETE FROM account_wallets
+     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
