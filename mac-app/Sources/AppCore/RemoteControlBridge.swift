@@ -839,6 +839,38 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         return try await desktop_account_summary()
     }
 
+    func desktop_request_withdrawal(_ request: DesktopCompanionWithdrawalRequest) async throws -> DesktopCompanionWithdrawalRecord {
+        let record: DesktopCompanionWithdrawalRecord = try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/withdraw",
+            body: request
+        )
+        await refreshDesktopWalletSnapshotIfNeeded(force: true)
+        return record
+    }
+
+    func desktop_account_withdrawals() async throws -> DesktopCompanionWithdrawalsResponse {
+        try await desktopGatewayJSON(method: "GET", path: "/v1/account/withdrawals")
+    }
+
+    func desktop_deposit_info() async throws -> DesktopCompanionDepositInfo {
+        struct Solvency: Decodable {
+            let treasuryAddress: String
+            let explorerUrl: String
+        }
+        let solvency: Solvency = try await desktopGatewayJSON(
+            method: "GET",
+            path: "/v1/solvency",
+            requiresAuth: false
+        )
+        let summary = try await desktop_account_summary()
+        return DesktopCompanionDepositInfo(
+            treasuryAddress: solvency.treasuryAddress,
+            memo: "teale:deposit:\(summary.account_user_id)",
+            explorerUrl: solvency.explorerUrl
+        )
+    }
+
     func desktop_refresh_wallet() async throws -> DesktopCompanionAppSnapshot {
         await refreshDesktopWalletSnapshotIfNeeded(force: true)
         return try await desktop_snapshot()

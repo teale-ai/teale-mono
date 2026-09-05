@@ -662,6 +662,45 @@
           </div>
         </section>
 
+        <section class="section" id="account-cashout-section">
+          <p class="prompt"><span class="arrow">&gt;</span> <span data-i18n="account.cashout.prompt">deposit &amp; withdraw</span></p>
+          <div class="card">
+            <p class="muted" data-i18n="account.deposit.note">Add USDC by sending it to the network treasury on Solana with your personal memo in the transfer. Your account is credited once the deposit confirms on-chain.</p>
+            <dl class="stats">
+              <dt data-i18n="account.deposit.treasury">Treasury address</dt>
+              <dd>
+                <span id="deposit-treasury-address" class="mono">-</span>
+                <button id="deposit-treasury-copy" class="action" type="button" data-i18n="account.deposit.copy">Copy</button>
+              </dd>
+              <dt data-i18n="account.deposit.memo">Your deposit memo</dt>
+              <dd>
+                <span id="deposit-memo" class="mono">-</span>
+                <button id="deposit-memo-copy" class="action" type="button" data-i18n="account.deposit.copy">Copy</button>
+              </dd>
+            </dl>
+            <p class="muted"><a id="deposit-explorer-link" href="#" target="_blank" rel="noopener" data-i18n="account.deposit.explorer">Verify the treasury on Solscan</a></p>
+          </div>
+          <div class="card">
+            <div class="form-grid">
+              <label class="field">
+                <span data-i18n="account.withdraw.amount">Amount (USD)</span>
+                <input id="withdraw-amount" type="text" inputmode="decimal" placeholder="0.00" />
+              </label>
+              <label class="field field-wide">
+                <span data-i18n="account.withdraw.destination">Destination Solana address</span>
+                <input id="withdraw-destination" type="text" placeholder="" data-i18n-placeholder="account.withdraw.destinationPlaceholder" />
+              </label>
+            </div>
+            <div class="actions">
+              <button id="withdraw-submit" class="action action-primary" type="button" data-i18n="account.withdraw.action">Request withdrawal</button>
+            </div>
+            <p id="withdraw-status" class="muted"></p>
+            <p class="muted" data-i18n="account.withdraw.note">Withdrawals are paid manually from the treasury, usually within 72 hours. The reserved amount leaves your balance right away and is refunded if the request is rejected.</p>
+            <div id="withdrawals-list" class="ledger-list"></div>
+            <p id="withdrawals-empty" class="muted" data-i18n="account.withdraw.empty">No withdrawals yet.</p>
+          </div>
+        </section>
+
         <section class="section">
           <p class="prompt"><span class="arrow">&gt;</span> direct gateway api keys</p>
           <div class="card">

@@ -18,6 +18,9 @@ const ROUTES = {
   accountSweep: "/v1/desktop/app/account/sweep",
   accountSend: "/v1/desktop/app/account/send",
   accountDevicesRemove: "/v1/desktop/app/account/devices/remove",
+  accountWithdraw: "/v1/desktop/app/account/withdraw",
+  accountWithdrawals: "/v1/desktop/app/account/withdrawals",
+  depositInfo: "/v1/desktop/app/account/deposit-info",
   networkModels: "/v1/desktop/app/network/models",
   networkStats: "/v1/desktop/app/network/stats",
   walletRefresh: "/v1/desktop/app/wallet/refresh",
@@ -177,6 +180,17 @@ const els = {
   accountSendMemo: document.getElementById("account-send-memo"),
   accountSendSubmit: document.getElementById("account-send-submit"),
   accountSendNote: document.getElementById("account-send-note"),
+  depositTreasuryAddress: document.getElementById("deposit-treasury-address"),
+  depositTreasuryCopy: document.getElementById("deposit-treasury-copy"),
+  depositMemo: document.getElementById("deposit-memo"),
+  depositMemoCopy: document.getElementById("deposit-memo-copy"),
+  depositExplorerLink: document.getElementById("deposit-explorer-link"),
+  withdrawAmount: document.getElementById("withdraw-amount"),
+  withdrawDestination: document.getElementById("withdraw-destination"),
+  withdrawSubmit: document.getElementById("withdraw-submit"),
+  withdrawStatus: document.getElementById("withdraw-status"),
+  withdrawalsList: document.getElementById("withdrawals-list"),
+  withdrawalsEmpty: document.getElementById("withdrawals-empty"),
 };
 
 const LANGUAGE_STORAGE_KEY = "teale.language";
@@ -255,6 +269,21 @@ const translations = {
     "account.input.code": "123456",
     "account.auth.note.default": "Signing in is not required. Teale works without an account. Sign in if you want a human account that can manage multiple devices and get support.",
     "account.send.note": "Use full wallet IDs only. Account wallet sends target a full account wallet ID or a 64-char device wallet ID.",
+    "account.cashout.prompt": "deposit & withdraw",
+    "account.deposit.note": "Add USDC by sending it to the network treasury on Solana with your personal memo in the transfer. Your account is credited once the deposit confirms on-chain.",
+    "account.deposit.treasury": "Treasury address",
+    "account.deposit.memo": "Your deposit memo",
+    "account.deposit.copy": "Copy",
+    "account.deposit.explorer": "Verify the treasury on Solscan",
+    "account.withdraw.amount": "Amount (USD)",
+    "account.withdraw.destination": "Destination Solana address",
+    "account.withdraw.destinationPlaceholder": "base58 address, no memo needed",
+    "account.withdraw.action": "Request withdrawal",
+    "account.withdraw.note": "Withdrawals are paid manually from the treasury, usually within 72 hours. The reserved amount leaves your balance right away and is refunded if the request is rejected.",
+    "account.withdraw.empty": "No withdrawals yet.",
+    "account.withdraw.submitted": "Withdrawal requested. The treasury pays it manually, usually within 72 hours.",
+    "account.withdraw.invalidAmount": "Enter a valid USD amount.",
+    "account.withdraw.invalidDestination": "Enter a full Solana address.",
     "common.asset": "Asset",
     "common.recipient": "Recipient",
     "common.amount": "Amount",
@@ -415,6 +444,21 @@ const translations = {
     "account.input.code": "123456",
     "account.auth.note.default": "登录不是必需的。Teale 没有账户也能使用。若你想用一个人类账户来管理多台设备并获得支持，再登录即可。",
     "account.send.note": "仅支持完整 wallet ID。account wallet 发送仅面向完整的 account wallet ID 或 64 位字符的 device wallet ID。",
+    "account.cashout.prompt": "充值与提现",
+    "account.deposit.note": "向 Solana 上的网络金库地址转账 USDC,并在转账中附上您的专属备注(memo),即可充值。转账在链上确认后,您的账户会自动入账。",
+    "account.deposit.memo": "您的充值备注",
+    "account.deposit.copy": "复制",
+    "account.deposit.explorer": "在 Solscan 上查看金库",
+    "account.withdraw.amount": "金额(美元)",
+    "account.withdraw.destination": "收款 Solana 地址",
+    "account.withdraw.destinationPlaceholder": "base58 地址,无需备注",
+    "account.withdraw.action": "申请提现",
+    "account.withdraw.note": "提现由金库人工支付,通常在 72 小时内完成。申请后相应金额会立即从余额中冻结;若申请被拒绝,将全额退还。",
+    "account.withdraw.empty": "暂无提现记录。",
+    "account.withdraw.submitted": "提现已申请。金库将人工支付,通常在 72 小时内完成。",
+    "account.withdraw.invalidAmount": "请输入有效的美元金额。",
+    "account.withdraw.invalidDestination": "请输入完整的 Solana 地址。",
+    "account.deposit.treasury": "金库地址",
     "common.asset": "资产",
     "common.recipient": "接收方",
     "common.amount": "数量",
@@ -524,6 +568,21 @@ const translations = {
     "account.input.code": "123456",
     "account.auth.note.default": "Fazer login não é obrigatório. O Teale funciona sem conta. Entre apenas se quiser uma conta humana para gerenciar vários dispositivos e obter suporte.",
     "account.send.note": "Use apenas IDs completos. Envios da wallet da conta usam um ID completo de wallet da conta ou um ID de wallet do dispositivo com 64 caracteres.",
+    "account.cashout.prompt": "depósito e saque",
+    "account.deposit.note": "Adicione USDC enviando para o tesouro da rede na Solana com o seu memo pessoal na transferência. Sua conta é creditada assim que o depósito é confirmado on-chain.",
+    "account.deposit.treasury": "Endereço do tesouro",
+    "account.deposit.memo": "Seu memo de depósito",
+    "account.deposit.copy": "Copiar",
+    "account.deposit.explorer": "Verificar o tesouro no Solscan",
+    "account.withdraw.amount": "Valor (USD)",
+    "account.withdraw.destination": "Endereço Solana de destino",
+    "account.withdraw.destinationPlaceholder": "endereço base58, sem memo",
+    "account.withdraw.action": "Solicitar saque",
+    "account.withdraw.note": "Saques são pagos manualmente pelo tesouro, geralmente em até 72 horas. O valor reservado sai do seu saldo na hora e é devolvido se a solicitação for recusada.",
+    "account.withdraw.empty": "Nenhum saque ainda.",
+    "account.withdraw.submitted": "Saque solicitado. O tesouro paga manualmente, geralmente em até 72 horas.",
+    "account.withdraw.invalidAmount": "Insira um valor em USD válido.",
+    "account.withdraw.invalidDestination": "Insira um endereço Solana completo.",
     "common.asset": "Ativo",
     "common.recipient": "Destinatário",
     "common.amount": "Valor",
@@ -640,6 +699,21 @@ const translations = {
     "account.input.code": "123456",
     "account.auth.note.default": "Iniciar sesión no es obligatorio. Teale funciona sin una cuenta. Inicia sesión solo si quieres una cuenta humana para administrar varios dispositivos y obtener soporte.",
     "account.send.note": "Usa solo IDs completos. Los envíos desde la wallet de cuenta usan un ID completo de wallet de cuenta o un ID de wallet de dispositivo de 64 caracteres.",
+    "account.cashout.prompt": "depósito y retiro",
+    "account.deposit.note": "Añade USDC enviándolo a la tesorería de la red en Solana con tu memo personal en la transferencia. Tu cuenta se acredita cuando el depósito se confirma on-chain.",
+    "account.deposit.treasury": "Dirección de la tesorería",
+    "account.deposit.memo": "Tu memo de depósito",
+    "account.deposit.copy": "Copiar",
+    "account.deposit.explorer": "Verifica la tesorería en Solscan",
+    "account.withdraw.amount": "Importe (USD)",
+    "account.withdraw.destination": "Dirección Solana de destino",
+    "account.withdraw.destinationPlaceholder": "dirección base58, sin memo",
+    "account.withdraw.action": "Solicitar retiro",
+    "account.withdraw.note": "Los retiros se pagan manualmente desde la tesorería, normalmente en un plazo de 72 horas. El importe reservado sale de tu saldo de inmediato y se reembolsa si la solicitud es rechazada.",
+    "account.withdraw.empty": "Aún no hay retiros.",
+    "account.withdraw.submitted": "Retiro solicitado. La tesorería lo paga manualmente, normalmente en un plazo de 72 horas.",
+    "account.withdraw.invalidAmount": "Introduce un importe en USD válido.",
+    "account.withdraw.invalidDestination": "Introduce una dirección Solana completa.",
     "common.asset": "Activo",
     "common.recipient": "Destinatario",
     "common.amount": "Cantidad",
@@ -756,6 +830,21 @@ const translations = {
     "account.input.code": "123456",
     "account.auth.note.default": "Hindi kailangan ang pag-sign in. Gumagana ang Teale kahit walang account. Mag-sign in lang kung gusto mo ng human account para mamahala ng maraming device at makakuha ng support.",
     "account.send.note": "Buong wallet IDs lang ang gamitin. Ang send mula sa account wallet ay para sa buong account wallet ID o 64-char device wallet ID.",
+    "account.cashout.prompt": "deposito at pag-withdraw",
+    "account.deposit.note": "Magdagdag ng USDC sa pamamagitan ng pagpapadala nito sa treasury ng network sa Solana kasama ang personal mong memo sa transfer. Makikita sa account mo ang credit kapag na-confirm na ang deposito on-chain.",
+    "account.deposit.treasury": "Address ng treasury",
+    "account.deposit.memo": "Ang deposit memo mo",
+    "account.deposit.copy": "Kopyahin",
+    "account.deposit.explorer": "Tingnan ang treasury sa Solscan",
+    "account.withdraw.amount": "Halaga (USD)",
+    "account.withdraw.destination": "Destinasyon na Solana address",
+    "account.withdraw.destinationPlaceholder": "base58 address, walang memo",
+    "account.withdraw.action": "Humiling ng withdrawal",
+    "account.withdraw.note": "Manu-manong binabayaran ang mga withdrawal mula sa treasury, karaniwan sa loob ng 72 oras. Agad mawawala sa balance mo ang reserbadong halaga at ibabalik kung tanggihan ang request.",
+    "account.withdraw.empty": "Wala pang withdrawal.",
+    "account.withdraw.submitted": "Na-request ang withdrawal. Manu-manong babayaran ng treasury, karaniwan sa loob ng 72 oras.",
+    "account.withdraw.invalidAmount": "Maglagay ng wastong halaga sa USD.",
+    "account.withdraw.invalidDestination": "Maglagay ng buong Solana address.",
     "common.asset": "Asset",
     "common.recipient": "Tatanggap",
     "common.amount": "Halaga",
@@ -3139,7 +3228,21 @@ async function getJsonMaybeMissing(path) {
 function setActiveView(view) {
   activeView = view;
   document.body.classList.toggle("simple-mode", view === "simple");
-  for (const button of els.viewButtons) {
+  if (els.withdrawSubmit) {
+  els.withdrawSubmit.addEventListener("click", submitWithdrawal);
+}
+if (els.depositTreasuryCopy) {
+  els.depositTreasuryCopy.addEventListener("click", () => {
+    copyTextQuiet(els.depositTreasuryAddress.textContent || "");
+  });
+}
+if (els.depositMemoCopy) {
+  els.depositMemoCopy.addEventListener("click", () => {
+    copyTextQuiet(els.depositMemo.textContent || "");
+  });
+}
+
+for (const button of els.viewButtons) {
     button.classList.toggle("active", button.dataset.viewButton === view);
   }
   for (const panel of els.views) {
@@ -3564,6 +3667,131 @@ function renderLedger(entries) {
 
     row.append(info, amount);
     els.ledgerList.appendChild(row);
+  }
+}
+
+let withdrawalsCache = [];
+
+async function loadDepositInfo() {
+  if (!els.depositTreasuryAddress) {
+    return;
+  }
+  if (!accountSummary?.account_user_id) {
+    els.depositTreasuryAddress.textContent = "-";
+    if (els.depositMemo) {
+      els.depositMemo.textContent = "-";
+    }
+    return;
+  }
+  try {
+    const info = await getJsonMaybeMissing(ROUTES.depositInfo);
+    if (!info) {
+      return;
+    }
+    els.depositTreasuryAddress.textContent = info.treasuryAddress || "-";
+    if (els.depositMemo) {
+      els.depositMemo.textContent = info.memo || "-";
+    }
+    if (els.depositExplorerLink && info.explorerUrl) {
+      els.depositExplorerLink.href = info.explorerUrl;
+    }
+  } catch (error) {
+    console.warn("deposit info fetch failed", error);
+  }
+}
+
+async function loadWithdrawals() {
+  if (!els.withdrawalsList) {
+    return;
+  }
+  if (!accountSummary?.account_user_id) {
+    withdrawalsCache = [];
+    renderWithdrawals();
+    return;
+  }
+  try {
+    const response = await getJsonMaybeMissing(ROUTES.accountWithdrawals);
+    withdrawalsCache = response?.withdrawals || [];
+  } catch (error) {
+    console.warn("withdrawals fetch failed", error);
+  }
+  renderWithdrawals();
+}
+
+function renderWithdrawals() {
+  if (!els.withdrawalsList) {
+    return;
+  }
+  els.withdrawalsList.innerHTML = "";
+  const list = withdrawalsCache.slice().reverse();
+  if (els.withdrawalsEmpty) {
+    els.withdrawalsEmpty.hidden = list.length > 0;
+  }
+  for (const record of list) {
+    const row = document.createElement("article");
+    row.className = "ledger-row";
+
+    const info = document.createElement("div");
+    const title = document.createElement("h3");
+    title.textContent = `${record.status} - $${((record.amountUsdcCents ?? 0) / 100).toFixed(2)}`;
+    const meta = document.createElement("p");
+    meta.className = "ledger-meta";
+    meta.textContent = [
+      record.createdAt ? formatTimestamp(record.createdAt) : "",
+      String(record.destinationAddress || "").slice(0, 12),
+    ].filter(Boolean).join(" // ");
+    info.append(title, meta);
+    row.append(info);
+
+    if (record.txSignature) {
+      const link = document.createElement("a");
+      link.href = `https://solscan.io/tx/${record.txSignature}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Solscan";
+      row.append(link);
+    }
+    els.withdrawalsList.appendChild(row);
+  }
+}
+
+async function submitWithdrawal() {
+  if (!els.withdrawAmount || !els.withdrawDestination || !els.withdrawSubmit) {
+    return;
+  }
+  const usd = Number.parseFloat(els.withdrawAmount.value || "");
+  const destination = els.withdrawDestination.value.trim();
+  if (!Number.isFinite(usd) || usd <= 0) {
+    els.withdrawStatus.textContent = t("account.withdraw.invalidAmount", {
+      fallback: "Enter a valid USD amount.",
+    });
+    return;
+  }
+  if (destination.length < 32) {
+    els.withdrawStatus.textContent = t("account.withdraw.invalidDestination", {
+      fallback: "Enter a full Solana address.",
+    });
+    return;
+  }
+  els.withdrawSubmit.disabled = true;
+  els.withdrawStatus.textContent = "";
+  try {
+    await post(ROUTES.accountWithdraw, {
+      requestID: crypto.randomUUID(),
+      destinationAddress: destination,
+      amountUsdcCents: Math.round(usd * 100),
+    });
+    els.withdrawStatus.textContent = t("account.withdraw.submitted", {
+      fallback: "Withdrawal requested. The treasury pays it manually, usually within 72 hours.",
+    });
+    els.withdrawAmount.value = "";
+    els.withdrawDestination.value = "";
+    await refreshAccountState();
+    render(lastSnapshot);
+  } catch (error) {
+    els.withdrawStatus.textContent = error.message;
+  } finally {
+    els.withdrawSubmit.disabled = false;
   }
 }
 
@@ -4190,6 +4418,8 @@ async function refreshAccountState() {
     accountDevices = accountSummary?.devices || [];
     accountApiKeys = [];
     authTrace(`account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=0 auth=none`);
+    loadDepositInfo();
+    loadWithdrawals();
     return;
   }
 
@@ -4227,6 +4457,8 @@ async function refreshAccountState() {
   authTrace(
     `account state refreshed summaryDevices=${accountDevices.length} apiKeys=${accountApiKeys.length} supabaseDevices=${supabaseAccountDevices.length}`
   );
+  loadDepositInfo();
+  loadWithdrawals();
 }
 
 async function createAccountApiKey() {

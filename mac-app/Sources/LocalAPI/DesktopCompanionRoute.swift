@@ -206,6 +206,38 @@ enum DesktopCompanionRoute {
         }
     }
 
+    static func requestWithdrawal(
+        request: Request,
+        controller: (any DesktopCompanionControlling)?
+    ) async throws -> Response {
+        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
+        do {
+            let body = try await request.body.collect(upTo: 1_048_576)
+            let payload = try JSONDecoder().decode(DesktopCompanionWithdrawalRequest.self, from: body)
+            return try jsonResponse(try await controller.desktop_request_withdrawal(payload))
+        } catch {
+            return errorResponse(error)
+        }
+    }
+
+    static func accountWithdrawals(controller: (any DesktopCompanionControlling)?) async throws -> Response {
+        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
+        do {
+            return try jsonResponse(try await controller.desktop_account_withdrawals())
+        } catch {
+            return errorResponse(error)
+        }
+    }
+
+    static func depositInfo(controller: (any DesktopCompanionControlling)?) async throws -> Response {
+        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
+        do {
+            return try jsonResponse(try await controller.desktop_deposit_info())
+        } catch {
+            return errorResponse(error)
+        }
+    }
+
     static func refreshWallet(
         controller: (any DesktopCompanionControlling)?
     ) async throws -> Response {
