@@ -290,7 +290,7 @@ public final class PINExitClient: @unchecked Sendable {
                         switch await dialed.connectionState {
                         case .connected:
                             startTask.cancel()
-                            if await self.verifyTransport(dialed, pinId: pinId) {
+                            if await self.verifyTransport(.direct(dialed), pinId: pinId) {
                                 return dialed
                             }
                             break poll
