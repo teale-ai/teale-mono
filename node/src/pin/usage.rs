@@ -27,6 +27,12 @@ pub struct UsageRecord {
     pub model_id: String,
     pub tokens_in: i64,
     pub tokens_out: i64,
+    /// Exit-bandwidth metering (#171): present only on records whose
+    /// model_id is `__exit__`. Older gateways ignore unknown fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_in: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_out: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,6 +52,10 @@ struct BatchEntry {
     requests: i64,
     tokens_in: i64,
     tokens_out: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bytes_in: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bytes_out: Option<i64>,
 }
 
 pub struct UsageBatcher {
@@ -138,10 +148,18 @@ impl UsageBatcher {
                     requests: 0,
                     tokens_in: 0,
                     tokens_out: 0,
+                    bytes_in: None,
+                    bytes_out: None,
                 });
             entry.requests += 1;
             entry.tokens_in += r.tokens_in;
             entry.tokens_out += r.tokens_out;
+            if let Some(b) = r.bytes_in {
+                *entry.bytes_in.get_or_insert(0) += b;
+            }
+            if let Some(b) = r.bytes_out {
+                *entry.bytes_out.get_or_insert(0) += b;
+            }
         }
         for (pin_id, entries) in by_pin {
             let batch = Batch {
@@ -232,6 +250,8 @@ mod tests {
             model_id: "qwen3-4b".into(),
             tokens_in: 100,
             tokens_out,
+            bytes_in: None,
+            bytes_out: None,
         }
     }
 

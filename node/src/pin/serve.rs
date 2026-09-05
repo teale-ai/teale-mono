@@ -64,6 +64,7 @@ pub fn spawn_serving<B: CompletionBackend>(
     backend: Arc<B>,
     gate: Arc<PriorityGate>,
     usage: Arc<UsageBatcher>,
+    exit: Option<Arc<super::exit::ExitProvider>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(connection) = listener.accept().await {
@@ -80,6 +81,7 @@ pub fn spawn_serving<B: CompletionBackend>(
                 backend.clone(),
                 gate.clone(),
                 usage.clone(),
+                exit.clone(),
             ));
         }
     })
@@ -93,6 +95,7 @@ async fn serve_peer<B: CompletionBackend>(
     backend: Arc<B>,
     gate: Arc<PriorityGate>,
     usage: Arc<UsageBatcher>,
+    exit: Option<Arc<super::exit::ExitProvider>>,
 ) {
     while let Some(message) = connection.recv().await {
         match message {
@@ -114,6 +117,38 @@ async fn serve_peer<B: CompletionBackend>(
             // Liveness probe for offline-LAN scheduling.
             ClusterMessage::Heartbeat(hb) => {
                 let _ = connection.send(&ClusterMessage::HeartbeatAck(hb)).await;
+            }
+            // PIN exit-node data plane: SOCKS5-over-Noise egress.
+            ClusterMessage::SocksOpen(open) => {
+                if let Some(exit) = &exit {
+                    let connection = connection.clone();
+                    let exit = exit.clone();
+                    let pin_id = pin_id.clone();
+                    let consumer = consumer_device_id.clone();
+                    tokio::spawn(async move {
+                        exit.handle_open(connection, pin_id, consumer, open).await;
+                    });
+                } else {
+                    let _ = connection
+                        .send(&ClusterMessage::SocksOpenResult(
+                            teale_protocol::cluster::SocksOpenResultPayload {
+                                stream_id: open.stream_id,
+                                ok: false,
+                                error: Some("exit not offered".to_string()),
+                            },
+                        ))
+                        .await;
+                }
+            }
+            ClusterMessage::SocksData(data) => {
+                if let Some(exit) = &exit {
+                    exit.handle_data(data).await;
+                }
+            }
+            ClusterMessage::SocksClose(close) => {
+                if let Some(exit) = &exit {
+                    exit.handle_close(close).await;
+                }
             }
             _ => {}
         }
@@ -204,6 +239,8 @@ async fn handle_request<B: CompletionBackend>(
                     model_id: requested_model,
                     tokens_in,
                     tokens_out,
+                    bytes_in: None,
+                    bytes_out: None,
                 })
                 .unwrap_or(false);
             if should_flush {
@@ -351,6 +388,7 @@ mod tests {
             Arc::new(FakeBackend),
             gate,
             usage.clone(),
+            None,
         );
 
         let connection = dial(addr, &PublicKey::from(&server_static), &client_static)
@@ -405,7 +443,7 @@ mod tests {
                 .await
                 .unwrap();
         let addr = listener.local_addr().unwrap();
-        let _serving = spawn_serving(listener, manager, Arc::new(FakeBackend), gate, usage);
+        let _serving = spawn_serving(listener, manager, Arc::new(FakeBackend), gate, usage, None);
 
         let connection = dial(addr, &PublicKey::from(&server_static), &client_static)
             .await

@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod client;
 pub mod endpoints;
+pub mod exit;
 pub mod gate;
 pub mod manager;
 pub mod noise;

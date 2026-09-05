@@ -171,12 +171,18 @@ pub async fn spawn_pin_runtime(
         .set_din_priority_equal(runtime.settings().din_priority_equal);
 
     // Serving path (PIN-first admission, netmap-authenticated peers).
+    let exit = if config.pin.offer_exit {
+        Some(super::exit::ExitProvider::new(usage.clone()))
+    } else {
+        None
+    };
     super::serve::spawn_serving(
         listener,
         manager.clone(),
         swap.clone(),
         node_state.pin_gate.clone(),
         usage.clone(),
+        exit,
     );
 
     // Control-plane sync loop: fresh endpoints + loaded models + policy
