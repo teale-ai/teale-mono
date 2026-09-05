@@ -2458,10 +2458,15 @@ pub fn normalize_account_user_id(value: &str) -> String {
             _ => c.is_ascii_hexdigit(),
         });
     if is_uuid {
-        v.to_ascii_uppercase()
-    } else {
-        v.to_string()
+        return v.to_ascii_uppercase();
     }
+    // email-derived ids: the address is case-insensitive per RFC 5321 and
+    // our normalize_account_email already lowercases it - keep the id form
+    // canonical too so "EMAIL:Taylor@Hou.vc" can never fork an account.
+    if v.len() > 6 && v[..6].eq_ignore_ascii_case("email:") {
+        return format!("email:{}", v[6..].to_lowercase());
+    }
+    v.to_string()
 }
 
 /// True when a wallet row already exists for the (normalized) account id.
@@ -5466,7 +5471,7 @@ pub fn account_user_id_for_login(pool: &DbPool, email: &str) -> anyhow::Result<S
     let conn = pool.lock();
     let existing: Option<String> = conn
         .query_row(
-            "SELECT account_user_id FROM account_wallets WHERE email = ?",
+            "SELECT account_user_id FROM account_wallets WHERE LOWER(email) = ?",
             [&email],
             |r| r.get(0),
         )
@@ -6563,9 +6568,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 1);
-        // email: ids are not UUID-shaped and pass through untouched.
+        // email: ids canonicalize to lowercase regardless of input case.
         assert_eq!(
             normalize_account_user_id("email:taylor@hou.vc"),
+            "email:taylor@hou.vc"
+        );
+        assert_eq!(
+            normalize_account_user_id("EMAIL:Taylor@Hou.vc"),
             "email:taylor@hou.vc"
         );
     }
