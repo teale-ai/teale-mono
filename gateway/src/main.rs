@@ -345,6 +345,14 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::admin::migrate_share_keys),
         )
         .route(
+            "/v1/admin/pending-withdrawals",
+            get(handlers::admin::pending_withdrawals),
+        )
+        .route(
+            "/v1/admin/complete-withdrawal",
+            post(handlers::admin::complete_withdrawal),
+        )
+        .route(
             "/v1/admin/refund-expired-share-keys",
             post(handlers::admin::refund_expired_share_keys),
         )

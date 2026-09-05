@@ -700,6 +700,118 @@ struct RpcUiTokenAmount {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedTreasuryPayout {
+    pub tx_signature: String,
+    pub destination_address: String,
+    pub gross_amount_usdc_cents: i64,
+    pub destination_amount_micro_usdc: i64,
+    pub treasury_retained_micro_usdc: i64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TreasuryPayoutError {
+    #[error("txSignature is required")]
+    MissingSignature,
+    #[error("payout transaction was not found on Solana")]
+    TransactionNotFound,
+    #[error("payout transaction is not {required_status} yet")]
+    TransactionNotSettled { required_status: String },
+    #[error("payout transaction failed on-chain")]
+    TransactionFailed,
+    #[error("payout did not debit the treasury exactly the expected net amount")]
+    TreasuryDebitMismatch,
+    #[error("payout did not credit the requested destination exactly the expected net amount")]
+    DestinationMismatch,
+    #[error("payout credited unexpected additional USDC owners")]
+    UnexpectedRecipients,
+    #[error(transparent)]
+    Deposit(#[from] DepositVerificationError),
+    #[error("solana rpc error: {0}")]
+    Rpc(String),
+}
+
+/// Verify a treasury-paid withdrawal: a settled, successful transaction that
+/// moves exactly `gross - fee` USDC from the treasury to the destination.
+/// The 1.8% fee is retained by simply never leaving the treasury.
+pub async fn verify_treasury_payout(
+    config: &SolanaConfig,
+    tx_signature: &str,
+    expected_destination: &str,
+    gross_amount_usdc_cents: i64,
+) -> Result<VerifiedTreasuryPayout, TreasuryPayoutError> {
+    let tx_signature = tx_signature.trim();
+    if tx_signature.is_empty() {
+        return Err(TreasuryPayoutError::MissingSignature);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(config.request_timeout_seconds))
+        .build()
+        .map_err(|err| TreasuryPayoutError::Rpc(err.to_string()))?;
+
+    let status = fetch_signature_status(&client, config, tx_signature).await?;
+    let Some(status) = status else {
+        return Err(TreasuryPayoutError::TransactionNotFound);
+    };
+    if status.err.is_some() {
+        return Err(TreasuryPayoutError::TransactionFailed);
+    }
+    if !commitment_satisfied(&config.commitment, status.confirmation_status.as_deref()) {
+        return Err(TreasuryPayoutError::TransactionNotSettled {
+            required_status: config.commitment.clone(),
+        });
+    }
+
+    let tx = fetch_transaction(&client, config, tx_signature).await?;
+    let Some(tx) = tx else {
+        return Err(TreasuryPayoutError::TransactionNotFound);
+    };
+    let meta = tx
+        .meta
+        .as_ref()
+        .ok_or(TreasuryPayoutError::DestinationMismatch)?;
+    if meta.err.is_some() {
+        return Err(TreasuryPayoutError::TransactionFailed);
+    }
+
+    let deltas = aggregate_owner_deltas(
+        meta.pre_token_balances.as_deref().unwrap_or(&[]),
+        meta.post_token_balances.as_deref().unwrap_or(&[]),
+        &config.usdc_mint,
+    )?;
+
+    let gross_micro_usdc = i128::from(gross_amount_usdc_cents) * MICRO_USDC_PER_CENT;
+    let fee_micro_usdc = withdrawal_fee_micro_usdc(gross_micro_usdc, config.withdrawal_fee_bps);
+    let net_micro_usdc = gross_micro_usdc - fee_micro_usdc;
+
+    let treasury_delta = *deltas.get(config.treasury_address.as_str()).unwrap_or(&0);
+    if treasury_delta != -net_micro_usdc {
+        return Err(TreasuryPayoutError::TreasuryDebitMismatch);
+    }
+    let destination_delta = *deltas.get(expected_destination).unwrap_or(&0);
+    if destination_delta != net_micro_usdc {
+        return Err(TreasuryPayoutError::DestinationMismatch);
+    }
+    if deltas
+        .iter()
+        .any(|(owner, delta)| *delta > 0 && owner != expected_destination)
+    {
+        return Err(TreasuryPayoutError::UnexpectedRecipients);
+    }
+
+    Ok(VerifiedTreasuryPayout {
+        tx_signature: tx_signature.to_string(),
+        destination_address: expected_destination.to_string(),
+        gross_amount_usdc_cents,
+        destination_amount_micro_usdc: net_micro_usdc.try_into().map_err(|_| {
+            TreasuryPayoutError::Rpc("verified payout overflowed i64".into())
+        })?,
+        treasury_retained_micro_usdc: fee_micro_usdc.try_into().map_err(|_| {
+            TreasuryPayoutError::Rpc("verified fee overflowed i64".into())
+        })?,
+    })
+}
+
 pub struct VerifiedTreasuryDeposit {
     pub tx_signature: String,
     pub amount_usdc_cents: i64,

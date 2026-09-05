@@ -589,6 +589,8 @@ pub enum AccountOnchainError {
     WithdrawalConflict,
     #[error("withdrawal txSignature is already recorded for a different request")]
     WithdrawalSignatureConflict,
+    #[error("no pending withdrawal for request id")]
+    WithdrawalNotPending,
     #[error(
         "insufficient withdrawable credits: balance {balance}, redeemable {redeemable_credits}, need {required}"
     )]
@@ -3532,6 +3534,216 @@ pub fn record_account_treasury_deposit(
     account_onchain_summary(pool, &account_user_id)
 }
 
+pub fn get_withdrawal_by_request(
+    pool: &DbPool,
+    request_id: &str,
+) -> Result<Option<AccountWithdrawalRecord>, AccountOnchainError> {
+    let conn = pool.lock();
+    let record = conn
+        .query_row(
+            "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                    amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                    completed_at
+             FROM account_withdrawals
+             WHERE request_id = ?",
+            [request_id],
+            |r| {
+                Ok(AccountWithdrawalRecord {
+                    withdrawal_id: r.get(0)?,
+                    request_id: r.get(1)?,
+                    account_user_id: r.get(2)?,
+                    destination_address: r.get(3)?,
+                    amount_usdc_cents: r.get(4)?,
+                    amount_credits: r.get(5)?,
+                    status: r.get(6)?,
+                    tx_signature: r.get(7)?,
+                    created_at: r.get(8)?,
+                    completed_at: r.get(9)?,
+                })
+            },
+        )
+        .ok();
+    Ok(record)
+}
+
+pub fn list_pending_withdrawals(
+    pool: &DbPool,
+    limit: usize,
+) -> Result<Vec<AccountWithdrawalRecord>, AccountOnchainError> {
+    let conn = pool.lock();
+    let mut stmt = conn.prepare(
+        "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                completed_at
+         FROM account_withdrawals
+         WHERE status = 'pending'
+         ORDER BY created_at ASC
+         LIMIT ?",
+    )?;
+    let rows = stmt
+        .query_map([limit as i64], |r| {
+            Ok(AccountWithdrawalRecord {
+                withdrawal_id: r.get(0)?,
+                request_id: r.get(1)?,
+                account_user_id: r.get(2)?,
+                destination_address: r.get(3)?,
+                amount_usdc_cents: r.get(4)?,
+                amount_credits: r.get(5)?,
+                status: r.get(6)?,
+                tx_signature: r.get(7)?,
+                created_at: r.get(8)?,
+                completed_at: r.get(9)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Complete a pending withdrawal with a treasury-paid, on-chain-verified
+/// payout. The balance check + debit happen HERE (pending requests hold no
+/// funds); the payout signature must already be verified by
+/// `solana::verify_treasury_payout`. Idempotent: re-completing with the same
+/// signature returns the record; a different signature conflicts.
+pub fn complete_account_withdrawal_from_treasury(
+    pool: &DbPool,
+    request_id: &str,
+    tx_signature: &str,
+) -> Result<AccountWithdrawalRecord, AccountOnchainError> {
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+
+    let existing = tx
+        .query_row(
+            "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                    amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                    completed_at
+             FROM account_withdrawals
+             WHERE request_id = ?",
+            [request_id],
+            |r| {
+                Ok(AccountWithdrawalRecord {
+                    withdrawal_id: r.get(0)?,
+                    request_id: r.get(1)?,
+                    account_user_id: r.get(2)?,
+                    destination_address: r.get(3)?,
+                    amount_usdc_cents: r.get(4)?,
+                    amount_credits: r.get(5)?,
+                    status: r.get(6)?,
+                    tx_signature: r.get(7)?,
+                    created_at: r.get(8)?,
+                    completed_at: r.get(9)?,
+                })
+            },
+        )
+        .ok();
+
+    let Some(existing) = existing else {
+        return Err(AccountOnchainError::WithdrawalNotPending);
+    };
+    if existing.status != "pending" {
+        if existing.tx_signature.as_deref() == Some(tx_signature) {
+            return Ok(existing);
+        }
+        return Err(AccountOnchainError::WithdrawalConflict);
+    }
+
+    let signature_in_use: Option<String> = tx
+        .query_row(
+            "SELECT request_id FROM account_withdrawals WHERE tx_signature = ?",
+            [tx_signature],
+            |r| r.get(0),
+        )
+        .ok();
+    if signature_in_use.is_some() {
+        return Err(AccountOnchainError::WithdrawalSignatureConflict);
+    }
+
+    let wallet_state = load_account_wallet_state_locked(&tx, &existing.account_user_id)?;
+    if wallet_state.balance_credits < existing.amount_credits {
+        return Err(AccountOnchainError::InsufficientWithdrawable {
+            balance: wallet_state.balance_credits,
+            redeemable_credits: wallet_state.balance_credits,
+            required: existing.amount_credits,
+        });
+    }
+
+    tx.execute(
+        "UPDATE account_wallets
+         SET balance_credits = balance_credits - ?,
+             usdc_cents = usdc_cents - ?,
+             withdrawn_usdc_cents_total = withdrawn_usdc_cents_total + ?,
+             updated_at = ?
+         WHERE account_user_id = ?",
+        params![
+            existing.amount_credits,
+            existing.amount_usdc_cents,
+            existing.amount_usdc_cents,
+            now,
+            existing.account_user_id.as_str(),
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note)
+         VALUES (?, 'credits', ?, 'ONCHAIN_WITHDRAWAL_BURN', ?, ?, ?)",
+        params![
+            existing.account_user_id.as_str(),
+            -existing.amount_credits,
+            now,
+            "treasury-payout",
+            format!("burned for treasury payout {request_id}"),
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO account_ledger
+            (account_user_id, asset, amount, type, timestamp, device_id, note)
+         VALUES (?, 'usdc', ?, 'ONCHAIN_WITHDRAWAL_OUT', ?, ?, ?)",
+        params![
+            existing.account_user_id.as_str(),
+            -existing.amount_usdc_cents,
+            now,
+            "treasury-payout",
+            format!(
+                "treasury payout {} to {}",
+                request_id, existing.destination_address
+            ),
+        ],
+    )?;
+    tx.execute(
+        "UPDATE account_withdrawals
+         SET status = 'submitted', tx_signature = ?, completed_at = ?
+         WHERE request_id = ?",
+        params![tx_signature, now, request_id],
+    )?;
+
+    let record = tx.query_row(
+        "SELECT withdrawal_id, request_id, account_user_id, destination_address,
+                amount_usdc_cents, amount_credits, status, tx_signature, created_at,
+                completed_at
+         FROM account_withdrawals
+         WHERE request_id = ?",
+        [request_id],
+        |r| {
+            Ok(AccountWithdrawalRecord {
+                withdrawal_id: r.get(0)?,
+                request_id: r.get(1)?,
+                account_user_id: r.get(2)?,
+                destination_address: r.get(3)?,
+                amount_usdc_cents: r.get(4)?,
+                amount_credits: r.get(5)?,
+                status: r.get(6)?,
+                tx_signature: r.get(7)?,
+                created_at: r.get(8)?,
+                completed_at: r.get(9)?,
+            })
+        },
+    )?;
+    tx.commit()?;
+    Ok(record)
+}
+
 pub fn submit_account_withdrawal(
     pool: &DbPool,
     requester_device_id: &str,
@@ -3643,11 +3855,14 @@ pub fn submit_account_withdrawal(
         });
     };
 
+    // Custodial model: every credit is backed by the treasury, so the full
+    // balance is withdrawable. (Pre-custody, withdrawals were limited to
+    // deposit-backed credits because only deposited USDC existed on-chain.)
     let redeemable_credits = credits_from_usdc_cents(redeemable_usdc_cents(
         wallet_state.deposited_usdc_cents_total,
         wallet_state.withdrawn_usdc_cents_total,
     ))?;
-    let available_withdrawable = wallet_state.balance_credits.min(redeemable_credits);
+    let available_withdrawable = wallet_state.balance_credits;
     if available_withdrawable < amount_credits {
         return Err(AccountOnchainError::InsufficientWithdrawable {
             balance: wallet_state.balance_credits,
@@ -7011,6 +7226,106 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, AccountOnchainError::AccountNotLinked));
+    }
+
+    #[test]
+    fn treasury_completion_debits_and_is_idempotent() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                email: Some("payout@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        record_account_treasury_deposit(
+            &pool,
+            "device-a",
+            "sol-treasury-dep-9",
+            10_000,
+            None,
+            "TreasuryWallet11111111111111111111111111111",
+        )
+        .unwrap();
+
+        let pending = submit_account_withdrawal(
+            &pool,
+            "device-a",
+            &AccountWithdrawalRequest {
+                request_id: "wd-t1".into(),
+                destination_address: "DestWallet333333333333333333333333333333".into(),
+                amount_usdc_cents: 2_500,
+                tx_signature: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(pending.status, "pending");
+
+        // Pending holds no funds: balance untouched until completion.
+        let before = account_onchain_summary_for_device(&pool, "device-a").unwrap();
+        assert_eq!(before.balance_credits, 100_000_000); // $100 deposit
+
+        let record = complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-1")
+            .unwrap();
+        assert_eq!(record.status, "submitted");
+        assert_eq!(record.tx_signature.as_deref(), Some("sol-payout-1"));
+        let after = account_onchain_summary_for_device(&pool, "device-a").unwrap();
+        assert_eq!(after.balance_credits, 75_000_000); // $75 left
+        assert_eq!(after.withdrawn_usdc_cents_total, 2_500);
+
+        // Idempotent same-signature replay.
+        let replay = complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-1")
+            .unwrap();
+        assert_eq!(replay.status, "submitted");
+        // Different signature conflicts.
+        assert!(matches!(
+            complete_account_withdrawal_from_treasury(&pool, "wd-t1", "sol-payout-2"),
+            Err(AccountOnchainError::WithdrawalConflict)
+        ));
+        // Unknown request id.
+        assert!(matches!(
+            complete_account_withdrawal_from_treasury(&pool, "wd-nope", "sol-payout-3"),
+            Err(AccountOnchainError::WithdrawalNotPending)
+        ));
+    }
+
+    #[test]
+    fn earned_credits_are_withdrawable_under_custody() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        link_device_to_account(
+            &pool,
+            "device-a",
+            "user-123",
+            &AccountLinkMetadata {
+                email: Some("earner@example.com".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Simulate earned (never deposited) credits.
+        pool.lock()
+            .execute(
+                "UPDATE account_wallets SET balance_credits = 5_000_000, solana_enabled = 1, solana_address = 'EarnWallet5555555555555555555555555555555' WHERE account_user_id = 'user-123'",
+                [],
+            )
+            .unwrap();
+        let pending = submit_account_withdrawal(
+            &pool,
+            "device-a",
+            &AccountWithdrawalRequest {
+                request_id: "wd-e1".into(),
+                destination_address: "DestWallet444444444444444444444444444444".into(),
+                amount_usdc_cents: 400, // 4M credits of the 5M balance; zero deposited
+                tx_signature: Some("sol-selfcustody-earned".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(pending.status, "submitted");
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::auth::{AuthPrincipal, PrincipalKind};
 use crate::db::DbPool;
 use crate::error::GatewayError;
 use crate::ledger;
+use crate::solana;
 use crate::state::AppState;
 
 fn require_static(principal: &AuthPrincipal) -> Result<(), GatewayError> {
@@ -115,6 +116,70 @@ pub async fn migrate_share_keys(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteWithdrawalReq {
+    pub request_id: String,
+    pub tx_signature: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWithdrawalsRes {
+    pub withdrawals: Vec<ledger::AccountWithdrawalRecord>,
+}
+
+/// GET /v1/admin/pending-withdrawals - ops queue of withdrawal requests
+/// waiting for a manual treasury payout.
+pub async fn pending_withdrawals(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<PendingWithdrawalsRes>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let withdrawals = ledger::list_pending_withdrawals(pool, 100)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("pending-withdrawals: {}", e)))?;
+    Ok(Json(PendingWithdrawalsRes { withdrawals }))
+}
+
+/// POST /v1/admin/complete-withdrawal - mark a pending withdrawal paid after
+/// ops manually sends the USDC from the treasury. The tx is verified on-chain
+/// (treasury debited exactly gross-minus-fee, destination credited the same,
+/// no other recipients) before the ledger burns the credits.
+pub async fn complete_withdrawal(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Json(req): Json<CompleteWithdrawalReq>,
+) -> Result<Json<ledger::AccountWithdrawalRecord>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let pending = ledger::get_withdrawal_by_request(pool, &req.request_id)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("complete-withdrawal: {}", e)))?
+        .filter(|w| w.status == "pending")
+        .ok_or_else(|| GatewayError::BadRequest("no pending withdrawal for request id".into()))?;
+    let verified = solana::verify_treasury_payout(
+        &state.config.solana,
+        &req.tx_signature,
+        &pending.destination_address,
+        pending.amount_usdc_cents,
+    )
+    .await
+    .map_err(|e| GatewayError::BadRequest(format!("payout verification failed: {e}")))?;
+    let record = ledger::complete_account_withdrawal_from_treasury(
+        pool,
+        &req.request_id,
+        &verified.tx_signature,
+    )
+    .map_err(|e| GatewayError::Other(anyhow::anyhow!("complete-withdrawal: {}", e)))?;
+    tracing::info!(
+        request_id = %req.request_id,
+        tx = %verified.tx_signature,
+        gross_cents = verified.gross_amount_usdc_cents,
+        "admin completed treasury payout"
+    );
+    Ok(Json(record))
+}
+
 /// POST /v1/admin/refund-expired-share-keys — refund any expired, still-open
 /// funded share keys back to their original funders.
 pub async fn refund_expired_share_keys(
@@ -163,6 +228,7 @@ mod tests {
     use crate::config::Config;
     use crate::db::open_in_memory;
     use crate::ledger;
+use crate::solana;
     use crate::model_metrics::ModelMetricsTracker;
     use crate::registry::Registry;
     use crate::relay_client::RelayHandle;
