@@ -41,10 +41,13 @@ const METER_FLUSH_SECONDS: u64 = 60;
 /// Per-(pin, consumer, day) byte counters. Drained into the usage batcher
 /// once a minute; a crash between flushes loses at most a minute of
 /// metering (counts, never prompts - the privacy boundary holds).
+/// (pin_id, consumer_device_id, day) -> (bytes_in, bytes_out).
+type MeterKey = (String, String, String);
+type MeterMap = HashMap<MeterKey, (i64, i64)>;
+
 #[derive(Default)]
 pub struct ExitMeter {
-    /// (pin_id, consumer_device_id, day) -> (bytes_in, bytes_out).
-    inner: PlMutex<HashMap<(String, String, String), (i64, i64)>>,
+    inner: PlMutex<MeterMap>,
 }
 
 impl ExitMeter {
@@ -60,7 +63,7 @@ impl ExitMeter {
     /// Append one UsageRecord per accumulator and reset. Best-effort: a
     /// failed append keeps the counts for the next drain.
     fn drain_into(&self, usage: &UsageBatcher) {
-        let records: Vec<((String, String, String), (i64, i64))> = {
+        let records: Vec<(MeterKey, (i64, i64))> = {
             let mut map = self.inner.lock();
             map.drain().collect()
         };
