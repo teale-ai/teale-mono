@@ -478,7 +478,10 @@ public final class PINExitClient: @unchecked Sendable {
             await inFlight.value
             return
         }
-        let task = Task { [weak self] in await self?.redial() }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.redial()
+        }
         redialInFlight = task
         redialStateLock.unlock()
         await task.value
