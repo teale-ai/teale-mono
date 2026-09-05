@@ -284,6 +284,11 @@ pub struct AccountApiKeyRevokeResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub app_version: String,
+    /// Live relay-registration state of this node's earning path. The
+    /// desktop/remote wallet views key relayConnected off this - fleet boxes
+    /// run with the Swift WAN stack disabled, so the Swift-side relay status
+    /// is always dark there.
+    pub relay_connected: bool,
     pub service_state: String,
     pub state_reason: Option<String>,
     pub device: DeviceSnapshot,
@@ -632,6 +637,7 @@ impl StatusState {
 
         AppSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            relay_connected,
             service_state: service_state.as_str().to_string(),
             state_reason,
             device: DeviceSnapshot {

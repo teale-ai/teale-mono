@@ -388,10 +388,34 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
 
     // MARK: - Wallet
 
+    /// Reads the embedded node's relay state from its local control server
+    /// (GET /v1/app). Nil when the node is not running / unreachable.
+    private func localNodeRelayConnected() async -> Bool? {
+        struct NodeAppSnapshot: Decodable {
+            let relay_connected: Bool?
+        }
+        guard let url = URL(string: "http://127.0.0.1:11437/v1/app") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let snapshot = try? JSONDecoder().decode(NodeAppSnapshot.self, from: data)
+        else { return nil }
+        return snapshot.relay_connected
+    }
+
     func remoteWalletBalance() async -> RemoteWalletSnapshot {
         let deviceID = GatewayIdentity.shared.deviceID
         let wanNodeID = try? AppState.canonicalWANIdentity().nodeID
-        let relayConnected = appState.wanEnabled && appState.wanManager.state.relayStatus == .connected
+        // The earning relay is the embedded Rust node's (its own register/
+        // heartbeat loop). The Swift WANManager is GUI cluster networking and
+        // is off on fleet boxes (teale.wanEnabled=0), so keying the wallet
+        // view off it reports relayConnected:false while the node earns.
+        // Prefer the node's own snapshot; fall back to the Swift WAN status
+        // when the node's control server is unreachable.
+        let nodeRelay = await localNodeRelayConnected()
+        let relayConnected = nodeRelay ?? (appState.wanEnabled && appState.wanManager.state.relayStatus == .connected)
         let localServingReady = appState.engineStatus.isReady || appState.engineStatus.isGenerating
         let identityMismatch = wanNodeID != nil && wanNodeID != deviceID
 
