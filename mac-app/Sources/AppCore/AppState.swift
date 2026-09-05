@@ -123,6 +123,19 @@ public final class AppState {
     public var isWANBusy: Bool = false
     public var wanLastError: String?
 
+    /// Retries fleet-mode WAN enables that failed (relay unreachable at boot,
+    /// transient network). Interactive toggles keep the snap-off behavior.
+    private var fleetWANRetryTask: Task<Void, Never>?
+    private var fleetWANRetryDelay: TimeInterval = 30
+
+    /// Headless fleet-supply daemon marker - persisted by the --fleet-supply
+    /// boot path (InferencePoolApp) so the intent survives the auto-updater's
+    /// bare-binary relaunch.
+    nonisolated static var isFleetSupplyMode: Bool {
+        UserDefaults.standard.bool(forKey: "teale.fleetSupply")
+            || CommandLine.arguments.contains("--fleet-supply")
+    }
+
     // Credits
     public var wallet: USDCWallet
 
@@ -1783,6 +1796,8 @@ public final class AppState {
     }
 
     private func enableWAN() {
+        fleetWANRetryTask?.cancel()
+        fleetWANRetryTask = nil
         let relayURLString = wanRelayURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let relayURL = validatedWANRelayURL(from: relayURLString) else {
             wanLastError = "Enter a valid relay WebSocket URL before enabling WAN."
@@ -1825,6 +1840,7 @@ public final class AppState {
 
                 await MainActor.run {
                     self.isWANBusy = false
+                    self.fleetWANRetryDelay = 30
                     if relayStatus == .connected {
                         if identityResolution.replacedLegacyIdentity,
                            let previousStoredNodeID = identityResolution.previousStoredNodeID {
@@ -1855,14 +1871,47 @@ public final class AppState {
             } catch {
                 let msg = error.localizedDescription
                 guard let self else { return }
+                let fleetMode = Self.isFleetSupplyMode
                 await MainActor.run {
                     self.wanLastError = msg
                     self.isWANBusy = false
-                    self.setWANEnabled(false)
+                    if !fleetMode {
+                        // Interactive toggle: snap off to signal the failure.
+                        // Fleet keeps the intent persisted instead - see
+                        // scheduleFleetWANEnableRetry.
+                        self.setWANEnabled(false)
+                    }
                 }
                 await self.wanManager.disable()
-                await self.applyInferenceBackendSelection()
+                if fleetMode {
+                    await MainActor.run { self.scheduleFleetWANEnableRetry(reason: msg) }
+                } else {
+                    await self.applyInferenceBackendSelection()
+                }
             }
+        }
+    }
+
+    /// Fleet supply must not go silently dark: a failed enableWAN (relay
+    /// unreachable at boot, transient network, identity hiccup) previously
+    /// erased teale.wanEnabled and left the box off the network until a
+    /// human noticed - the failure class behind the Sep 5 64/96 outage.
+    /// In fleet mode keep the intent and retry with backoff (30s doubling
+    /// to a 10m cap, unbounded) while it stays on; an explicit toggle-off
+    /// (toggleWAN -> disableWAN) cancels the retry.
+    private func scheduleFleetWANEnableRetry(reason: String) {
+        fleetWANRetryTask?.cancel()
+        guard wanEnabled else { return }
+        let delay = fleetWANRetryDelay
+        fleetWANRetryDelay = min(fleetWANRetryDelay * 2, 600)
+        Self.wanLog("fleet WAN enable failed (\(reason)); retrying in \(Int(delay))s")
+        fleetWANRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard let self, self.wanEnabled else { return }
+            guard self.wanManager.state.relayStatus != .connected else { return }
+            Self.wanLog("retrying fleet WAN enable...")
+            self.enableWAN()
         }
     }
 
@@ -1962,6 +2011,8 @@ public final class AppState {
     }
 
     private func disableWAN(clearError: Bool = true) {
+        fleetWANRetryTask?.cancel()
+        fleetWANRetryTask = nil
         isWANBusy = false
         if clearError {
             wanLastError = nil
