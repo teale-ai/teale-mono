@@ -64,7 +64,7 @@ private func resolveNet(_ client: TealeClient, _ net: String?) async throws -> S
             throw ValidationError(
                 matches.isEmpty
                     ? "no network matches '\(net)'"
-                    : "'\(net)' is ambiguous; use the full network id")
+                    : "'\(net)' is ambiguous; use the full network id: \(matches.map { "\($0.1) (\($0.0))" }.joined(separator: ", "))")
         }
         return matches[0].0
     }
