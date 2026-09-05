@@ -1238,15 +1238,34 @@ extension RemoteControlBridge: PINControlling {
             throw RemoteControlError.unsupported
         }
         let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
-        guard let pinId = json["pinId"] as? String, !pinId.isEmpty else {
-            throw RemoteControlError.invalidSetting("`pinId` is required")
+        var pinId = json["pinId"] as? String
+        var deviceId = json["deviceId"] as? String
+        if pinId?.isEmpty ?? true {
+            // Bare start: fall back to the persisted route so an operator
+            // can recover a failed route without re-sending its params.
+            // (An explicit stop clears the persisted route, so this only
+            // resumes routes that were never intentionally stopped.)
+            let settings = await service.manager.settings()
+            pinId = settings.exitRoutePinId
+            if deviceId == nil { deviceId = settings.exitRouteDeviceId }
+            Self.pinLog("exit start: no pinId in body, persisted route = \(pinId ?? "none")")
         }
-        let deviceId = json["deviceId"] as? String
+        guard let pinId, !pinId.isEmpty else {
+            Self.pinLog("exit start rejected: no pinId in body and no persisted route")
+            throw RemoteControlError.invalidSetting(
+                "`pinId` is required (no persisted exit route to resume)")
+        }
         let client = await MainActor.run { appState.pinExitClient }
         guard let client else { throw RemoteControlError.unsupported }
-        try await client.start(
-            pinId: pinId, deviceId: deviceId, listenPort: 17890,
-            wanManager: await MainActor.run { appState.wanManager })
+        Self.pinLog("exit start pin=\(pinId) device=\(deviceId ?? "auto")")
+        do {
+            try await client.start(
+                pinId: pinId, deviceId: deviceId, listenPort: 17890,
+                wanManager: await MainActor.run { appState.wanManager })
+        } catch {
+            Self.pinLog("exit start failed: \(error.localizedDescription)")
+            throw error
+        }
         // Persist so the route resumes across restarts.
         _ = await service.manager.updateSettings { settings in
             settings.exitRoutePinId = pinId
@@ -1261,6 +1280,7 @@ extension RemoteControlBridge: PINControlling {
         }
         let client = await MainActor.run { appState.pinExitClient }
         guard let client else { throw RemoteControlError.unsupported }
+        Self.pinLog("exit stop (clears persisted route)")
         await client.stop()
         _ = await service.manager.updateSettings { settings in
             settings.exitRoutePinId = nil
