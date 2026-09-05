@@ -1,0 +1,27 @@
+name: kv-eval
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'HF model id to eval (e.g. mlx-community/Qwen3-0.6B-4bit)'
+        required: false
+        default: 'mlx-community/Qwen3-0.6B-4bit'
+jobs:
+  eval:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: build teale-eval
+        run: cd mac-app && swift build -c release --product teale-eval
+      - name: run eval
+        run: cd mac-app && swift run -c release teale-eval "${{ inputs.model }}"
+      - name: summary
+        run: |
+          cd mac-app
+          echo '## KV-quant eval (kvBits:8 vs baseline, greedy)' >> $GITHUB_STEP_SUMMARY
+          jq -r '"| model | identical | mean tps base | mean tps kv8 | speedup |","|---|---|---|---|---|","| \(.model) | \(.identicalCount)/\(.promptCount) | \(.meanBaselineTPS) | \(.meanQuantizedTPS) | \(.speedupPct)% |"' eval-results.json >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: mac-app/eval-results.json
