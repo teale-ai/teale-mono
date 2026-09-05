@@ -524,7 +524,7 @@ fn translate_stream(response: Response) -> Response {
                                 st.out.push_back(
                                     Event::default()
                                         .event("error")
-                                        .data(String::from_utf8_lossy(payload).into_owned()),
+                                        .data(&String::from_utf8_lossy(payload)),
                                 );
                             } else {
                                 st.handle_chunk(&chunk);
