@@ -829,6 +829,13 @@ public actor RelayClient {
         FileHandle.standardError.write(Data("[WAN] Resuming \(sessions.count) suspended relay session(s)...\n".utf8))
 
         for session in sessions {
+            // The session may have been torn down while suspended (e.g.
+            // WANManager found its Noise keys unrecoverable and closed it);
+            // never re-register a closed connection.
+            if await session.connection.isClosed {
+                FileHandle.standardError.write(Data("[WAN] Skipping resume of closed relay session \(session.sessionID.prefix(8))...\n".utf8))
+                continue
+            }
             do {
                 let payload = RelayMessage.RelaySessionPayload(
                     fromNodeID: config.identity.nodeID,
@@ -840,6 +847,15 @@ public actor RelayClient {
                 // session must already map to THIS connection object or the
                 // peer's idempotent re-ack would recreate and diverge it.
                 relayedConnections[session.sessionID] = session.connection
+                // Drain anything that arrived while the session was
+                // unregistered (relayConnection() does this for fresh
+                // sessions; the direct assignment here used to skip it,
+                // silently losing every message from the race window).
+                if let pending = pendingRelayedData.removeValue(forKey: session.sessionID) {
+                    for packet in pending {
+                        Task { await session.connection.receiveRelayedClusterMessage(packet) }
+                    }
+                }
                 try await send(.relayOpen(payload))
                 FileHandle.standardError.write(Data("[WAN] Resumed relay session \(session.sessionID.prefix(8))... to \(session.remoteNodeID.prefix(16))...\n".utf8))
             } catch {
