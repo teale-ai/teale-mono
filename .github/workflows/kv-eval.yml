@@ -12,16 +12,39 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
       - name: build teale-eval
-        run: cd mac-app && swift build -c release --product teale-eval
-      - name: run eval
-        run: cd mac-app && swift run -c release teale-eval "${{ inputs.model }}"
-      - name: summary
+        # xcodebuild (not plain swift build) so the .metal shaders MLX needs
+        # are compiled into the Cmlx resource bundle.
+        working-directory: mac-app
         run: |
-          cd mac-app
+          xcodebuild \
+            -scheme teale-eval \
+            -configuration Release \
+            -derivedDataPath .build/xcode \
+            -destination 'platform=macOS' \
+            build
+      - name: colocate the metallib
+        # MLX probes for mlx.metallib next to the running binary; resource
+        # bundles are not auto-loaded for a raw CLI, so copy it there.
+        working-directory: mac-app
+        run: |
+          PRODUCTS=.build/xcode/Build/Products/Release
+          METALLIB=$(find "$PRODUCTS" -name '*.metallib' -path '*Cmlx*' | head -1)
+          echo "metallib: $METALLIB"
+          cp "$METALLIB" "$PRODUCTS/mlx.metallib"
+      - name: run eval
+        working-directory: mac-app
+        run: .build/xcode/Build/Products/Release/teale-eval "${{ inputs.model }}"
+      - name: summary
+        if: always()
+        working-directory: mac-app
+        run: |
           echo '## KV-quant eval (kvBits:8 vs baseline, greedy)' >> $GITHUB_STEP_SUMMARY
           jq -r '"| model | identical | mean tps base | mean tps kv8 | speedup |","|---|---|---|---|---|","| \(.model) | \(.identicalCount)/\(.promptCount) | \(.meanBaselineTPS) | \(.meanQuantizedTPS) | \(.speedupPct)% |"' eval-results.json >> $GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: eval-results
           path: mac-app/eval-results.json
