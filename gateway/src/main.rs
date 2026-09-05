@@ -353,6 +353,10 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::admin::complete_withdrawal),
         )
         .route(
+            "/v1/admin/reject-withdrawal",
+            post(handlers::admin::reject_withdrawal),
+        )
+        .route(
             "/v1/admin/refund-expired-share-keys",
             post(handlers::admin::refund_expired_share_keys),
         )

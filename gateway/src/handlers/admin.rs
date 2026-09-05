@@ -180,6 +180,28 @@ pub async fn complete_withdrawal(
     Ok(Json(record))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectWithdrawalReq {
+    pub request_id: String,
+    pub reason: Option<String>,
+}
+
+/// POST /v1/admin/reject-withdrawal - reject a pending withdrawal and refund
+/// the reserved credits in full (e.g. destination failed review).
+pub async fn reject_withdrawal(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Json(req): Json<RejectWithdrawalReq>,
+) -> Result<Json<ledger::AccountWithdrawalRecord>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let record = ledger::reject_account_withdrawal(pool, &req.request_id, req.reason.as_deref())
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("reject-withdrawal: {}", e)))?;
+    tracing::info!(request_id = %req.request_id, "admin rejected withdrawal, reserve refunded");
+    Ok(Json(record))
+}
+
 /// POST /v1/admin/refund-expired-share-keys — refund any expired, still-open
 /// funded share keys back to their original funders.
 pub async fn refund_expired_share_keys(
