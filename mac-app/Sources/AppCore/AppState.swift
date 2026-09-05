@@ -1715,8 +1715,31 @@ public final class AppState {
     /// True when this device currently advertises `model` as servable (engine
     /// or adopted server-truth). Used by PIN chat to short-circuit
     /// self-provision locally instead of Noise-dialing its own endpoints.
+    /// Descriptor of the currently loaded model, if the engine has one.
+    private var loadedModelDescriptor: ModelDescriptor? {
+        switch engineStatus {
+        case .ready(let model), .generating(let model, _):
+            return model
+        default:
+            return nil
+        }
+    }
+
     public func servesModelLocally(_ model: String) -> Bool {
-        advertisedLoadedModels(for: engineStatus).contains(model)
+        // Match against EVERY identifier of the loaded descriptor (canonical
+        // slug, raw GGUF id, HF repo, display name) via the shared
+        // identifier matcher. The PIN path used to exact-match only the
+        // single canonical advertised id, which silently WAN-routed
+        // requests for a locally loaded model under any of its other
+        // aliases (e.g. the raw "gguf-…" id).
+        guard let descriptor = loadedModelDescriptor else { return false }
+        return descriptor.matchesIdentifier(model)
+    }
+
+    /// One-line routing context for [PINLocal] decision logs.
+    public func servingDecisionContext() -> String {
+        guard let descriptor = loadedModelDescriptor else { return "engine: no model loaded" }
+        return "engine: loaded \(descriptor.id) identifiers=\(descriptor.identifiers.joined(separator: "|"))"
     }
 
     /// Stream a completion from this device's own serving provider (the same
