@@ -11,6 +11,7 @@ use crate::auth::{AuthPrincipal, PrincipalKind};
 use crate::db::DbPool;
 use crate::error::GatewayError;
 use crate::ledger;
+use crate::solana;
 use crate::state::AppState;
 
 fn require_static(principal: &AuthPrincipal) -> Result<(), GatewayError> {
@@ -113,6 +114,92 @@ pub async fn migrate_share_keys(
         total_debited_credits: report.total_debited_credits,
         total_shrunk_credits: report.total_shrunk_credits,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteWithdrawalReq {
+    pub request_id: String,
+    pub tx_signature: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWithdrawalsRes {
+    pub withdrawals: Vec<ledger::AccountWithdrawalRecord>,
+}
+
+/// GET /v1/admin/pending-withdrawals - ops queue of withdrawal requests
+/// waiting for a manual treasury payout.
+pub async fn pending_withdrawals(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<PendingWithdrawalsRes>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let withdrawals = ledger::list_pending_withdrawals(pool, 100)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("pending-withdrawals: {}", e)))?;
+    Ok(Json(PendingWithdrawalsRes { withdrawals }))
+}
+
+/// POST /v1/admin/complete-withdrawal - mark a pending withdrawal paid after
+/// ops manually sends the USDC from the treasury. The tx is verified on-chain
+/// (treasury debited exactly gross-minus-fee, destination credited the same,
+/// no other recipients) before the ledger burns the credits.
+pub async fn complete_withdrawal(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Json(req): Json<CompleteWithdrawalReq>,
+) -> Result<Json<ledger::AccountWithdrawalRecord>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let pending = ledger::get_withdrawal_by_request(pool, &req.request_id)
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("complete-withdrawal: {}", e)))?
+        .filter(|w| w.status == "pending")
+        .ok_or_else(|| GatewayError::BadRequest("no pending withdrawal for request id".into()))?;
+    let verified = solana::verify_treasury_payout(
+        &state.config.solana,
+        &req.tx_signature,
+        &pending.destination_address,
+        pending.amount_usdc_cents,
+    )
+    .await
+    .map_err(|e| GatewayError::BadRequest(format!("payout verification failed: {e}")))?;
+    let record = ledger::complete_account_withdrawal_from_treasury(
+        pool,
+        &req.request_id,
+        &verified.tx_signature,
+    )
+    .map_err(|e| GatewayError::Other(anyhow::anyhow!("complete-withdrawal: {}", e)))?;
+    tracing::info!(
+        request_id = %req.request_id,
+        tx = %verified.tx_signature,
+        gross_cents = verified.gross_amount_usdc_cents,
+        "admin completed treasury payout"
+    );
+    Ok(Json(record))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectWithdrawalReq {
+    pub request_id: String,
+    pub reason: Option<String>,
+}
+
+/// POST /v1/admin/reject-withdrawal - reject a pending withdrawal and refund
+/// the reserved credits in full (e.g. destination failed review).
+pub async fn reject_withdrawal(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Json(req): Json<RejectWithdrawalReq>,
+) -> Result<Json<ledger::AccountWithdrawalRecord>, GatewayError> {
+    require_static(&principal)?;
+    let pool = require_pool(&state)?;
+    let record = ledger::reject_account_withdrawal(pool, &req.request_id, req.reason.as_deref())
+        .map_err(|e| GatewayError::Other(anyhow::anyhow!("reject-withdrawal: {}", e)))?;
+    tracing::info!(request_id = %req.request_id, "admin rejected withdrawal, reserve refunded");
+    Ok(Json(record))
 }
 
 /// POST /v1/admin/refund-expired-share-keys — refund any expired, still-open

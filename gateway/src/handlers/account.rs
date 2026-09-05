@@ -421,7 +421,8 @@ fn map_onchain_error(err: ledger::AccountOnchainError) -> GatewayError {
         | ledger::AccountOnchainError::SolanaWalletNotEnabled
         | ledger::AccountOnchainError::DepositConflict
         | ledger::AccountOnchainError::WithdrawalConflict
-        | ledger::AccountOnchainError::WithdrawalSignatureConflict => {
+        | ledger::AccountOnchainError::WithdrawalSignatureConflict
+        | ledger::AccountOnchainError::WithdrawalNotPending => {
             GatewayError::Conflict(err.to_string())
         }
         ledger::AccountOnchainError::InsufficientWithdrawable {
