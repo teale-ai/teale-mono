@@ -3,6 +3,9 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub relay: RelayConfig,
+    /// Employee-machine throttling (Windows only today).
+    #[serde(default)]
+    pub power: PowerConfig,
     /// Inference backend: "llama" (default), "mnn", "litert", or "ds4"
     #[serde(default = "default_backend")]
     pub backend: String,
@@ -310,5 +313,53 @@ impl Config {
         }
 
         Ok(config)
+    }
+}
+
+/// Employee-machine supply throttling. Windows-only today: a poller in
+/// `power_win` reads these knobs and drives `NodeRuntimeState.throttle_level`
+/// (0 = paused, 100 = full), which the gateway scheduler already multiplies
+/// into routing scores - a throttled node simply stops being picked.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PowerConfig {
+    /// Pause supply while average CPU usage over the window exceeds the
+    /// threshold. Default on: supply must never degrade the host machine.
+    #[serde(default = "default_pause_on_cpu_busy")]
+    pub pause_on_cpu_busy: bool,
+    #[serde(default = "default_cpu_busy_threshold_pct")]
+    pub cpu_busy_threshold_pct: u32,
+    #[serde(default = "default_cpu_busy_window_secs")]
+    pub cpu_busy_window_secs: u64,
+    /// When true, supply only while the user is idle (no keyboard/mouse
+    /// input for `idle_after_secs`). Off by default; CPU-busy gating is
+    /// the baseline protection.
+    #[serde(default)]
+    pub idle_only: bool,
+    #[serde(default = "default_idle_after_secs")]
+    pub idle_after_secs: u64,
+}
+
+fn default_pause_on_cpu_busy() -> bool {
+    true
+}
+fn default_cpu_busy_threshold_pct() -> u32 {
+    70
+}
+fn default_cpu_busy_window_secs() -> u64 {
+    180
+}
+fn default_idle_after_secs() -> u64 {
+    300
+}
+
+impl Default for PowerConfig {
+    fn default() -> Self {
+        Self {
+            pause_on_cpu_busy: default_pause_on_cpu_busy(),
+            cpu_busy_threshold_pct: default_cpu_busy_threshold_pct(),
+            cpu_busy_window_secs: default_cpu_busy_window_secs(),
+            idle_only: false,
+            idle_after_secs: default_idle_after_secs(),
+        }
     }
 }

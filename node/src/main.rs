@@ -271,6 +271,28 @@ async fn main() -> anyhow::Result<()> {
     let ac_state: Option<Arc<std::sync::atomic::AtomicBool>> = None;
     let _ = &ac_state; // Reserved for supervisor wiring in a follow-up.
 
+    // Employee-machine throttling (#167): CPU-pressure and (optionally)
+    // user-idle gating. Windows only; on other platforms the throttle stays
+    // at the NodeRuntimeState default of 100 (full supply).
+    #[cfg(windows)]
+    let throttle_state = {
+        let flag = Arc::new(std::sync::atomic::AtomicU32::new(100));
+        let p = &config.power;
+        power_win::spawn_throttle_poller(
+            power_win::ThrottleConfig {
+                pause_on_cpu_busy: p.pause_on_cpu_busy,
+                cpu_busy_threshold_pct: p.cpu_busy_threshold_pct,
+                cpu_busy_window_secs: p.cpu_busy_window_secs,
+                idle_only: p.idle_only,
+                idle_after_secs: p.idle_after_secs,
+            },
+            flag.clone(),
+        );
+        Some(flag)
+    };
+    #[cfg(not(windows))]
+    let throttle_state: Option<Arc<std::sync::atomic::AtomicU32>> = None;
+
     let loaded_models = swap_manager_loaded_models_from_registry(&registry, &config);
     let effective_context = initial_context_size;
     let capabilities = build_capabilities(
@@ -335,12 +357,18 @@ async fn main() -> anyhow::Result<()> {
             .await;
     }
 
-    if let Some(ac_state) = ac_state.clone() {
+    if ac_state.is_some() || throttle_state.is_some() {
         let state = state.clone();
         tokio::spawn(async move {
             loop {
-                let current = ac_state.load(Ordering::SeqCst);
-                state.on_ac_power.store(current, Ordering::SeqCst);
+                if let Some(ac) = &ac_state {
+                    state.on_ac_power.store(ac.load(Ordering::SeqCst), Ordering::SeqCst);
+                }
+                if let Some(th) = &throttle_state {
+                    state
+                        .throttle_level
+                        .store(th.load(Ordering::SeqCst), Ordering::SeqCst);
+                }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         });
