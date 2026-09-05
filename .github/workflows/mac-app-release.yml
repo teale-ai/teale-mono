@@ -4,6 +4,12 @@ on:
   push:
     tags: ['mac-v*']
   workflow_dispatch:
+    inputs:
+      artifact_only:
+        description: 'Build signed artifacts and upload as a CI artifact (canary benchmarking) instead of publishing a GitHub release'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-and-release:
@@ -24,6 +30,8 @@ jobs:
           # Use the same YYYY.MM.DD.HHMM format as internal builds, prefixed mac-v.
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${{ github.ref_name }}"
+          elif [ "${{ inputs.artifact_only }}" = "true" ]; then
+            TAG="mac-v$(date -u '+%Y.%m.%d.%H%M')-canary-$(git rev-parse --short=7 HEAD)"
           else
             TAG="mac-v$(date -u '+%Y.%m.%d.%H%M')"
           fi
@@ -92,7 +100,19 @@ jobs:
           shasum -a 256 Teale.zip >> checksums.txt
           shasum -a 256 teale-macos-arm64 >> checksums.txt
 
+      - name: Upload canary artifacts (artifact_only)
+        if: inputs.artifact_only == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.tag }}
+          path: |
+            mac-app/.build/Teale.dmg
+            mac-app/.build/Teale.zip
+            mac-app/.build/teale-macos-arm64
+            mac-app/.build/checksums.txt
+
       - name: Create Release
+        if: inputs.artifact_only != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
