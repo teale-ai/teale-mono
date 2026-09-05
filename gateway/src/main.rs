@@ -203,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
         )
+        .route("/v1/responses", post(handlers::responses::responses))
         .route("/v1/messages", post(handlers::messages::messages))
         .route(
             "/v1/messages/count_tokens",
