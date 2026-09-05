@@ -687,6 +687,20 @@ const MIGRATIONS: &[&str] = &[
     DELETE FROM account_wallets
      WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
     "#,
+    // 022_rename_legacy_dupe_network.sql — one-shot rename of the legacy
+    // case-split dupe network. The account merge (021) left the canonical
+    // account seeing TWO networks named 'teale-internal', which made
+    // `--net teale-internal` ambiguous in the CLI. Fleet-verified Sep 5
+    // 2026: the dupe (join-code gen 7) has zero live machines (active=0,
+    // pending=0 across all five fleet Macs); the canonical network
+    // (380ed740…) carries the real membership (active=4). Guarded: keyed
+    // to the exact dupe pin_id + name, so it is a no-op on any other
+    // database. Non-destructive display-name change only.
+    r#"
+    UPDATE pins SET name = 'teale-internal-legacy'
+     WHERE pin_id = '49251acb-e669-4a1b-808f-994c96aacb07'
+       AND name = 'teale-internal';
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
