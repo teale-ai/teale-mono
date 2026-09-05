@@ -362,7 +362,9 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 if let Some(ac) = &ac_state {
-                    state.on_ac_power.store(ac.load(Ordering::SeqCst), Ordering::SeqCst);
+                    state
+                        .on_ac_power
+                        .store(ac.load(Ordering::SeqCst), Ordering::SeqCst);
                 }
                 if let Some(th) = &throttle_state {
                     state

@@ -20,12 +20,12 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 use windows::Win32::Foundation::FILETIME;
-use windows::Win32::System::SystemInformation::GetTickCount;
-use windows::Win32::System::Threading::GetSystemTimes;
 use windows::Win32::System::Power::{
     GetSystemPowerStatus, SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS,
     ES_SYSTEM_REQUIRED, EXECUTION_STATE, SYSTEM_POWER_STATUS,
 };
+use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::System::Threading::GetSystemTimes;
 
 /// RAII handle — while this value is alive, Windows will not enter sleep
 /// because of user inactivity. Drop it to release the wake-lock (the OS
