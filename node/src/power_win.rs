@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 use windows::Win32::Foundation::FILETIME;
-use windows::Win32::System::SystemInformation::{GetSystemTimes, GetTickCount};
+use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::System::Threading::GetSystemTimes;
 use windows::Win32::System::Power::{
     GetSystemPowerStatus, SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS,
     ES_SYSTEM_REQUIRED, EXECUTION_STATE, SYSTEM_POWER_STATUS,
@@ -163,14 +164,8 @@ fn cpu_tick_snapshot() -> Option<(u64, u64)> {
     let mut user = FILETIME::default();
     // Safety: out-params only; GetSystemTimes writes into the three
     // FILETIMEs and reports failure via the return value.
-    let ok = unsafe {
-        GetSystemTimes(
-            Some(&mut idle as *mut _),
-            Some(&mut kernel as *mut _),
-            Some(&mut user as *mut _),
-        )
-    };
-    if ok.is_err() {
+    let ok = unsafe { GetSystemTimes(&mut idle as *mut _, &mut kernel as *mut _, &mut user as *mut _) };
+    if !ok.as_bool() {
         return None;
     }
     // Kernel time already includes idle time; subtract to get true busy.
@@ -191,7 +186,7 @@ pub fn seconds_since_last_input() -> Option<u64> {
     };
     // Safety: cbSize is set correctly; GetLastInputInfo only writes dwTime.
     let ok = unsafe { GetLastInputInfo(&mut info as *mut _) };
-    if ok.is_err() {
+    if !ok.as_bool() {
         return None;
     }
     // GetTickCount wraps after ~49 days; wrapping_sub keeps deltas sane.
