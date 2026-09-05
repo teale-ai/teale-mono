@@ -164,7 +164,13 @@ fn cpu_tick_snapshot() -> Option<(u64, u64)> {
     let mut user = FILETIME::default();
     // Safety: out-params only; GetSystemTimes writes into the three
     // FILETIMEs and reports failure via the return value.
-    let ok = unsafe { GetSystemTimes(&mut idle as *mut _, &mut kernel as *mut _, &mut user as *mut _) };
+    let ok = unsafe {
+        GetSystemTimes(
+            &mut idle as *mut _,
+            &mut kernel as *mut _,
+            &mut user as *mut _,
+        )
+    };
     if !ok.as_bool() {
         return None;
     }
