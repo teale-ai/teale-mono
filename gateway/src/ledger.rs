@@ -2444,12 +2444,47 @@ fn format_recipient_note(sender_label: &str, memo: Option<&str>) -> String {
     }
 }
 
+
+/// Canonical form for account ids. UUID-shaped ids are uppercased so the
+/// same account can never split across case variants - SQLite TEXT PRIMARY
+/// KEYs compare case-sensitively, and Apple Foundation's uuidString emits
+/// uppercase while other clients may not. Non-UUID ids (`email:{addr}`,
+/// provider ids) pass through unchanged.
+pub fn normalize_account_user_id(value: &str) -> String {
+    let v = value.trim();
+    let is_uuid = v.len() == 36
+        && v.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if is_uuid {
+        v.to_ascii_uppercase()
+    } else {
+        v.to_string()
+    }
+}
+
+/// True when a wallet row already exists for the (normalized) account id.
+pub fn account_wallet_exists(pool: &DbPool, account_user_id: &str) -> anyhow::Result<bool> {
+    let account_user_id = normalize_account_user_id(account_user_id);
+    let conn = pool.lock();
+    let row: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM account_wallets WHERE account_user_id = ?",
+            [&account_user_id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(row.is_some())
+}
+
 pub fn link_device_to_account(
     pool: &DbPool,
     device_id: &str,
     account_user_id: &str,
     metadata: &AccountLinkMetadata,
 ) -> anyhow::Result<()> {
+    let account_user_id = &normalize_account_user_id(account_user_id);
     let mut conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
@@ -6508,6 +6543,33 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn link_normalizes_uuid_case_into_one_account() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "device-a").unwrap();
+        let upper = "270E90AF-1234-5678-9ABC-DEF012345678";
+        let lower = &upper.to_ascii_lowercase();
+        let meta = AccountLinkMetadata::default();
+        link_device_to_account(&pool, "device-a", lower, &meta).unwrap();
+        assert!(account_wallet_exists(&pool, upper).unwrap());
+        assert!(account_wallet_exists(&pool, lower).unwrap());
+        link_device_to_account(&pool, "device-a", upper, &meta).unwrap();
+        let conn = pool.lock();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM account_wallets WHERE account_user_id IN (?, ?)",
+                [upper, lower.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        // email: ids are not UUID-shaped and pass through untouched.
+        assert_eq!(
+            normalize_account_user_id("email:taylor@hou.vc"),
+            "email:taylor@hou.vc"
+        );
+    }
+
     fn link_device_to_account_persists_summary() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "device-a").unwrap();

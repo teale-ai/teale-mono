@@ -120,10 +120,16 @@ pub async fn link_account(
         return Err(GatewayError::BadRequest("accountUserID is required".into()));
     }
 
+    let account_user_id = ledger::normalize_account_user_id(&req.account_user_id);
+    // The welcome bonus is for genuinely new accounts only: linking an
+    // existing wallet (or re-linking after a client-side id change) must
+    // not mint again.
+    let is_new_account =
+        !ledger::account_wallet_exists(pool, &account_user_id).map_err(GatewayError::Other)?;
     ledger::link_device_to_account(
         pool,
         requester_device_id,
-        req.account_user_id.trim(),
+        &account_user_id,
         &AccountLinkMetadata {
             device_name: req.device_name,
             platform: req.platform,
@@ -134,13 +140,15 @@ pub async fn link_account(
         },
     )
     .map_err(GatewayError::Other)?;
-    let _ = ledger::apply_account_join_rewards(
-        pool,
-        requester_device_id,
-        req.account_user_id.trim(),
-        req.referral_code.as_deref(),
-    )
-    .map_err(map_referral_error)?;
+    if is_new_account {
+        let _ = ledger::apply_account_join_rewards(
+            pool,
+            requester_device_id,
+            &account_user_id,
+            req.referral_code.as_deref(),
+        )
+        .map_err(map_referral_error)?;
+    }
 
     let summary = ledger::account_summary_for_device(pool, requester_device_id)
         .map_err(GatewayError::Other)?;
