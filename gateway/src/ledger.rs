@@ -6547,7 +6547,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn link_normalizes_uuid_case_into_one_account() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "device-a").unwrap();
@@ -6578,6 +6577,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn link_device_to_account_persists_summary() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "device-a").unwrap();
