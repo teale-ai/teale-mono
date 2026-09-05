@@ -84,6 +84,14 @@ public final class PINExitClient: @unchecked Sendable {
     /// Watches the provider's exit offer for the lifetime of the listener
     /// (Bug D: offer withdrawn mid-route used to leave us "listening").
     private var offerWatcher: Task<Void, Never>?
+    /// Watches the data path itself (#212): the offer watcher only watches
+    /// the OFFER; a wedged relay session left status "listening" while the
+    /// route passed zero bytes (Sep 5 2026 incident).
+    private var livenessProbe: Task<Void, Never>?
+    /// In-flight redial, so the liveness probe and stream-open failures
+    /// don't dial over each other.
+    private var redialInFlight: Task<Void, Never>?
+    private let redialStateLock = NSLock()
 
     public init(pinService: PINService, selfDeviceId: String) {
         self.pinService = pinService
@@ -186,6 +194,7 @@ public final class PINExitClient: @unchecked Sendable {
             state: "listening", pinId: pinId, viaDevice: viaName,
             host: "127.0.0.1", port: Int(listenPort), error: nil))
         startOfferWatcher(pinId: pinId)
+        startLivenessProbe(pinId: pinId)
     }
 
     public func stop() async {
@@ -197,6 +206,8 @@ public final class PINExitClient: @unchecked Sendable {
     private func stopLocked() async {
         offerWatcher?.cancel()
         offerWatcher = nil
+        livenessProbe?.cancel()
+        livenessProbe = nil
         listener?.cancel()
         listener = nil
         streamsLock.lock()
@@ -373,6 +384,8 @@ public final class PINExitClient: @unchecked Sendable {
     }
 
     private func tearDownWithdrawnRoute(pinId: String) async {
+        livenessProbe?.cancel()
+        livenessProbe = nil
         listener?.cancel()
         listener = nil
         streamsLock.lock()
@@ -398,6 +411,83 @@ public final class PINExitClient: @unchecked Sendable {
         await stateBox.set(Status(
             state: "failed", pinId: pinId, viaDevice: nil, host: nil, port: nil,
             error: "exit provider went offline or withdrew its offer"))
+    }
+
+    /// #212: probe the data path itself every 30s (a socksOpen the exit
+    /// node is expected to REFUSE - an answer, any answer, proves the
+    /// transport relays both ways). On failure, redial once and re-probe.
+    /// A dead path surfaces in status.error instead of sitting "listening"
+    /// with traffic dying silently; a recovered path clears it.
+    private func startLivenessProbe(pinId: String) {
+        livenessProbe?.cancel()
+        livenessProbe = Task { [weak self] in
+            var probing = false
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                if Task.isCancelled { break }
+                guard let self else { break }
+                // Route stopped or torn down by the offer watcher.
+                guard self.hasRoute() else { break }
+                if probing { continue }
+                probing = true
+                await self.probeDataPath(pinId: pinId)
+                probing = false
+            }
+        }
+    }
+
+    private func hasRoute() -> Bool {
+        transportLock.lock()
+        defer { transportLock.unlock() }
+        return route != nil
+    }
+
+    private func probeDataPath(pinId: String) async {
+        var healthy = false
+        if let conn = currentTransport(), await verifyTransport(conn, pinId: pinId) {
+            healthy = true
+        } else {
+            PINExitServer.log("exit client: data-path probe unanswered - redialing")
+            await redialOnce()
+            if let conn = currentTransport(), await verifyTransport(conn, pinId: pinId) {
+                healthy = true
+                PINExitServer.log("exit client: data-path probe passed after redial")
+            }
+        }
+        var s = await stateBox.get()
+        if healthy {
+            if s.error != nil {
+                s.error = nil
+                await stateBox.set(s)
+                PINExitServer.log("exit client: data path healthy again")
+            }
+        } else if s.state == "listening", s.error == nil {
+            s.error = "exit data path unresponsive (probes failing; retrying)"
+            await stateBox.set(s)
+            PINExitServer.log("exit client: data-path probe FAILED after redial - route is wedged, will keep retrying")
+        }
+    }
+
+    /// Redial, coalescing with any redial already in flight (stream opens
+    /// redial on failure too; two concurrent dials would race the peer
+    /// table).
+    private func redialOnce() async {
+        redialStateLock.lock()
+        if let inFlight = redialInFlight {
+            redialStateLock.unlock()
+            await inFlight.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.redial()
+        }
+        redialInFlight = task
+        redialStateLock.unlock()
+        await task.value
+        redialStateLock.lock()
+        redialInFlight = nil
+        redialStateLock.unlock()
     }
 
     // MARK: - SOCKS5
@@ -515,7 +605,7 @@ public final class PINExitClient: @unchecked Sendable {
         var lastError: Error = ExitError.openFailed("no route to exit node")
         for attempt in 1...2 {
             guard let transport = currentTransport() else {
-                if attempt < 2 { await redial(); continue }
+                if attempt < 2 { await redialOnce(); continue }
                 throw lastError
             }
             do {
@@ -526,7 +616,7 @@ public final class PINExitClient: @unchecked Sendable {
             } catch {
                 lastError = error
                 PINExitServer.log("exit client: open attempt \(attempt) failed: \(error.localizedDescription)")
-                if attempt < 2 { await redial() }
+                if attempt < 2 { await redialOnce() }
             }
         }
         throw lastError
