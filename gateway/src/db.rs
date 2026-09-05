@@ -614,6 +614,20 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE pin_members ADD COLUMN offers_exit INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 020_taylor_email_change.sql — one-shot account email change (the
+    // founder's explicit request, Sep 5 2026): taylor@hou.vc ->
+    // taylor@teale.com. account_user_id (the PK/FK everywhere) is untouched,
+    // so sessions, devices, balances, and history all carry over; logging in
+    // with the new email resolves the same account via the wallet lookup.
+    // Guarded: no-op if a teale.com wallet row already exists (e.g. he
+    // signed up fresh first) — that case needs a manual merge instead.
+    r#"
+    UPDATE account_wallets
+       SET email = 'taylor@teale.com',
+           updated_at = CAST(strftime('%s','now') AS INTEGER)
+     WHERE email = 'taylor@hou.vc'
+       AND NOT EXISTS (SELECT 1 FROM account_wallets WHERE email = 'taylor@teale.com');
+    "#,
 ];
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
