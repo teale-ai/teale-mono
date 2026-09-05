@@ -74,6 +74,15 @@ jobs:
         run: |
           codesign --verify --deep --strict --verbose=2 .build/Teale.app
 
+      - name: Package dSYM
+        run: |
+          DSYM=.build/xcode/Build/Products/Release/Teale.dSYM
+          if [ -d "$DSYM" ]; then
+            ditto -c -k --keepParent "$DSYM" .build/Teale.dSYM.zip
+          else
+            echo "WARNING: dSYM not found at $DSYM"
+          fi
+
       - name: Build and sign DMG
         env:
           SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
@@ -99,6 +108,7 @@ jobs:
           shasum -a 256 Teale.dmg > checksums.txt
           shasum -a 256 Teale.zip >> checksums.txt
           shasum -a 256 teale-macos-arm64 >> checksums.txt
+          shasum -a 256 Teale.app/Contents/MacOS/Teale >> checksums.txt
 
       - name: Upload canary artifacts (artifact_only)
         if: inputs.artifact_only == true
@@ -109,6 +119,7 @@ jobs:
             mac-app/.build/Teale.dmg
             mac-app/.build/Teale.zip
             mac-app/.build/teale-macos-arm64
+            mac-app/.build/Teale.dSYM.zip
             mac-app/.build/checksums.txt
 
       - name: Create Release
@@ -162,4 +173,5 @@ jobs:
             .build/Teale.dmg \
             .build/Teale.zip \
             .build/teale-macos-arm64 \
+            .build/Teale.dSYM.zip \
             .build/checksums.txt
