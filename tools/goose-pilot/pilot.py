@@ -148,6 +148,9 @@ def report(r, expect_tool):
     print("[%s] %-22s ttfb=%.2fs total=%.2fs chunks=%d max_gap=%.2fs finish=%s %s %s" % (
         status, r.name, r.ttfb or -1, r.total or -1, r.chunks, r.max_gap,
         r.finish, shape, ("lane_exhausted=" + r.lane_header) if r.lane_header else ""))
+    if r.text:
+        snippet = r.text.replace("\n", " ")[:220]
+        print("    text: %s%s" % (snippet, "..." if len(r.text) > 220 else ""))
     if r.error:
         print("    error:", r.error)
     return status == "OK"
@@ -183,10 +186,19 @@ def main():
     else:
         print("[SKIP] t2-tool-answer (no t1 call)")
 
-    # Turn 3: second tool call type
+    # Turn 3: second tool call type (streamed). Retry on tool loss to gauge
+    # determinism, then a non-streaming control of the same messages: if the
+    # control also loses the call, the loss is upstream of SSE (template /
+    # model / parser); if the control works, suspect the streaming path.
     msgs.append({"role": "user", "content": "Add 37 and 5."})
     t3 = sse_turn("t3-tool-call-2", msgs, stream=True, tools=TOOLS)
     ok &= report(t3, expect_tool=True)
+    if t3.tool_loss:
+        for attempt in (2, 3):
+            t3r = sse_turn("t3-retry-%d" % attempt, msgs, stream=True, tools=TOOLS)
+            report(t3r, expect_tool=True)
+        t3c = sse_turn("t3-nonstream-ctl", msgs, stream=False, tools=TOOLS)
+        report(t3c, expect_tool=True)
 
     # Turn 4: result -> final streamed text
     if t3.tool_calls:
