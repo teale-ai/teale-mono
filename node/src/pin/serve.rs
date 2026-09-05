@@ -239,6 +239,8 @@ async fn handle_request<B: CompletionBackend>(
                     model_id: requested_model,
                     tokens_in,
                     tokens_out,
+                    bytes_in: None,
+                    bytes_out: None,
                 })
                 .unwrap_or(false);
             if should_flush {

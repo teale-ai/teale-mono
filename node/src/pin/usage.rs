@@ -250,6 +250,8 @@ mod tests {
             model_id: "qwen3-4b".into(),
             tokens_in: 100,
             tokens_out,
+            bytes_in: None,
+            bytes_out: None,
         }
     }
 
