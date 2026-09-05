@@ -980,6 +980,32 @@ pub async fn treasury_usdc_balance_micro(config: &SolanaConfig) -> Result<i64, S
     Ok(total)
 }
 
+/// Native SOL balance of the treasury address, in lamports.
+pub async fn treasury_sol_balance_lamports(config: &SolanaConfig) -> Result<i64, String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(config.request_timeout_seconds))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getBalance",
+        "params": [config.treasury_address]
+    });
+    let resp: Value = client
+        .post(config.rpc_url.as_str())
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    resp["result"]["value"]
+        .as_i64()
+        .ok_or_else(|| format!("getBalance: unexpected response: {resp}"))
+}
+
 pub struct VerifiedMemoAnchor {
     pub tx_signature: String,
     pub memo: String,
