@@ -238,6 +238,7 @@ public actor MLXProvider: InferenceProvider {
 
         // Prepare input and generate
         let userInput = UserInput(messages: messages, tools: mlxToolSpecs(from: request.tools))
+        var sawToolCall = false
         do {
             let lmInput = try await container.prepare(input: userInput)
             let promptTokens: [Int] = lmInput.text.tokens.asArray(Int.self)
@@ -282,24 +283,33 @@ public actor MLXProvider: InferenceProvider {
             }
 
             var completionInfo: GenerateCompletionInfo? = nil
-            var toolCallReturned = false
+            var toolCallIndex = 0
             var hitMaxTokens = false
 
             generationLoop: for await generation in stream {
                 if Task.isCancelled { break }
                 switch generation {
                 case .chunk(let text):
+                    // Text trailing a tool call is not part of the OpenAI
+                    // tool_calls response shape - swallow it so clients see
+                    // a clean finish.
+                    if sawToolCall { continue }
                     tokenCount += 1
                     continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
                     if tokenCount >= maxTokens { hitMaxTokens = true; break generationLoop }
                 case .info(let info):
                     completionInfo = info
                 case .toolCall(let toolCall):
-                    continuation.yield(makeToolCallChunk(id: chatId, model: modelName, toolCall: toolCall))
-                    continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "tool_calls"))
-                    continuation.finish()
-                    toolCallReturned = true
-                    break generationLoop
+                    continuation.yield(makeToolCallChunk(id: chatId, model: modelName, toolCall: toolCall, index: toolCallIndex))
+                    toolCallIndex += 1
+                    sawToolCall = true
+                    // Do NOT break here: mlx-swift-lm emits .info right
+                    // after the tool-call events (Evaluate.swift:
+                    // onGenerationEnd -> infoEvent), and .info carries
+                    // generationTokenCount, which the cache retention below
+                    // needs. Breaking on .toolCall used to drop the KV cache
+                    // after EVERY tool call, forcing a full re-prefill of
+                    // the conversation on the next turn of an agentic loop.
                 }
             }
 
@@ -328,10 +338,6 @@ public actor MLXProvider: InferenceProvider {
                 dropReusableCache()
             }
 
-            if toolCallReturned {
-                _status = .ready(descriptor)
-                return
-            }
         } catch {
             dropReusableCache()
             throw InferenceError.generationFailed(describeMLXError(error))
@@ -339,7 +345,7 @@ public actor MLXProvider: InferenceProvider {
 
         // Final chunk
         if !Task.isCancelled {
-            continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: "stop"))
+            continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: nil, finishReason: sawToolCall ? "tool_calls" : "stop"))
         }
         continuation.finish()
         _status = .ready(descriptor)
@@ -361,7 +367,7 @@ public actor MLXProvider: InferenceProvider {
         )
     }
 
-    private func makeToolCallChunk(id: String, model: String, toolCall: MLXLMCommon.ToolCall) -> ChatCompletionChunk {
+    private func makeToolCallChunk(id: String, model: String, toolCall: MLXLMCommon.ToolCall, index: Int = 0) -> ChatCompletionChunk {
         let args = toolCall.function.arguments.mapValues { $0.anyValue }
         let argsData = try? JSONSerialization.data(withJSONObject: args)
         let argsString = argsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -377,7 +383,7 @@ public actor MLXProvider: InferenceProvider {
                         content: nil,
                         toolCalls: [
                             SharedTypes.ToolCall(
-                                index: 0,
+                                index: index,
                                 id: "call_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))",
                                 type: "function",
                                 function: .init(name: toolCall.function.name, arguments: argsString)
