@@ -24,7 +24,18 @@ public actor MLXProvider: InferenceProvider {
     private var reusableTokens: [Int] = []
 
     /// Don't retain the cache for prompts beyond this size (idle memory).
-    private static let maxReusableTokens = 32768
+    /// Scales with physical RAM: the retained KV is a live allocation, so
+    /// big-RAM nodes can afford to keep long agentic sessions warm instead
+    /// of paying a full re-prefill every turn. 32k-token floor (unchanged
+    /// behavior for <=16GB machines), +2048 tokens per GB above 16GB,
+    /// capped at 256k (matches the largest context we advertise). A
+    /// 30B-class 4-bit model's KV runs ~100KB/token, so the 128GB tier
+    /// retains at most ~25GB - large but proportionate, and reuse is
+    /// exact-prefix-only so output is bit-identical either way.
+    private static var maxReusableTokens: Int {
+        let ramGB = Int(ProcessInfo.processInfo.physicalMemory / (1 << 30))
+        return min(262_144, max(32_768, 32_768 + max(0, ramGB - 16) * 2_048))
+    }
 
     /// Prompt tokens evaluated per prefill step. mlx-swift-lm defaults to
     /// 512; 2048 cuts kernel-launch/eval round-trips ~4x on long prompts
