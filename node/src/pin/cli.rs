@@ -89,7 +89,6 @@ pub struct LocalApi {
     json: bool,
 }
 
-
 /// Bearer key for the local API when it runs in authenticated mode (the Mac
 /// app requires one while "Allow Network Access" is on). Resolution order:
 /// TEALE_LOCAL_API_KEY env, then the app's api_keys.json (first active key).
@@ -101,10 +100,14 @@ fn local_api_key() -> Option<String> {
         }
     }
     let candidates: Vec<std::path::PathBuf> = [
-        std::env::var_os("HOME")
-            .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/Teale/api_keys.json")),
-        std::env::var_os("APPDATA")
-            .map(|h| std::path::PathBuf::from(h).join("Teale").join("api_keys.json")),
+        std::env::var_os("HOME").map(|h| {
+            std::path::PathBuf::from(h).join("Library/Application Support/Teale/api_keys.json")
+        }),
+        std::env::var_os("APPDATA").map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Teale")
+                .join("api_keys.json")
+        }),
     ]
     .into_iter()
     .flatten()
@@ -353,11 +356,7 @@ pub async fn run(command: PinCommand, control_port: u16, json: bool) -> Result<(
                 .filter(|c| *c != '-')
                 .map(|c| c.to_ascii_uppercase())
                 .collect();
-            if normalized.len() != 10
-                || !normalized
-                    .bytes()
-                    .all(|b| JOIN_ALPHABET.contains(&b))
-            {
+            if normalized.len() != 10 || !normalized.bytes().all(|b| JOIN_ALPHABET.contains(&b)) {
                 bail!(
                     "'{code}' is not a join PIN (expected XXXX-XXXX-XX). \
                      If that's a network id, ask the network admin for the current join PIN."
