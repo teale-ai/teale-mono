@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use parking_lot::Mutex;
+use parking_lot::Mutex as PlMutex;
+use tokio::sync::Mutex;
 use teale_protocol::cluster::{
     SocksClosePayload, SocksDataPayload, SocksOpenPayload, SocksOpenResultPayload,
 };
@@ -43,7 +44,7 @@ const METER_FLUSH_SECONDS: u64 = 60;
 #[derive(Default)]
 pub struct ExitMeter {
     /// (pin_id, consumer_device_id, day) -> (bytes_in, bytes_out).
-    inner: Mutex<HashMap<(String, String, String), (i64, i64)>>,
+    inner: PlMutex<HashMap<(String, String, String), (i64, i64)>>,
 }
 
 impl ExitMeter {
@@ -142,7 +143,7 @@ impl ExitProvider {
         {
             Ok(Ok(stream)) => {
                 let (mut reader, writer) = stream.into_split();
-                self.streams.lock().insert(
+                self.streams.lock().await.insert(
                     stream_id.clone(),
                     EgressStream {
                         writer,
@@ -178,14 +179,14 @@ impl ExitProvider {
                                         break;
                                     }
                                 }
-                                if let Some(s) = provider.streams.lock().get_mut(&sid) {
+                                if let Some(s) = provider.streams.lock().await.get_mut(&sid) {
                                     s.last_activity = Instant::now();
                                 }
                             }
                             Err(_) => break,
                         }
                     }
-                    provider.streams.lock().remove(&sid);
+                    provider.streams.lock().await.remove(&sid);
                     let _ = conn
                         .send(&ClusterMessage::SocksClose(SocksClosePayload {
                             stream_id: sid,
@@ -220,7 +221,7 @@ impl ExitProvider {
             Ok(b) => b,
             Err(_) => return,
         };
-        let mut streams = self.streams.lock();
+        let mut streams = self.streams.lock().await;
         if let Some(stream) = streams.get_mut(&data.stream_id) {
             if stream.writer.write_all(&bytes).await.is_ok() {
                 stream.last_activity = Instant::now();
@@ -235,7 +236,7 @@ impl ExitProvider {
     }
 
     pub async fn handle_close(&self, close: SocksClosePayload) {
-        if let Some(mut stream) = self.streams.lock().remove(&close.stream_id) {
+        if let Some(mut stream) = self.streams.lock().await.remove(&close.stream_id) {
             let _ = stream.writer.shutdown().await;
         }
     }
