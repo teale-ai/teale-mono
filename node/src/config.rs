@@ -38,6 +38,12 @@ pub struct PinConfig {
     /// UDP port for the PIN data plane. 0 = ephemeral.
     #[serde(default)]
     pub port: u16,
+    /// Offer this device as an exit node for every PIN it is an active
+    /// member of: fellow members may route SOCKS5-over-Noise byte streams
+    /// out through this machine. Device-sovereign, default off. Bytes are
+    /// metered per consumer for exit-bandwidth settlement (#171).
+    #[serde(default)]
+    pub offer_exit: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]

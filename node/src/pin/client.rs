@@ -376,6 +376,7 @@ mod tests {
             Arc::new(FakeBackend),
             PriorityGate::new(Arc::new(Semaphore::new(2))),
             usage,
+            None,
         );
 
         let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
