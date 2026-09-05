@@ -2136,6 +2136,40 @@ pub fn mint_pool_snapshot(pool: &DbPool) -> anyhow::Result<MintPoolSnapshot> {
         total_minted,
         remaining,
     })
+
+pub struct SolvencyLiabilities {
+    /// Credits held by devices (supplier earnings not yet swept to accounts),
+    /// excluding the internal `__ops__` sentinel.
+    pub device_credits: i64,
+    /// Credits held in account wallets.
+    pub account_credits: i64,
+    /// USDC cents reserved by pending withdrawal requests (already debited
+    /// from account balances, not yet paid out).
+    pub pending_withdrawal_usdc_cents: i64,
+}
+
+pub fn solvency_liabilities(pool: &DbPool) -> anyhow::Result<SolvencyLiabilities> {
+    let conn = pool.lock();
+    let device_credits: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(balance), 0) FROM balances WHERE device_id != '__ops__'",
+        [],
+        |r| r.get(0),
+    )?;
+    let account_credits: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(balance_credits), 0) FROM account_wallets",
+        [],
+        |r| r.get(0),
+    )?;
+    let pending_withdrawal_usdc_cents: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount_usdc_cents), 0) FROM account_withdrawals WHERE status = 'pending'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(SolvencyLiabilities {
+        device_credits,
+        account_credits,
+        pending_withdrawal_usdc_cents,
+    })
 }
 
 pub fn network_ledger_totals(pool: &DbPool) -> anyhow::Result<NetworkLedgerTotals> {

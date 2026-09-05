@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::SolanaConfig;
@@ -818,6 +818,51 @@ pub async fn verify_treasury_deposit(
         memo: expected_memo.to_string(),
         fee_payer,
     })
+}
+
+/// Current USDC balance of the treasury, in micro-USDC (1e-6), straight
+/// from the chain. Returns 0 when the treasury token account does not exist
+/// yet (never funded).
+pub async fn treasury_usdc_balance_micro(config: &SolanaConfig) -> Result<i64, String> {
+    #[derive(Serialize)]
+    struct RpcReq<'a> {
+        jsonrpc: &'a str,
+        id: u32,
+        method: &'a str,
+        params: Value,
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(config.request_timeout_seconds))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let req = RpcReq {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTokenAccountsByOwner",
+        params: serde_json::json!([
+            config.treasury_address,
+            { "mint": config.usdc_mint },
+            { "encoding": "jsonParsed" }
+        ]),
+    };
+    let resp: Value = client
+        .post(config.rpc_url.as_str())
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let accounts = resp["result"]["value"].as_array().cloned().unwrap_or_default();
+    let mut total: i64 = 0;
+    for account in accounts {
+        let amount = &account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"];
+        if let Some(raw) = amount.as_str() {
+            total += raw.parse::<i64>().map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(total)
 }
 
 pub struct VerifiedMemoAnchor {
