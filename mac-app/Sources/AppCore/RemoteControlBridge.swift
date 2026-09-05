@@ -842,7 +842,7 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     func desktop_request_withdrawal(_ request: DesktopCompanionWithdrawalRequest) async throws -> DesktopCompanionWithdrawalRecord {
         let record: DesktopCompanionWithdrawalRecord = try await desktopGatewayJSON(
             method: "POST",
-            path: "/v1/account/withdraw",
+            path: "/v1/account/wallet/withdraw",
             body: request
         )
         await refreshDesktopWalletSnapshotIfNeeded(force: true)
@@ -850,7 +850,7 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     }
 
     func desktop_account_withdrawals() async throws -> DesktopCompanionWithdrawalsResponse {
-        try await desktopGatewayJSON(method: "GET", path: "/v1/account/withdrawals")
+        try await desktopGatewayJSON(method: "GET", path: "/v1/account/wallet/withdrawals")
     }
 
     func desktop_deposit_info() async throws -> DesktopCompanionDepositInfo {
