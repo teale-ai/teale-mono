@@ -29,11 +29,15 @@ public final class PINExitClient: @unchecked Sendable {
         case noExitProviders(String)
         case dialFailed(String)
         case openFailed(String)
+        /// The exit node answered the open with a refusal - distinct from a
+        /// timeout because an answer proves the transport path is alive.
+        case openRefused(String)
         public var description: String {
             switch self {
             case .noExitProviders(let m): return m
             case .dialFailed(let m): return m
             case .openFailed(let m): return m
+            case .openRefused(let m): return m
             }
         }
     }
@@ -77,6 +81,9 @@ public final class PINExitClient: @unchecked Sendable {
     private let streamsLock = NSLock()
     /// Serialized start/stop.
     private let lifecycleLock = NSLock()
+    /// Watches the provider's exit offer for the lifetime of the listener
+    /// (Bug D: offer withdrawn mid-route used to leave us "listening").
+    private var offerWatcher: Task<Void, Never>?
 
     public init(pinService: PINService, selfDeviceId: String) {
         self.pinService = pinService
@@ -97,13 +104,20 @@ public final class PINExitClient: @unchecked Sendable {
         defer { lifecycleLock.unlock() }
         await stopLocked()
 
-        let candidates = await pinService.manager.exitMembers(
-            pinId: pinId, excludingDeviceId: selfDeviceId)
-        let member: PinNetmapMember?
-        if let deviceId {
-            member = candidates.first { $0.deviceId == deviceId }
-        } else {
-            member = candidates.first
+        // The consumer-side netmap cache can lag the provider's offer by a
+        // sync round (phantom "no exit providers" on the first attempt) -
+        // poll a few times before declaring the network empty.
+        var member: PinNetmapMember?
+        for attempt in 1...4 {
+            let candidates = await pinService.manager.exitMembers(
+                pinId: pinId, excludingDeviceId: selfDeviceId)
+            if let deviceId {
+                member = candidates.first { $0.deviceId == deviceId }
+            } else {
+                member = candidates.first
+            }
+            if member != nil { break }
+            if attempt < 4 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
         }
         guard let member else {
             await stateBox.set(Status(
@@ -117,7 +131,7 @@ public final class PINExitClient: @unchecked Sendable {
         PINExitServer.log("exit client: dialing \(viaName) for pin \(pinId.prefix(8))...")
 
         do {
-            let (conn, owned) = try await dial(member: member, wanManager: wanManager)
+            let (conn, owned) = try await dial(member: member, pinId: pinId, wanManager: wanManager)
             transportLock.lock()
             transport = conn
             ownsTransport = owned
@@ -171,6 +185,7 @@ public final class PINExitClient: @unchecked Sendable {
         await stateBox.set(Status(
             state: "listening", pinId: pinId, viaDevice: viaName,
             host: "127.0.0.1", port: Int(listenPort), error: nil))
+        startOfferWatcher(pinId: pinId)
     }
 
     public func stop() async {
@@ -180,6 +195,8 @@ public final class PINExitClient: @unchecked Sendable {
     }
 
     private func stopLocked() async {
+        offerWatcher?.cancel()
+        offerWatcher = nil
         listener?.cancel()
         listener = nil
         streamsLock.lock()
@@ -206,64 +223,181 @@ public final class PINExitClient: @unchecked Sendable {
     /// is usually unavailable); the manual ladder covers relay-independent
     /// LAN/offline PINs.
     private func dial(
-        member: PinNetmapMember, wanManager: WANManager
+        member: PinNetmapMember, pinId: String, wanManager: WANManager
     ) async throws -> (WANTransportConnection, Bool) {
         if let existing = await wanManager.connectedPeers(byNodeID: member.nodePubkey) {
-            if await existing.isLive {
+            // A peer-table entry (or even a completed handshake) is not
+            // proof the data path works: duplicate tailscaled identities
+            // can answer the handshake on a stale IP while return packets
+            // leave via the other instance (Bug C). Verify with a probe.
+            if await existing.isLive, await verifyTransport(existing, pinId: pinId) {
                 PINExitServer.log("exit client: reusing WAN connection to \(member.nodePubkey.prefix(12))")
                 return (existing, false)
             }
-            // Stale peer-table entry: the relay session died but WANManager
-            // has not pruned it yet. Reusing it sends socksOpen into the
-            // void - evict and fall through to a fresh dial.
+            // Stale or asymmetric peer-table entry: reusing it sends
+            // socksOpen into the void - evict and fall through to a fresh
+            // dial.
             PINExitServer.log("exit client: cached WAN connection to \(member.nodePubkey.prefix(12)) is dead, redialing")
             await wanManager.disconnectPeer(member.nodePubkey)
         }
         // WANManager connect (discovery-based: direct attempt, relay fallback).
         let connectTask = Task { try? await wanManager.connectToPeer(nodeID: member.nodePubkey) }
-        for _ in 0..<90 {
+        wanPoll: for _ in 0..<90 {
             if let connected = await wanManager.connectedPeers(byNodeID: member.nodePubkey) {
                 connectTask.cancel()
-                PINExitServer.log("exit client: WANManager connected to \(member.nodePubkey.prefix(12))")
-                return (connected, false)
+                if await verifyTransport(connected, pinId: pinId) {
+                    PINExitServer.log("exit client: WANManager connected to \(member.nodePubkey.prefix(12))")
+                    return (connected, false)
+                }
+                PINExitServer.log("exit client: WANManager path failed probe, falling back to manual ladder")
+                await wanManager.disconnectPeer(member.nodePubkey)
+                break wanPoll
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         connectTask.cancel()
 
         // Manual ladder: lan, then reflexive (relay endpoints need the
-        // discovery path above, which already failed).
+        // discovery path above, which already failed). ALL endpoints are
+        // raced concurrently and only a VERIFIED connection wins: a stale
+        // duplicate tailscaled identity can answer the Noise handshake yet
+        // blackhole the return path, so "handshake done" must not win.
         guard let wgKeyData = Data(hexString: member.wgPubkey),
             let wgKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: wgKeyData)
         else { throw ExitError.dialFailed("exit node has no usable key") }
         let identity = try AppState.canonicalWANIdentity()
-        let ordered = member.endpoints.filter { $0.kind == "lan" }
-            + member.endpoints.filter { $0.kind == "reflexive" }
-        for endpoint in ordered {
-            let parts = endpoint.addr.split(separator: ":")
-            guard parts.count == 2, let port = UInt16(parts[1]) else { continue }
-            let dialed = WireGuardTransport.connect(
-                to: String(parts[0]), port: port,
-                remoteNodeID: member.nodePubkey,
-                remoteWGPublicKey: wgKey,
-                localIdentity: identity)
-            PINExitServer.log("exit client: dialing \(endpoint.addr)")
-            let startTask = Task { await dialed.start() }
-            poll: for _ in 0..<48 {  // 12s per endpoint
-                switch await dialed.connectionState {
-                case .connected:
+        var seen = Set<String>()
+        let ordered = (member.endpoints.filter { $0.kind == "lan" }
+            + member.endpoints.filter { $0.kind == "reflexive" })
+            .filter { seen.insert($0.addr).inserted }
+        let winner: WireGuardPeerConnection? = await withTaskGroup(
+            of: WireGuardPeerConnection?.self
+        ) { group in
+            for endpoint in ordered {
+                let parts = endpoint.addr.split(separator: ":")
+                guard parts.count == 2, let port = UInt16(parts[1]) else { continue }
+                let host = String(parts[0])
+                group.addTask {
+                    let dialed = WireGuardTransport.connect(
+                        to: host, port: port,
+                        remoteNodeID: member.nodePubkey,
+                        remoteWGPublicKey: wgKey,
+                        localIdentity: identity)
+                    PINExitServer.log("exit client: dialing \(endpoint.addr)")
+                    let startTask = Task { await dialed.start() }
+                    poll: for _ in 0..<48 {  // 12s handshake budget
+                        if Task.isCancelled { break poll }
+                        switch await dialed.connectionState {
+                        case .connected:
+                            startTask.cancel()
+                            if await self.verifyTransport(dialed, pinId: pinId) {
+                                return dialed
+                            }
+                            break poll
+                        case .failed, .disconnected:
+                            break poll
+                        default:
+                            try? await Task.sleep(nanoseconds: 250_000_000)
+                        }
+                    }
+                    await dialed.cancel()
                     startTask.cancel()
-                    return (.direct(dialed), true)
-                case .failed, .disconnected:
-                    break poll
-                default:
-                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    return nil
                 }
             }
-            await dialed.cancel()
-            startTask.cancel()
+            var first: WireGuardPeerConnection?
+            for await candidate in group {
+                if let candidate {
+                    if first == nil {
+                        first = candidate
+                        group.cancelAll()
+                    } else {
+                        await candidate.cancel()
+                    }
+                }
+            }
+            return first
         }
+        if let winner { return (.direct(winner), true) }
         throw ExitError.dialFailed("all routes to exit node failed")
+    }
+
+    /// Prove the bidirectional data path before a connection is declared
+    /// usable. A completed Noise handshake is NOT enough (Bug C: with
+    /// duplicate tailscaled identities the handshake lands on a stale
+    /// instance whose return path is blackholed). We send a probe socksOpen
+    /// to 127.0.0.1:9 (always instantly refused) and require ANY
+    /// socksOpenResult back - a refusal proves the path, silence proves it
+    /// dead.
+    private func verifyTransport(_ conn: WANTransportConnection, pinId: String) async -> Bool {
+        let probeID = UUID()
+        do {
+            try await conn.send(.socksOpen(SocksOpenPayload(
+                pinId: pinId, streamID: probeID, destHost: "127.0.0.1", destPort: 9)))
+            try await awaitOpenResult(streamID: probeID, on: conn, timeoutSeconds: 6)
+            // The probe target actually accepted a connection - odd, but
+            // the path is proven either way.
+            return true
+        } catch ExitError.openRefused(let reason) {
+            PINExitServer.log("exit client: transport verified (probe refused as expected: \(reason))")
+            return true
+        } catch {
+            PINExitServer.log("exit client: transport probe unanswered: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Bug D: watch the offer for the lifetime of the listener. If the
+    /// provider goes offline or withdraws its exit offer, tear the route
+    /// down instead of sitting "listening" with traffic dying silently.
+    private func startOfferWatcher(pinId: String) {
+        offerWatcher?.cancel()
+        offerWatcher = Task { [weak self] in
+            var emptyPolls = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if Task.isCancelled { break }
+                guard let self else { break }
+                let members = await self.pinService.manager.exitMembers(
+                    pinId: pinId, excludingDeviceId: self.selfDeviceId)
+                // Two consecutive empty polls (~20s) guard against netmap
+                // sync gaps tearing down a healthy route.
+                emptyPolls = members.isEmpty ? emptyPolls + 1 : 0
+                if emptyPolls >= 2 {
+                    PINExitServer.log("exit client: exit offer withdrawn for pin \(pinId.prefix(8)) - tearing down listener")
+                    await self.tearDownWithdrawnRoute(pinId: pinId)
+                    break
+                }
+            }
+        }
+    }
+
+    private func tearDownWithdrawnRoute(pinId: String) async {
+        listener?.cancel()
+        listener = nil
+        streamsLock.lock()
+        let streams = activeStreams
+        activeStreams.removeAll()
+        streamsLock.unlock()
+        for (_, s) in streams { await s.close() }
+        transportLock.lock()
+        let old = transport
+        let owned = ownsTransport
+        let wanManager = wanManagerRef
+        let oldRoute = route
+        transport = nil
+        ownsTransport = false
+        route = nil
+        wanManagerRef = nil
+        transportLock.unlock()
+        if owned {
+            await old?.cancel()
+        } else if old != nil, let wanManager, let oldRoute {
+            await wanManager.disconnectPeer(oldRoute.member.nodePubkey)
+        }
+        await stateBox.set(Status(
+            state: "failed", pinId: pinId, viaDevice: nil, host: nil, port: nil,
+            error: "exit provider went offline or withdrew its offer"))
     }
 
     // MARK: - SOCKS5
@@ -420,7 +554,7 @@ public final class PINExitClient: @unchecked Sendable {
             ?? members.first { $0.nodePubkey == route.member.nodePubkey }
             ?? route.member
         do {
-            let (conn, newOwned) = try await dial(member: member, wanManager: wanManager)
+            let (conn, newOwned) = try await dial(member: member, pinId: route.pinId, wanManager: wanManager)
             transportLock.lock()
             transport = conn
             ownsTransport = newOwned
@@ -469,10 +603,12 @@ public final class PINExitClient: @unchecked Sendable {
         if let s { await s.close() }
     }
 
-    private func awaitOpenResult(streamID: UUID, on transport: WANTransportConnection) async throws {
+    private func awaitOpenResult(
+        streamID: UUID, on transport: WANTransportConnection, timeoutSeconds: UInt64 = 15
+    ) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                try await Task.sleep(nanoseconds: 15 * 1_000_000_000)
+                try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
                 throw ExitError.openFailed("exit node did not answer")
             }
             group.addTask {
@@ -480,7 +616,7 @@ public final class PINExitClient: @unchecked Sendable {
                 for await message in messages {
                     if case .socksOpenResult(let result) = message, result.streamID == streamID {
                         if result.ok { return }
-                        throw ExitError.openFailed(result.error ?? "refused")
+                        throw ExitError.openRefused(result.error ?? "refused")
                     }
                 }
                 throw ExitError.openFailed("exit node disconnected")
