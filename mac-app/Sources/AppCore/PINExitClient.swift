@@ -92,6 +92,10 @@ public final class PINExitClient: @unchecked Sendable {
     /// don't dial over each other.
     private var redialInFlight: Task<Void, Never>?
     private let redialStateLock = NSLock()
+    /// Re-establishes a route the provider dropped (offer withdrawn /
+    /// provider offline) once the provider returns - "never touch the
+    /// fallback VPN" means a blip must heal without operator action.
+    private var resumeTask: Task<Void, Never>?
 
     public init(pinService: PINService, selfDeviceId: String) {
         self.pinService = pinService
@@ -208,6 +212,8 @@ public final class PINExitClient: @unchecked Sendable {
         offerWatcher = nil
         livenessProbe?.cancel()
         livenessProbe = nil
+        resumeTask?.cancel()
+        resumeTask = nil
         listener?.cancel()
         listener = nil
         streamsLock.lock()
@@ -410,7 +416,43 @@ public final class PINExitClient: @unchecked Sendable {
         }
         await stateBox.set(Status(
             state: "failed", pinId: pinId, viaDevice: nil, host: nil, port: nil,
-            error: "exit provider went offline or withdrew its offer"))
+            error: "exit provider went offline or withdrew its offer (will auto-resume when it returns)"))
+        if let oldRoute, let wanManager {
+            startAutoResume(route: oldRoute, wanManager: wanManager)
+        }
+    }
+
+    /// Retry start() with backoff until the provider (or a replacement in
+    /// the same network) is reachable again. An explicit stop cancels this,
+    /// so only unintentional drops resume. The full start path re-reads the
+    /// netmap, so a provider that changed endpoints or devices is found.
+    private func startAutoResume(
+        route: (pinId: String, member: PinNetmapMember), wanManager: WANManager
+    ) {
+        resumeTask?.cancel()
+        resumeTask = Task { [weak self] in
+            var attempt = 0
+            while !Task.isCancelled {
+                attempt += 1
+                let delaySeconds: UInt64 = attempt == 1 ? 30 : (attempt == 2 ? 60 : 120)
+                try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                if Task.isCancelled { break }
+                guard let self else { break }
+                do {
+                    PINExitServer.log("exit client: auto-resume attempt \(attempt) for pin \(route.pinId.prefix(8))...")
+                    // deviceId nil on purpose: if the original provider is
+                    // gone but another member of the same network offers
+                    // exit, resume to it - availability beats same-node.
+                    try await self.start(
+                        pinId: route.pinId, deviceId: nil,
+                        listenPort: 17890, wanManager: wanManager)
+                    PINExitServer.log("exit client: auto-resume SUCCEEDED on attempt \(attempt)")
+                    return
+                } catch {
+                    PINExitServer.log("exit client: auto-resume attempt \(attempt) failed: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     /// #212: probe the data path itself every 30s (a socksOpen the exit
