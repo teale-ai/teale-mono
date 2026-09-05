@@ -104,7 +104,7 @@ fn local_api_key() -> Option<String> {
         std::env::var_os("HOME")
             .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/Teale/api_keys.json")),
         std::env::var_os("APPDATA")
-            .map(|h| std::path::PathBuf::from(h).join("Teale\api_keys.json")),
+            .map(|h| std::path::PathBuf::from(h).join("Teale").join("api_keys.json")),
     ]
     .into_iter()
     .flatten()
