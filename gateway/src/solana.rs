@@ -854,7 +854,10 @@ pub async fn treasury_usdc_balance_micro(config: &SolanaConfig) -> Result<i64, S
         .json()
         .await
         .map_err(|e| e.to_string())?;
-    let accounts = resp["result"]["value"].as_array().cloned().unwrap_or_default();
+    let accounts = resp["result"]["value"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut total: i64 = 0;
     for account in accounts {
         let amount = &account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"];
