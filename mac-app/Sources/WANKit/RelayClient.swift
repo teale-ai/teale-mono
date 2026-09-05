@@ -320,6 +320,28 @@ public actor RelayClient {
     public func setOnReconnect(_ handler: @escaping @Sendable () async -> Void) {
         onReconnectHandler = handler
     }
+
+    /// Status subscribers fired when the socket drops into reconnect and
+    /// after a successful reconnect, so observers (e.g. WANManager.state)
+    /// re-latch instead of serving a stale relayStatus snapshot forever.
+    private var statusHandlers: [UUID: @Sendable () async -> Void] = [:]
+
+    @discardableResult
+    public func addStatusHandler(_ handler: @escaping @Sendable () async -> Void) -> UUID {
+        let id = UUID()
+        statusHandlers[id] = handler
+        return id
+    }
+
+    public func removeStatusHandler(_ id: UUID) {
+        statusHandlers[id] = nil
+    }
+
+    private func fireStatusHandlers() {
+        let handlers = statusHandlers
+        guard !handlers.isEmpty else { return }
+        Task { for (_, handler) in handlers { await handler() } }
+    }
     private static let maxBackoff: TimeInterval = 60.0
 
     public var relayStatus: RelayStatus {
@@ -701,6 +723,7 @@ public actor RelayClient {
     private func scheduleReconnect() {
         guard reconnectTask == nil else { return }
 
+        fireStatusHandlers()
         reconnectTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self = self else { return }
@@ -714,6 +737,7 @@ public actor RelayClient {
                     try await self.connect()
                     FileHandle.standardError.write(Data("[WAN] Relay reconnected successfully\n".utf8))
                     await self.resetReconnect()
+                    await self.fireStatusHandlers()
                     // Re-register after reconnect
                     await self.onReconnectHandler?()
                     // Re-establish suspended relay sessions

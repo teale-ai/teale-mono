@@ -295,6 +295,14 @@ public final class WANManager: @unchecked Sendable {
         self.discoveryService = discovery
         self.natTraversal = nat
 
+        // Re-latch state.relayStatus on relay socket loss/recovery. Without
+        // this, a reconnect only re-registers discovery and the snapshot
+        // serves the stale status indefinitely (wallet/earning views then
+        // wrongly report relayConnected/earningEligible as false).
+        _ = await relay.addStatusHandler { [weak self] in
+            self?.updateState()
+        }
+
         await discovery.setCallbacks(
             onPeerDiscovered: { [weak self] peer in
                 Task {
