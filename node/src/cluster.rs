@@ -495,6 +495,26 @@ pub fn abort_sessions_to_peer(state: &NodeRuntimeState, peer_id: &str) -> usize 
     aborted
 }
 
+/// Abort every in-flight inference worker (#237): the relay connection
+/// itself is gone, so no chunk can reach any consumer - each in-flight
+/// request already failed from the consumer's side, and letting it run to
+/// "completion" would burn compute and count a request as served that was
+/// never delivered. Aborted workers are counted as failed, not completed.
+/// Returns how many workers were aborted.
+pub fn abort_all_inference(state: &NodeRuntimeState) -> usize {
+    let mut tasks = state.inference_tasks.lock().unwrap();
+    let aborted = tasks.len();
+    if aborted > 0 {
+        state
+            .failed_requests
+            .fetch_add(aborted as u64, Ordering::Relaxed);
+    }
+    for (_, (_, handle)) in tasks.drain() {
+        handle.abort();
+    }
+    aborted
+}
+
 /// Parse the peer id out of a relay `peer_not_found` error message
 /// ("Peer <id> is not connected", relay/server.ts).
 pub fn peer_not_found_id(message: &str) -> Option<&str> {
