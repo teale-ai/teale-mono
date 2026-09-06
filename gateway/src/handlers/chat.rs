@@ -90,8 +90,8 @@ const PREFILL_TPS_FLOOR: u64 = 200;
 /// observed fleet, and under parallel slots (#229) one slot's prefill also
 /// stretches every co-resident request's first token. The deadline should
 /// mean "device unresponsive", never "device busy with a big prompt", so it
-/// scales with estimated prefill time: max(base, 30s + prompt_tokens /
-/// PREFILL_TPS_FLOOR), capped at request_timeout_seconds.
+/// scales with estimated prefill time: base + prompt_tokens /
+/// PREFILL_TPS_FLOOR, capped at request_timeout_seconds.
 fn pre_first_token_deadline(
     state: &AppState,
     catalog_model: &CatalogModel,
@@ -102,8 +102,8 @@ fn pre_first_token_deadline(
         return Duration::from_secs(cap);
     }
     let base = ttft_deadline_seconds_for_model(&state.config.reliability, catalog_model);
-    let prompt_aware = 30 + required_ctx as u64 / PREFILL_TPS_FLOOR;
-    Duration::from_secs(base.max(prompt_aware).min(cap))
+    let prompt_aware = base + required_ctx as u64 / PREFILL_TPS_FLOOR;
+    Duration::from_secs(prompt_aware.min(cap))
 }
 
 fn resolve_requested_model(state: &AppState, requested_model: &str) -> Option<CatalogModel> {
@@ -2387,7 +2387,7 @@ pricing_completion: "0.00000020"
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
-            pre_first_token_deadline(&state, &model, 2_000),
+            pre_first_token_deadline(&state, &model, 0),
             Duration::from_secs(18)
         );
     }
@@ -2404,7 +2404,7 @@ pricing_completion: "0.00000020"
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
-            pre_first_token_deadline(&state, &model, 2_000),
+            pre_first_token_deadline(&state, &model, 0),
             Duration::from_secs(18)
         );
     }
@@ -2415,16 +2415,20 @@ pricing_completion: "0.00000020"
         // rates; the deadline must cover it instead of killing the request
         // mid-prefill.
         let model = free_like();
-        let state = dispatch_test_state(dispatch_test_config(18), &model);
+        let mut config = dispatch_test_config(18);
+        config.reliability.request_timeout_seconds = 300;
+        let state = dispatch_test_state(config, &model);
         state.registry.upsert_device(
             "node-a".into(),
             "Node A".into(),
             dispatch_caps(&[&model.id], &[]),
         );
 
-        let deadline = pre_first_token_deadline(&state, &model, 39_000);
-        assert!(deadline >= Duration::from_secs(195));
-        assert!(deadline <= Duration::from_secs(state.config.reliability.request_timeout_seconds));
+        // 18s base + 39000/200 = 213s
+        assert_eq!(
+            pre_first_token_deadline(&state, &model, 39_000),
+            Duration::from_secs(213)
+        );
     }
 
     #[tokio::test]
@@ -2444,7 +2448,7 @@ pricing_completion: "0.00000020"
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
-            pre_first_token_deadline(&state, &model, 2_000),
+            pre_first_token_deadline(&state, &model, 0),
             Duration::from_secs(18)
         );
     }
