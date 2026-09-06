@@ -95,6 +95,10 @@ pub struct ReliabilityConfig {
     pub quarantine_seconds: u64,
     #[serde(default = "default_discover_interval")]
     pub discover_interval_seconds: u64,
+    /// How long a departed (peerLeft) device's models stay listed before
+    /// the registry removes it for real. Absorbs transient relay flaps.
+    #[serde(default = "default_departed_grace")]
+    pub departed_grace_seconds: u64,
 }
 
 impl Default for ReliabilityConfig {
@@ -107,6 +111,7 @@ impl Default for ReliabilityConfig {
             heartbeat_stale_seconds: default_heartbeat_stale(),
             quarantine_seconds: default_quarantine(),
             discover_interval_seconds: default_discover_interval(),
+            departed_grace_seconds: default_departed_grace(),
         }
     }
 }
@@ -218,6 +223,9 @@ fn default_quarantine() -> u64 {
 }
 fn default_discover_interval() -> u64 {
     60
+}
+fn default_departed_grace() -> u64 {
+    180
 }
 fn default_synthetic_probe_enabled() -> bool {
     false
