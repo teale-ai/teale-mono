@@ -1060,6 +1060,7 @@ async fn run_streaming(
             let mut got_first_token = false;
             let mut retriable_failure = false;
             let mut completed = false;
+            let mut queue_full_failure = false;
 
             loop {
                 let deadline = if got_first_token {
@@ -1119,6 +1120,7 @@ async fn run_streaming(
                     }
                     Ok(Some(SessionEvent::Error { message, code })) => {
                         warn!(device=%target_node, code=?code, "upstream error: {}", message);
+                        queue_full_failure = code.as_deref() == Some("queuefull");
                         if !got_first_token && tried <= max_retries {
                             retriable_failure = true;
                             metrics::RETRIES_TOTAL
@@ -1181,10 +1183,12 @@ async fn run_streaming(
             state.relay.close_session(&target_node, &session_id);
             state.registry.dec_in_flight(&target_node);
 
-            // Same in-flight gate as the streaming path (#239).
+            // QueueFull is backpressure from a live, busy device - never
+            // a reason to quarantine (the fast-fail IS the design, #229).
             if !completed
                 && !got_first_token
                 && !cold_start_grace
+                && !queue_full_failure
                 && state.registry.in_flight(&target_node) == 0
             {
                 state
@@ -1360,6 +1364,7 @@ async fn run_buffered(
         let mut retriable = false;
         let mut completed = false;
         let mut err_message: Option<String> = None;
+        let mut err_code: Option<String> = None;
 
         loop {
             let deadline = if got_first {
@@ -1398,8 +1403,9 @@ async fn run_buffered(
                     completed = true;
                     break;
                 }
-                Ok(Some(SessionEvent::Error { message, .. })) => {
+                Ok(Some(SessionEvent::Error { message, code })) => {
                     err_message = Some(message);
+                    err_code = code;
                     if !got_first && tried <= max_retries {
                         retriable = true;
                     }
@@ -1447,11 +1453,14 @@ async fn run_buffered(
         // Quarantine only when the device had no other work in flight: a
         // pre-first-token death while the node is busy is queueing delay on
         // a serial node, not device failure - quarantining sole supply for
-        // it turns load into a fleet-wide outage (#239).
+        // it turns load into a fleet-wide outage (#239). QueueFull is
+        // backpressure from a live, busy device, never a failure (#250).
+        let queue_full_failure = err_code.as_deref() == Some("queuefull");
         if !completed
             && !got_first
             && !warmup_retry
             && !cold_start_grace
+            && !queue_full_failure
             && state.registry.in_flight(&target_node) == 0
         {
             state
@@ -1552,9 +1561,11 @@ async fn run_buffered(
                 continue;
             }
             info!(device = %target_node, "retrying (buffered) on next-best device");
-            state
-                .registry
-                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            if !queue_full_failure {
+                state
+                    .registry
+                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            }
             excluded.push(target_node);
             metrics::RETRIES_TOTAL
                 .with_label_values(&["buffered_failure"])
