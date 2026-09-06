@@ -44,10 +44,12 @@ pub struct NodeRuntimeState {
     pub semaphore: Arc<Semaphore>,
     /// PIN-over-DIN admission priority, sharing `semaphore`.
     pub pin_gate: Arc<crate::pin::gate::PriorityGate>,
-    /// Live inference worker tasks by relay session id (#229). RelayClose
-    /// aborts the worker so a dead client stops consuming GPU.
+    /// Live inference worker tasks by relay session id (#229), each with
+    /// its target peer id. RelayClose - or a peer_not_found / peerLeft
+    /// naming the target (#237) - aborts the worker so a dead client
+    /// stops consuming GPU.
     pub inference_tasks:
-        std::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>,
+        std::sync::Mutex<std::collections::HashMap<String, (String, tokio::task::JoinHandle<()>)>>,
 }
 
 impl NodeRuntimeState {
@@ -237,7 +239,7 @@ pub async fn handle_relay_data(
                 .inference_tasks
                 .lock()
                 .unwrap()
-                .insert(session.to_string(), handle);
+                .insert(session.to_string(), (from.to_string(), handle));
         }
 
         ClusterMessage::LoadModel(req) => {
@@ -471,4 +473,47 @@ fn send(relay: &RelayClient, to_node_id: &str, session_id: &str, message: &Clust
 
 fn short(node_id: &str) -> &str {
     &node_id[..16.min(node_id.len())]
+}
+
+/// Abort in-flight inference workers whose target peer is `peer_id`
+/// (#237): once the relay says a peer is gone (peer_not_found) or left,
+/// requests toward it are generating into the void. Returns how many
+/// workers were aborted.
+pub fn abort_sessions_to_peer(state: &NodeRuntimeState, peer_id: &str) -> usize {
+    let mut tasks = state.inference_tasks.lock().unwrap();
+    let doomed: Vec<String> = tasks
+        .iter()
+        .filter(|(_, (from, _))| from == peer_id)
+        .map(|(session, _)| session.clone())
+        .collect();
+    let aborted = doomed.len();
+    for session in doomed {
+        if let Some((_, handle)) = tasks.remove(&session) {
+            handle.abort();
+        }
+    }
+    aborted
+}
+
+/// Parse the peer id out of a relay `peer_not_found` error message
+/// ("Peer <id> is not connected", relay/server.ts).
+pub fn peer_not_found_id(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("Peer ")?
+        .strip_suffix(" is not connected")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_not_found_id;
+
+    #[test]
+    fn parses_peer_not_found_message() {
+        assert_eq!(
+            peer_not_found_id("Peer e8e5a748b6fc9a92 is not connected"),
+            Some("e8e5a748b6fc9a92")
+        );
+        assert_eq!(peer_not_found_id("rate limited"), None);
+        assert_eq!(peer_not_found_id("Peer x is not connecte"), None);
+    }
 }
