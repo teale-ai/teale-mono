@@ -545,29 +545,6 @@ mod tests {
     }
 
 
-    fn caps(loaded: &[&str]) -> NodeCapabilities {
-        NodeCapabilities {
-            hardware: HardwareCapability {
-                chip_family: "m4Max".into(),
-                chip_name: "m4Max".into(),
-                total_ram_gb: 64.0,
-                gpu_core_count: 40,
-                memory_bandwidth_gbs: 546.0,
-                tier: 1,
-                gpu_backend: Some("metal".into()),
-                platform: Some("macOS".into()),
-                gpu_vram_gb: None,
-            },
-            loaded_models: loaded.iter().map(|s| s.to_string()).collect(),
-            max_model_size_gb: 48.0,
-            is_available: true,
-            ptn_ids: None,
-            swappable_models: vec![],
-            max_concurrent_requests: Some(4),
-            effective_context: Some(32768),
-            on_ac_power: Some(true),
-        }
-    }
 
     #[test]
     fn departed_device_survives_grace_then_is_removed() {
