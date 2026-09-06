@@ -89,6 +89,19 @@ impl DeviceState {
         self.departed_at.is_some()
     }
 
+    /// Should this device's models stay in the catalog (live-model
+    /// resolution and /v1/models listing)? Quarantine gates DISPATCH, not
+    /// catalog presence: a device inside the departed-grace window keeps
+    /// its models listed even when quarantined, or the quarantine safety
+    /// valve re-vanishes the model for every consumer while a relay flaps
+    /// (#220 follow-up: GLM-5.3-flash kept disappearing mid-flap because
+    /// dispatch-failure quarantines, not departed removal, evicted it).
+    pub fn catalog_visible(&self, stale_after_secs: u64) -> bool {
+        self.capabilities.is_available
+            && !self.heartbeat_is_stale(stale_after_secs)
+            && (!self.is_quarantined() || self.is_departed())
+    }
+
     pub fn is_quarantined(&self) -> bool {
         self.quarantined_until
             .map(|t| t > Instant::now())

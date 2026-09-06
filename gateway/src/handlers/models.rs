@@ -99,11 +99,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .collect();
 
     let mut live_models: HashMap<String, (String, u32, Option<u32>)> = HashMap::new();
-    for device in devices.iter().filter(|dev| {
-        !dev.is_quarantined()
-            && dev.capabilities.is_available
-            && !dev.heartbeat_is_stale(state.config.reliability.heartbeat_stale_seconds)
-    }) {
+    for device in devices
+        .iter()
+        .filter(|dev| dev.catalog_visible(state.config.reliability.heartbeat_stale_seconds))
+    {
         for model_id in &device.capabilities.loaded_models {
             if HIDDEN_MODEL_IDS.contains(&model_id.as_str()) {
                 continue;
@@ -277,5 +276,53 @@ mod tests {
                 .map(|pricing| pricing.prompt.as_str()),
             Some(crate::catalog::LIVE_MODEL_DEFAULT_PROMPT_PRICE)
         );
+    }
+
+    #[tokio::test]
+    async fn departed_in_grace_device_keeps_live_model_listed_despite_quarantine() {
+        // #220 follow-up: quarantine gates dispatch, not the catalog - a
+        // departed-in-grace device must keep its models listed or a relay
+        // flap vanishes them for every consumer.
+        let state = test_state();
+        state.registry.upsert_device(
+            "node-live".into(),
+            "Tailor 512g1".into(),
+            test_caps(&["acme/live-model"]),
+        );
+        state.registry.mark_departed("node-live");
+        state.registry.quarantine("node-live", 30);
+
+        let response = list_models(State(state), HeaderMap::new()).await;
+        let (_parts, body) = response.into_parts();
+        let bytes = to_bytes(body, 1024 * 1024).await.expect("read body");
+        let models: ModelsResponse = serde_json::from_slice(&bytes).expect("parse body");
+        let model = models
+            .data
+            .iter()
+            .find(|model| model.id == "acme/live-model")
+            .expect("departed-in-grace device keeps its live model listed");
+        assert_eq!(model.loaded_device_count, Some(1));
+    }
+
+    #[tokio::test]
+    async fn quarantined_device_without_departure_does_not_list_live_model() {
+        // Control: quarantine alone (no departed mark) still hides the
+        // device from the listing.
+        let state = test_state();
+        state.registry.upsert_device(
+            "node-live".into(),
+            "Tailor 512g1".into(),
+            test_caps(&["acme/live-model"]),
+        );
+        state.registry.quarantine("node-live", 30);
+
+        let response = list_models(State(state), HeaderMap::new()).await;
+        let (_parts, body) = response.into_parts();
+        let bytes = to_bytes(body, 1024 * 1024).await.expect("read body");
+        let models: ModelsResponse = serde_json::from_slice(&bytes).expect("parse body");
+        assert!(models
+            .data
+            .iter()
+            .all(|model| model.id != "acme/live-model"));
     }
 }

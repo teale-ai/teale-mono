@@ -112,9 +112,7 @@ fn resolve_requested_model(state: &AppState, requested_model: &str) -> Option<Ca
         .snapshot_devices()
         .into_iter()
         .filter(|device| {
-            !device.is_quarantined()
-                && device.capabilities.is_available
-                && !device.heartbeat_is_stale(state.config.reliability.heartbeat_stale_seconds)
+            device.catalog_visible(state.config.reliability.heartbeat_stale_seconds)
                 && crate::registry::model_matches_any(
                     requested_model,
                     &device.capabilities.loaded_models,
@@ -2141,6 +2139,44 @@ pricing_completion: "0.00000020"
             resolved.pricing_completion,
             crate::catalog::LIVE_MODEL_DEFAULT_COMPLETION_PRICE
         );
+    }
+
+    #[tokio::test]
+    async fn departed_in_grace_device_keeps_live_model_resolvable_despite_quarantine() {
+        // #220 follow-up: dispatch failures during a relay flap quarantine
+        // the node. Quarantine gates dispatch, not the catalog - a
+        // departed-in-grace device must keep its live models resolvable or
+        // the flap still vanishes the model for every consumer.
+        let config = dispatch_test_config(15);
+        let state = dispatch_test_state_with_catalog(config, vec![]);
+        state.registry.upsert_device(
+            "node-live".into(),
+            "Tailor 512g1".into(),
+            dispatch_caps(&["acme/live-model"], &[]),
+        );
+        state.registry.mark_departed("node-live");
+        state.registry.quarantine("node-live", 30);
+
+        let resolved = resolve_requested_model(&state, "acme/live-model")
+            .expect("departed-in-grace device keeps its live model resolvable");
+        assert_eq!(resolved.id, "acme/live-model");
+    }
+
+    #[tokio::test]
+    async fn quarantined_device_without_departure_hides_live_model() {
+        // Control: quarantine alone (no departed mark) still hides the
+        // device from live-model resolution - only the grace window
+        // overrides quarantine for catalog purposes.
+        let config = dispatch_test_config(15);
+        let state = dispatch_test_state_with_catalog(config, vec![]);
+        state.registry.upsert_device(
+            "node-live".into(),
+            "Tailor 512g1".into(),
+            dispatch_caps(&["acme/live-model"], &[]),
+        );
+        state.registry.quarantine("node-live", 30);
+
+        assert!(resolve_requested_model(&state, "acme/live-model").is_none());
     }
 
     #[tokio::test]
