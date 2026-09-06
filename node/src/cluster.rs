@@ -237,14 +237,10 @@ pub async fn handle_relay_data(
                     .unwrap()
                     .remove(&session_key);
             });
-            state
-                .inference_tasks
-                .lock()
-                .unwrap()
-                .insert(
-                    session.to_string(),
-                    (from.to_string(), request_id_owned, handle),
-                );
+            state.inference_tasks.lock().unwrap().insert(
+                session.to_string(),
+                (from.to_string(), request_id_owned, handle),
+            );
         }
 
         ClusterMessage::LoadModel(req) => {
@@ -585,7 +581,13 @@ pub fn abort_sessions_to_peer(state: &NodeRuntimeState, peer_id: &str) -> usize 
 /// never delivered. Aborted workers are counted as failed, not completed.
 /// Returns how many workers were aborted.
 pub fn abort_all_inference(state: &NodeRuntimeState) -> usize {
-    let sessions: Vec<String> = state.inference_tasks.lock().unwrap().keys().cloned().collect();
+    let sessions: Vec<String> = state
+        .inference_tasks
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
     let mut aborted = 0;
     for session in sessions {
         let mut tasks = state.inference_tasks.lock().unwrap();
