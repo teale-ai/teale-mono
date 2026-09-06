@@ -552,7 +552,11 @@ impl SendFailureThrottle {
         if due {
             let suppressed = std::mem::take(&mut self.suppressed);
             self.last_log = Some(now);
-            Some(if suppressed > 0 { Some(suppressed) } else { None })
+            Some(if suppressed > 0 {
+                Some(suppressed)
+            } else {
+                None
+            })
         } else {
             self.suppressed += 1;
             None
