@@ -206,7 +206,16 @@ impl InferenceProxy {
         if !streaming_enabled {
             let advertised_model_id = self.advertised_model_id.clone();
             tokio::spawn(async move {
-                let response_json = match response.json::<Value>().await {
+                let response_json = match tokio::select! {
+                    r = response.json::<Value>() => r,
+                    // Consumer aborted or went away pre-completion: drop the
+                    // backend request so llama-server frees the slot now
+                    // instead of at the 900s budget cap (#258).
+                    _ = tx.closed() => {
+                        debug!("chunk receiver gone before body - cancelling backend request");
+                        return;
+                    }
+                } {
                     Ok(value) => value,
                     Err(e) => {
                         debug!("non-stream completion decode failed: {}", e);
@@ -249,7 +258,32 @@ impl InferenceProxy {
             let mut buffer = String::new();
 
             use futures_util::StreamExt;
-            while let Some(chunk) = stream.next().await {
+            loop {
+                let chunk = tokio::select! {
+                    item = stream.next() => item,
+                    // Consumer aborted or went away mid-stream (relayClose,
+                    // peer_not_found, connection loss): dropping `response`
+                    // here closes the backend HTTP request, and llama-server
+                    // frees the slot on client disconnect (#258). Without
+                    // this the reader parked in stream.next() kept the slot
+                    // until the 900s cap.
+                    _ = tx.closed() => {
+                        debug!("chunk receiver gone mid-stream - cancelling backend stream");
+                        return;
+                    }
+                };
+                let Some(chunk) = chunk else {
+                    // The backend closed the stream without a [DONE]
+                    // terminator - not a clean completion; say so instead of
+                    // letting the receiver read a bare channel close as
+                    // success (#255).
+                    let _ = tx
+                        .send(StreamEvent::Failed(
+                            "backend stream ended without [DONE]".to_string(),
+                        ))
+                        .await;
+                    return;
+                };
                 match chunk {
                     Ok(bytes) => {
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -291,14 +325,6 @@ impl InferenceProxy {
                     }
                 }
             }
-            // The backend closed the stream without a [DONE] terminator -
-            // not a clean completion; say so instead of letting the
-            // receiver read a bare channel close as success (#255).
-            let _ = tx
-                .send(StreamEvent::Failed(
-                    "backend stream ended without [DONE]".to_string(),
-                ))
-                .await;
         });
 
         Ok(rx)

@@ -10,7 +10,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{debug, info};
 
 use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 
@@ -125,7 +125,17 @@ impl LiteRtEngine {
                 let mut lines = reader.lines();
                 let mut chunk_idx: u32 = 0;
 
-                while let Ok(Some(line)) = lines.next_line().await {
+                loop {
+                    let line = tokio::select! {
+                        line = lines.next_line() => line,
+                        _ = tx.closed() => {
+                            // Consumer gone: kill the backend process so its
+                            // resources free immediately (#258).
+                            let _ = child.kill().await;
+                            return;
+                        }
+                    };
+                    let Ok(Some(line)) = line else { break };
                     let text = line.trim().to_string();
                     if text.is_empty() {
                         continue;
