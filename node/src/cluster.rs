@@ -16,7 +16,8 @@ use tracing::{debug, error, info, warn};
 
 use teale_protocol::{
     decode_relay_data, now_reference_seconds, ClusterMessage, HeartbeatPayload, HelloAckPayload,
-    InferenceErrorCode, InferenceErrorPayload, InferenceRequestPayload, ThermalLevel,
+    InferenceErrorCode, InferenceErrorPayload, InferenceRequestPayload, ModelLoadErrorPayload,
+    ThermalLevel,
 };
 
 use crate::relay::{RelayClient, RelayDataPayload};
@@ -43,6 +44,10 @@ pub struct NodeRuntimeState {
     pub semaphore: Arc<Semaphore>,
     /// PIN-over-DIN admission priority, sharing `semaphore`.
     pub pin_gate: Arc<crate::pin::gate::PriorityGate>,
+    /// Live inference worker tasks by relay session id (#229). RelayClose
+    /// aborts the worker so a dead client stops consuming GPU.
+    pub inference_tasks:
+        std::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl NodeRuntimeState {
@@ -64,6 +69,7 @@ impl NodeRuntimeState {
             shutting_down: AtomicBool::new(false),
             semaphore: semaphore.clone(),
             pin_gate: crate::pin::gate::PriorityGate::new(semaphore),
+            inference_tasks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -200,10 +206,58 @@ pub async fn handle_relay_data(
                 );
                 return;
             }
-            handle_inference_request(relay, from, session, *req, swap, state).await;
+            // Run inference on its own task so the relay message pump keeps
+            // processing other sessions (#229). The pin_gate semaphore is
+            // the real concurrency cap (fail-fast QueueFull when full);
+            // before this, the inline await serialized every request behind
+            // the running one and max_concurrent never engaged.
+            let relay_handle = relay.clone();
+            let from_owned = from.to_string();
+            let session_owned = session.to_string();
+            let swap_owned = swap.clone();
+            let state_owned = state.clone();
+            let session_key = session_owned.clone();
+            let handle = tokio::spawn(async move {
+                handle_inference_request(
+                    &relay_handle,
+                    &from_owned,
+                    &session_owned,
+                    *req,
+                    &swap_owned,
+                    &state_owned,
+                )
+                .await;
+                state_owned
+                    .inference_tasks
+                    .lock()
+                    .unwrap()
+                    .remove(&session_key);
+            });
+            state
+                .inference_tasks
+                .lock()
+                .unwrap()
+                .insert(session.to_string(), handle);
         }
 
         ClusterMessage::LoadModel(req) => {
+            let in_flight = state.queue_depth.load(Ordering::Relaxed);
+            if in_flight > 0 {
+                warn!(
+                    "Rejecting swap to {} - {} inference request(s) in flight",
+                    req.model_id, in_flight
+                );
+                let reply = ClusterMessage::ModelLoadError(ModelLoadErrorPayload {
+                    request_id: req.request_id.clone(),
+                    model_id: req.model_id.clone(),
+                    reason: format!(
+                        "node busy: {} inference request(s) in flight; retry when idle",
+                        in_flight
+                    ),
+                });
+                send(relay, from, session, &reply);
+                return;
+            }
             let sm = swap.clone();
             let relay_node = from.to_string();
             let relay_session = session.to_string();
@@ -271,8 +325,8 @@ async fn handle_inference_request(
     state.is_generating.store(true, Ordering::Relaxed);
 
     // Guard decrements on drop — covers error paths.
-    struct QueueGuard<'a>(&'a NodeRuntimeState);
-    impl<'a> Drop for QueueGuard<'a> {
+    struct QueueGuard(Arc<NodeRuntimeState>);
+    impl Drop for QueueGuard {
         fn drop(&mut self) {
             self.0.queue_depth.fetch_sub(1, Ordering::Relaxed);
             if self.0.queue_depth.load(Ordering::Relaxed) == 0 {
@@ -280,7 +334,7 @@ async fn handle_inference_request(
             }
         }
     }
-    let _guard = QueueGuard(state);
+    let _guard = QueueGuard(state.clone());
 
     // 2. Model pre-check: fail typed instead of hitting the backend with a wrong model.
     if let Some(requested_model) = req.request.model.as_deref() {
@@ -318,7 +372,16 @@ async fn handle_inference_request(
 
     match swap.stream_completion(&req.request).await {
         Ok(mut rx) => {
+            let mut first_token_logged = false;
             while let Some(chunk_json) = rx.recv().await {
+                if !first_token_logged {
+                    first_token_logged = true;
+                    info!(
+                        "Inference request {} first token in {}ms",
+                        request_id,
+                        started.elapsed().as_millis()
+                    );
+                }
                 token_count += 1;
                 let msg = ClusterMessage::InferenceChunk(teale_protocol::InferenceChunkPayload {
                     request_id: request_id.clone(),
