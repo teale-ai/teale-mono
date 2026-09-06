@@ -111,14 +111,17 @@ fn prefill_floor_tps(required_ctx: u32) -> u64 {
 fn pre_first_token_deadline(
     state: &AppState,
     catalog_model: &CatalogModel,
-    required_ctx: u32,
+    prompt_tokens: u32,
 ) -> Duration {
     let cap = state.config.reliability.request_timeout_seconds;
     if single_supplier_large_cold_start_grace(state, catalog_model) {
         return Duration::from_secs(cap);
     }
     let base = ttft_deadline_seconds_for_model(&state.config.reliability, catalog_model);
-    let prompt_aware = base + required_ctx as u64 / prefill_floor_tps(required_ctx);
+    // Scale with PROMPT tokens only (#259): the completion budget
+    // (max_tokens) is not prefilled, and letting it inflate the deadline
+    // pushed small prompts with large max_tokens straight to the 300s cap.
+    let prompt_aware = base + prompt_tokens as u64 / prefill_floor_tps(prompt_tokens);
     Duration::from_secs(prompt_aware.min(cap))
 }
 
@@ -217,6 +220,7 @@ pub async fn chat_completions(
                 prepared.req_body,
                 prepared.consumer,
                 prepared.required_ctx,
+                prepared.prompt_tokens,
                 prepared.preferred_node_ids,
             )
             .await
@@ -228,6 +232,7 @@ pub async fn chat_completions(
                 prepared.req_body,
                 prepared.consumer,
                 prepared.required_ctx,
+                prepared.prompt_tokens,
                 prepared.preferred_node_ids,
             )
             .await
@@ -277,6 +282,7 @@ pub(crate) struct PreparedChatRequest {
     pub req_body: Value,
     pub consumer: Option<ledger::ConsumerPrincipal>,
     pub required_ctx: u32,
+    pub prompt_tokens: u32,
     pub preferred_node_ids: Vec<String>,
     pub streaming: bool,
     /// True when a virtual resolution required parameters (tools/tool_choice)
@@ -514,6 +520,7 @@ pub(crate) fn prepare_chat_request_excluding(
     // Compute context budget once; scheduler uses it to filter out nodes
     // whose effective_context can't cover the request.
     let required_ctx = estimate_required_context(&parsed);
+    let prompt_tokens = estimate_prompt_tokens(&parsed);
     let preferred_node_ids = preferred_linked_node_ids(state, headers, principal);
 
     Ok(PreparedChatRequest {
@@ -521,6 +528,7 @@ pub(crate) fn prepare_chat_request_excluding(
         req_body: req,
         consumer,
         required_ctx,
+        prompt_tokens,
         preferred_node_ids,
         streaming,
         was_virtual_resolution,
@@ -621,7 +629,7 @@ fn affordable_out_tokens(model: &CatalogModel, remaining_after_prompt: i64) -> u
 /// for CJK and under-estimates for code. We don't pad with a safety margin
 /// because that pushes otherwise-legal requests (e.g. exactly 16k prompt
 /// + completion on a 16k-catalog model) past the ceiling and forces a 503.
-pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
+pub(crate) fn estimate_prompt_tokens(req: &ChatCompletionRequest) -> u32 {
     let prompt_chars: usize = req
         .messages
         .iter()
@@ -630,7 +638,11 @@ pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
             other => other.to_string().len(),
         })
         .sum();
-    let prompt_est = (prompt_chars / 4) as u32;
+    (prompt_chars / 4) as u32
+}
+
+pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
+    let prompt_est = estimate_prompt_tokens(req);
     let completion_budget = req.max_tokens.unwrap_or(4096);
     prompt_est.saturating_add(completion_budget)
 }
@@ -1004,6 +1016,7 @@ async fn run_streaming(
     req_body: Value,
     consumer: Option<ledger::ConsumerPrincipal>,
     required_ctx: u32,
+    prompt_tokens: u32,
     preferred_node_ids: Vec<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
@@ -1028,7 +1041,7 @@ async fn run_streaming(
         loop {
             tried += 1;
             let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
-            let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, required_ctx);
+            let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
             let dispatch = pick_and_dispatch(
                 &state,
                 &catalog_model,
@@ -1329,6 +1342,7 @@ async fn run_buffered(
     req_body: Value,
     consumer: Option<ledger::ConsumerPrincipal>,
     required_ctx: u32,
+    prompt_tokens: u32,
     preferred_node_ids: Vec<String>,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
@@ -1349,7 +1363,7 @@ async fn run_buffered(
     loop {
         tried += 1;
         let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
-        let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, required_ctx);
+        let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
         let (mut rx, target_node, session_id) = pick_and_dispatch(
             &state,
             &catalog_model,
