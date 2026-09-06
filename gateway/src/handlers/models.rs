@@ -305,9 +305,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quarantined_device_without_departure_does_not_list_live_model() {
-        // Control: quarantine alone (no departed mark) still hides the
-        // device from the listing.
+    async fn quarantined_device_keeps_live_model_listed() {
+        // #239: quarantine gates DISPATCH, never catalog presence. A
+        // quarantined sole supplier keeps its model listed so consumers
+        // get a retriable 503 from dispatch instead of a fatal-looking
+        // 404 "model not found".
         let state = test_state();
         state.registry.upsert_device(
             "node-live".into(),
@@ -323,6 +325,6 @@ mod tests {
         assert!(models
             .data
             .iter()
-            .all(|model| model.id != "acme/live-model"));
+            .any(|model| model.id == "acme/live-model"));
     }
 }

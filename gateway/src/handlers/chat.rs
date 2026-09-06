@@ -271,8 +271,12 @@ pub(crate) fn prepare_chat_request_excluding(
     };
 
     // Catalog lookup.
-    let mut catalog_model = resolve_requested_model(state, &requested_model)
-        .ok_or_else(|| GatewayError::ModelNotFound(requested_model.clone()))?;
+    let mut catalog_model = resolve_requested_model(state, &requested_model).ok_or_else(|| {
+        metrics::REQUESTS_TOTAL
+            .with_label_values(&[requested_model.as_str(), "model_not_found"])
+            .inc();
+        GatewayError::ModelNotFound(requested_model.clone())
+    })?;
     let was_virtual_resolution = catalog_model.is_virtual;
 
     let floor = &state.config.scheduler.per_model_floor;
@@ -1130,7 +1134,12 @@ async fn run_streaming(
             state.relay.close_session(&target_node, &session_id);
             state.registry.dec_in_flight(&target_node);
 
-            if !completed && !got_first_token && !cold_start_grace {
+            // Same in-flight gate as the streaming path (#239).
+            if !completed
+                && !got_first_token
+                && !cold_start_grace
+                && state.registry.in_flight(&target_node) == 0
+            {
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -1388,7 +1397,16 @@ async fn run_buffered(
                 .as_deref()
                 .is_some_and(is_transient_warmup_error);
 
-        if !completed && !got_first && !warmup_retry && !cold_start_grace {
+        // Quarantine only when the device had no other work in flight: a
+        // pre-first-token death while the node is busy is queueing delay on
+        // a serial node, not device failure - quarantining sole supply for
+        // it turns load into a fleet-wide outage (#239).
+        if !completed
+            && !got_first
+            && !warmup_retry
+            && !cold_start_grace
+            && state.registry.in_flight(&target_node) == 0
+        {
             state
                 .registry
                 .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -2163,10 +2181,11 @@ pricing_completion: "0.00000020"
     }
 
     #[tokio::test]
-    async fn quarantined_device_without_departure_hides_live_model() {
-        // Control: quarantine alone (no departed mark) still hides the
-        // device from live-model resolution - only the grace window
-        // overrides quarantine for catalog purposes.
+    async fn quarantined_device_keeps_live_model_resolvable() {
+        // #239: quarantine gates DISPATCH, never catalog presence. A
+        // quarantined sole supplier must keep its live model resolvable so
+        // dispatch surfaces a retriable 503 (no eligible device) instead of
+        // a fatal-looking 404 "model not found" for every consumer.
         let config = dispatch_test_config(15);
         let state = dispatch_test_state_with_catalog(config, vec![]);
         state.registry.upsert_device(
@@ -2176,7 +2195,9 @@ pricing_completion: "0.00000020"
         );
         state.registry.quarantine("node-live", 30);
 
-        assert!(resolve_requested_model(&state, "acme/live-model").is_none());
+        let resolved = resolve_requested_model(&state, "acme/live-model")
+            .expect("quarantined device keeps its live model resolvable");
+        assert_eq!(resolved.id, "acme/live-model");
     }
 
     #[tokio::test]
