@@ -26,6 +26,27 @@ pub struct Config {
     pub synthetic_probes: SyntheticProbeConfig,
     #[serde(default)]
     pub solana: SolanaConfig,
+    #[serde(default)]
+    pub fleet: FleetConfig,
+}
+
+/// Fleet membership policy (#263). The relay is a global namespace any
+/// client can join, and discover responses feed the gateway's device
+/// registry directly: without a membership check, any peer advertising
+/// available=true becomes eligible supply and can be dialed for
+/// inference, pulling prompts onto unknown hardware. When
+/// allowed_node_ids is non-empty, only those node ids may enter the
+/// registry; empty preserves the previous accept-all behavior (dev).
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct FleetConfig {
+    #[serde(default)]
+    pub allowed_node_ids: Vec<String>,
+}
+
+impl FleetConfig {
+    pub fn allows(&self, node_id: &str) -> bool {
+        self.allowed_node_ids.is_empty() || self.allowed_node_ids.iter().any(|id| id == node_id)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -294,6 +315,7 @@ impl Config {
             reliability: ReliabilityConfig::default(),
             synthetic_probes: SyntheticProbeConfig::default(),
             solana: SolanaConfig::default(),
+            fleet: FleetConfig::default(),
         }
     }
 }

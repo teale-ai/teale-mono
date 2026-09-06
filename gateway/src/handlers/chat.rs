@@ -1985,6 +1985,7 @@ quantization: null
             },
             synthetic_probes: Default::default(),
             solana: Default::default(),
+            fleet: Default::default(),
         }
     }
 
