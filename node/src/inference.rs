@@ -27,6 +27,14 @@ use crate::config::{Ds4Config, LlamaConfig, MnnConfig};
 /// enough that a stalled consumer observable backpressure within ~100ms.
 pub const CHUNK_CHANNEL_CAPACITY: usize = 64;
 
+/// Total per-request budget (prefill + generation) for the backend
+/// client. Deliberately far above the gateway's policy timeouts so the
+/// node never cuts off a long generation the gateway explicitly allowed.
+/// Surfaced in per-request failure lines when a stream dies at the cap
+/// (see cluster.rs) so the reason names the cap, not the raw transport
+/// error the budget fires as.
+pub const STREAM_BUDGET_SECONDS: u64 = 900;
+
 fn http_backend_streaming_enabled() -> bool {
     match std::env::var("TEALE_HTTP_BACKEND_STREAMING") {
         Ok(value) => {
@@ -80,12 +88,11 @@ impl InferenceProxy {
             advertised_model_id: advertised_model_id.to_string(),
             backend_model_id: backend_model_id.to_string(),
             client: reqwest::Client::builder()
-                // Total request budget, prefill + generation. Deliberately
-                // far above the gateway's policy timeouts so the node never
-                // cuts off a long generation the gateway explicitly
-                // allowed: at 38k context, shared decode runs ~4 tok/s, so
-                // a long answer needs real headroom past 300s.
-                .timeout(std::time::Duration::from_secs(900))
+                // Total request budget, prefill + generation (see
+                // STREAM_BUDGET_SECONDS): at 38k context, shared decode
+                // runs ~4 tok/s, so a long answer needs real headroom
+                // past 300s.
+                .timeout(std::time::Duration::from_secs(STREAM_BUDGET_SECONDS))
                 .build()
                 .expect("reqwest client build failed"),
             ready: Arc::new(AtomicBool::new(false)),
