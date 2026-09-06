@@ -232,16 +232,13 @@ pub async fn spawn(
         tokio::spawn(async move {
             while let Some(m) = outbox_rx.recv().await {
                 let tx = current_tx.lock().unwrap().clone();
-                match tx {
-                    Some(tx) => {
-                        // A dead connection between snapshot and send drops the
-                        // message; sessions are failed on disconnect anyway.
-                        let _ = tx.send(m);
-                    }
-                    // Disconnected: drop. Stale register/relayOpen/relayData for
-                    // dead sessions must not replay onto the next connection.
-                    None => {}
+                if let Some(tx) = tx {
+                    // A dead connection between snapshot and send drops the
+                    // message; sessions are failed on disconnect anyway.
+                    let _ = tx.send(m);
                 }
+                // None (disconnected): drop. Stale register/relayOpen/relayData
+                // for dead sessions must not replay onto the next connection.
             }
         });
     }
