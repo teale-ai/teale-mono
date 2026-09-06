@@ -230,7 +230,13 @@ async fn handle_request<B: CompletionBackend>(
                 }
             }
             if let Some(e) = stream_failed {
-                send_error(&connection, &request_id, &e, InferenceErrorCode::InternalError).await;
+                send_error(
+                    &connection,
+                    &request_id,
+                    &e,
+                    InferenceErrorCode::InternalError,
+                )
+                .await;
                 return;
             }
             let tokens_in = estimate_tokens_in(&request.request);
