@@ -28,6 +28,12 @@ pub struct DeviceState {
     pub last_seen: Instant,
     /// If quarantined, this is when we can re-add it to the pool.
     pub quarantined_until: Option<Instant>,
+    /// Set when the relay reported peerLeft. The device stays in the
+    /// registry (and its models stay listed) for the departed grace
+    /// window - a transient flap must not vanish a model for every
+    /// consumer (#220). The sweep removes it for real once the grace
+    /// expires; any liveness signal clears it.
+    pub departed_at: Option<Instant>,
     /// Observed tokens-per-second EWMA. Defaults to hardware estimate until
     /// first real measurement arrives.
     pub ewma_tokens_per_second: f64,
@@ -79,6 +85,10 @@ impl DeviceState {
         }
     }
 
+    pub fn is_departed(&self) -> bool {
+        self.departed_at.is_some()
+    }
+
     pub fn is_quarantined(&self) -> bool {
         self.quarantined_until
             .map(|t| t > Instant::now())
@@ -92,6 +102,7 @@ impl DeviceState {
     pub fn apply_heartbeat(&mut self, hb: &HeartbeatPayload) {
         self.last_heartbeat = Instant::now();
         self.last_seen = Instant::now();
+        self.departed_at = None;
         self.live.queue_depth = hb.queue_depth;
         self.live.is_generating = hb.is_generating;
         self.live.throttle_level = hb.throttle_level;
@@ -223,12 +234,16 @@ impl Registry {
                     last_heartbeat: now,
                     last_seen: now,
                     quarantined_until: None,
+                    departed_at: None,
                     ewma_tokens_per_second: hardware_tps_prior(&caps),
                     live: LiveStats::fresh(),
                 });
             entry.display_name = display_name;
             entry.capabilities = caps;
             entry.last_seen = now;
+            // A discover response from this peer is a rejoin: clear any
+            // departed mark instantly rather than waiting out the grace.
+            entry.departed_at = None;
             // Treat an inbound discover response (which only arrives because
             // the relay heard from this peer recently) as a liveness signal.
             // Without this, a peer that doesn't actively send heartbeat
@@ -253,6 +268,29 @@ impl Registry {
         }
     }
 
+    /// Relay said peerLeft. Do NOT remove the device: a transient relay
+    /// flap would vanish its models from the catalog for every consumer
+    /// (Sep 6: GLM-5.3-flash gone 11 min while 512g8 flapped on a ~40s
+    /// cadence). Mark it departed; the sweep removes it for real after
+    /// `departed_grace_seconds` with no rejoin (#220).
+    ///
+    /// The device keeps its last-known availability during grace, so the
+    /// catalog stays stable. A dispatch attempted mid-flap fails fast via
+    /// the relay's peer_not_found error, which quarantines the node through
+    /// the existing path - that is the safety valve, and it self-clears.
+    pub fn mark_departed(&self, node_id: &str) {
+        if let Some(mut dev) = self.devices.get_mut(node_id) {
+            if dev.departed_at.is_none() {
+                dev.departed_at = Some(Instant::now());
+                tracing::info!(
+                    node = node_id,
+                    "device departed; {}s grace before catalog removal",
+                    self.reliability.departed_grace_seconds
+                );
+            }
+        }
+    }
+
     pub fn remove_device(&self, node_id: &str) {
         self.devices.remove(node_id);
         let idx = self.model_to_devices.read();
@@ -273,6 +311,21 @@ impl Registry {
     /// and update `DEVICES_ELIGIBLE` gauges.
     pub fn sweep(&self) {
         let stale_threshold = self.reliability.heartbeat_stale_seconds;
+        // Devices whose departed grace expired are removed for real.
+        let grace = std::time::Duration::from_secs(self.reliability.departed_grace_seconds);
+        let departed: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|r| r.departed_at.is_some_and(|t| t.elapsed() >= grace))
+            .map(|r| r.node_id.clone())
+            .collect();
+        for node_id in departed {
+            tracing::info!(
+                node = node_id,
+                "departed grace expired; removing device from registry"
+            );
+            self.remove_device(&node_id);
+        }
         let mut stale_nodes = Vec::new();
         for mut dev in self.devices.iter_mut() {
             if dev.heartbeat_is_stale(stale_threshold) {
@@ -489,5 +542,61 @@ mod tests {
         }
 
         assert!(registry.eligible_devices("teale/auto").is_empty());
+    }
+
+    #[test]
+    fn departed_device_survives_grace_then_is_removed() {
+        let reliability = ReliabilityConfig {
+            departed_grace_seconds: 180,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
+        registry.upsert_device(
+            "node-a".into(),
+            "A".into(),
+            caps(vec!["glm-5.3-flash"], true),
+        );
+
+        registry.mark_departed("node-a");
+        // Still in the registry; model still listed during grace.
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .any(|d| d.node_id == "node-a"));
+        assert_eq!(registry.loaded_count("glm-5.3-flash"), 1);
+        registry.sweep();
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .any(|d| d.node_id == "node-a"));
+
+        // Simulate grace expiry by backdating the departure.
+        {
+            let mut dev = registry.devices.get_mut("node-a").unwrap();
+            dev.departed_at = Some(Instant::now() - std::time::Duration::from_secs(181));
+        }
+        registry.sweep();
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .all(|d| d.node_id != "node-a"));
+        assert_eq!(registry.loaded_count("glm-5.3-flash"), 0);
+    }
+
+    #[test]
+    fn rejoin_during_grace_clears_departed() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
+        registry.mark_departed("node-a");
+        assert!(registry.devices.get("node-a").unwrap().is_departed());
+
+        // Rejoin via discover upsert restores instantly.
+        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
+        assert!(!registry.devices.get("node-a").unwrap().is_departed());
+        registry.sweep();
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .any(|d| d.node_id == "node-a"));
     }
 }

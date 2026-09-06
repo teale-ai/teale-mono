@@ -195,6 +195,7 @@ mod tests {
                 heartbeat_stale_seconds: 3600,
                 quarantine_seconds: 30,
                 discover_interval_seconds: 10,
+                departed_grace_seconds: 180,
             },
             synthetic_probes: Default::default(),
             solana: Default::default(),

@@ -456,7 +456,9 @@ async fn handle_incoming(
         }
         IncomingRelayMessage::PeerLeft(p) => {
             info!(node = p.node_id, "peerLeft");
-            registry.remove_device(&p.node_id);
+            // Grace window, not instant removal: a transient relay flap
+            // must not vanish the node's models from the catalog (#220).
+            registry.mark_departed(&p.node_id);
             update_eligible_gauges(registry);
         }
         IncomingRelayMessage::RelayReady(s) => {

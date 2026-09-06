@@ -340,6 +340,7 @@ mod tests {
                 last_heartbeat: heartbeat_at,
                 last_seen: heartbeat_at,
                 quarantined_until: None,
+                departed_at: None,
                 ewma_tokens_per_second: 100.0,
                 live: LiveStats {
                     queue_depth,
