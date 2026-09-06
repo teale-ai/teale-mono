@@ -280,10 +280,9 @@ pub async fn handle_relay_data(
                     Err(err) => ClusterMessage::ModelLoadError(err),
                 };
                 let value = reply.to_value();
-                if let Err(e) =
-                    relay_handle.send_cluster_message(&relay_node, &relay_session, &value)
-                {
-                    error!("send swap result: {}", e);
+                match relay_handle.send_cluster_message(&relay_node, &relay_session, &value) {
+                    Ok(()) => note_send_success(),
+                    Err(e) => log_send_failure("send swap result", &e),
                 }
             });
         }
@@ -520,10 +519,90 @@ fn reply_err(
     send(relay, to, session, &err);
 }
 
+/// Send-failure log throttle (#238). A dead relay socket fails once per
+/// streamed chunk - Citadel counted 629 identical lines in one 42s outage
+/// window, burying the signal lines around it. First failure logs
+/// immediately; repeats inside the interval are counted and folded into
+/// one summary line; the first successful send after failures logs one
+/// recovery line and resets the throttle.
+struct SendFailureThrottle {
+    last_log: Option<Instant>,
+    suppressed: u64,
+    failures_since_ok: u64,
+}
+
+const SEND_FAILURE_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+static SEND_FAILURE_THROTTLE: std::sync::Mutex<SendFailureThrottle> =
+    std::sync::Mutex::new(SendFailureThrottle {
+        last_log: None,
+        suppressed: 0,
+        failures_since_ok: 0,
+    });
+
+impl SendFailureThrottle {
+    /// Record one failed send. Returns what to log: the bare error on a
+    /// fresh line, or the error plus the suppressed count when failures
+    /// have accumulated since the last emitted line.
+    fn on_failure(&mut self, now: Instant) -> Option<Option<u64>> {
+        self.failures_since_ok += 1;
+        let due = self
+            .last_log
+            .is_none_or(|t| now.duration_since(t) >= SEND_FAILURE_LOG_INTERVAL);
+        if due {
+            let suppressed = std::mem::take(&mut self.suppressed);
+            self.last_log = Some(now);
+            Some(if suppressed > 0 {
+                Some(suppressed)
+            } else {
+                None
+            })
+        } else {
+            self.suppressed += 1;
+            None
+        }
+    }
+
+    /// Record one successful send. Returns the failure count to report on
+    /// the recovery line, or None when there is nothing to recover from.
+    fn on_success(&mut self) -> Option<u64> {
+        if self.failures_since_ok == 0 {
+            return None;
+        }
+        let failures = self.failures_since_ok;
+        self.failures_since_ok = 0;
+        self.suppressed = 0;
+        self.last_log = None;
+        Some(failures)
+    }
+}
+
+/// Throttled send-failure log shared by every relay send path in this
+/// module (#238): the per-chunk stream below and the swap-result reply.
+fn log_send_failure(context: &str, err: &dyn std::fmt::Display) {
+    let mut st = SEND_FAILURE_THROTTLE.lock().unwrap();
+    match st.on_failure(Instant::now()) {
+        Some(Some(suppressed)) => error!(
+            "{}: {} ({} further send failure(s) suppressed)",
+            context, err, suppressed
+        ),
+        Some(None) => error!("{}: {}", context, err),
+        None => {}
+    }
+}
+
+fn note_send_success() {
+    let mut st = SEND_FAILURE_THROTTLE.lock().unwrap();
+    if let Some(failures) = st.on_success() {
+        info!("relay send recovered after {} failed send(s)", failures);
+    }
+}
+
 fn send(relay: &RelayClient, to_node_id: &str, session_id: &str, message: &ClusterMessage) {
     let value = message.to_value();
-    if let Err(e) = relay.send_cluster_message(to_node_id, session_id, &value) {
-        error!("Failed to send cluster message: {}", e);
+    match relay.send_cluster_message(to_node_id, session_id, &value) {
+        Ok(()) => note_send_success(),
+        Err(e) => log_send_failure("Failed to send cluster message", &e),
     }
 }
 
@@ -612,7 +691,8 @@ pub fn peer_not_found_id(message: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::peer_not_found_id;
+    use super::{peer_not_found_id, SendFailureThrottle, SEND_FAILURE_LOG_INTERVAL};
+    use std::time::Instant;
 
     #[test]
     fn parses_peer_not_found_message() {
@@ -622,5 +702,45 @@ mod tests {
         );
         assert_eq!(peer_not_found_id("rate limited"), None);
         assert_eq!(peer_not_found_id("Peer x is not connecte"), None);
+    }
+
+    #[test]
+    fn send_failure_throttle_first_logs_then_suppresses() {
+        let t0 = Instant::now();
+        let mut th = SendFailureThrottle {
+            last_log: None,
+            suppressed: 0,
+            failures_since_ok: 0,
+        };
+        // First failure logs immediately with no suppressed count.
+        assert_eq!(th.on_failure(t0), Some(None));
+        // Repeats inside the interval are suppressed and counted.
+        assert_eq!(th.on_failure(t0), None);
+        assert_eq!(th.on_failure(t0), None);
+        // After the interval, one summary line carries the count.
+        let t1 = t0 + SEND_FAILURE_LOG_INTERVAL;
+        assert_eq!(th.on_failure(t1), Some(Some(2)));
+        // Window re-arms after a summary line.
+        assert_eq!(th.on_failure(t1), None);
+    }
+
+    #[test]
+    fn send_failure_throttle_recovers_on_success() {
+        let t0 = Instant::now();
+        let mut th = SendFailureThrottle {
+            last_log: None,
+            suppressed: 0,
+            failures_since_ok: 0,
+        };
+        assert_eq!(th.on_success(), None);
+        assert_eq!(th.on_failure(t0), Some(None));
+        th.on_failure(t0);
+        th.on_failure(t0);
+        assert_eq!(th.on_success(), Some(3));
+        // State fully reset: next failure logs as a fresh first line, and
+        // recovering from it reports exactly that one failure, then nothing.
+        assert_eq!(th.on_failure(t0), Some(None));
+        assert_eq!(th.on_success(), Some(1));
+        assert_eq!(th.on_success(), None);
     }
 }
