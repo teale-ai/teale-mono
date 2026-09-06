@@ -27,6 +27,14 @@ use crate::config::{Ds4Config, LlamaConfig, MnnConfig};
 /// enough that a stalled consumer observable backpressure within ~100ms.
 pub const CHUNK_CHANNEL_CAPACITY: usize = 64;
 
+/// Total per-request budget (prefill + generation) for the backend
+/// client. Deliberately far above the gateway's policy timeouts so the
+/// node never cuts off a long generation the gateway explicitly allowed.
+/// Surfaced in per-request failure lines when a stream dies at the cap
+/// (see cluster.rs) so the reason names the cap, not the raw transport
+/// error the budget fires as.
+pub const STREAM_BUDGET_SECONDS: u64 = 900;
+
 fn http_backend_streaming_enabled() -> bool {
     match std::env::var("TEALE_HTTP_BACKEND_STREAMING") {
         Ok(value) => {
@@ -90,14 +98,6 @@ impl InferenceProxy {
             ready: Arc::new(AtomicBool::new(false)),
         }
     }
-
-/// Total per-request budget (prefill + generation) for the backend
-/// client. Deliberately far above the gateway's policy timeouts so the
-/// node never cuts off a long generation the gateway explicitly allowed.
-/// Surfaced in per-request failure lines when a stream dies at the cap
-/// (see cluster.rs) so the reason names the cap, not the raw transport
-/// error the budget fires as.
-pub const STREAM_BUDGET_SECONDS: u64 = 900;
 
     pub fn loaded_models(&self) -> Vec<String> {
         if self.is_ready() {
