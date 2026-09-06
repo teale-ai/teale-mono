@@ -544,14 +544,16 @@ mod tests {
         assert!(registry.eligible_devices("teale/auto").is_empty());
     }
 
-
-
     #[test]
     fn departed_device_survives_grace_then_is_removed() {
         let mut reliability = ReliabilityConfig::default();
         reliability.departed_grace_seconds = 180;
         let registry = Registry::new(reliability);
-        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["glm-5.3-flash"], true));
+        registry.upsert_device(
+            "node-a".into(),
+            "A".into(),
+            caps(vec!["glm-5.3-flash"], true),
+        );
 
         registry.mark_departed("node-a");
         // Still in the registry; model still listed during grace.
