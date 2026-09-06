@@ -46,9 +46,8 @@ pub struct NodeRuntimeState {
     pub pin_gate: Arc<crate::pin::gate::PriorityGate>,
     /// Live inference worker tasks by relay session id (#229). RelayClose
     /// aborts the worker so a dead client stops consuming GPU.
-    pub inference_tasks: std::sync::Mutex<
-        std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
-    >,
+    pub inference_tasks:
+        std::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl NodeRuntimeState {
