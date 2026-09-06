@@ -670,6 +670,17 @@ async fn run_relay_session(
                 let Some(msg) = msg_opt else {
                     tray_status.mark_relay_connected(false);
                     tray_status.set_last_error("Relay connection lost").await;
+                    // The socket is dead: in-flight streams can no longer
+                    // deliver a single chunk, so cancel them before
+                    // reconnecting (#237). Leaving them to run burns compute
+                    // and counts never-delivered requests as completed.
+                    let aborted = cluster::abort_all_inference(state);
+                    if aborted > 0 {
+                        warn!(
+                            "Relay connection lost - aborted {} in-flight inference request(s) (counted as failed)",
+                            aborted
+                        );
+                    }
                     break Err(anyhow::anyhow!("Relay connection lost"));
                 };
                 tray_status.mark_relay_connected(true);
