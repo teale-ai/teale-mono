@@ -548,7 +548,7 @@ impl SendFailureThrottle {
         self.failures_since_ok += 1;
         let due = self
             .last_log
-            .map_or(true, |t| now.duration_since(t) >= SEND_FAILURE_LOG_INTERVAL);
+            .is_none_or(|t| now.duration_since(t) >= SEND_FAILURE_LOG_INTERVAL);
         if due {
             let suppressed = std::mem::take(&mut self.suppressed);
             self.last_log = Some(now);
