@@ -19,10 +19,19 @@ struct TealeApp: App {
 
         Self.installStderrLog()
 
-        // Run as a regular foreground app so the companion window gets focus.
-        NSApplication.shared.setActivationPolicy(.regular)
+        // Fleet boxes (teale.fleetSupply persisted by --fleet-supply) must
+        // never surface a GUI: the auto-updater relaunches the bare binary
+        // with no argv, and a bare boot used to appear as a full Dock app
+        // whose process then owned the relay registration (#222 - fleet's
+        // Air/16 stray-GUI incidents, Sep 6). Run accessory: no Dock icon,
+        // no menu bar presence; the supply stack still boots via the
+        // persisted-prefs restore.
+        let isFleetSupply = UserDefaults.standard.bool(forKey: "teale.fleetSupply")
+        NSApplication.shared.setActivationPolicy(isFleetSupply ? .accessory : .regular)
 
-        Self.installDockIcon()
+        if !isFleetSupply {
+            Self.installDockIcon()
+        }
         Self.patchAppMenuTitle("Teale")
 
         let state = AppState()

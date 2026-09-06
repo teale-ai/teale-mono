@@ -416,6 +416,14 @@ public final class UpdateChecker {
             let relaunch = Process()
             relaunch.executableURL = currentApp
                 .appendingPathComponent("Contents/MacOS/\(exeName)")
+            // Fleet boxes: carry the role across the relaunch so the new
+            // process boots as headless supply, not a stray GUI (#222).
+            // The bare exec drops argv by design (LaunchServices workaround
+            // above), so without this the updated binary would surface as a
+            // Dock app and fight fleet-supply for relay registration.
+            if UserDefaults.standard.bool(forKey: "teale.fleetSupply") {
+                relaunch.arguments = ["--fleet-supply"]
+            }
             try relaunch.run()
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
