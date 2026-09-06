@@ -131,6 +131,7 @@ impl LiteRtEngine {
                         _ = tx.closed() => {
                             // Consumer gone: kill the backend process so its
                             // resources free immediately (#258).
+                            debug!("chunk receiver gone - killing litert_lm");
                             let _ = child.kill().await;
                             return;
                         }
