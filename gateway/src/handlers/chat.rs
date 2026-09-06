@@ -79,15 +79,34 @@ fn single_supplier_large_cold_start_grace(state: &AppState, catalog_model: &Cata
     candidate_count <= 1
 }
 
-fn pre_first_token_deadline(state: &AppState, catalog_model: &CatalogModel) -> Duration {
+/// Conservative prefill rate floor (tokens/second) used to scale the
+/// pre-first-token deadline with prompt size. Deliberately below the slowest
+/// observed supplier (~258 tok/s on glm-5.3-flash Q8_0 on M3 Ultra) so the
+/// estimate errs toward patience.
+const PREFILL_TPS_FLOOR: u64 = 200;
+
+/// Pre-first-token deadline (#243): the flat per-model deadline killed big
+/// prompts mid-prefill - a 36-39k ctx request needs >130s of prefill on the
+/// observed fleet, and under parallel slots (#229) one slot's prefill also
+/// stretches every co-resident request's first token. The deadline should
+/// mean "device unresponsive", never "device busy with a big prompt", so it
+/// scales with estimated prefill time: base + prompt_tokens /
+/// PREFILL_TPS_FLOOR, capped at request_timeout_seconds. The estimate
+/// assumes a cold prefix cache; cache-warm prompts (e.g. CCC runs ~97%
+/// cached) finish far earlier, so over-estimation is the safe direction -
+/// the deadline exists to cover the non-cache-warm heavy claim.
+fn pre_first_token_deadline(
+    state: &AppState,
+    catalog_model: &CatalogModel,
+    required_ctx: u32,
+) -> Duration {
+    let cap = state.config.reliability.request_timeout_seconds;
     if single_supplier_large_cold_start_grace(state, catalog_model) {
-        Duration::from_secs(state.config.reliability.request_timeout_seconds)
-    } else {
-        Duration::from_secs(ttft_deadline_seconds_for_model(
-            &state.config.reliability,
-            catalog_model,
-        ))
+        return Duration::from_secs(cap);
     }
+    let base = ttft_deadline_seconds_for_model(&state.config.reliability, catalog_model);
+    let prompt_aware = base + required_ctx as u64 / PREFILL_TPS_FLOOR;
+    Duration::from_secs(prompt_aware.min(cap))
 }
 
 fn resolve_requested_model(state: &AppState, requested_model: &str) -> Option<CatalogModel> {
@@ -981,7 +1000,7 @@ async fn run_streaming(
         loop {
             tried += 1;
             let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
-            let ttft_deadline = pre_first_token_deadline(&state, &catalog_model);
+            let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, required_ctx);
             let dispatch = pick_and_dispatch(
                 &state,
                 &catalog_model,
@@ -1298,7 +1317,7 @@ async fn run_buffered(
     loop {
         tried += 1;
         let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
-        let ttft_deadline = pre_first_token_deadline(&state, &catalog_model);
+        let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, required_ctx);
         let (mut rx, target_node, session_id) = pick_and_dispatch(
             &state,
             &catalog_model,
@@ -2371,7 +2390,7 @@ pricing_completion: "0.00000020"
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
-            pre_first_token_deadline(&state, &model),
+            pre_first_token_deadline(&state, &model, 0),
             Duration::from_secs(18)
         );
     }
@@ -2388,8 +2407,30 @@ pricing_completion: "0.00000020"
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
-            pre_first_token_deadline(&state, &model),
+            pre_first_token_deadline(&state, &model, 0),
             Duration::from_secs(18)
+        );
+    }
+
+    #[tokio::test]
+    async fn big_prompt_scales_first_token_deadline() {
+        // #243: a 39k ctx prompt needs >130s of prefill at observed fleet
+        // rates; the deadline must cover it instead of killing the request
+        // mid-prefill.
+        let model = free_like();
+        let mut config = dispatch_test_config(18);
+        config.reliability.request_timeout_seconds = 300;
+        let state = dispatch_test_state(config, &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        // 18s base + 39000/200 = 213s
+        assert_eq!(
+            pre_first_token_deadline(&state, &model, 39_000),
+            Duration::from_secs(213)
         );
     }
 
@@ -2410,7 +2451,7 @@ pricing_completion: "0.00000020"
 
         assert!(!single_supplier_large_cold_start_grace(&state, &model));
         assert_eq!(
-            pre_first_token_deadline(&state, &model),
+            pre_first_token_deadline(&state, &model, 0),
             Duration::from_secs(18)
         );
     }
