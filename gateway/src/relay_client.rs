@@ -253,6 +253,7 @@ pub async fn spawn(
         let outbox_tx = outbox_tx.clone();
         let current_tx = current_tx.clone();
         let reliability = config.reliability.clone();
+        let fleet = config.fleet.clone();
         let idle_timeout = relay_idle_timeout(config.reliability.discover_interval_seconds);
 
         tokio::spawn(async move {
@@ -329,6 +330,7 @@ pub async fn spawn(
                                         &sessions,
                                         &ready_waiters,
                                         reliability.quarantine_seconds,
+                                        &fleet,
                                         &mut sent_discover_after_ack,
                                     )
                                     .await;
@@ -342,6 +344,7 @@ pub async fn spawn(
                                                 &sessions,
                                                 &ready_waiters,
                                                 reliability.quarantine_seconds,
+                                                &fleet,
                                                 &mut sent_discover_after_ack,
                                             )
                                             .await;
@@ -423,6 +426,7 @@ async fn handle_incoming(
     sessions: &Arc<DashMap<String, PendingSession>>,
     ready_waiters: &Arc<Mutex<HashMap<String, ReadyWaiter>>>,
     quarantine_seconds: u64,
+    fleet: &crate::config::FleetConfig,
     sent_discover_after_ack: &mut bool,
 ) {
     match msg {
@@ -453,6 +457,21 @@ async fn handle_incoming(
                 let Some(caps_json) = obj.get("capabilities") else {
                     continue;
                 };
+                // Fleet membership gate (#263): the relay is a global
+                // namespace - any client can register and advertise
+                // available=true, and an unfiltered upsert makes a
+                // stranger's machine eligible supply that dispatch can
+                // dial, sending prompts to unknown hardware. When the
+                // allowlist is configured, only listed node ids enter
+                // the registry.
+                if !fleet.allows(node_id) {
+                    warn!(
+                        node = node_id,
+                        display = %display_name,
+                        "discover: peer denied by fleet allowlist - not eligible supply"
+                    );
+                    continue;
+                }
                 let caps = match serde_json::from_value::<NodeCapabilities>(caps_json.clone()) {
                     Ok(c) => c,
                     Err(e) => {
@@ -752,6 +771,7 @@ mod tests {
             &sessions,
             &ready_waiters,
             60,
+            &crate::config::FleetConfig::default(),
             &mut sent_discover_after_ack,
         )
         .await;
