@@ -48,9 +48,8 @@ pub struct NodeRuntimeState {
     /// its target peer id. RelayClose - or a peer_not_found / peerLeft
     /// naming the target (#237) - aborts the worker so a dead client
     /// stops consuming GPU.
-    pub inference_tasks: std::sync::Mutex<
-        std::collections::HashMap<String, (String, tokio::task::JoinHandle<()>)>,
-    >,
+    pub inference_tasks:
+        std::sync::Mutex<std::collections::HashMap<String, (String, tokio::task::JoinHandle<()>)>>,
 }
 
 impl NodeRuntimeState {
