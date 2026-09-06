@@ -154,15 +154,24 @@ function handleRegister(ws: ServerWebSocket<unknown>, payload: RegisterPayload) 
     }
   });
 
-  broadcast(
-    {
-      peerJoined: {
-        nodeID: payload.nodeID,
-        displayName: payload.displayName
-      }
-    },
-    payload.nodeID
-  );
+  // A re-register on the SAME live socket is a heartbeat, not a join: the
+  // node's periodic heartbeat re-registers on its existing session to keep
+  // the capability cache fresh. Broadcasting peerJoined for those ticks
+  // makes every consumer tear down and rebuild peer state on the node's
+  // heartbeat cadence (40s in the fleet), which reads as catalog churn.
+  // Broadcast only for a genuinely new nodeID or a session replacement.
+  const isSessionRefresh = existing !== undefined && existing.ws === ws;
+  if (!isSessionRefresh) {
+    broadcast(
+      {
+        peerJoined: {
+          nodeID: payload.nodeID,
+          displayName: payload.displayName
+        }
+      },
+      payload.nodeID
+    );
+  }
 }
 
 function handleDiscover(ws: ServerWebSocket<unknown>, payload: DiscoverPayload) {
