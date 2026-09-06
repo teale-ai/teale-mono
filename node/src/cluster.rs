@@ -624,7 +624,7 @@ fn send(relay: &RelayClient, to_node_id: &str, session_id: &str, message: &Clust
     }
 }
 
-fn short(node_id: &str) -> &str {
+pub(crate) fn short(node_id: &str) -> &str {
     &node_id[..16.min(node_id.len())]
 }
 

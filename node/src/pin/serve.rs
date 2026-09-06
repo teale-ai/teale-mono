@@ -207,6 +207,21 @@ async fn handle_request<B: CompletionBackend>(
         return;
     }
 
+    // Per-request visibility (#245): the PIN path was an observability
+    // dark path - a request admitted here produced no session open, no
+    // request line, no outcome, which once read as a hidden supplier.
+    // Mirror the cluster path: one admission line and one outcome line
+    // per request.
+    let started = std::time::Instant::now();
+    let est_tokens_in = estimate_tokens_in(&request.request);
+    tracing::info!(
+        "PIN inference request {} from {} (model {}, ~{} prompt tokens)",
+        request_id,
+        crate::cluster::short(&consumer_device_id),
+        requested_model,
+        est_tokens_in
+    );
+
     match backend.stream_completion(&request.request).await {
         Ok(mut rx) => {
             let mut tokens_out: i64 = 0;
@@ -230,6 +245,12 @@ async fn handle_request<B: CompletionBackend>(
                 }
             }
             if let Some(e) = stream_failed {
+                tracing::warn!(
+                    "PIN inference request {} failed after {} token(s): {}",
+                    request_id,
+                    tokens_out,
+                    e
+                );
                 send_error(
                     &connection,
                     &request_id,
@@ -239,7 +260,13 @@ async fn handle_request<B: CompletionBackend>(
                 .await;
                 return;
             }
-            let tokens_in = estimate_tokens_in(&request.request);
+            let tokens_in = est_tokens_in;
+            tracing::info!(
+                "PIN inference request {} completed ({} tokens in {:?})",
+                request_id,
+                tokens_out,
+                started.elapsed()
+            );
             let _ = connection
                 .send(&ClusterMessage::InferenceComplete(
                     InferenceCompletePayload {
@@ -273,6 +300,10 @@ async fn handle_request<B: CompletionBackend>(
             }
         }
         Err(err) => {
+            tracing::warn!(
+                "PIN inference request {} failed to start: {err:#}",
+                request_id
+            );
             send_error(
                 &connection,
                 &request_id,
