@@ -56,12 +56,36 @@ impl RelayClient {
 
         // Read task
         let ping_tx = write_tx.clone();
+        let ready_tx = write_tx.clone();
+        let ready_node_id = node_id.clone();
         tokio::spawn(async move {
             let mut read = read;
             while let Some(result) = read.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
                         if let Some(msg) = IncomingRelayMessage::parse(&text) {
+                            // Answer RelayOpen inline, from the read task. The
+                            // main loop can sit behind a long inference (#229)
+                            // while the gateway's relayReady deadline is 4s -
+                            // a control-plane reply must not queue behind
+                            // inference, or concurrent session opens time out
+                            // with "relay open: timeout waiting for relayReady"
+                            // on an otherwise healthy node. Forwarding to the
+                            // main loop continues below, so session
+                            // bookkeeping/logging is unchanged and channel
+                            // order (open before its data) is preserved.
+                            if let IncomingRelayMessage::RelayOpen(ref session) = msg {
+                                let ready = serde_json::json!({
+                                    "relayReady": {
+                                        "fromNodeID": ready_node_id,
+                                        "toNodeID": session.from_node_id,
+                                        "sessionID": session.session_id,
+                                    }
+                                });
+                                if ready_tx.send(Message::Text(ready.to_string())).is_err() {
+                                    break;
+                                }
+                            }
                             if incoming_tx.send(msg).is_err() {
                                 break;
                             }
@@ -171,6 +195,9 @@ impl RelayClient {
         self.send_json(&payload)
     }
 
+    // Unused since relayReady moved into the read task (see connect()); kept
+    // as part of the client's control-message API.
+    #[allow(dead_code)]
     pub fn send_relay_ready(&self, to_node_id: &str, session_id: &str) -> anyhow::Result<()> {
         let payload = serde_json::json!({
             "relayReady": {

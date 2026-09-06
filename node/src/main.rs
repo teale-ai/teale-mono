@@ -724,9 +724,9 @@ async fn dispatch(
                 &session.from_node_id[..16.min(session.from_node_id.len())],
                 &session.session_id[..8.min(session.session_id.len())]
             );
-            if let Err(e) = relay.send_relay_ready(&session.from_node_id, &session.session_id) {
-                error!("send relayReady: {}", e);
-            }
+            // relayReady is sent inline by the relay read task (relay.rs) so
+            // it never queues behind inference; only session bookkeeping
+            // happens here.
         }
 
         IncomingRelayMessage::RelayData(data) => {
