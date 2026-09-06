@@ -128,6 +128,9 @@ pub struct AppState {
     /// Gateway Ed25519 identity, used to sign PIN netmaps. `None` only in
     /// tests that don't exercise netmap endpoints.
     pub identity: Option<Arc<crate::identity::GatewayIdentity>>,
+    /// Process start, for the post-restart registry warmup window (see
+    /// ReliabilityConfig::registry_warmup_seconds).
+    pub started_at: std::time::Instant,
     /// Join-knock rate limiting for /v1/pins/join.
     pub pin_join_limiter: PinJoinLimiter,
 }

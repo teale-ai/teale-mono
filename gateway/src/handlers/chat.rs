@@ -109,6 +109,25 @@ fn pre_first_token_deadline(
     Duration::from_secs(prompt_aware.min(cap))
 }
 
+/// Error for an unresolvable model. During the post-restart warmup window
+/// (registry_warmup_seconds), nodes are still re-announcing on their own
+/// refresh cadence (up to ~40s), so an unresolved model may just be a
+/// supplier the fresh registry has not learned yet - return a retriable
+/// 503 instead of a hard 404 so clients back off rather than fail.
+fn unresolved_model_error(state: &AppState, requested_model: &str) -> GatewayError {
+    let warmup = Duration::from_secs(state.config.reliability.registry_warmup_seconds);
+    if state.started_at.elapsed() < warmup {
+        metrics::REQUESTS_TOTAL
+            .with_label_values(&[requested_model, "registry_warmup"])
+            .inc();
+        return GatewayError::NoEligibleDevice(requested_model.to_string());
+    }
+    metrics::REQUESTS_TOTAL
+        .with_label_values(&[requested_model, "model_not_found"])
+        .inc();
+    GatewayError::ModelNotFound(requested_model.to_string())
+}
+
 fn resolve_requested_model(state: &AppState, requested_model: &str) -> Option<CatalogModel> {
     if let Some(model) = state
         .catalog
@@ -291,10 +310,7 @@ pub(crate) fn prepare_chat_request_excluding(
 
     // Catalog lookup.
     let mut catalog_model = resolve_requested_model(state, &requested_model).ok_or_else(|| {
-        metrics::REQUESTS_TOTAL
-            .with_label_values(&[requested_model.as_str(), "model_not_found"])
-            .inc();
-        GatewayError::ModelNotFound(requested_model.clone())
+        unresolved_model_error(state, &requested_model)
     })?;
     let was_virtual_resolution = catalog_model.is_virtual;
 
@@ -1928,6 +1944,7 @@ quantization: null
                 quarantine_seconds: 30,
                 discover_interval_seconds: 10,
                 departed_grace_seconds: 180,
+                registry_warmup_seconds: 0,
             },
             synthetic_probes: Default::default(),
             solana: Default::default(),
@@ -1977,6 +1994,7 @@ quantization: null
             providers: crate::providers::ProvidersHandle::empty_for_test(),
             identity: None,
             pin_join_limiter: Default::default(),
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -2432,6 +2450,30 @@ pricing_completion: "0.00000020"
             pre_first_token_deadline(&state, &model, 39_000),
             Duration::from_secs(213)
         );
+    }
+
+    #[test]
+    fn unresolved_model_is_retriable_during_registry_warmup() {
+        let model = free_like();
+
+        // Inside the warmup window an unresolved model returns a retriable
+        // 503 (the supplier may simply not have re-announced yet).
+        let mut config = dispatch_test_config(18);
+        config.reliability.registry_warmup_seconds = 60;
+        let state = dispatch_test_state(config, &model);
+        assert!(matches!(
+            unresolved_model_error(&state, "acme/missing-model"),
+            GatewayError::NoEligibleDevice(_)
+        ));
+
+        // After the warmup window the same miss is a hard 404 again.
+        let mut state = dispatch_test_state(dispatch_test_config(18), &model);
+        state.config.reliability.registry_warmup_seconds = 60;
+        state.started_at = std::time::Instant::now() - Duration::from_secs(120);
+        assert!(matches!(
+            unresolved_model_error(&state, "acme/missing-model"),
+            GatewayError::ModelNotFound(_)
+        ));
     }
 
     #[tokio::test]
