@@ -543,12 +543,7 @@ mod tests {
 
         assert!(registry.eligible_devices("teale/auto").is_empty());
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use teale_protocol::HardwareCapability;
 
     fn caps(loaded: &[&str]) -> NodeCapabilities {
         NodeCapabilities {
@@ -579,7 +574,7 @@ mod tests {
         let mut reliability = ReliabilityConfig::default();
         reliability.departed_grace_seconds = 180;
         let registry = Registry::new(reliability);
-        registry.upsert_device("node-a".into(), "A".into(), caps(&["glm-5.3-flash"]));
+        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["glm-5.3-flash"], true));
 
         registry.mark_departed("node-a");
         // Still in the registry; model still listed during grace.
@@ -610,12 +605,12 @@ mod tests {
     #[test]
     fn rejoin_during_grace_clears_departed() {
         let registry = Registry::new(ReliabilityConfig::default());
-        registry.upsert_device("node-a".into(), "A".into(), caps(&["m"]));
+        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
         registry.mark_departed("node-a");
         assert!(registry.devices.get("node-a").unwrap().is_departed());
 
         // Rejoin via discover upsert restores instantly.
-        registry.upsert_device("node-a".into(), "A".into(), caps(&["m"]));
+        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
         assert!(!registry.devices.get("node-a").unwrap().is_departed());
         registry.sweep();
         assert!(registry
