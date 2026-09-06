@@ -20,5 +20,5 @@ jobs:
         # context, so run from the relay directory (context = relay/).
         working-directory: relay
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_RELAY_API_TOKEN || secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only --config fly.toml --dockerfile Dockerfile
