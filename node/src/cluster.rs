@@ -438,10 +438,28 @@ async fn handle_inference_request(
                 }
                 Some(Err(e)) => {
                     state.failed_requests.fetch_add(1, Ordering::Relaxed);
-                    error!(
-                        "Inference request {} failed after {} token(s): {}",
-                        request_id, token_count, e
-                    );
+                    // Name the stream budget when it fired: the reqwest
+                    // total timeout surfaces as a transport decode error,
+                    // which reads like a backend fault. When elapsed has
+                    // reached the budget, say so (Citadel had to subtract
+                    // timestamps to attribute a 900.06s failure).
+                    let elapsed = started.elapsed();
+                    let budget =
+                        std::time::Duration::from_secs(crate::inference::STREAM_BUDGET_SECONDS);
+                    if elapsed + std::time::Duration::from_secs(5) >= budget {
+                        error!(
+                            "Inference request {} failed after {} token(s): stream cap {}s reached ({})",
+                            request_id,
+                            token_count,
+                            crate::inference::STREAM_BUDGET_SECONDS,
+                            e
+                        );
+                    } else {
+                        error!(
+                            "Inference request {} failed after {} token(s): {}",
+                            request_id, token_count, e
+                        );
+                    }
                     reply_err(
                         relay,
                         from,
