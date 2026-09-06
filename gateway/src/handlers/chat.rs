@@ -2451,8 +2451,8 @@ pricing_completion: "0.00000020"
         );
     }
 
-    #[test]
-    fn unresolved_model_is_retriable_during_registry_warmup() {
+    #[tokio::test]
+    async fn unresolved_model_is_retriable_during_registry_warmup() {
         let model = free_like();
 
         // Inside the warmup window an unresolved model returns a retriable
