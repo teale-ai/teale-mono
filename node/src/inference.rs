@@ -19,8 +19,8 @@ use tracing::{debug, info};
 
 use teale_protocol::openai::ChatCompletionRequest;
 
-use crate::config::{Ds4Config, LlamaConfig, MnnConfig};
 use crate::backend::StreamEvent;
+use crate::config::{Ds4Config, LlamaConfig, MnnConfig};
 
 /// Bounded channel capacity for streaming chunks back to the dispatcher.
 /// Chosen so a 2048-token response can buffer without blocking, but fast

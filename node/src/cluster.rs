@@ -419,12 +419,13 @@ async fn handle_inference_request(
                         .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
                     state.completed_requests.fetch_add(1, Ordering::Relaxed);
 
-                    let done =
-                        ClusterMessage::InferenceComplete(teale_protocol::InferenceCompletePayload {
+                    let done = ClusterMessage::InferenceComplete(
+                        teale_protocol::InferenceCompletePayload {
                             request_id: request_id.clone(),
                             tokens_in: None,
                             tokens_out: Some(token_count as u32),
-                        });
+                        },
+                    );
                     send(relay, from, session, &done);
                     info!(
                         "Inference request {} completed ({} tokens in {:?})",
