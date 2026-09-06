@@ -195,6 +195,7 @@ mod tests {
                 quarantine_seconds: 30,
                 discover_interval_seconds: 10,
                 departed_grace_seconds: 180,
+                registry_warmup_seconds: 0,
             },
             synthetic_probes: Default::default(),
             solana: Default::default(),
@@ -245,6 +246,7 @@ mod tests {
             providers: crate::providers::ProvidersHandle::empty_for_test(),
             identity: None,
             pin_join_limiter: Default::default(),
+            started_at: std::time::Instant::now(),
         }
     }
 

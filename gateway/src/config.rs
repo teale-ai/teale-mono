@@ -99,6 +99,12 @@ pub struct ReliabilityConfig {
     /// the registry removes it for real. Absorbs transient relay flaps.
     #[serde(default = "default_departed_grace")]
     pub departed_grace_seconds: u64,
+    /// Post-start warmup: nodes re-announce on their own refresh cadence
+    /// (up to ~40s), so a freshly restarted gateway briefly sees an empty
+    /// registry. During this window an unresolved model is treated as a
+    /// not-yet-re-announced supplier (retriable 503) instead of a hard 404.
+    #[serde(default = "default_registry_warmup")]
+    pub registry_warmup_seconds: u64,
 }
 
 impl Default for ReliabilityConfig {
@@ -112,6 +118,7 @@ impl Default for ReliabilityConfig {
             quarantine_seconds: default_quarantine(),
             discover_interval_seconds: default_discover_interval(),
             departed_grace_seconds: default_departed_grace(),
+            registry_warmup_seconds: default_registry_warmup(),
         }
     }
 }
@@ -226,6 +233,9 @@ fn default_discover_interval() -> u64 {
 }
 fn default_departed_grace() -> u64 {
     180
+}
+fn default_registry_warmup() -> u64 {
+    60
 }
 fn default_synthetic_probe_enabled() -> bool {
     false
