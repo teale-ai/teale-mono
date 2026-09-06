@@ -546,8 +546,10 @@ mod tests {
 
     #[test]
     fn departed_device_survives_grace_then_is_removed() {
-        let mut reliability = ReliabilityConfig::default();
-        reliability.departed_grace_seconds = 180;
+        let reliability = ReliabilityConfig {
+            departed_grace_seconds: 180,
+            ..ReliabilityConfig::default()
+        };
         let registry = Registry::new(reliability);
         registry.upsert_device(
             "node-a".into(),

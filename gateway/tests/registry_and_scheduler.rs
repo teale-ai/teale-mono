@@ -18,6 +18,7 @@ fn reliability() -> ReliabilityConfig {
         heartbeat_stale_seconds: 30,
         quarantine_seconds: 30,
         discover_interval_seconds: 10,
+        departed_grace_seconds: 180,
     }
 }
 
