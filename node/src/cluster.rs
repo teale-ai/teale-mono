@@ -737,8 +737,10 @@ mod tests {
         th.on_failure(t0);
         th.on_failure(t0);
         assert_eq!(th.on_success(), Some(3));
-        // State fully reset: next failure logs as a fresh first line.
+        // State fully reset: next failure logs as a fresh first line, and
+        // recovering from it reports exactly that one failure, then nothing.
         assert_eq!(th.on_failure(t0), Some(None));
+        assert_eq!(th.on_success(), Some(1));
         assert_eq!(th.on_success(), None);
     }
 }
