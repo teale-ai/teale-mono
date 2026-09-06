@@ -48,9 +48,14 @@ pub struct NodeRuntimeState {
     /// its target peer id. RelayClose - or a peer_not_found / peerLeft
     /// naming the target (#237) - aborts the worker so a dead client
     /// stops consuming GPU.
-    pub inference_tasks:
-        std::sync::Mutex<std::collections::HashMap<String, (String, tokio::task::JoinHandle<()>)>>,
+    pub inference_tasks: InferenceTaskMap,
 }
+
+/// In-flight inference worker entry: target peer id, request id, task
+/// handle. The peer id drives peer-scoped aborts (#237); the request id
+/// gives every abort path its per-request outcome line.
+type InferenceTaskEntry = (String, String, tokio::task::JoinHandle<()>);
+type InferenceTaskMap = std::sync::Mutex<std::collections::HashMap<String, InferenceTaskEntry>>;
 
 impl NodeRuntimeState {
     pub fn new(max_concurrent: u32) -> Self {
@@ -219,6 +224,7 @@ pub async fn handle_relay_data(
             let swap_owned = swap.clone();
             let state_owned = state.clone();
             let session_key = session_owned.clone();
+            let request_id_owned = req.request_id.clone();
             let handle = tokio::spawn(async move {
                 handle_inference_request(
                     &relay_handle,
@@ -235,11 +241,10 @@ pub async fn handle_relay_data(
                     .unwrap()
                     .remove(&session_key);
             });
-            state
-                .inference_tasks
-                .lock()
-                .unwrap()
-                .insert(session.to_string(), (from.to_string(), handle));
+            state.inference_tasks.lock().unwrap().insert(
+                session.to_string(),
+                (from.to_string(), request_id_owned, handle),
+            );
         }
 
         ClusterMessage::LoadModel(req) => {
@@ -526,6 +531,33 @@ fn short(node_id: &str) -> &str {
     &node_id[..16.min(node_id.len())]
 }
 
+/// Abort one in-flight worker with its per-request outcome line: every
+/// request must end in exactly one outcome - completed, failed, or
+/// aborted - so the abort paths log the request id and count the failure
+/// here, the same accounting #255 gave stream endings. Returns true when
+/// a worker was found.
+fn abort_one_locked(
+    tasks: &mut std::collections::HashMap<String, InferenceTaskEntry>,
+    state: &NodeRuntimeState,
+    session: &str,
+    reason: &str,
+) -> bool {
+    let Some((_, request_id, handle)) = tasks.remove(session) else {
+        return false;
+    };
+    handle.abort();
+    state.failed_requests.fetch_add(1, Ordering::Relaxed);
+    warn!("Inference request {} aborted: {}", request_id, reason);
+    true
+}
+
+/// Abort the in-flight worker for one session (#229 relayClose path).
+/// Returns true when a worker was found and aborted.
+pub fn abort_session(state: &NodeRuntimeState, session_id: &str, reason: &str) -> bool {
+    let mut tasks = state.inference_tasks.lock().unwrap();
+    abort_one_locked(&mut tasks, state, session_id, reason)
+}
+
 /// Abort in-flight inference workers whose target peer is `peer_id`
 /// (#237): once the relay says a peer is gone (peer_not_found) or left,
 /// requests toward it are generating into the void. Returns how many
@@ -534,13 +566,13 @@ pub fn abort_sessions_to_peer(state: &NodeRuntimeState, peer_id: &str) -> usize 
     let mut tasks = state.inference_tasks.lock().unwrap();
     let doomed: Vec<String> = tasks
         .iter()
-        .filter(|(_, (from, _))| from == peer_id)
+        .filter(|(_, (from, _, _))| from == peer_id)
         .map(|(session, _)| session.clone())
         .collect();
-    let aborted = doomed.len();
+    let mut aborted = 0;
     for session in doomed {
-        if let Some((_, handle)) = tasks.remove(&session) {
-            handle.abort();
+        if abort_one_locked(&mut tasks, state, &session, "consumer peer unreachable") {
+            aborted += 1;
         }
     }
     aborted
@@ -553,15 +585,19 @@ pub fn abort_sessions_to_peer(state: &NodeRuntimeState, peer_id: &str) -> usize 
 /// never delivered. Aborted workers are counted as failed, not completed.
 /// Returns how many workers were aborted.
 pub fn abort_all_inference(state: &NodeRuntimeState) -> usize {
-    let mut tasks = state.inference_tasks.lock().unwrap();
-    let aborted = tasks.len();
-    if aborted > 0 {
-        state
-            .failed_requests
-            .fetch_add(aborted as u64, Ordering::Relaxed);
-    }
-    for (_, (_, handle)) in tasks.drain() {
-        handle.abort();
+    let sessions: Vec<String> = state
+        .inference_tasks
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let mut aborted = 0;
+    for session in sessions {
+        let mut tasks = state.inference_tasks.lock().unwrap();
+        if abort_one_locked(&mut tasks, state, &session, "relay connection lost") {
+            aborted += 1;
+        }
     }
     aborted
 }
