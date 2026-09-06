@@ -48,10 +48,14 @@ pub struct NodeRuntimeState {
     /// its target peer id. RelayClose - or a peer_not_found / peerLeft
     /// naming the target (#237) - aborts the worker so a dead client
     /// stops consuming GPU.
-    pub inference_tasks: std::sync::Mutex<
-        std::collections::HashMap<String, (String, String, tokio::task::JoinHandle<()>)>,
-    >,
+    pub inference_tasks: InferenceTaskMap,
 }
+
+/// In-flight inference worker entry: target peer id, request id, task
+/// handle. The peer id drives peer-scoped aborts (#237); the request id
+/// gives every abort path its per-request outcome line.
+type InferenceTaskEntry = (String, String, tokio::task::JoinHandle<()>);
+type InferenceTaskMap = std::sync::Mutex<std::collections::HashMap<String, InferenceTaskEntry>>;
 
 impl NodeRuntimeState {
     pub fn new(max_concurrent: u32) -> Self {
@@ -533,7 +537,7 @@ fn short(node_id: &str) -> &str {
 /// here, the same accounting #255 gave stream endings. Returns true when
 /// a worker was found.
 fn abort_one_locked(
-    tasks: &mut std::collections::HashMap<String, (String, String, tokio::task::JoinHandle<()>)>,
+    tasks: &mut std::collections::HashMap<String, InferenceTaskEntry>,
     state: &NodeRuntimeState,
     session: &str,
     reason: &str,
