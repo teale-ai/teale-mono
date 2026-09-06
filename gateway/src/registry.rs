@@ -282,8 +282,11 @@ impl Registry {
         if let Some(mut dev) = self.devices.get_mut(node_id) {
             if dev.departed_at.is_none() {
                 dev.departed_at = Some(Instant::now());
-                tracing::info!(node = node_id, "device departed; {}s grace before catalog removal",
-                    self.reliability.departed_grace_seconds);
+                tracing::info!(
+                    node = node_id,
+                    "device departed; {}s grace before catalog removal",
+                    self.reliability.departed_grace_seconds
+                );
             }
         }
     }
@@ -317,7 +320,10 @@ impl Registry {
             .map(|r| r.node_id.clone())
             .collect();
         for node_id in departed {
-            tracing::info!(node = node_id, "departed grace expired; removing device from registry");
+            tracing::info!(
+                node = node_id,
+                "departed grace expired; removing device from registry"
+            );
             self.remove_device(&node_id);
         }
         let mut stale_nodes = Vec::new();
@@ -577,10 +583,16 @@ mod tests {
 
         registry.mark_departed("node-a");
         // Still in the registry; model still listed during grace.
-        assert!(registry.snapshot_devices().iter().any(|d| d.node_id == "node-a"));
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .any(|d| d.node_id == "node-a"));
         assert_eq!(registry.loaded_count("glm-5.3-flash"), 1);
         registry.sweep();
-        assert!(registry.snapshot_devices().iter().any(|d| d.node_id == "node-a"));
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .any(|d| d.node_id == "node-a"));
 
         // Simulate grace expiry by backdating the departure.
         {
@@ -588,7 +600,10 @@ mod tests {
             dev.departed_at = Some(Instant::now() - std::time::Duration::from_secs(181));
         }
         registry.sweep();
-        assert!(registry.snapshot_devices().iter().all(|d| d.node_id != "node-a"));
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .all(|d| d.node_id != "node-a"));
         assert_eq!(registry.loaded_count("glm-5.3-flash"), 0);
     }
 
@@ -603,6 +618,9 @@ mod tests {
         registry.upsert_device("node-a".into(), "A".into(), caps(&["m"]));
         assert!(!registry.devices.get("node-a").unwrap().is_departed());
         registry.sweep();
-        assert!(registry.snapshot_devices().iter().any(|d| d.node_id == "node-a"));
+        assert!(registry
+            .snapshot_devices()
+            .iter()
+            .any(|d| d.node_id == "node-a"));
     }
 }
