@@ -309,9 +309,8 @@ pub(crate) fn prepare_chat_request_excluding(
     };
 
     // Catalog lookup.
-    let mut catalog_model = resolve_requested_model(state, &requested_model).ok_or_else(|| {
-        unresolved_model_error(state, &requested_model)
-    })?;
+    let mut catalog_model = resolve_requested_model(state, &requested_model)
+        .ok_or_else(|| unresolved_model_error(state, &requested_model))?;
     let was_virtual_resolution = catalog_model.is_virtual;
 
     let floor = &state.config.scheduler.per_model_floor;
