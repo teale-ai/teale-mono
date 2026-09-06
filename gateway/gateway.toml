@@ -75,8 +75,24 @@ treasury_address = "HwGY6RJKzAxoRjeqWYvmnZGu4AC8oyEzqFrpGgqAKzhA"
 withdrawal_fee_bps = 180
 
 [fleet]
-# Fleet membership allowlist (#263): when non-empty, only these node ids may
-# enter the device registry from relay discover; strangers advertising
-# available=true are denied as supply. Populated after fleet confirms the
-# full node ids; empty = accept-all (previous behavior).
-allowed_node_ids = []
+# Fleet membership allowlist (#263): only these node ids may enter the
+# device registry from relay discover; strangers advertising available=true
+# are denied as supply. Ids confirmed by the fleet (cross-checked across two
+# boxes' logs + registerAck/exit-pin/health agreement); teale-512g8's id
+# additionally confirmed from live gateway dispatch logs. Excluded
+# deliberately: NICOLLE b8ff97d7..., TICO 1766594... (unidentified),
+# LAPTOP-EFKCAOHN, LAPTOP-GLSRB496, the 512g1 pair.
+allowed_node_ids = [
+    # 96 Tailors-Mac-Studio
+    "7af2b3cb4b1e745e4e9a71a63935619ef0fd30e89c0f5ea7447d3d7d76370430",
+    # 64 tailor64s-mac-studio
+    "d49e5885b882f4470779115dd739cbbf2ae5cbf83e2417f2ddf1743784a6afa0",
+    # MBP taylors-macbook-pro
+    "e676554a95f14a46c3c043aaf04a3e4386ef18e766823c71b7a2da4ba7a9f482",
+    # teale-512g8 (CCC workhorse)
+    "02f1b0445450a6ef3969842774bf638ac22a6545c430f9a83339305a73a92355",
+    # 16 ochou.local / tailor16s-mac-mini
+    "fca7880a697e6a6e3669349b76eae604e3a801db67d5436f74421721dddeb0da",
+    # Air ais-macbook-air
+    "6d8a4f43fb03860648cb3f0e1d8c26d0123d42967a5e76f3354c21a4817c64ae",
+]
