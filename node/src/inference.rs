@@ -15,11 +15,12 @@ use std::sync::{
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use teale_protocol::openai::ChatCompletionRequest;
 
 use crate::config::{Ds4Config, LlamaConfig, MnnConfig};
+use crate::backend::StreamEvent;
 
 /// Bounded channel capacity for streaming chunks back to the dispatcher.
 /// Chosen so a 2048-token response can buffer without blocking, but fast
@@ -166,7 +167,7 @@ impl InferenceProxy {
     pub async fn stream_completion(
         &self,
         request: &ChatCompletionRequest,
-    ) -> anyhow::Result<mpsc::Receiver<Value>> {
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
         let url = format!("{}/v1/chat/completions", self.base_url);
 
         let mut body = serde_json::to_value(request)?;
@@ -200,7 +201,7 @@ impl InferenceProxy {
         }
         self.set_ready(true);
 
-        let (tx, rx) = mpsc::channel::<Value>(CHUNK_CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::channel::<StreamEvent>(CHUNK_CHANNEL_CAPACITY);
 
         if !streaming_enabled {
             let advertised_model_id = self.advertised_model_id.clone();
@@ -208,7 +209,13 @@ impl InferenceProxy {
                 let response_json = match response.json::<Value>().await {
                     Ok(value) => value,
                     Err(e) => {
-                        error!("non-stream completion decode failed: {}", e);
+                        debug!("non-stream completion decode failed: {}", e);
+                        let _ = tx
+                            .send(StreamEvent::Failed(format!(
+                                "non-stream completion decode failed: {}",
+                                e
+                            )))
+                            .await;
                         return;
                     }
                 };
@@ -227,9 +234,11 @@ impl InferenceProxy {
                     "usage": response_json.get("usage").cloned().unwrap_or(Value::Null)
                 });
 
-                if tx.send(chunk).await.is_err() {
+                if tx.send(StreamEvent::Chunk(chunk)).await.is_err() {
                     debug!("chunk receiver dropped before synthesized chunk");
+                    return;
                 }
+                let _ = tx.send(StreamEvent::Finished).await;
             });
 
             return Ok(rx);
@@ -251,13 +260,14 @@ impl InferenceProxy {
 
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if data == "[DONE]" {
+                                    let _ = tx.send(StreamEvent::Finished).await;
                                     return;
                                 }
                                 if let Ok(parsed) = serde_json::from_str::<Value>(data) {
                                     // `.send().await` is the backpressure point:
                                     // if the relay consumer is slow, we stall here
                                     // instead of growing an unbounded buffer.
-                                    if tx.send(parsed).await.is_err() {
+                                    if tx.send(StreamEvent::Chunk(parsed)).await.is_err() {
                                         debug!("chunk receiver dropped — stopping SSE reader");
                                         return;
                                     }
@@ -266,16 +276,29 @@ impl InferenceProxy {
                         }
                     }
                     Err(e) => {
-                        // A mid-stream read failure (client-side timeout,
-                        // connection reset, decode error) is not evidence
-                        // the backend is down - llama-server may be serving
-                        // fine. The health probes own readiness; do NOT
-                        // flip ready here.
-                        error!("SSE stream error: {}", e);
-                        break;
+                        // A mid-stream read failure (client-side timeout -
+                        // this is where the 900s budget lands - connection
+                        // reset, decode error) is not evidence the backend
+                        // is down - llama-server may be serving fine. The
+                        // health probes own readiness; do NOT flip ready
+                        // here. The consumer owns the request-id log line
+                        // and the failed-count accounting (#255).
+                        debug!("SSE stream error: {}", e);
+                        let _ = tx
+                            .send(StreamEvent::Failed(format!("backend stream error: {}", e)))
+                            .await;
+                        return;
                     }
                 }
             }
+            // The backend closed the stream without a [DONE] terminator -
+            // not a clean completion; say so instead of letting the
+            // receiver read a bare channel close as success (#255).
+            let _ = tx
+                .send(StreamEvent::Failed(
+                    "backend stream ended without [DONE]".to_string(),
+                ))
+                .await;
         });
 
         Ok(rx)
