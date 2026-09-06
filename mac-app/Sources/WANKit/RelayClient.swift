@@ -413,8 +413,9 @@ public actor RelayClient {
         handshakeTimeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.handshakeTimeoutSeconds * 1_000_000_000))
             guard !Task.isCancelled, let self = self else { return }
-            let stillWaiting = await self.isConnecting && !(await self.isConnectedValue)
-            if stillWaiting {
+            let connecting = await self.isConnecting
+            let connected = await self.isConnectedValue
+            if connecting && !connected {
                 await self.handleDeadConnection(reason: "no inbound frame within \(Int(Self.handshakeTimeoutSeconds))s of connect")
             }
         }
