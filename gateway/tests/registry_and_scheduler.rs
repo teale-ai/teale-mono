@@ -19,6 +19,7 @@ fn reliability() -> ReliabilityConfig {
         quarantine_seconds: 30,
         discover_interval_seconds: 10,
         departed_grace_seconds: 180,
+        registry_warmup_seconds: 0,
     }
 }
 

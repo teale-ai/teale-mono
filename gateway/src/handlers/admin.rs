@@ -274,6 +274,7 @@ mod tests {
             providers: crate::providers::ProvidersHandle::empty_for_test(),
             identity: None,
             pin_join_limiter: Default::default(),
+            started_at: std::time::Instant::now(),
         }
     }
 
