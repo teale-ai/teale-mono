@@ -300,7 +300,10 @@ async fn handle_request<B: CompletionBackend>(
             }
         }
         Err(err) => {
-            tracing::warn!("PIN inference request {} failed to start: {err:#}", request_id);
+            tracing::warn!(
+                "PIN inference request {} failed to start: {err:#}",
+                request_id
+            );
             send_error(
                 &connection,
                 &request_id,
