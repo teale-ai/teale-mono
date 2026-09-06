@@ -218,6 +218,31 @@ pub async fn spawn(
         outbox: outbox_tx.clone(),
     };
 
+    // The outbox receiver must live for the whole process, so it is drained
+    // by ONE persistent task that forwards to whichever connection is live.
+    // The previous design moved the receiver into a per-connection drain task;
+    // on the first reconnect the drained receiver was a dummy, the real one was
+    // dropped, and every send (including the re-register) failed silently -
+    // leaving the gateway connected to the relay but unregistered until the
+    // next process restart (devices' offers then die as peer_not_found).
+    let current_tx: Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<Message>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    {
+        let current_tx = current_tx.clone();
+        tokio::spawn(async move {
+            while let Some(m) = outbox_rx.recv().await {
+                let tx = current_tx.lock().unwrap().clone();
+                if let Some(tx) = tx {
+                    // A dead connection between snapshot and send drops the
+                    // message; sessions are failed on disconnect anyway.
+                    let _ = tx.send(m);
+                }
+                // None (disconnected): drop. Stale register/relayOpen/relayData
+                // for dead sessions must not replay onto the next connection.
+            }
+        });
+    }
+
     let connection_task = {
         let relay_url = config.relay.url.clone();
         let identity = identity.clone();
@@ -226,6 +251,7 @@ pub async fn spawn(
         let sessions = sessions.clone();
         let ready_waiters = ready_waiters.clone();
         let outbox_tx = outbox_tx.clone();
+        let current_tx = current_tx.clone();
         let reliability = config.reliability.clone();
         let idle_timeout = relay_idle_timeout(config.reliability.discover_interval_seconds);
 
@@ -246,22 +272,10 @@ pub async fn spawn(
 
                         let (mut write, read) = ws_stream.split();
 
-                        // writer task
+                        // writer task: fed by the persistent drain via the slot
                         let (local_outbox_tx, mut local_outbox_rx) =
                             mpsc::unbounded_channel::<Message>();
-                        let drain_task = {
-                            let mut main_rx =
-                                std::mem::replace(&mut outbox_rx, mpsc::unbounded_channel().1);
-                            tokio::spawn(async move {
-                                while let Some(m) = main_rx.recv().await {
-                                    if local_outbox_tx.send(m).is_err() {
-                                        break;
-                                    }
-                                }
-                                // When connection dies the local side errors out, and
-                                // we return here so the outer loop can respawn.
-                            })
-                        };
+                        *current_tx.lock().unwrap() = Some(local_outbox_tx);
                         let write_task = tokio::spawn(async move {
                             while let Some(msg) = local_outbox_rx.recv().await {
                                 if let Err(e) = write.send(msg).await {
@@ -355,7 +369,7 @@ pub async fn spawn(
                             }
                         }
 
-                        drain_task.abort();
+                        *current_tx.lock().unwrap() = None;
                         write_task.abort();
 
                         // Fail in-flight sessions.
