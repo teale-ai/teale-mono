@@ -91,7 +91,10 @@ const PREFILL_TPS_FLOOR: u64 = 200;
 /// stretches every co-resident request's first token. The deadline should
 /// mean "device unresponsive", never "device busy with a big prompt", so it
 /// scales with estimated prefill time: base + prompt_tokens /
-/// PREFILL_TPS_FLOOR, capped at request_timeout_seconds.
+/// PREFILL_TPS_FLOOR, capped at request_timeout_seconds. The estimate
+/// assumes a cold prefix cache; cache-warm prompts (e.g. CCC runs ~97%
+/// cached) finish far earlier, so over-estimation is the safe direction -
+/// the deadline exists to cover the non-cache-warm heavy claim.
 fn pre_first_token_deadline(
     state: &AppState,
     catalog_model: &CatalogModel,
