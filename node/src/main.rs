@@ -750,19 +750,9 @@ async fn dispatch(
                 &session.session_id[..8.min(session.session_id.len())]
             );
             // Abort any in-flight inference worker for this session (#229):
-            // the client is gone, stop burning GPU on it.
-            if let Some((_, handle)) = state
-                .inference_tasks
-                .lock()
-                .unwrap()
-                .remove(&session.session_id)
-            {
-                handle.abort();
-                info!(
-                    "Aborted in-flight inference for closed session {}...",
-                    &session.session_id[..8.min(session.session_id.len())]
-                );
-            }
+            // the client is gone, stop burning GPU on it. The helper logs
+            // the per-request outcome line and counts the failure.
+            cluster::abort_session(state, &session.session_id, "consumer closed the session");
         }
 
         IncomingRelayMessage::PeerJoined(peer) => {
