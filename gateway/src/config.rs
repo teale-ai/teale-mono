@@ -315,6 +315,7 @@ impl Config {
             reliability: ReliabilityConfig::default(),
             synthetic_probes: SyntheticProbeConfig::default(),
             solana: SolanaConfig::default(),
+            fleet: FleetConfig::default(),
         }
     }
 }
