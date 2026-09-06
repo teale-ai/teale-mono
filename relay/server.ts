@@ -1,3 +1,5 @@
+import { loadHistory, logEvent, queryEvents, eventLogStatus } from "./eventlog.ts";
+
 type JSONValue =
   | string
   | number
@@ -65,10 +67,12 @@ function send(ws: ServerWebSocket<unknown>, message: RelayMessage) {
     stats.lastDropAt = new Date().toISOString();
     stats.lastDropTo = sockets.get(ws)?.substring(0, 16) ?? "unknown";
     console.log(`[send] DROPPED message to ${stats.lastDropTo}... kind=${Object.keys(message)[0]} buffered=${ws.getBufferedAmount()}`);
+    logEvent("drop", { to: sockets.get(ws) ?? "unknown", msg_kind: Object.keys(message)[0], buffered: ws.getBufferedAmount() });
   } else if (result === -1) {
     stats.backpressured++;
     if (stats.backpressured % 100 === 1) {
       console.log(`[send] backpressure enqueuing to ${sockets.get(ws)?.substring(0, 16) ?? "unknown"}... buffered=${ws.getBufferedAmount()} count=${stats.backpressured}`);
+      logEvent("backpressure", { to: sockets.get(ws) ?? "unknown", buffered: ws.getBufferedAmount(), count: stats.backpressured });
     }
   }
 }
@@ -108,6 +112,7 @@ function forwardToTarget(kind: string, payload: TargetedPayload & Record<string,
   const target = peers.get(payload.toNodeID);
   if (!target) {
     sendError(sender, "peer_not_found", `Peer ${payload.toNodeID} is not connected`);
+    logEvent("peer_not_found", { from: sockets.get(sender) ?? "unknown", to: payload.toNodeID, msg_kind: kind });
     return;
   }
 
@@ -161,6 +166,13 @@ function handleRegister(ws: ServerWebSocket<unknown>, payload: RegisterPayload) 
   // heartbeat cadence (40s in the fleet), which reads as catalog churn.
   // Broadcast only for a genuinely new nodeID or a session replacement.
   const isSessionRefresh = existing !== undefined && existing.ws === ws;
+  logEvent("register", {
+    node: payload.nodeID,
+    displayName: payload.displayName,
+    peers_before: peers.size - 1,
+    replaced: existing !== undefined && existing.ws !== ws,
+    refresh: isSessionRefresh,
+  });
   if (!isSessionRefresh) {
     broadcast(
       {
@@ -249,6 +261,7 @@ function handleClose(ws: ServerWebSocket<unknown>) {
   const nodeID = sockets.get(ws);
   if (!nodeID) {
     console.log(`[close] unknown websocket closed`);
+    logEvent("close", { outcome: "unknown_socket" });
     return;
   }
 
@@ -257,11 +270,13 @@ function handleClose(ws: ServerWebSocket<unknown>) {
   const peer = peers.get(nodeID);
   if (!peer || peer.ws !== ws) {
     console.log(`[close] stale ws for ${nodeID.substring(0, 16)}... (already replaced)`);
+    logEvent("close", { node: nodeID, outcome: "stale_replaced" });
     return;
   }
 
   peers.delete(nodeID);
   console.log(`[close] removed ${nodeID.substring(0, 16)}... peers_after=${peers.size}`);
+  logEvent("close", { node: nodeID, outcome: "removed", peers_after: peers.size });
   broadcast({
     peerLeft: {
       nodeID,
@@ -278,8 +293,16 @@ const server = Bun.serve({
       return Response.json({
         ok: true,
         peers: peers.size,
-        stats
+        stats,
+        eventlog: eventLogStatus()
       });
+    }
+
+    // Post-hoc forensics (#221): recent control-plane events, newest last.
+    // Node IDs are truncated here; full IDs stay in the on-disk JSONL,
+    // readable via flyctl ssh console -a teale-relay.
+    if (url.pathname === "/events") {
+      return Response.json({ events: queryEvents(url.searchParams) });
     }
 
     if (url.pathname === "/peers") {
@@ -308,4 +331,17 @@ const server = Bun.serve({
   }
 });
 
-console.log(`relay listening on :${server.port}`);
+const replayed = loadHistory();
+logEvent("start", { port: server.port, events_replayed: replayed });
+console.log(`relay listening on :${server.port} (replayed ${replayed} events from disk)`);
+
+// Periodic stats snapshot so post-hoc forensics get a counter timeline
+// (registrations/closes are event-driven; delivery counters are not).
+setInterval(() => {
+  logEvent("stats", {
+    sent: stats.sent,
+    dropped: stats.dropped,
+    backpressured: stats.backpressured,
+    peers: peers.size,
+  });
+}, 60_000);
