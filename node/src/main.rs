@@ -740,7 +740,7 @@ async fn dispatch(
             );
             // Abort any in-flight inference worker for this session (#229):
             // the client is gone, stop burning GPU on it.
-            if let Some((_, handle)) = state
+            if let Some(handle) = state
                 .inference_tasks
                 .lock()
                 .unwrap()
