@@ -80,10 +80,23 @@ fn single_supplier_large_cold_start_grace(state: &AppState, catalog_model: &Cata
 }
 
 /// Conservative prefill rate floor (tokens/second) used to scale the
-/// pre-first-token deadline with prompt size. Deliberately below the slowest
-/// observed supplier (~258 tok/s on glm-5.3-flash Q8_0 on M3 Ultra) so the
-/// estimate errs toward patience.
-const PREFILL_TPS_FLOOR: u64 = 200;
+/// pre-first-token deadline with prompt size. Deliberately below observed
+/// rates so the estimate errs toward patience. Measured on glm-5.3-flash
+/// Q8_0 (M3 Ultra, build b176): ~350 tok/s at 4k context but only ~160
+/// tok/s at 38k - attention cost grows with context, so a flat floor
+/// under-covers long prompts. Two regimes until the curve is better sampled.
+const PREFILL_TPS_FLOOR_SHORT: u64 = 200;
+const PREFILL_TPS_FLOOR_LONG: u64 = 150;
+/// Context length above which the long-context floor applies.
+const PREFILL_LONG_CTX_THRESHOLD: u32 = 8_192;
+
+fn prefill_floor_tps(required_ctx: u32) -> u64 {
+    if required_ctx > PREFILL_LONG_CTX_THRESHOLD {
+        PREFILL_TPS_FLOOR_LONG
+    } else {
+        PREFILL_TPS_FLOOR_SHORT
+    }
+}
 
 /// Pre-first-token deadline (#243): the flat per-model deadline killed big
 /// prompts mid-prefill - a 36-39k ctx request needs >130s of prefill on the
@@ -91,7 +104,7 @@ const PREFILL_TPS_FLOOR: u64 = 200;
 /// stretches every co-resident request's first token. The deadline should
 /// mean "device unresponsive", never "device busy with a big prompt", so it
 /// scales with estimated prefill time: base + prompt_tokens /
-/// PREFILL_TPS_FLOOR, capped at request_timeout_seconds. The estimate
+/// prefill_floor_tps(ctx), capped at request_timeout_seconds. The estimate
 /// assumes a cold prefix cache; cache-warm prompts (e.g. CCC runs ~97%
 /// cached) finish far earlier, so over-estimation is the safe direction -
 /// the deadline exists to cover the non-cache-warm heavy claim.
@@ -105,7 +118,7 @@ fn pre_first_token_deadline(
         return Duration::from_secs(cap);
     }
     let base = ttft_deadline_seconds_for_model(&state.config.reliability, catalog_model);
-    let prompt_aware = base + required_ctx as u64 / PREFILL_TPS_FLOOR;
+    let prompt_aware = base + required_ctx as u64 / prefill_floor_tps(required_ctx);
     Duration::from_secs(prompt_aware.min(cap))
 }
 
@@ -2444,10 +2457,15 @@ pricing_completion: "0.00000020"
             dispatch_caps(&[&model.id], &[]),
         );
 
-        // 18s base + 39000/200 = 213s
+        // 18s base + 39000/150 (long-context floor) = 278s
         assert_eq!(
             pre_first_token_deadline(&state, &model, 39_000),
-            Duration::from_secs(213)
+            Duration::from_secs(278)
+        );
+        // Short prompts keep the 200 floor: 18 + 4000/200 = 38s
+        assert_eq!(
+            pre_first_token_deadline(&state, &model, 4_000),
+            Duration::from_secs(38)
         );
     }
 
