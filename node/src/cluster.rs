@@ -375,7 +375,23 @@ async fn handle_inference_request(
     match swap.stream_completion(&req.request).await {
         Ok(mut rx) => {
             let mut first_token_logged = false;
-            while let Some(chunk_json) = rx.recv().await {
+            // Every stream ends with a terminal event (#255): Finished on a
+            // natural end, Failed on the 900s budget cap or a mid-stream
+            // read/decode error. A bare channel close is treated as a
+            // failure too - never as a silent completion.
+            let mut terminal: Option<Result<(), String>> = None;
+            while let Some(event) = rx.recv().await {
+                let chunk_json = match event {
+                    crate::backend::StreamEvent::Chunk(c) => c,
+                    crate::backend::StreamEvent::Finished => {
+                        terminal = Some(Ok(()));
+                        break;
+                    }
+                    crate::backend::StreamEvent::Failed(e) => {
+                        terminal = Some(Err(e));
+                        break;
+                    }
+                };
                 if !first_token_logged {
                     first_token_logged = true;
                     info!(
@@ -392,26 +408,61 @@ async fn handle_inference_request(
                 send(relay, from, session, &msg);
             }
 
-            let elapsed = started.elapsed();
-            state
-                .total_completion_tokens
-                .fetch_add(token_count, Ordering::Relaxed);
-            state
-                .total_completion_seconds_micros
-                .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
-            state.completed_requests.fetch_add(1, Ordering::Relaxed);
+            match terminal {
+                Some(Ok(())) => {
+                    let elapsed = started.elapsed();
+                    state
+                        .total_completion_tokens
+                        .fetch_add(token_count, Ordering::Relaxed);
+                    state
+                        .total_completion_seconds_micros
+                        .fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+                    state.completed_requests.fetch_add(1, Ordering::Relaxed);
 
-            let done =
-                ClusterMessage::InferenceComplete(teale_protocol::InferenceCompletePayload {
-                    request_id: request_id.clone(),
-                    tokens_in: None,
-                    tokens_out: Some(token_count as u32),
-                });
-            send(relay, from, session, &done);
-            info!(
-                "Inference request {} completed ({} tokens in {:?})",
-                request_id, token_count, elapsed
-            );
+                    let done = ClusterMessage::InferenceComplete(
+                        teale_protocol::InferenceCompletePayload {
+                            request_id: request_id.clone(),
+                            tokens_in: None,
+                            tokens_out: Some(token_count as u32),
+                        },
+                    );
+                    send(relay, from, session, &done);
+                    info!(
+                        "Inference request {} completed ({} tokens in {:?})",
+                        request_id, token_count, elapsed
+                    );
+                }
+                Some(Err(e)) => {
+                    state.failed_requests.fetch_add(1, Ordering::Relaxed);
+                    error!(
+                        "Inference request {} failed after {} token(s): {}",
+                        request_id, token_count, e
+                    );
+                    reply_err(
+                        relay,
+                        from,
+                        session,
+                        &request_id,
+                        &e,
+                        Some(InferenceErrorCode::InternalError),
+                    );
+                }
+                None => {
+                    state.failed_requests.fetch_add(1, Ordering::Relaxed);
+                    error!(
+                        "Inference request {} stream closed with no terminal event after {} token(s)",
+                        request_id, token_count
+                    );
+                    reply_err(
+                        relay,
+                        from,
+                        session,
+                        &request_id,
+                        "backend stream closed without an outcome",
+                        Some(InferenceErrorCode::InternalError),
+                    );
+                }
+            }
         }
         Err(e) => {
             error!("Inference error for {}: {}", request_id, e);

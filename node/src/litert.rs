@@ -14,6 +14,7 @@ use tracing::info;
 
 use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 
+use crate::backend::StreamEvent;
 use crate::config::LiteRtConfig;
 use crate::inference::CHUNK_CHANNEL_CAPACITY;
 
@@ -79,7 +80,7 @@ impl LiteRtEngine {
     pub async fn stream_completion(
         &self,
         request: &ChatCompletionRequest,
-    ) -> anyhow::Result<mpsc::Receiver<Value>> {
+    ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
         let prompt = format_chat_prompt(&request.messages);
 
         let mut cmd = Command::new(&self.binary);
@@ -105,7 +106,7 @@ impl LiteRtEngine {
             anyhow::anyhow!("Failed to spawn litert_lm_main at '{}': {}", self.binary, e)
         })?;
 
-        let (tx, rx) = mpsc::channel::<Value>(CHUNK_CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::channel::<StreamEvent>(CHUNK_CHANNEL_CAPACITY);
         let model_id = self.model_id.clone();
 
         if let Some(stderr) = child.stderr.take() {
@@ -142,7 +143,7 @@ impl LiteRtEngine {
                     });
 
                     chunk_idx += 1;
-                    if tx.send(chunk_json).await.is_err() {
+                    if tx.send(StreamEvent::Chunk(chunk_json)).await.is_err() {
                         break;
                     }
                 }
@@ -157,9 +158,21 @@ impl LiteRtEngine {
                         "finish_reason": "stop"
                     }]
                 });
-                let _ = tx.send(final_json).await;
+                let _ = tx.send(StreamEvent::Chunk(final_json)).await;
 
-                let _ = child.wait().await;
+                match child.wait().await {
+                    Ok(s) if s.success() => {
+                        let _ = tx.send(StreamEvent::Finished).await;
+                    }
+                    other => {
+                        let _ = tx
+                            .send(StreamEvent::Failed(format!(
+                                "litert_lm exited abnormally: {:?}",
+                                other
+                            )))
+                            .await;
+                    }
+                }
             });
         }
 

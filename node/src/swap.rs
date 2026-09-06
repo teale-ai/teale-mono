@@ -19,7 +19,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
@@ -170,7 +169,7 @@ impl SwapManager {
     pub async fn stream_completion(
         &self,
         request: &ChatCompletionRequest,
-    ) -> anyhow::Result<mpsc::Receiver<Value>> {
+    ) -> anyhow::Result<mpsc::Receiver<crate::backend::StreamEvent>> {
         let guard = self.inner.read().await;
         guard.backend.stream_completion(request).await
     }

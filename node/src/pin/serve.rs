@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::gate::PriorityGate;
@@ -30,7 +29,7 @@ pub trait CompletionBackend: Send + Sync + 'static {
     fn stream_completion(
         &self,
         request: &ChatCompletionRequest,
-    ) -> impl Future<Output = Result<mpsc::Receiver<Value>>> + Send;
+    ) -> impl Future<Output = Result<mpsc::Receiver<crate::backend::StreamEvent>>> + Send;
 }
 
 impl CompletionBackend for crate::swap::SwapManager {
@@ -40,7 +39,7 @@ impl CompletionBackend for crate::swap::SwapManager {
     async fn stream_completion(
         &self,
         request: &ChatCompletionRequest,
-    ) -> Result<mpsc::Receiver<Value>> {
+    ) -> Result<mpsc::Receiver<crate::backend::StreamEvent>> {
         crate::swap::SwapManager::stream_completion(self, request).await
     }
 }
@@ -211,14 +210,34 @@ async fn handle_request<B: CompletionBackend>(
     match backend.stream_completion(&request.request).await {
         Ok(mut rx) => {
             let mut tokens_out: i64 = 0;
-            while let Some(chunk) = rx.recv().await {
-                tokens_out += 1;
-                let _ = connection
-                    .send(&ClusterMessage::InferenceChunk(InferenceChunkPayload {
-                        request_id: request_id.clone(),
-                        chunk,
-                    }))
-                    .await;
+            let mut stream_failed: Option<String> = None;
+            while let Some(event) = rx.recv().await {
+                match event {
+                    crate::backend::StreamEvent::Chunk(chunk) => {
+                        tokens_out += 1;
+                        let _ = connection
+                            .send(&ClusterMessage::InferenceChunk(InferenceChunkPayload {
+                                request_id: request_id.clone(),
+                                chunk,
+                            }))
+                            .await;
+                    }
+                    crate::backend::StreamEvent::Finished => break,
+                    crate::backend::StreamEvent::Failed(e) => {
+                        stream_failed = Some(e);
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = stream_failed {
+                send_error(
+                    &connection,
+                    &request_id,
+                    &e,
+                    InferenceErrorCode::InternalError,
+                )
+                .await;
+                return;
             }
             let tokens_in = estimate_tokens_in(&request.request);
             let _ = connection
@@ -283,12 +302,17 @@ mod tests {
         async fn stream_completion(
             &self,
             _request: &ChatCompletionRequest,
-        ) -> Result<mpsc::Receiver<Value>> {
+        ) -> Result<mpsc::Receiver<crate::backend::StreamEvent>> {
             let (tx, rx) = mpsc::channel(8);
             tokio::spawn(async move {
                 for i in 0..3 {
-                    let _ = tx.send(serde_json::json!({"token": i})).await;
+                    let _ = tx
+                        .send(crate::backend::StreamEvent::Chunk(
+                            serde_json::json!({"token": i}),
+                        ))
+                        .await;
                 }
+                let _ = tx.send(crate::backend::StreamEvent::Finished).await;
             });
             Ok(rx)
         }

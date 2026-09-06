@@ -241,12 +241,17 @@ mod tests {
         async fn stream_completion(
             &self,
             _request: &ChatCompletionRequest,
-        ) -> Result<mpsc::Receiver<Value>> {
+        ) -> Result<mpsc::Receiver<crate::backend::StreamEvent>> {
             let (tx, rx) = mpsc::channel(8);
             tokio::spawn(async move {
                 for i in 0..2 {
-                    let _ = tx.send(serde_json::json!({"delta": i})).await;
+                    let _ = tx
+                        .send(crate::backend::StreamEvent::Chunk(
+                            serde_json::json!({"delta": i}),
+                        ))
+                        .await;
                 }
+                let _ = tx.send(crate::backend::StreamEvent::Finished).await;
             });
             Ok(rx)
         }
