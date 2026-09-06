@@ -740,7 +740,7 @@ async fn dispatch(
             );
             // Abort any in-flight inference worker for this session (#229):
             // the client is gone, stop burning GPU on it.
-            if let Some(handle) = state
+            if let Some((_, handle)) = state
                 .inference_tasks
                 .lock()
                 .unwrap()
@@ -768,6 +768,15 @@ async fn dispatch(
                 peer.display_name,
                 &peer.node_id[..16.min(peer.node_id.len())]
             );
+            // Requests toward a departed peer are generating into the
+            // void; stop them (#237).
+            let aborted = cluster::abort_sessions_to_peer(state, &peer.node_id);
+            if aborted > 0 {
+                info!(
+                    "Aborted {} in-flight inference request(s) toward departed peer",
+                    aborted
+                );
+            }
         }
 
         IncomingRelayMessage::Error(err) => {
@@ -777,6 +786,22 @@ async fn dispatch(
                     .lock()
                     .await
                     .note_rate_limit(&err.message, err.retry_after_seconds);
+            }
+            // The relay answers a send to a disconnected peer with
+            // peer_not_found instead of synthesizing relayClose per
+            // session (the relay is session-stateless), so this is the
+            // node's only signal for a dead consumer (#237).
+            if err.code == "peer_not_found" {
+                if let Some(peer_id) = cluster::peer_not_found_id(&err.message) {
+                    let aborted = cluster::abort_sessions_to_peer(state, peer_id);
+                    if aborted > 0 {
+                        warn!(
+                            "Aborted {} in-flight inference request(s) toward unreachable peer {}...",
+                            aborted,
+                            &peer_id[..16.min(peer_id.len())]
+                        );
+                    }
+                }
             }
         }
 

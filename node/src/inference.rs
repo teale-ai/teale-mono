@@ -79,7 +79,12 @@ impl InferenceProxy {
             advertised_model_id: advertised_model_id.to_string(),
             backend_model_id: backend_model_id.to_string(),
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
+                // Total request budget, prefill + generation. Deliberately
+                // far above the gateway's policy timeouts so the node never
+                // cuts off a long generation the gateway explicitly
+                // allowed: at 38k context, shared decode runs ~4 tok/s, so
+                // a long answer needs real headroom past 300s.
+                .timeout(std::time::Duration::from_secs(900))
                 .build()
                 .expect("reqwest client build failed"),
             ready: Arc::new(AtomicBool::new(false)),
@@ -196,7 +201,6 @@ impl InferenceProxy {
         self.set_ready(true);
 
         let (tx, rx) = mpsc::channel::<Value>(CHUNK_CHANNEL_CAPACITY);
-        let ready = self.ready.clone();
 
         if !streaming_enabled {
             let advertised_model_id = self.advertised_model_id.clone();
@@ -262,7 +266,11 @@ impl InferenceProxy {
                         }
                     }
                     Err(e) => {
-                        ready.store(false, Ordering::Relaxed);
+                        // A mid-stream read failure (client-side timeout,
+                        // connection reset, decode error) is not evidence
+                        // the backend is down - llama-server may be serving
+                        // fine. The health probes own readiness; do NOT
+                        // flip ready here.
                         error!("SSE stream error: {}", e);
                         break;
                     }
