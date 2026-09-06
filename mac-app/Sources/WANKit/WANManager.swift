@@ -328,7 +328,9 @@ public final class WANManager: @unchecked Sendable {
         do {
             wanLog("Connecting to relay \(config.relayServerURLs.first?.absoluteString ?? "?")...")
             try await relay.connect()
-            let msg = "Relay: connected"
+            // Socket resumed only - liveness latches on the first inbound
+            // frame (relayStatus reads .reconnecting until then, #209).
+            let msg = "Relay: socket up, awaiting first frame"
             wanLog(msg)
             diag.append(msg)
         } catch {

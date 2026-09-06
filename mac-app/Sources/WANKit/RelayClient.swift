@@ -305,6 +305,11 @@ public actor RelayClient {
     /// Multiple subscribers can listen for relay messages (discovery + manager).
     private var messageContinuations: [UUID: AsyncStream<RelayMessage>.Continuation] = [:]
     private var isConnected: Bool = false
+    /// Socket is up but no inbound frame has arrived yet. Until the first
+    /// frame (registerAck in practice) lands, "connected" is unproven.
+    private var isConnecting: Bool = false
+    /// Declares the connection dead if no inbound frame arrives in time.
+    private var handshakeTimeoutTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var currentBackoff: TimeInterval = 1.0
     private var relayedConnections: [String: RelayPeerConnection] = [:]
@@ -346,7 +351,10 @@ public actor RelayClient {
 
     public var relayStatus: RelayStatus {
         if isConnected { return .connected }
-        if reconnectTask != nil { return .reconnecting }
+        // Socket up but handshake unproven reads as .reconnecting, not
+        // .connected - a socket that dies before its first frame never
+        // reports connected (#209).
+        if isConnecting || reconnectTask != nil { return .reconnecting }
         return .disconnected
     }
 
@@ -372,14 +380,48 @@ public actor RelayClient {
         self.webSocketTask = task
         task.resume()
 
-        isConnected = true
+        // Do NOT mark connected here: resume() only means the socket was
+        // asked to open. isConnected latches on the first inbound frame
+        // (noteFirstFrame), and the handshake timeout forces a reconnect if
+        // none arrives (#209).
+        isConnected = false
+        isConnecting = true
         currentBackoff = 1.0
 
-        FileHandle.standardError.write(Data("[WAN] connect() completed, calling receiveLoop()...\n".utf8))
+        FileHandle.standardError.write(Data("[WAN] connect() socket resumed, awaiting first inbound frame...\n".utf8))
         startPingLoop()
         receiveLoop()
-        FileHandle.standardError.write(Data("[WAN] receiveLoop() returned\n".utf8))
+        startHandshakeTimeout()
     }
+
+    /// First inbound frame proves the socket is live end to end (TCP + TLS +
+    /// WS upgrade + relay accepting traffic). Latch connected state here.
+    private func noteFirstFrame() {
+        guard !isConnected else { return }
+        isConnected = true
+        isConnecting = false
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
+        FileHandle.standardError.write(Data("[WAN] Relay connection established (first frame received)\n".utf8))
+        fireStatusHandlers()
+    }
+
+    private static let handshakeTimeoutSeconds: TimeInterval = 20.0
+
+    private func startHandshakeTimeout() {
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.handshakeTimeoutSeconds * 1_000_000_000))
+            guard !Task.isCancelled, let self = self else { return }
+            let stillWaiting = await self.isConnecting && !(await self.isConnectedValue)
+            if stillWaiting {
+                await self.handleDeadConnection(reason: "no inbound frame within \(Int(Self.handshakeTimeoutSeconds))s of connect")
+            }
+        }
+    }
+
+    /// Actor-isolated read for the handshake timeout task.
+    private var isConnectedValue: Bool { isConnected }
 
     public func disconnect() {
         reconnectTask?.cancel()
@@ -391,6 +433,9 @@ public actor RelayClient {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         isConnected = false
+        isConnecting = false
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
         failActiveRelaySessions(with: WANError.peerDisconnected)
         for (_, cont) in messageContinuations {
             cont.finish()
@@ -457,9 +502,12 @@ public actor RelayClient {
     /// proves the WebSocket is dead but no close/error event has surfaced
     /// (half-open connection). Mirrors the receive-loop error path.
     private func handleDeadConnection(reason: String) {
-        guard isConnected else { return }
+        guard isConnected || isConnecting else { return }
         FileHandle.standardError.write(Data("[WAN] Declaring relay connection dead (\(reason)); forcing reconnect\n".utf8))
         isConnected = false
+        isConnecting = false
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
         pingTask?.cancel()
         pingTask = nil
         receiveTask?.cancel()
@@ -657,6 +705,7 @@ public actor RelayClient {
                     return
                 }
 
+                await noteFirstFrame()
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .deferredToDate
                 let preview = String(data: data.prefix(100), encoding: .utf8) ?? "binary"
@@ -688,6 +737,9 @@ public actor RelayClient {
                 let msg = "[WAN] Relay WebSocket disconnected: \(error.localizedDescription)"
                 FileHandle.standardError.write(Data((msg + "\n").utf8))
                 isConnected = false
+                isConnecting = false
+                handshakeTimeoutTask?.cancel()
+                handshakeTimeoutTask = nil
                 pingTask?.cancel()
                 pingTask = nil
                 suspendActiveRelaySessions()
@@ -735,7 +787,9 @@ public actor RelayClient {
                 do {
                     FileHandle.standardError.write(Data("[WAN] Attempting relay reconnect (backoff: \(backoff)s)...\n".utf8))
                     try await self.connect()
-                    FileHandle.standardError.write(Data("[WAN] Relay reconnected successfully\n".utf8))
+                    // Socket established only - liveness is confirmed by the
+                    // first inbound frame, logged by noteFirstFrame().
+                    FileHandle.standardError.write(Data("[WAN] Relay socket re-established; awaiting first frame to confirm liveness\n".utf8))
                     await self.resetReconnect()
                     await self.fireStatusHandlers()
                     // Re-register after reconnect
