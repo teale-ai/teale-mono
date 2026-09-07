@@ -125,6 +125,26 @@ fn pre_first_token_deadline(
     Duration::from_secs(prompt_aware.min(cap))
 }
 
+/// Co-resident TTFT allowance: a LIGHT request admitted beside an
+/// in-flight heavy waits on the heavy's decode for its prefill slot, so
+/// a slow first token there is contention on a live device, not device
+/// failure. Extend the deadline past the request_timeout cap (Citadel's
+/// samples show co-resident first tokens of 123-216s on 512g8) - and the
+/// caller skips quarantine for the attempt, since quarantining a band's
+/// only heavy-occupied supplier turns one busy device into a fleet-wide
+/// outage (the 05:07-05:15Z GLM flap, #270).
+pub(crate) fn co_resident_ttft_adjust(
+    deadline: Duration,
+    beside_heavy: bool,
+    reliability: &crate::config::ReliabilityConfig,
+) -> Duration {
+    if beside_heavy {
+        deadline + Duration::from_secs(reliability.heavy_co_resident_ttft_bonus_seconds)
+    } else {
+        deadline
+    }
+}
+
 /// Error for an unresolvable model. During the post-restart warmup window
 /// (registry_warmup_seconds), nodes are still re-announcing on their own
 /// refresh cadence (up to ~40s), so an unresolved model may just be a
@@ -1139,6 +1159,13 @@ async fn run_streaming(
                     return;
                 }
             };
+            // Co-resident-beside-heavy: record occupancy at dispatch - a
+            // heavy that finishes during our wait must not expose this
+            // request to quarantine for the contention it actually saw.
+            let beside_heavy =
+                !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+            let ttft_deadline =
+                co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
             info!(
                 model = %model_id,
@@ -1279,6 +1306,7 @@ async fn run_streaming(
                 && !got_first_token
                 && !cold_start_grace
                 && !queue_full_failure
+                && !beside_heavy
                 && state.registry.in_flight(&target_node) == 0
             {
                 state
@@ -1310,7 +1338,11 @@ async fn run_streaming(
                 device = %target_node,
                 "retrying on next-best device after non-streamed failure"
             );
-            state.registry.quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            if !beside_heavy {
+                state
+                    .registry
+                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            }
             excluded.push(target_node);
         }
 
@@ -1450,6 +1482,11 @@ async fn run_buffered(
             &preferred_node_ids,
         )
         .await?;
+        // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
+        let beside_heavy =
+            !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+        let ttft_deadline =
+            co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
         let mut got_first = false;
         let mut retriable = false;
@@ -1552,6 +1589,7 @@ async fn run_buffered(
             && !warmup_retry
             && !cold_start_grace
             && !queue_full_failure
+            && !beside_heavy
             && state.registry.in_flight(&target_node) == 0
         {
             state
@@ -1652,7 +1690,7 @@ async fn run_buffered(
                 continue;
             }
             info!(device = %target_node, "retrying (buffered) on next-best device");
-            if !queue_full_failure {
+            if !queue_full_failure && !beside_heavy {
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -2060,6 +2098,7 @@ quantization: null
                 heavy_hold: true,
                 heavy_hold_prompt_tokens: 30_000,
                 heavy_hold_max_tokens: 4096,
+                heavy_co_resident_ttft_bonus_seconds: 180,
                 discover_interval_seconds: 10,
                 departed_grace_seconds: 180,
                 registry_warmup_seconds: 0,
@@ -2752,6 +2791,20 @@ pricing_completion: "0.00000020"
         assert!(heavy);
         assert_eq!(state.registry.in_flight("node-b"), 1);
         assert_eq!(state.registry.heavy_in_flight("node-b"), 1);
+    }
+
+    #[test]
+    fn co_resident_ttft_adjust_extends_deadline_only_beside_heavy() {
+        let reliability = crate::config::ReliabilityConfig {
+            heavy_co_resident_ttft_bonus_seconds: 180,
+            ..crate::config::ReliabilityConfig::default()
+        };
+        let base = Duration::from_secs(120);
+        assert_eq!(co_resident_ttft_adjust(base, false, &reliability), base);
+        assert_eq!(
+            co_resident_ttft_adjust(base, true, &reliability),
+            Duration::from_secs(300)
+        );
     }
 
     #[tokio::test]

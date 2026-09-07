@@ -60,6 +60,11 @@ discover_interval_seconds = 60
 heavy_hold = true
 heavy_hold_prompt_tokens = 30000
 heavy_hold_max_tokens = 4096
+# Extra first-token allowance for a light request admitted beside an
+# in-flight heavy: its slow first token is contention on a live device,
+# not failure - the deadline is extended and quarantine is skipped for
+# that attempt.
+heavy_co_resident_ttft_bonus_seconds = 180
 
 [synthetic_probes]
 # Keep /v1/models TTFT/TPS from going stale when real traffic is quiet.

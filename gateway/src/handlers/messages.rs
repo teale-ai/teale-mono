@@ -20,7 +20,9 @@ use uuid::Uuid;
 use crate::auth::AuthPrincipal;
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
-use crate::handlers::chat::{error_to_status_label, pick_and_dispatch, PreparedChatRequest};
+use crate::handlers::chat::{
+    co_resident_ttft_adjust, error_to_status_label, pick_and_dispatch, PreparedChatRequest,
+};
 use crate::ledger;
 use crate::metrics;
 use crate::relay_client::SessionEvent;
@@ -454,6 +456,12 @@ async fn run_anthropic_buffered(
             &prepared.preferred_node_ids,
         )
         .await?;
+        // Co-resident-beside-heavy: occupancy at dispatch; a slow first
+        // token there is contention on a live device, not device failure.
+        let beside_heavy =
+            !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+        let ttft_deadline =
+            co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
         let mut got_first = false;
         let mut retriable = false;
@@ -523,7 +531,7 @@ async fn run_anthropic_buffered(
         state.relay.close_session(&target_node, &session_id);
         state.registry.dec_in_flight(&target_node, request_heavy);
 
-        if !completed && !got_first && !cold_start_grace {
+        if !completed && !got_first && !cold_start_grace && !beside_heavy {
             state
                 .registry
                 .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -553,9 +561,11 @@ async fn run_anthropic_buffered(
                     .inc();
                 continue;
             }
-            state
-                .registry
-                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            if !beside_heavy {
+                state
+                    .registry
+                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            }
             excluded.push(target_node);
             metrics::RETRIES_TOTAL
                 .with_label_values(&["anthropic_buffered_failure"])
@@ -613,6 +623,12 @@ async fn run_anthropic_streaming(
                     return;
                 }
             };
+            // Co-resident-beside-heavy: occupancy at dispatch (see chat.rs).
+            let beside_heavy =
+                !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+            let ttft_deadline =
+                co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
+
 
             info!(model = %model_id, device = %target_node, attempt = tried, "Anthropic streaming inference dispatched");
             let mut translator = AnthropicStreamTranslator::new(
@@ -695,7 +711,7 @@ async fn run_anthropic_streaming(
             state.relay.close_session(&target_node, &session_id);
             state.registry.dec_in_flight(&target_node, request_heavy);
 
-            if !completed && !got_first && !cold_start_grace {
+            if !completed && !got_first && !cold_start_grace && !beside_heavy {
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -721,9 +737,11 @@ async fn run_anthropic_streaming(
                     .inc();
                 continue;
             }
-            state
-                .registry
-                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            if !beside_heavy {
+                state
+                    .registry
+                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+            }
             excluded.push(target_node);
             metrics::RETRIES_TOTAL
                 .with_label_values(&["anthropic_stream_failure"])
