@@ -848,15 +848,14 @@ pub(crate) fn apmhelp_lane_request(state: &AppState, principal: &AuthPrincipal) 
     let Some(pool) = state.db.as_ref() else {
         return false;
     };
-    let account: Option<String> = if let Some((account_user_id, _session_id)) =
-        principal.account_session()
-    {
-        Some(account_user_id.to_string())
-    } else {
-        principal
-            .api_key()
-            .map(|(_key_id, account_user_id, _role)| account_user_id.to_string())
-    };
+    let account: Option<String> =
+        if let Some((account_user_id, _session_id)) = principal.account_session() {
+            Some(account_user_id.to_string())
+        } else {
+            principal
+                .api_key()
+                .map(|(_key_id, account_user_id, _role)| account_user_id.to_string())
+        };
     if let Some(account) = account {
         if let Ok(Some(_role)) = crate::pins::role_of(pool, &cfg.pin_id, &account) {
             return true;

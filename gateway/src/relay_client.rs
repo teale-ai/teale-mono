@@ -495,7 +495,12 @@ async fn handle_incoming(
                         continue;
                     }
                 };
-                registry.upsert_device_with_class(node_id.to_string(), display_name, caps, employee);
+                registry.upsert_device_with_class(
+                    node_id.to_string(),
+                    display_name,
+                    caps,
+                    employee,
+                );
             }
             update_eligible_gauges(registry);
         }
