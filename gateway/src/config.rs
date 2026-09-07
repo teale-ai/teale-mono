@@ -138,6 +138,13 @@ pub struct ReliabilityConfig {
     pub heavy_hold_prompt_tokens: u32,
     #[serde(default = "default_heavy_hold_max_tokens")]
     pub heavy_hold_max_tokens: u32,
+    /// Extra first-token allowance for a LIGHT request admitted beside
+    /// an in-flight heavy: its prefill waits on the heavy's decode, so
+    /// a slow first token is contention on a live device, not device
+    /// failure. Applied on top of the (capped) prompt-scaled deadline
+    /// and signals the caller to skip quarantine for that attempt.
+    #[serde(default = "default_heavy_co_resident_ttft_bonus")]
+    pub heavy_co_resident_ttft_bonus_seconds: u64,
 }
 
 impl Default for ReliabilityConfig {
@@ -155,6 +162,7 @@ impl Default for ReliabilityConfig {
             heavy_hold: default_heavy_hold(),
             heavy_hold_prompt_tokens: default_heavy_hold_prompt_tokens(),
             heavy_hold_max_tokens: default_heavy_hold_max_tokens(),
+            heavy_co_resident_ttft_bonus_seconds: default_heavy_co_resident_ttft_bonus(),
         }
     }
 }
@@ -289,6 +297,13 @@ fn default_heavy_hold_prompt_tokens() -> u32 {
 /// partially produced) 6k+; short answers finish even beside a heavy.
 fn default_heavy_hold_max_tokens() -> u32 {
     4096
+}
+
+/// 180s on top of the normal TTFT deadline: Citadel's contention samples
+/// show co-resident first tokens of 123-216s on 512g8 behind a heavy's
+/// cold prefill, over the 120s base deadline.
+fn default_heavy_co_resident_ttft_bonus() -> u64 {
+    180
 }
 fn default_synthetic_probe_enabled() -> bool {
     false
