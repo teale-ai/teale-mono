@@ -83,10 +83,11 @@ fn single_supplier_large_cold_start_grace(state: &AppState, catalog_model: &Cata
 /// pre-first-token deadline with prompt size. Deliberately below observed
 /// rates so the estimate errs toward patience. Measured on glm-5.3-flash
 /// Q8_0 (M3 Ultra, build b176): ~350 tok/s at 4k context but only ~160
-/// tok/s at 38k - attention cost grows with context, so a flat floor
-/// under-covers long prompts. Two regimes until the curve is better sampled.
+/// tok/s at 38k, ~55 tok/s at 200k+ with a cold post-reset cache (512g8,
+/// Sep 7) - attention cost grows with context, so a flat floor under-covers
+/// long prompts. Two regimes until the curve is better sampled.
 const PREFILL_TPS_FLOOR_SHORT: u64 = 200;
-const PREFILL_TPS_FLOOR_LONG: u64 = 150;
+const PREFILL_TPS_FLOOR_LONG: u64 = 100;
 /// Context length above which the long-context floor applies.
 const PREFILL_LONG_CTX_THRESHOLD: u32 = 8_192;
 
@@ -108,6 +109,15 @@ fn prefill_floor_tps(required_ctx: u32) -> u64 {
 /// assumes a cold prefix cache; cache-warm prompts (e.g. CCC runs ~97%
 /// cached) finish far earlier, so over-estimation is the safe direction -
 /// the deadline exists to cover the non-cache-warm heavy claim.
+/// Sole-supplier TTFT ceiling: when a model has exactly one eligible
+/// device there is no failover to protect, so the pre-first-token deadline's
+/// only job is detecting a wedged device. A genuinely large prompt gets the
+/// prefill time it needs instead of dying at the 300s request cap mid-
+/// prefill (9hg's 86.6k prompt died this way on 512g8 at 10:52Z Sep 7,
+/// cold cache after a box reset). Bounded below the node stream budget
+/// (1800s, node/src/inference.rs) minus a decode reserve.
+const SOLE_SUPPLIER_TTFT_CEILING_SECONDS: u64 = 1500;
+
 fn pre_first_token_deadline(
     state: &AppState,
     catalog_model: &CatalogModel,
@@ -122,6 +132,9 @@ fn pre_first_token_deadline(
     // (max_tokens) is not prefilled, and letting it inflate the deadline
     // pushed small prompts with large max_tokens straight to the 300s cap.
     let prompt_aware = base + prompt_tokens as u64 / prefill_floor_tps(prompt_tokens);
+    if state.registry.eligible_devices(&catalog_model.id).len() <= 1 {
+        return Duration::from_secs(prompt_aware.min(SOLE_SUPPLIER_TTFT_CEILING_SECONDS));
+    }
     Duration::from_secs(prompt_aware.min(cap))
 }
 
@@ -1357,6 +1370,9 @@ async fn run_streaming(
             // request to quarantine for the contention it actually saw.
             let beside_heavy =
                 !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+            // Sole supplier: quarantining the only eligible device turns a
+            // slow cold prefill into a fleet-wide outage for the model.
+            let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;
             let ttft_deadline =
                 co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
@@ -1515,6 +1531,7 @@ async fn run_streaming(
                 && !queue_full_failure
                 && !client_error_failure
                 && !beside_heavy
+                && !sole_supplier
                 && state.registry.in_flight(&target_node) == 0
             {
                 state
@@ -1708,6 +1725,7 @@ async fn run_buffered(
         let cleanup = SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
         let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+        let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;
         let ttft_deadline =
             co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
@@ -1823,6 +1841,7 @@ async fn run_buffered(
             && !queue_full_failure
             && !client_error_failure
             && !beside_heavy
+            && !sole_supplier
             && state.registry.in_flight(&target_node) == 0
         {
             state
@@ -2824,6 +2843,49 @@ pricing_completion: "0.00000020"
     }
 
     #[tokio::test]
+    async fn loaded_large_sole_supplier_big_prompt_exceeds_request_cap() {
+        let model = kimi_like();
+        let state = dispatch_test_state(dispatch_test_config(18), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        // 86.6k prompt: 18 + 86600/100 = 884s - the 300s request cap must
+        // NOT clamp a sole supplier's cold prefill (9hg's 10:52Z death).
+        assert_eq!(
+            pre_first_token_deadline(&state, &model, 86_600),
+            Duration::from_secs(884)
+        );
+        // And it clamps at the sole-supplier ceiling, never the 300s cap.
+        assert_eq!(
+            pre_first_token_deadline(&state, &model, 262_144),
+            Duration::from_secs(SOLE_SUPPLIER_TTFT_CEILING_SECONDS)
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_supplier_big_prompt_keeps_request_cap() {
+        let model = kimi_like();
+        let state = dispatch_test_state(dispatch_test_config(18), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-b".into(),
+            "Node B".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        let cap = state.config.reliability.request_timeout_seconds;
+        assert_eq!(
+            pre_first_token_deadline(&state, &model, 86_600),
+            Duration::from_secs(cap)
+        );
+    }
+
+    #[tokio::test]
     async fn small_single_supplier_keeps_normal_first_token_deadline() {
         let model = free_like();
         let state = dispatch_test_state(dispatch_test_config(18), &model);
@@ -2855,10 +2917,11 @@ pricing_completion: "0.00000020"
             dispatch_caps(&[&model.id], &[]),
         );
 
-        // 18s base + 39000/150 (long-context floor) = 278s
+        // 18s base + 39000/100 (long-context floor) = 408s; one registered
+        // device is a sole supplier, so the 300s request cap does not clamp.
         assert_eq!(
             pre_first_token_deadline(&state, &model, 39_000),
-            Duration::from_secs(278)
+            Duration::from_secs(408)
         );
         // Short prompts keep the 200 floor: 18 + 4000/200 = 38s
         assert_eq!(

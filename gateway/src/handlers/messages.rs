@@ -469,6 +469,9 @@ async fn run_anthropic_buffered(
         // Co-resident-beside-heavy: occupancy at dispatch; a slow first
         // token there is contention on a live device, not device failure.
         let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+        // Sole supplier: quarantining the only eligible device turns a slow
+        // cold prefill into a fleet-wide outage for the model.
+        let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;
         let ttft_deadline =
             co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
@@ -545,7 +548,13 @@ async fn run_anthropic_buffered(
 
         cleanup.run_now();
 
-        if !completed && !got_first && !cold_start_grace && !client_error_failure && !beside_heavy {
+        if !completed
+            && !got_first
+            && !cold_start_grace
+            && !client_error_failure
+            && !beside_heavy
+            && !sole_supplier
+        {
             state
                 .registry
                 .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -653,6 +662,7 @@ async fn run_anthropic_streaming(
             // Co-resident-beside-heavy: occupancy at dispatch (see chat.rs).
             let beside_heavy =
                 !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+            let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;
             let ttft_deadline =
                 co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
@@ -749,6 +759,7 @@ async fn run_anthropic_streaming(
                 && !cold_start_grace
                 && !client_error_failure
                 && !beside_heavy
+                && !sole_supplier
             {
                 state
                     .registry
