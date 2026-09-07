@@ -423,6 +423,7 @@ pub async fn spawn(
     Ok(handle)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     msg: IncomingRelayMessage,
     registry: &Arc<Registry>,
@@ -793,6 +794,7 @@ mod tests {
             &ready_waiters,
             60,
             &crate::config::FleetConfig::default(),
+            &crate::config::ApmhelpConfig::default(),
             &mut sent_discover_after_ack,
         )
         .await;
