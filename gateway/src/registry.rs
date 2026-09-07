@@ -216,10 +216,7 @@ impl Registry {
     /// Refusal leaves the counters untouched. Pair with `dec_in_flight`
     /// on session close.
     pub fn admit(&self, node_id: &str, heavy: bool) -> bool {
-        let e = self
-            .in_flight
-            .entry(node_id.to_string())
-            .or_default();
+        let e = self.in_flight.entry(node_id.to_string()).or_default();
         if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
             return false;
         }
