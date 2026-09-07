@@ -554,6 +554,7 @@ async fn start_backend(
                 };
                 info!("Waiting for {} to become healthy...", backend_name);
                 inference.wait_for_health(120).await?;
+                inference.warm_up().await;
                 Some(sup)
             };
 
