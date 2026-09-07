@@ -149,7 +149,7 @@ async fn probe_target(
     target: &ProbeTarget,
     max_tokens: u32,
 ) -> anyhow::Result<()> {
-    state.registry.inc_in_flight(&target.node_id);
+    state.registry.admit(&target.node_id, false);
 
     let ttft_deadline_seconds =
         ttft_deadline_seconds_for_model_size(&state.config.reliability, target.is_large);
@@ -164,7 +164,7 @@ async fn probe_target(
     {
         Ok(session_id) => session_id,
         Err(err) => {
-            state.registry.dec_in_flight(&target.node_id);
+            state.registry.dec_in_flight(&target.node_id, false);
             anyhow::bail!("relay open: {}", err);
         }
     };
@@ -214,7 +214,7 @@ async fn probe_target(
     );
     if let Err(err) = send {
         state.relay.close_session(&target.node_id, &session_id);
-        state.registry.dec_in_flight(&target.node_id);
+        state.registry.dec_in_flight(&target.node_id, false);
         anyhow::bail!("relay send: {}", err);
     }
 
@@ -272,7 +272,7 @@ async fn probe_target(
     };
 
     state.relay.close_session(&target.node_id, &session_id);
-    state.registry.dec_in_flight(&target.node_id);
+    state.registry.dec_in_flight(&target.node_id, false);
     result
 }
 

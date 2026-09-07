@@ -36,6 +36,9 @@ pub enum GatewayError {
     #[error("no eligible device for model {0}")]
     NoEligibleDevice(String),
 
+    #[error("heavy-hold: all eligible devices for {0} are running a heavy request; retry after the incumbent finishes (#247)")]
+    HeavyContention(String),
+
     #[error("upstream error: {0}")]
     Upstream(String),
 
@@ -64,6 +67,7 @@ impl GatewayError {
             Self::InsufficientCredits { .. } => StatusCode::PAYMENT_REQUIRED,
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
             Self::NoEligibleDevice(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::HeavyContention(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::AllUpstreamsFailed(_) => StatusCode::BAD_GATEWAY,
             Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
@@ -83,6 +87,7 @@ impl GatewayError {
             Self::InsufficientCredits { .. } => "insufficient_credits",
             Self::ModelNotFound(_) => "model_not_found",
             Self::NoEligibleDevice(_) => "model_unavailable",
+            Self::HeavyContention(_) => "heavy_contention",
             Self::Upstream(_) => "upstream_error",
             Self::AllUpstreamsFailed(_) => "upstream_failed",
             Self::UpstreamTimeout => "timeout",

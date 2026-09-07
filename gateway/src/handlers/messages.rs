@@ -445,7 +445,7 @@ async fn run_anthropic_buffered(
         let cold_start_grace =
             single_supplier_large_cold_start_grace(&state, &prepared.catalog_model);
         let ttft_deadline = pre_first_token_deadline(&state, &prepared.catalog_model);
-        let (mut rx, target_node, session_id) = pick_and_dispatch(
+        let (mut rx, target_node, session_id, request_heavy) = pick_and_dispatch(
             &state,
             &prepared.catalog_model,
             &prepared.req_body,
@@ -521,7 +521,7 @@ async fn run_anthropic_buffered(
         }
 
         state.relay.close_session(&target_node, &session_id);
-        state.registry.dec_in_flight(&target_node);
+        state.registry.dec_in_flight(&target_node, request_heavy);
 
         if !completed && !got_first && !cold_start_grace {
             state
@@ -604,7 +604,7 @@ async fn run_anthropic_streaming(
             )
             .await;
 
-            let (mut rx, target_node, session_id) = match dispatch {
+            let (mut rx, target_node, session_id, request_heavy) = match dispatch {
                 Ok(v) => v,
                 Err(e) => {
                     let status = error_to_status_label(&e);
@@ -693,7 +693,7 @@ async fn run_anthropic_streaming(
             }
 
             state.relay.close_session(&target_node, &session_id);
-            state.registry.dec_in_flight(&target_node);
+            state.registry.dec_in_flight(&target_node, request_heavy);
 
             if !completed && !got_first && !cold_start_grace {
                 state

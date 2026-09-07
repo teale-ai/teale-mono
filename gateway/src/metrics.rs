@@ -26,6 +26,14 @@ pub static RETRIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static HEAVY_HOLD_REFUSED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    prometheus::register_int_counter!(
+        "gateway_heavy_hold_refused_total",
+        "Heavy requests refused admission because every eligible device already carries a heavy (#247)"
+    )
+    .expect("metric init")
+});
+
 pub static TTFT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "gateway_ttft_seconds",
@@ -85,6 +93,7 @@ pub fn init() {
     // Force Lazy init so metrics appear in /metrics even before first request.
     let _ = &*REQUESTS_TOTAL;
     let _ = &*RETRIES_TOTAL;
+    let _ = &*HEAVY_HOLD_REFUSED;
     let _ = &*TTFT_SECONDS;
     let _ = &*TOTAL_LATENCY_SECONDS;
     let _ = &*DEVICES_ELIGIBLE;

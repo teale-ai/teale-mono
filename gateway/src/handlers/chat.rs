@@ -641,6 +641,25 @@ pub(crate) fn estimate_prompt_tokens(req: &ChatCompletionRequest) -> u32 {
     (prompt_chars / 4) as u32
 }
 
+/// Heavy-hold classification (#247). A request is heavy when its
+/// estimated prompt OR its requested output is large: both halves
+/// matter, because the observed cap deaths were modest-cache-warm
+/// prompts asking for 6k+ token answers beside 25-66k residents.
+/// Prompt estimate assumes a cold cache; CCC runs ~97% warm, but the
+/// decode side is what starves, so counting warm prompts as heavy is
+/// the safe direction.
+pub(crate) fn is_heavy_request(
+    prompt_tokens: u32,
+    max_tokens: Option<u32>,
+    reliability: &crate::config::ReliabilityConfig,
+) -> bool {
+    if !reliability.heavy_hold {
+        return false;
+    }
+    prompt_tokens >= reliability.heavy_hold_prompt_tokens
+        || max_tokens.unwrap_or(0) >= reliability.heavy_hold_max_tokens
+}
+
 pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
     let prompt_est = estimate_prompt_tokens(req);
     let completion_budget = req.max_tokens.unwrap_or(4096);
@@ -815,7 +834,7 @@ pub(crate) async fn pick_and_dispatch(
     exclude: &[String],
     min_context: Option<u32>,
     preferred_node_ids: &[String],
-) -> Result<(mpsc::Receiver<SessionEvent>, String, String), GatewayError> {
+) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
     let mut outbound: ChatCompletionRequest = serde_json::from_value(req_body.clone())
@@ -834,8 +853,14 @@ pub(crate) async fn pick_and_dispatch(
     // opting out of the thing OR needs).
     outbound.stream_options = Some(serde_json::json!({ "include_usage": true }));
 
+    let request_heavy = is_heavy_request(
+        estimate_prompt_tokens(&outbound),
+        outbound.max_tokens,
+        &state.config.reliability,
+    );
     let mut excluded: Vec<String> = exclude.to_vec();
     let mut last_dispatch_error: Option<String> = None;
+    let mut heavy_refused = false;
     let cold_start_grace = single_supplier_large_cold_start_grace(state, catalog_model);
     let max_dispatch_grace_retries =
         (state.config.reliability.request_timeout_seconds / 5).max(1) as u32;
@@ -862,6 +887,35 @@ pub(crate) async fn pick_and_dispatch(
                 .cloned()
                 .collect()
         };
+        // Heavy-hold preference (#247): decode is a shared resource, so a
+        // request landing beside an in-flight heavy starves. Every request
+        // prefers a heavy-free device; for heavy requests the preference
+        // becomes a hard gate at admit time below (refusal -> retriable
+        // 503) because a co-scheduled heavy pair starves BOTH into the
+        // stream cap, while a serialized retry finishes.
+        let heavy_free =
+            |list: &[crate::registry::DeviceState]| -> Vec<crate::registry::DeviceState> {
+                let free: Vec<_> = list
+                    .iter()
+                    .filter(|c| state.registry.heavy_in_flight(&c.node_id) == 0)
+                    .cloned()
+                    .collect();
+                if free.is_empty() {
+                    list.to_vec()
+                } else {
+                    free
+                }
+            };
+        let candidates = if state.config.reliability.heavy_hold {
+            heavy_free(&candidates)
+        } else {
+            candidates
+        };
+        let preferred_candidates = if state.config.reliability.heavy_hold {
+            heavy_free(&preferred_candidates)
+        } else {
+            preferred_candidates
+        };
         let target_node = match state
             .scheduler
             .pick(
@@ -884,18 +938,35 @@ pub(crate) async fn pick_and_dispatch(
             None => {
                 return Err(match last_dispatch_error {
                     Some(message) => GatewayError::AllUpstreamsFailed(message),
+                    None if heavy_refused => {
+                        GatewayError::HeavyContention(catalog_model.id.clone())
+                    }
                     None => GatewayError::NoEligibleDevice(catalog_model.id.clone()),
                 });
             }
         };
 
-        // Bump live in-flight counter so the next pick_and_dispatch sees this
-        // node as busier. Use a scope guard so the counter rolls back if
-        // any of the dispatch steps below fail before we successfully hand
-        // off a Receiver to the caller (otherwise an open/send failure would
-        // leave the counter permanently elevated).
-        state.registry.inc_in_flight(&target_node);
-        let inc_guard = InFlightGuard::new(state.registry.clone(), target_node.clone());
+        // Bump live in-flight counters so the next pick_and_dispatch sees
+        // this node as busier. Heavy-hold gate (#247): a heavy request is
+        // refused when the device already carries a heavy - the refusal is
+        // atomic with the increment, so racing heavy dispatches cannot both
+        // pass. Use a scope guard so the counters roll back if any of the
+        // dispatch steps below fail before we successfully hand off a
+        // Receiver to the caller (otherwise an open/send failure would
+        // leave the counters permanently elevated).
+        if !state.registry.admit(&target_node, request_heavy) {
+            metrics::HEAVY_HOLD_REFUSED.inc();
+            info!(
+                device = %target_node,
+                model = %catalog_model.id,
+                "heavy-hold: refusing to co-schedule a heavy beside the in-flight heavy"
+            );
+            heavy_refused = true;
+            excluded.push(target_node);
+            continue;
+        }
+        let inc_guard =
+            InFlightGuard::new(state.registry.clone(), target_node.clone(), request_heavy);
 
         // Open a relay session.
         let session_id = match state.relay.open_session(&target_node, open_timeout).await {
@@ -979,7 +1050,7 @@ pub(crate) async fn pick_and_dispatch(
         // Successful hand-off; caller is responsible for dec_in_flight when
         // the session closes. Defuse the guard so we don't decrement here.
         inc_guard.defuse();
-        return Ok((rx, target_node, session_id));
+        return Ok((rx, target_node, session_id, request_heavy));
     }
 }
 
@@ -988,13 +1059,19 @@ pub(crate) async fn pick_and_dispatch(
 struct InFlightGuard {
     registry: Option<std::sync::Arc<crate::registry::Registry>>,
     node_id: String,
+    heavy: bool,
 }
 
 impl InFlightGuard {
-    fn new(registry: std::sync::Arc<crate::registry::Registry>, node_id: String) -> Self {
+    fn new(
+        registry: std::sync::Arc<crate::registry::Registry>,
+        node_id: String,
+        heavy: bool,
+    ) -> Self {
         Self {
             registry: Some(registry),
             node_id,
+            heavy,
         }
     }
     fn defuse(mut self) {
@@ -1005,7 +1082,7 @@ impl InFlightGuard {
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         if let Some(r) = self.registry.take() {
-            r.dec_in_flight(&self.node_id);
+            r.dec_in_flight(&self.node_id, self.heavy);
         }
     }
 }
@@ -1052,7 +1129,7 @@ async fn run_streaming(
             )
             .await;
 
-            let (mut rx, target_node, session_id) = match dispatch {
+            let (mut rx, target_node, session_id, request_heavy) = match dispatch {
                 Ok(v) => v,
                 Err(e) => {
                     let status = error_to_status_label(&e);
@@ -1194,7 +1271,7 @@ async fn run_streaming(
             }
 
             state.relay.close_session(&target_node, &session_id);
-            state.registry.dec_in_flight(&target_node);
+            state.registry.dec_in_flight(&target_node, request_heavy);
 
             // QueueFull is backpressure from a live, busy device - never
             // a reason to quarantine (the fast-fail IS the design, #229).
@@ -1364,7 +1441,7 @@ async fn run_buffered(
         tried += 1;
         let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
         let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
-        let (mut rx, target_node, session_id) = pick_and_dispatch(
+        let (mut rx, target_node, session_id, request_heavy) = pick_and_dispatch(
             &state,
             &catalog_model,
             &req_body,
@@ -1454,7 +1531,7 @@ async fn run_buffered(
         }
 
         state.relay.close_session(&target_node, &session_id);
-        state.registry.dec_in_flight(&target_node);
+        state.registry.dec_in_flight(&target_node, request_heavy);
 
         let single_supplier = single_supplier_large_cold_start_grace(&state, &catalog_model)
             || state.registry.eligible_devices(&model_id).len() <= 1;
@@ -1749,6 +1826,7 @@ fn done_event() -> Event {
 pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
     match err {
         GatewayError::NoEligibleDevice(_) => "no_supply",
+        GatewayError::HeavyContention(_) => "heavy_contention",
         GatewayError::ModelNotFound(_) => "model_not_found",
         GatewayError::NotFound(_) => "not_found",
         GatewayError::Forbidden(_) => "forbidden",
@@ -1979,6 +2057,9 @@ quantization: null
                 max_retries: 1,
                 heartbeat_stale_seconds: 3600,
                 quarantine_seconds: 30,
+                heavy_hold: true,
+                heavy_hold_prompt_tokens: 30_000,
+                heavy_hold_max_tokens: 4096,
                 discover_interval_seconds: 10,
                 departed_grace_seconds: 180,
                 registry_warmup_seconds: 0,
@@ -2574,7 +2655,7 @@ pricing_completion: "0.00000020"
             }
         });
 
-        let (rx, target_node, _session_id) = pick_and_dispatch(
+        let (rx, target_node, _session_id, _heavy) = pick_and_dispatch(
             &state,
             &model,
             &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
@@ -2596,6 +2677,126 @@ pricing_completion: "0.00000020"
         assert_eq!(eligible_ids, vec!["node-b"]);
         assert_eq!(state.registry.in_flight("node-a"), 0);
         assert_eq!(state.registry.in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn heavy_hold_refuses_second_heavy_on_same_device() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        // An incumbent heavy holds the only eligible device.
+        assert!(state.registry.admit("node-a", true));
+
+        let err = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(8192))).unwrap(),
+            &[],
+            None,
+            &[],
+        )
+        .await
+        .expect_err("second heavy must be refused");
+
+        assert!(matches!(err, GatewayError::HeavyContention(_)));
+        assert_eq!(state.registry.in_flight("node-a"), 1);
+        assert_eq!(state.registry.heavy_in_flight("node-a"), 1);
+    }
+
+    #[tokio::test]
+    async fn heavy_hold_prefers_heavy_free_device() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(2), &model);
+        for node in ["node-a", "node-b"] {
+            state.registry.upsert_device(
+                node.into(),
+                node.into(),
+                dispatch_caps(&[&model.id], &[]),
+            );
+        }
+        assert!(state.registry.admit("node-a", true));
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(8192))).unwrap(),
+            &[],
+            None,
+            &[],
+        )
+        .await
+        .expect("heavy should land on the heavy-free device");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "node-b");
+        assert!(heavy);
+        assert_eq!(state.registry.in_flight("node-b"), 1);
+        assert_eq!(state.registry.heavy_in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn heavy_hold_admits_light_beside_heavy() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        assert!(state.registry.admit("node-a", true));
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+        )
+        .await
+        .expect("light request must admit beside an in-flight heavy");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "node-a");
+        assert!(!heavy);
+        assert_eq!(state.registry.in_flight("node-a"), 2);
+        assert_eq!(state.registry.heavy_in_flight("node-a"), 1);
     }
 
     #[tokio::test]
@@ -2628,7 +2829,7 @@ pricing_completion: "0.00000020"
             }
         });
 
-        let (rx, target_node, _session_id) = pick_and_dispatch(
+        let (rx, target_node, _session_id, _heavy) = pick_and_dispatch(
             &state,
             &model,
             &serde_json::to_value(req_with("hi", Some(16))).unwrap(),

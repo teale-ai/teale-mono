@@ -126,6 +126,18 @@ pub struct ReliabilityConfig {
     /// not-yet-re-announced supplier (retriable 503) instead of a hard 404.
     #[serde(default = "default_registry_warmup")]
     pub registry_warmup_seconds: u64,
+    /// Heavy-hold admission (#247): refuse to co-schedule two heavy
+    /// requests on one node (retriable 503) instead of letting them
+    /// starve each other's decode into the stream cap.
+    #[serde(default = "default_heavy_hold")]
+    pub heavy_hold: bool,
+    /// A request is heavy when its estimated prompt is at least this
+    /// many tokens OR its requested max_tokens is at least
+    /// heavy_hold_max_tokens.
+    #[serde(default = "default_heavy_hold_prompt_tokens")]
+    pub heavy_hold_prompt_tokens: u32,
+    #[serde(default = "default_heavy_hold_max_tokens")]
+    pub heavy_hold_max_tokens: u32,
 }
 
 impl Default for ReliabilityConfig {
@@ -140,6 +152,9 @@ impl Default for ReliabilityConfig {
             discover_interval_seconds: default_discover_interval(),
             departed_grace_seconds: default_departed_grace(),
             registry_warmup_seconds: default_registry_warmup(),
+            heavy_hold: default_heavy_hold(),
+            heavy_hold_prompt_tokens: default_heavy_hold_prompt_tokens(),
+            heavy_hold_max_tokens: default_heavy_hold_max_tokens(),
         }
     }
 }
@@ -257,6 +272,23 @@ fn default_departed_grace() -> u64 {
 }
 fn default_registry_warmup() -> u64 {
     60
+}
+
+fn default_heavy_hold() -> bool {
+    true
+}
+
+/// 30k prompt tokens: CCC heavy steps run 36-100k; ordinary chat and
+/// small agent prompts sit well below. Cache-warm prompts still count -
+/// their decode is what starves.
+fn default_heavy_hold_prompt_tokens() -> u32 {
+    30_000
+}
+
+/// 4k requested output tokens: every observed cap death asked for (and
+/// partially produced) 6k+; short answers finish even beside a heavy.
+fn default_heavy_hold_max_tokens() -> u32 {
+    4096
 }
 fn default_synthetic_probe_enabled() -> bool {
     false
