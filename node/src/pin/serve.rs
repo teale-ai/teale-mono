@@ -226,7 +226,43 @@ async fn handle_request<B: CompletionBackend>(
         Ok(mut rx) => {
             let mut tokens_out: i64 = 0;
             let mut stream_failed: Option<String> = None;
-            while let Some(event) = rx.recv().await {
+            // Idle watchdog (#257), same policy as the cluster path: a
+            // zero-chunk session must not hold the slot to the stream cap.
+            let first_chunk_idle = std::time::Duration::from_secs(
+                std::env::var("TEALE_FIRST_CHUNK_IDLE_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(120),
+            );
+            let inter_chunk_idle = std::time::Duration::from_secs(
+                std::env::var("TEALE_INTER_CHUNK_IDLE_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300),
+            );
+            loop {
+                let idle_cap = if tokens_out > 0 {
+                    inter_chunk_idle
+                } else {
+                    first_chunk_idle
+                };
+                let event = match tokio::time::timeout(idle_cap, rx.recv()).await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => break,
+                    Err(_) => {
+                        let phase = if tokens_out > 0 {
+                            "mid-stream"
+                        } else {
+                            "pre-first-token"
+                        };
+                        stream_failed = Some(format!(
+                            "idle watchdog: no chunk for {}s ({})",
+                            idle_cap.as_secs(),
+                            phase
+                        ));
+                        break;
+                    }
+                };
                 match event {
                     crate::backend::StreamEvent::Chunk(chunk) => {
                         tokens_out += 1;
