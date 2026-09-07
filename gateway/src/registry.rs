@@ -39,6 +39,10 @@ pub struct DeviceState {
     pub ewma_tokens_per_second: f64,
     /// Runtime-live heartbeat fields (queue_depth, thermal, throttle).
     pub live: LiveStats,
+    /// apmhelp confirmed-employee supply (#272): admitted to the registry
+    /// but eligible ONLY for requests on the apmhelp PIN lane, never for
+    /// the default lane.
+    pub employee: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +267,19 @@ impl Registry {
 
     /// Insert or update a device from its advertised capabilities.
     pub fn upsert_device(&self, node_id: String, display_name: String, caps: NodeCapabilities) {
+        self.upsert_device_with_class(node_id, display_name, caps, false);
+    }
+
+    /// Upsert with an explicit supply class (#272). The class is
+    /// config-driven, so every upsert restates it: a node that leaves the
+    /// employee set reverts to fleet on its next discover response.
+    pub fn upsert_device_with_class(
+        &self,
+        node_id: String,
+        display_name: String,
+        caps: NodeCapabilities,
+        employee: bool,
+    ) {
         let now = Instant::now();
         // Scope the entry RefMut so it drops before we call rebuild_model_index_for,
         // which would otherwise deadlock trying to re-acquire the same shard.
@@ -280,9 +297,11 @@ impl Registry {
                     departed_at: None,
                     ewma_tokens_per_second: hardware_tps_prior(&caps),
                     live: LiveStats::fresh(),
+                    employee: false,
                 });
             entry.display_name = display_name;
             entry.capabilities = caps;
+            entry.employee = employee;
             entry.last_seen = now;
             // A discover response from this peer is a rejoin: clear any
             // departed mark instantly rather than waiting out the grace.
@@ -386,12 +405,24 @@ impl Registry {
         }
     }
 
-    /// All devices currently eligible to serve `model_id`.
+    /// All devices currently eligible to serve `model_id` for the
+    /// DEFAULT lane (fleet supply only - employee devices are excluded,
+    /// #272).
     pub fn eligible_devices(&self, model_id: &str) -> Vec<DeviceState> {
+        self.eligible_supply(model_id, false)
+    }
+
+    /// Devices currently eligible to serve `model_id`. With
+    /// `include_employee`, apmhelp confirmed-employee supply is included
+    /// (the caller owns lane authorization and any priority ordering).
+    pub fn eligible_supply(&self, model_id: &str, include_employee: bool) -> Vec<DeviceState> {
         self.devices
             .iter()
             .filter_map(|r| {
                 let st = r.value();
+                if st.employee && !include_employee {
+                    return None;
+                }
                 if st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds) {
                     return None;
                 }
@@ -585,6 +616,26 @@ mod tests {
         }
 
         assert!(registry.eligible_devices("teale/auto").is_empty());
+    }
+
+    #[test]
+    fn employee_supply_is_lane_scoped_and_restated_on_upsert() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        registry.upsert_device("fleet-a".into(), "F".into(), caps(vec!["m"], true));
+        registry.upsert_device_with_class("emp-b".into(), "E".into(), caps(vec!["m"], true), true);
+
+        // Default lane: fleet only.
+        let default_pool = registry.eligible_devices("m");
+        assert_eq!(default_pool.len(), 1);
+        assert_eq!(default_pool[0].node_id, "fleet-a");
+        // Lane pool: both, with the employee tagged.
+        let lane_pool = registry.eligible_supply("m", true);
+        assert_eq!(lane_pool.len(), 2);
+        assert!(lane_pool.iter().any(|d| d.employee && d.node_id == "emp-b"));
+        // The class is restated on every upsert: leaving the employee set
+        // reverts the node to fleet supply on its next discover.
+        registry.upsert_device_with_class("emp-b".into(), "E".into(), caps(vec!["m"], true), false);
+        assert_eq!(registry.eligible_devices("m").len(), 2);
     }
 
     #[test]

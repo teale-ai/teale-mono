@@ -254,6 +254,7 @@ pub async fn spawn(
         let current_tx = current_tx.clone();
         let reliability = config.reliability.clone();
         let fleet = config.fleet.clone();
+        let apmhelp = config.apmhelp.clone();
         let idle_timeout = relay_idle_timeout(config.reliability.discover_interval_seconds);
 
         tokio::spawn(async move {
@@ -331,6 +332,7 @@ pub async fn spawn(
                                         &ready_waiters,
                                         reliability.quarantine_seconds,
                                         &fleet,
+                                        &apmhelp,
                                         &mut sent_discover_after_ack,
                                     )
                                     .await;
@@ -345,6 +347,7 @@ pub async fn spawn(
                                                 &ready_waiters,
                                                 reliability.quarantine_seconds,
                                                 &fleet,
+                                                &apmhelp,
                                                 &mut sent_discover_after_ack,
                                             )
                                             .await;
@@ -420,6 +423,7 @@ pub async fn spawn(
     Ok(handle)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     msg: IncomingRelayMessage,
     registry: &Arc<Registry>,
@@ -427,6 +431,7 @@ async fn handle_incoming(
     ready_waiters: &Arc<Mutex<HashMap<String, ReadyWaiter>>>,
     quarantine_seconds: u64,
     fleet: &crate::config::FleetConfig,
+    apmhelp: &crate::config::ApmhelpConfig,
     sent_discover_after_ack: &mut bool,
 ) {
     match msg {
@@ -464,13 +469,25 @@ async fn handle_incoming(
                 // dial, sending prompts to unknown hardware. When the
                 // allowlist is configured, only listed node ids enter
                 // the registry.
-                if !fleet.allows(node_id) {
+                // apmhelp employee supply (#272): confirmed-employee
+                // machines are admitted as lane-scoped supply (employee
+                // class) even though they are not fleet; they never serve
+                // the default lane.
+                let employee = apmhelp.is_employee(node_id) && !fleet.allows(node_id);
+                if !fleet.allows(node_id) && !employee {
                     warn!(
                         node = node_id,
                         display = %display_name,
                         "discover: peer denied by fleet allowlist - not eligible supply"
                     );
                     continue;
+                }
+                if employee && !fleet.allows(node_id) {
+                    info!(
+                        node = node_id,
+                        display = %display_name,
+                        "discover: apmhelp employee peer admitted as lane-scoped supply"
+                    );
                 }
                 let caps = match serde_json::from_value::<NodeCapabilities>(caps_json.clone()) {
                     Ok(c) => c,
@@ -479,7 +496,12 @@ async fn handle_incoming(
                         continue;
                     }
                 };
-                registry.upsert_device(node_id.to_string(), display_name, caps);
+                registry.upsert_device_with_class(
+                    node_id.to_string(),
+                    display_name,
+                    caps,
+                    employee,
+                );
             }
             update_eligible_gauges(registry);
         }
@@ -772,6 +794,7 @@ mod tests {
             &ready_waiters,
             60,
             &crate::config::FleetConfig::default(),
+            &crate::config::ApmhelpConfig::default(),
             &mut sent_discover_after_ack,
         )
         .await;

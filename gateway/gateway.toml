@@ -88,6 +88,18 @@ max_supported_transaction_version = 0
 treasury_address = "HwGY6RJKzAxoRjeqWYvmnZGu4AC8oyEzqFrpGgqAKzhA"
 withdrawal_fee_bps = 180
 
+[apmhelp]
+# apmhelp employee-supply lane (#272): requests from members/staff of this
+# PIN may draw on the confirmed-employee set below, strictly preferred over
+# fleet supply. Empty pin_id disables the lane (the supply set stays
+# inert). Confirmation is manual per machine on Taylor's word - relay
+# registration is unauthenticated (#252), display names prove nothing.
+# TICO confirmed 2026-09-07 (idle apmhelp employee install; no models yet).
+pin_id = ""
+employee_node_ids = [
+    "176659403971565ff206c82dd023850e8ac30e39066358c8ad2e295335194c6d",
+]
+
 [fleet]
 # Fleet membership allowlist (#263): only these node ids may enter the
 # device registry from relay discover; strangers advertising available=true

@@ -28,6 +28,8 @@ pub struct Config {
     pub solana: SolanaConfig,
     #[serde(default)]
     pub fleet: FleetConfig,
+    #[serde(default)]
+    pub apmhelp: ApmhelpConfig,
 }
 
 /// Fleet membership policy (#263). The relay is a global namespace any
@@ -46,6 +48,34 @@ pub struct FleetConfig {
 impl FleetConfig {
     pub fn allows(&self, node_id: &str) -> bool {
         self.allowed_node_ids.is_empty() || self.allowed_node_ids.iter().any(|id| id == node_id)
+    }
+}
+
+/// apmhelp employee-supply lane (#272). Requests from members or staff of
+/// the configured PIN may draw on the confirmed-employee supply set,
+/// strictly preferred over general fleet supply. Employee machines are
+/// admitted to the registry but are NEVER eligible for the default lane -
+/// they serve apmhelp-PIN traffic only, as free supply (an apmhelp perk;
+/// no supplier fee split per Taylor 2026-09-07). Confirmation is manual
+/// per machine: relay registration is unauthenticated (#252), so display
+/// names prove nothing; an id enters employee_node_ids only on Taylor's
+/// word (TICO 1766594... confirmed 2026-09-07, advertises no models yet).
+/// Empty pin_id disables the lane (supply set stays inert).
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ApmhelpConfig {
+    #[serde(default)]
+    pub pin_id: String,
+    #[serde(default)]
+    pub employee_node_ids: Vec<String>,
+}
+
+impl ApmhelpConfig {
+    pub fn is_employee(&self, node_id: &str) -> bool {
+        self.employee_node_ids.iter().any(|id| id == node_id)
+    }
+
+    pub fn lane_enabled(&self) -> bool {
+        !self.pin_id.is_empty()
     }
 }
 
@@ -363,6 +393,7 @@ impl Config {
             synthetic_probes: SyntheticProbeConfig::default(),
             solana: SolanaConfig::default(),
             fleet: FleetConfig::default(),
+            apmhelp: ApmhelpConfig::default(),
         }
     }
 }
