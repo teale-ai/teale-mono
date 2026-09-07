@@ -335,6 +335,9 @@ impl SwapManager {
             });
         }
 
+        // Warm the fresh backend before it takes real traffic (#281).
+        proxy.warm_up().await;
+
         // 4. Commit.
         inner.backend = Backend::Http(proxy);
         inner.supervisor = Some(new_sup);

@@ -15,7 +15,7 @@ use std::sync::{
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use teale_protocol::openai::ChatCompletionRequest;
 
@@ -152,6 +152,30 @@ impl InferenceProxy {
                 Err(err) => debug!("backend health probe failed: {}", err),
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+    }
+
+    /// Fire a tiny completion right after the backend reports healthy, so the
+    /// first real request doesn't pay the cold cost of a fresh (re)load:
+    /// weights get paged into the OS cache and the backend's sampling/context
+    /// paths get exercised. Best-effort - a failed warm-up must never block
+    /// readiness, it just means the first real request runs cold. (#281)
+    pub async fn warm_up(&self) {
+        let started = tokio::time::Instant::now();
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let body = serde_json::json!({
+            "model": self.backend_model_id,
+            "messages": [{"role": "user", "content": "warm"}],
+            "max_tokens": 1,
+            "stream": false,
+        });
+        match self.client.post(&url).json(&body).send().await {
+            Ok(resp) => info!(
+                "backend warm-up finished in {:?} (status {})",
+                started.elapsed(),
+                resp.status()
+            ),
+            Err(e) => warn!("backend warm-up failed (non-fatal): {}", e),
         }
     }
 
