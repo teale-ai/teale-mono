@@ -1165,6 +1165,7 @@ impl Drop for InFlightGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_streaming(
     state: AppState,
     catalog_model: CatalogModel,
@@ -1505,6 +1506,7 @@ async fn run_streaming(
         .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_buffered(
     state: AppState,
     catalog_model: CatalogModel,

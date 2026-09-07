@@ -337,6 +337,7 @@ mod tests {
                     effective_context: Some(262_144),
                     on_ac_power: Some(true),
                 },
+                employee: false,
                 last_heartbeat: heartbeat_at,
                 last_seen: heartbeat_at,
                 quarantined_until: None,
