@@ -51,6 +51,15 @@ max_retries = 1
 heartbeat_stale_seconds = 3600
 quarantine_seconds = 120
 discover_interval_seconds = 60
+# Heavy-hold (#247): never co-schedule two "heavy" requests on one node. A
+# request is heavy when its prompt is at least heavy_hold_prompt_tokens OR its
+# requested max_tokens is at least heavy_hold_max_tokens. A second heavy aimed
+# at an occupied node is refused with a retriable 503 (heavy_contention) so
+# the fleet's backoff-retry re-attempts it; light traffic still co-schedules
+# and prefers nodes without an in-flight heavy.
+heavy_hold = true
+heavy_hold_prompt_tokens = 30000
+heavy_hold_max_tokens = 4096
 
 [synthetic_probes]
 # Keep /v1/models TTFT/TPS from going stale when real traffic is quiet.

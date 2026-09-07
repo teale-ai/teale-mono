@@ -170,13 +170,22 @@ pub struct Registry {
     /// swappable_models. `RwLock` inner for batch updates during
     /// discover responses.
     model_to_devices: RwLock<dashmap::DashMap<String, HashSet<String>>>,
-    /// Live in-flight request count per node. Incremented when the
-    /// gateway dispatches an inference request to the node, decremented
-    /// when the session closes. This is the scheduler's real picture
-    /// of load — heartbeat-reported queue_depth is ≥10s stale and
-    /// caused the "hot-spot one node" behaviour under rapid dispatch.
-    in_flight: DashMap<String, std::sync::atomic::AtomicU32>,
+    /// Live in-flight request count per node, split by weight. The total
+    /// is the scheduler's real picture of load — heartbeat-reported
+    /// queue_depth is ≥10s stale and caused the "hot-spot one node"
+    /// behaviour under rapid dispatch. The heavy split feeds heavy-hold
+    /// admission (#247): two heavy requests on one box starve each
+    /// other's decode until both hit the stream cap, so a heavy is only
+    /// admitted to a node with no in-flight heavy.
+    in_flight: DashMap<String, InFlight>,
     reliability: ReliabilityConfig,
+}
+
+/// Per-node live load, split by request weight (#247).
+#[derive(Default)]
+struct InFlight {
+    total: std::sync::atomic::AtomicU32,
+    heavy: std::sync::atomic::AtomicU32,
 }
 
 impl Registry {
@@ -197,26 +206,44 @@ impl Registry {
         self.devices.iter().map(|r| r.value().clone()).collect()
     }
 
-    /// Bump the live in-flight counter for a node. Paired with
-    /// `dec_in_flight` on session close.
-    pub fn inc_in_flight(&self, node_id: &str) -> u32 {
-        self.in_flight
+    /// Atomically admit one dispatched request (#247 heavy-hold). A HEAVY
+    /// request is refused when the node already carries an in-flight
+    /// heavy: two heavies on one box share decode and starve each other
+    /// until both die at the stream cap (Citadel measured five 900s
+    /// deaths and three 1800s deaths, all heavy-beside-heavy). Light
+    /// requests always admit. The entry lock makes the check-and-inc one
+    /// atomic step, so two racing heavy dispatches cannot both pass.
+    /// Refusal leaves the counters untouched. Pair with `dec_in_flight`
+    /// on session close.
+    pub fn admit(&self, node_id: &str, heavy: bool) -> bool {
+        let e = self
+            .in_flight
             .entry(node_id.to_string())
-            .or_insert_with(|| std::sync::atomic::AtomicU32::new(0))
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1
+            .or_insert_with(InFlight::default);
+        if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            return false;
+        }
+        e.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if heavy {
+            e.heavy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        true
     }
 
-    pub fn dec_in_flight(&self, node_id: &str) -> u32 {
-        if let Some(c) = self.in_flight.get(node_id) {
-            let prev = c.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    pub fn dec_in_flight(&self, node_id: &str, heavy: bool) -> u32 {
+        if let Some(e) = self.in_flight.get(node_id) {
+            let prev = e.total.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             if prev == 0 {
                 // Shouldn't happen — reset to 0 to avoid wrap-around.
-                c.store(0, std::sync::atomic::Ordering::SeqCst);
-                0
-            } else {
-                prev - 1
+                e.total.store(0, std::sync::atomic::Ordering::SeqCst);
             }
+            if heavy {
+                let hprev = e.heavy.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                if hprev == 0 {
+                    e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            prev.saturating_sub(1)
         } else {
             0
         }
@@ -225,7 +252,15 @@ impl Registry {
     pub fn in_flight(&self, node_id: &str) -> u32 {
         self.in_flight
             .get(node_id)
-            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .map(|e| e.total.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Live heavy in-flight count for a node (see `admit`).
+    pub fn heavy_in_flight(&self, node_id: &str) -> u32 {
+        self.in_flight
+            .get(node_id)
+            .map(|e| e.heavy.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(0)
     }
 
@@ -553,6 +588,31 @@ mod tests {
         }
 
         assert!(registry.eligible_devices("teale/auto").is_empty());
+    }
+
+    #[test]
+    fn heavy_hold_admission_refuses_second_heavy_and_balances() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
+        registry.upsert_device("node-b".into(), "B".into(), caps(vec!["m"], true));
+
+        assert!(registry.admit("node-a", true));
+        // Second heavy on the same device is refused, counters untouched.
+        assert!(!registry.admit("node-a", true));
+        assert_eq!(registry.in_flight("node-a"), 1);
+        assert_eq!(registry.heavy_in_flight("node-a"), 1);
+        // ...but the same heavy may still land on another device.
+        assert!(registry.admit("node-b", true));
+        assert_eq!(registry.heavy_in_flight("node-b"), 1);
+        // Light traffic is unaffected by an in-flight heavy.
+        assert!(registry.admit("node-a", false));
+        assert_eq!(registry.in_flight("node-a"), 2);
+        // Decrement tracks the class it was admitted with.
+        registry.dec_in_flight("node-a", true);
+        assert_eq!(registry.in_flight("node-a"), 1);
+        assert_eq!(registry.heavy_in_flight("node-a"), 0);
+        registry.dec_in_flight("node-a", false);
+        assert_eq!(registry.in_flight("node-a"), 0);
     }
 
     #[test]
