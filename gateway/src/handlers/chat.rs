@@ -913,8 +913,42 @@ pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::Co
         .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
 }
 
+/// Times the pick+admit+session-open phase and records it as
+/// `gateway_dispatch_seconds` on success, so Auto-vs-local latency work can
+/// decompose TTFT into gateway overhead vs upstream connect+prefill.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn pick_and_dispatch(
+    state: &AppState,
+    catalog_model: &CatalogModel,
+    req_body: &Value,
+    exclude: &[String],
+    min_context: Option<u32>,
+    preferred_node_ids: &[String],
+    apmhelp_lane: bool,
+    prompt_tokens: u32,
+) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
+    let dispatch_started = Instant::now();
+    let out = pick_and_dispatch_inner(
+        state,
+        catalog_model,
+        req_body,
+        exclude,
+        min_context,
+        preferred_node_ids,
+        apmhelp_lane,
+        prompt_tokens,
+    )
+    .await;
+    if out.is_ok() {
+        metrics::DISPATCH_SECONDS
+            .with_label_values(&[&catalog_model.id])
+            .observe(dispatch_started.elapsed().as_secs_f64());
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pick_and_dispatch_inner(
     state: &AppState,
     catalog_model: &CatalogModel,
     req_body: &Value,
@@ -3387,6 +3421,56 @@ pricing_completion: "0.00000020"
         signal_ready.await.expect("ready waiter task should finish");
         assert_eq!(target_node, "node-b");
         assert_eq!(state.registry.in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn pick_and_dispatch_records_dispatch_metric_on_success() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(2), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        let before = metrics::DISPATCH_SECONDS
+            .with_label_values(&[&model.id])
+            .get_sample_count();
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, _target, _session_id, _heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+        )
+        .await
+        .expect("dispatch should succeed");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        let after = metrics::DISPATCH_SECONDS
+            .with_label_values(&[&model.id])
+            .get_sample_count();
+        assert_eq!(after, before + 1, "successful dispatch records one sample");
     }
 
     #[tokio::test]
