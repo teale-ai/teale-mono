@@ -893,18 +893,19 @@ pub(crate) async fn pick_and_dispatch(
         // becomes a hard gate at admit time below (refusal -> retriable
         // 503) because a co-scheduled heavy pair starves BOTH into the
         // stream cap, while a serialized retry finishes.
-        let heavy_free = |list: &[crate::registry::DeviceState]| -> Vec<crate::registry::DeviceState> {
-            let free: Vec<_> = list
-                .iter()
-                .filter(|c| state.registry.heavy_in_flight(&c.node_id) == 0)
-                .cloned()
-                .collect();
-            if free.is_empty() {
-                list.to_vec()
-            } else {
-                free
-            }
-        };
+        let heavy_free =
+            |list: &[crate::registry::DeviceState]| -> Vec<crate::registry::DeviceState> {
+                let free: Vec<_> = list
+                    .iter()
+                    .filter(|c| state.registry.heavy_in_flight(&c.node_id) == 0)
+                    .cloned()
+                    .collect();
+                if free.is_empty() {
+                    list.to_vec()
+                } else {
+                    free
+                }
+            };
         let candidates = if state.config.reliability.heavy_hold {
             heavy_free(&candidates)
         } else {
