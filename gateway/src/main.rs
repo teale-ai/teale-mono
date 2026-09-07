@@ -467,7 +467,28 @@ async fn main() -> anyhow::Result<()> {
             }),
         );
 
-    let listener = tokio::net::TcpListener::bind(&config.bind).await?;
+    // #276: TCP keepalive on the listener (accepted conns inherit it on
+    // Linux) so half-open clients are detected and their in-flight request
+    // futures dropped instead of pinning node slots forever.
+    let bind_addr: std::net::SocketAddr = config
+        .bind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid bind address {}: {}", config.bind, e))?;
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(bind_addr),
+        socket2::Type::STREAM,
+        None,
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(30))
+            .with_interval(std::time::Duration::from_secs(10)),
+    )?;
+    socket.bind(&bind_addr.into())?;
+    socket.listen(1024)?;
+    let listener = tokio::net::TcpListener::from_std(socket.into())?;
     info!("listening on {}", config.bind);
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())

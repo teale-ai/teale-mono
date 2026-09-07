@@ -73,6 +73,18 @@ struct ReadyWaiter {
 }
 
 impl RelayHandle {
+    /// Test-only handle whose outbox goes nowhere (sends are swallowed).
+    #[cfg(test)]
+    pub(crate) fn dummy_for_tests() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Self {
+            node_id: "test-gateway".to_string(),
+            sessions: Default::default(),
+            ready_waiters: Default::default(),
+            outbox: tx,
+        }
+    }
+
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
