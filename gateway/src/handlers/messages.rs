@@ -458,6 +458,14 @@ async fn run_anthropic_buffered(
             prepared.prompt_tokens,
         )
         .await?;
+        // #276: cleanup on every exit path, including future-drop on client
+        // disconnect mid-prefill.
+        let cleanup = crate::handlers::chat::SessionCleanup::new(
+            &state,
+            &target_node,
+            &session_id,
+            request_heavy,
+        );
         // Co-resident-beside-heavy: occupancy at dispatch; a slow first
         // token there is contention on a live device, not device failure.
         let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
@@ -535,8 +543,7 @@ async fn run_anthropic_buffered(
             }
         }
 
-        state.relay.close_session(&target_node, &session_id);
-        state.registry.dec_in_flight(&target_node, request_heavy);
+        cleanup.run_now();
 
         if !completed && !got_first && !cold_start_grace && !client_error_failure && !beside_heavy {
             state
@@ -640,6 +647,9 @@ async fn run_anthropic_streaming(
                     return;
                 }
             };
+            // #276: armed for every exit path, including stream-drop on
+            // client disconnect mid-prefill.
+            let cleanup = crate::handlers::chat::SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
             // Co-resident-beside-heavy: occupancy at dispatch (see chat.rs).
             let beside_heavy =
                 !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
@@ -732,8 +742,7 @@ async fn run_anthropic_streaming(
                 }
             }
 
-            state.relay.close_session(&target_node, &session_id);
-            state.registry.dec_in_flight(&target_node, request_heavy);
+            cleanup.run_now();
 
             if !completed
                 && !got_first

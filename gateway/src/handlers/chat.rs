@@ -1202,6 +1202,96 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// Closes the relay session and releases the in-flight counters on ANY exit
+/// path from a streaming/buffered response - including the generator being
+/// dropped mid-await when the client disconnects during a long prefill.
+/// Without this, a client kill never becomes a relayClose toward the node:
+/// the backend keeps prefilling an orphaned request and holds its slot
+/// until it finishes (#276).
+pub(crate) struct SessionCleanup {
+    relay: crate::relay_client::RelayHandle,
+    registry: std::sync::Arc<crate::registry::Registry>,
+    node_id: String,
+    session_id: String,
+    heavy: bool,
+    armed: bool,
+}
+
+impl SessionCleanup {
+    pub(crate) fn new(state: &AppState, node_id: &str, session_id: &str, heavy: bool) -> Self {
+        Self {
+            relay: state.relay.clone(),
+            registry: state.registry.clone(),
+            node_id: node_id.to_string(),
+            session_id: session_id.to_string(),
+            heavy,
+            armed: true,
+        }
+    }
+
+    /// Run the cleanup now (normal exit path) and disarm the Drop impl.
+    pub(crate) fn run_now(mut self) {
+        self.relay.close_session(&self.node_id, &self.session_id);
+        self.registry.dec_in_flight(&self.node_id, self.heavy);
+        self.armed = false;
+    }
+}
+
+impl Drop for SessionCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            self.relay.close_session(&self.node_id, &self.session_id);
+            self.registry.dec_in_flight(&self.node_id, self.heavy);
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_cleanup_tests {
+    use super::SessionCleanup;
+    use crate::registry::Registry;
+
+    fn armed_cleanup(heavy: bool) -> (SessionCleanup, std::sync::Arc<Registry>) {
+        let registry = Registry::new(crate::config::ReliabilityConfig::default());
+        assert!(registry.admit("node1", heavy));
+        assert_eq!(registry.in_flight("node1"), 1);
+        let cleanup = SessionCleanup {
+            relay: crate::relay_client::RelayHandle::dummy_for_tests(),
+            registry: registry.clone(),
+            node_id: "node1".to_string(),
+            session_id: "sess-1".to_string(),
+            heavy,
+            armed: true,
+        };
+        (cleanup, registry)
+    }
+
+    /// #276 regression: a dropped response future (client kill mid-prefill)
+    /// must still close the session and release the in-flight counters.
+    #[test]
+    fn drop_without_run_now_releases_in_flight() {
+        let (cleanup, registry) = armed_cleanup(true);
+        assert_eq!(registry.heavy_in_flight("node1"), 1);
+        drop(cleanup);
+        assert_eq!(registry.in_flight("node1"), 0);
+        assert_eq!(registry.heavy_in_flight("node1"), 0);
+        // The released heavy must immediately re-admit (heavy-hold cleared).
+        assert!(registry.admit("node1", true));
+    }
+
+    /// Normal exit runs cleanup once; the later Drop must not double-dec.
+    #[test]
+    fn run_now_disarms_drop() {
+        let (cleanup, registry) = armed_cleanup(false);
+        cleanup.run_now();
+        assert_eq!(registry.in_flight("node1"), 0);
+        // run_now consumed the guard; dec happened exactly once. Re-admit and
+        // confirm no phantom decrement from a lingering guard exists.
+        assert!(registry.admit("node1", false));
+        assert_eq!(registry.in_flight("node1"), 1);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming(
     state: AppState,
@@ -1259,6 +1349,9 @@ async fn run_streaming(
                     return;
                 }
             };
+            // #276: armed for every exit path, including stream-drop on
+            // client disconnect mid-prefill.
+            let cleanup = SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
             // Co-resident-beside-heavy: record occupancy at dispatch - a
             // heavy that finishes during our wait must not expose this
             // request to quarantine for the contention it actually saw.
@@ -1412,8 +1505,7 @@ async fn run_streaming(
                 }
             }
 
-            state.relay.close_session(&target_node, &session_id);
-            state.registry.dec_in_flight(&target_node, request_heavy);
+            cleanup.run_now();
 
             // QueueFull is backpressure from a live, busy device - never
             // a reason to quarantine (the fast-fail IS the design, #229).
@@ -1611,6 +1703,9 @@ async fn run_buffered(
             prompt_tokens,
         )
         .await?;
+        // #276: armed for every exit path, including future-drop on client
+        // disconnect mid-prefill.
+        let cleanup = SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
         let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
         let ttft_deadline =
@@ -1705,8 +1800,7 @@ async fn run_buffered(
             }
         }
 
-        state.relay.close_session(&target_node, &session_id);
-        state.registry.dec_in_flight(&target_node, request_heavy);
+        cleanup.run_now();
 
         let single_supplier = single_supplier_large_cold_start_grace(&state, &catalog_model)
             || state.registry.eligible_devices(&model_id).len() <= 1;
