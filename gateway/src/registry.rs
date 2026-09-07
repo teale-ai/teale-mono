@@ -219,7 +219,7 @@ impl Registry {
         let e = self
             .in_flight
             .entry(node_id.to_string())
-            .or_insert_with(InFlight::default);
+            .or_default();
         if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
             return false;
         }
