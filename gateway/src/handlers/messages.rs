@@ -538,12 +538,7 @@ async fn run_anthropic_buffered(
         state.relay.close_session(&target_node, &session_id);
         state.registry.dec_in_flight(&target_node, request_heavy);
 
-        if !completed
-            && !got_first
-            && !cold_start_grace
-            && !client_error_failure
-            && !beside_heavy
-        {
+        if !completed && !got_first && !cold_start_grace && !client_error_failure && !beside_heavy {
             state
                 .registry
                 .quarantine(&target_node, state.config.reliability.quarantine_seconds);
