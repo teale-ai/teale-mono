@@ -384,7 +384,49 @@ async fn handle_inference_request(
             // read/decode error. A bare channel close is treated as a
             // failure too - never as a silent completion.
             let mut terminal: Option<Result<(), String>> = None;
-            while let Some(event) = rx.recv().await {
+            // Idle watchdog (#257): a session that produces zero chunks
+            // holds its backend slot hostage until the stream budget -
+            // observed 15min on 512g8 from a direct relay client that never
+            // closed. 120s is far above any legitimate TTFT (gateway
+            // deadlines are 8-10s base + prompt term) and far below the
+            // budget; post-first-token stalls get a larger 300s. Both are
+            // env-overridable. Dropping rx on the timeout fires the #258
+            // consumer-gone path, so the backend request cancels now.
+            let first_chunk_idle = std::time::Duration::from_secs(
+                std::env::var("TEALE_FIRST_CHUNK_IDLE_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(120),
+            );
+            let inter_chunk_idle = std::time::Duration::from_secs(
+                std::env::var("TEALE_INTER_CHUNK_IDLE_SECONDS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300),
+            );
+            loop {
+                let idle_cap = if first_token_logged {
+                    inter_chunk_idle
+                } else {
+                    first_chunk_idle
+                };
+                let event = match tokio::time::timeout(idle_cap, rx.recv()).await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => break, // bare channel close: handled as failure below
+                    Err(_) => {
+                        let phase = if first_token_logged {
+                            "mid-stream"
+                        } else {
+                            "pre-first-token"
+                        };
+                        terminal = Some(Err(format!(
+                            "idle watchdog: no chunk for {}s ({})",
+                            idle_cap.as_secs(),
+                            phase
+                        )));
+                        break;
+                    }
+                };
                 let chunk_json = match event {
                     crate::backend::StreamEvent::Chunk(c) => c,
                     crate::backend::StreamEvent::Finished => {
