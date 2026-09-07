@@ -913,7 +913,6 @@ pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::Co
         .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Times the pick+admit+session-open phase and records it as
 /// `gateway_dispatch_seconds` on success, so Auto-vs-local latency work can
 /// decompose TTFT into gateway overhead vs upstream connect+prefill.
