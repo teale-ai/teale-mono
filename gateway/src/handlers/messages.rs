@@ -455,6 +455,7 @@ async fn run_anthropic_buffered(
             Some(prepared.required_ctx),
             &prepared.preferred_node_ids,
             prepared.apmhelp_lane,
+            prepared.prompt_tokens,
         )
         .await?;
         // Co-resident-beside-heavy: occupancy at dispatch; a slow first
@@ -465,6 +466,7 @@ async fn run_anthropic_buffered(
 
         let mut got_first = false;
         let mut retriable = false;
+        let mut client_error_failure = false;
         let mut completed = false;
         let mut err_message: Option<String> = None;
 
@@ -494,6 +496,11 @@ async fn run_anthropic_buffered(
                     break;
                 }
                 Ok(Some(SessionEvent::Error { message, .. })) => {
+                    if crate::handlers::chat::is_backend_client_error(&message) {
+                        client_error_failure = true;
+                        err_message = Some(message);
+                        break;
+                    }
                     err_message = Some(message);
                     if !got_first && tried <= max_retries {
                         retriable = true;
@@ -531,7 +538,12 @@ async fn run_anthropic_buffered(
         state.relay.close_session(&target_node, &session_id);
         state.registry.dec_in_flight(&target_node, request_heavy);
 
-        if !completed && !got_first && !cold_start_grace && !beside_heavy {
+        if !completed
+            && !got_first
+            && !cold_start_grace
+            && !client_error_failure
+            && !beside_heavy
+        {
             state
                 .registry
                 .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -573,6 +585,14 @@ async fn run_anthropic_buffered(
             continue;
         }
 
+        if client_error_failure {
+            metrics::REQUESTS_TOTAL
+                .with_label_values(&[&model_id, "client_error"])
+                .inc();
+            return Err(GatewayError::BadRequest(
+                err_message.unwrap_or_else(|| "backend client error".into()),
+            ));
+        }
         metrics::REQUESTS_TOTAL
             .with_label_values(&[&model_id, "error"])
             .inc();
@@ -612,6 +632,7 @@ async fn run_anthropic_streaming(
                 Some(prepared.required_ctx),
                 &prepared.preferred_node_ids,
                 prepared.apmhelp_lane,
+                prepared.prompt_tokens,
             )
             .await;
 
@@ -641,6 +662,7 @@ async fn run_anthropic_streaming(
 
             let mut got_first = false;
             let mut retriable_failure = false;
+            let mut client_error_failure = false;
             let mut completed = false;
 
             loop {
@@ -674,6 +696,12 @@ async fn run_anthropic_streaming(
                     }
                     Ok(Some(SessionEvent::Error { message, .. })) => {
                         warn!(device = %target_node, "upstream error: {}", message);
+                        if crate::handlers::chat::is_backend_client_error(&message) {
+                            client_error_failure = true;
+                            yield Ok(anthropic_error_event(&GatewayError::BadRequest(message)));
+                            final_status = "client_error";
+                            break;
+                        }
                         if !got_first && tried <= max_retries {
                             retriable_failure = true;
                         } else {
@@ -712,7 +740,12 @@ async fn run_anthropic_streaming(
             state.relay.close_session(&target_node, &session_id);
             state.registry.dec_in_flight(&target_node, request_heavy);
 
-            if !completed && !got_first && !cold_start_grace && !beside_heavy {
+            if !completed
+                && !got_first
+                && !cold_start_grace
+                && !client_error_failure
+                && !beside_heavy
+            {
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);

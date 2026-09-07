@@ -39,6 +39,13 @@ pub enum GatewayError {
     #[error("heavy-hold: all eligible devices for {0} are running a heavy request; retry after the incumbent finishes (#247)")]
     HeavyContention(String),
 
+    #[error("prompt (~{estimated} tokens) exceeds the advertised context ceiling ({ceiling}) of every supplier for model {model}; not dispatched and not retriable - compact the prompt or raise the supplier ceiling")]
+    PromptExceedsContext {
+        model: String,
+        estimated: u32,
+        ceiling: u32,
+    },
+
     #[error("upstream error: {0}")]
     Upstream(String),
 
@@ -68,6 +75,7 @@ impl GatewayError {
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
             Self::NoEligibleDevice(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::HeavyContention(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::PromptExceedsContext { .. } => StatusCode::BAD_REQUEST,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::AllUpstreamsFailed(_) => StatusCode::BAD_GATEWAY,
             Self::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
@@ -88,6 +96,7 @@ impl GatewayError {
             Self::ModelNotFound(_) => "model_not_found",
             Self::NoEligibleDevice(_) => "model_unavailable",
             Self::HeavyContention(_) => "heavy_contention",
+            Self::PromptExceedsContext { .. } => "prompt_exceeds_context",
             Self::Upstream(_) => "upstream_error",
             Self::AllUpstreamsFailed(_) => "upstream_failed",
             Self::UpstreamTimeout => "timeout",

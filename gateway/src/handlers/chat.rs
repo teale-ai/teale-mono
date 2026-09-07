@@ -690,6 +690,16 @@ pub(crate) fn is_heavy_request(
         || max_tokens.unwrap_or(0) >= reliability.heavy_hold_max_tokens
 }
 
+/// Backend 4xx classification. llama-server client errors arrive as
+/// InternalError-coded InferenceError messages whose text carries the
+/// backend status line ("backend returned 400 Bad Request: {...}"). A 4xx
+/// is a request-shape problem - never device failure - so it must not
+/// quarantine the device, and it is never retriable: the same prompt
+/// refuses identically on every attempt.
+pub(crate) fn is_backend_client_error(message: &str) -> bool {
+    message.contains("exceed_context_size") || message.contains("backend returned 4")
+}
+
 pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
     let prompt_est = estimate_prompt_tokens(req);
     let completion_budget = req.max_tokens.unwrap_or(4096);
@@ -890,6 +900,7 @@ pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::Co
         .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn pick_and_dispatch(
     state: &AppState,
     catalog_model: &CatalogModel,
@@ -898,6 +909,7 @@ pub(crate) async fn pick_and_dispatch(
     min_context: Option<u32>,
     preferred_node_ids: &[String],
     apmhelp_lane: bool,
+    prompt_tokens: u32,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
@@ -952,6 +964,31 @@ pub(crate) async fn pick_and_dispatch(
         } else {
             state.registry.eligible_devices(&catalog_model.id)
         };
+        // Context-ceiling refusal: when every eligible supplier advertises
+        // an effective_context below the prompt estimate, the backend
+        // refuses with a pre-first-token 400 on EVERY attempt - dispatching
+        // buys a guaranteed failure cycle. Refuse non-retriably instead.
+        // Nodes that omit effective_context are trusted (absent == unknown).
+        let mut fits: Vec<crate::registry::DeviceState> = Vec::new();
+        let mut min_ceiling = u32::MAX;
+        let mut saw_ceiling = false;
+        for d in candidates.into_iter() {
+            match d.capabilities.effective_context {
+                Some(ctx) if (ctx as u64) < prompt_tokens as u64 => {
+                    saw_ceiling = true;
+                    min_ceiling = min_ceiling.min(ctx);
+                }
+                _ => fits.push(d),
+            }
+        }
+        if fits.is_empty() && saw_ceiling {
+            return Err(GatewayError::PromptExceedsContext {
+                model: catalog_model.id.clone(),
+                estimated: prompt_tokens,
+                ceiling: min_ceiling,
+            });
+        }
+        let candidates = fits;
         let preferred_candidates: Vec<_> = if preferred_node_ids.is_empty() {
             Vec::new()
         } else {
@@ -1184,6 +1221,7 @@ async fn run_streaming(
     let stream = async_stream::stream! {
         let mut excluded: Vec<String> = Vec::new();
         let mut first_token_at: Option<Instant> = None;
+        let mut last_failure: Option<String> = None;
         let mut tokens_out: u64 = 0;
         // If upstream includes a `usage` object in any chunk (stream_options
         // .include_usage=true was set on the outbound request), keep the
@@ -1237,6 +1275,7 @@ async fn run_streaming(
 
             let mut got_first_token = false;
             let mut retriable_failure = false;
+            let mut client_error_failure = false;
             let mut completed = false;
             let mut queue_full_failure = false;
 
@@ -1299,6 +1338,17 @@ async fn run_streaming(
                     Ok(Some(SessionEvent::Error { message, code })) => {
                         warn!(device=%target_node, code=?code, "upstream error: {}", message);
                         queue_full_failure = code.as_deref() == Some("queuefull");
+                        if is_backend_client_error(&message) {
+                            // Backend 4xx: the request shape is the problem,
+                            // not the device. No retry, no quarantine; the
+                            // caller gets a non-retriable 400.
+                            client_error_failure = true;
+                            last_failure = Some(message.clone());
+                            yield Ok(error_event(&GatewayError::BadRequest(message)));
+                            final_status = "client_error";
+                            break;
+                        }
+                        last_failure = Some(message.clone());
                         if !got_first_token && tried <= max_retries {
                             retriable_failure = true;
                             metrics::RETRIES_TOTAL
@@ -1314,6 +1364,7 @@ async fn run_streaming(
                     }
                     Ok(Some(SessionEvent::Disconnect(reason))) => {
                         warn!(device=%target_node, "upstream disconnect: {}", reason);
+                        last_failure = Some(reason.clone());
                         if !got_first_token && tried <= max_retries {
                             retriable_failure = true;
                             metrics::RETRIES_TOTAL
@@ -1329,6 +1380,7 @@ async fn run_streaming(
                     }
                     Ok(None) => {
                         // Channel closed without completion — treat like disconnect.
+                        last_failure = Some("channel closed".into());
                         if !got_first_token && tried <= max_retries {
                             retriable_failure = true;
                             metrics::RETRIES_TOTAL
@@ -1344,6 +1396,7 @@ async fn run_streaming(
                     Err(_) => {
                         let reason = if got_first_token { "mid_stream" } else { "ttft" };
                         warn!(device=%target_node, "timeout ({})", reason);
+                        last_failure = Some(format!("{} timeout", reason));
                         if !got_first_token && tried <= max_retries {
                             retriable_failure = true;
                             metrics::RETRIES_TOTAL
@@ -1367,6 +1420,7 @@ async fn run_streaming(
                 && !got_first_token
                 && !cold_start_grace
                 && !queue_full_failure
+                && !client_error_failure
                 && !beside_heavy
                 && state.registry.in_flight(&target_node) == 0
             {
@@ -1473,6 +1527,15 @@ async fn run_streaming(
             }
         }
 
+        if final_status != "ok" {
+            info!(
+                "request complete: model={} status={} total_ms={} last_error={}",
+                model_id,
+                final_status,
+                started.elapsed().as_millis(),
+                last_failure.as_deref().unwrap_or("-")
+            );
+        }
         metrics::REQUESTS_TOTAL
             .with_label_values(&[&model_id, final_status])
             .inc();
@@ -1553,6 +1616,7 @@ async fn run_buffered(
 
         let mut got_first = false;
         let mut retriable = false;
+        let mut client_error_failure = false;
         let mut completed = false;
         let mut err_message: Option<String> = None;
         let mut err_code: Option<String> = None;
@@ -1595,6 +1659,15 @@ async fn run_buffered(
                     break;
                 }
                 Ok(Some(SessionEvent::Error { message, code })) => {
+                    if is_backend_client_error(&message) {
+                        // Backend 4xx: request-shape problem, not device
+                        // failure - no retry, no quarantine, surfaced as a
+                        // non-retriable 400 below.
+                        client_error_failure = true;
+                        err_message = Some(message);
+                        err_code = code;
+                        break;
+                    }
                     err_message = Some(message);
                     err_code = code;
                     if !got_first && tried <= max_retries {
@@ -1652,6 +1725,7 @@ async fn run_buffered(
             && !warmup_retry
             && !cold_start_grace
             && !queue_full_failure
+            && !client_error_failure
             && !beside_heavy
             && state.registry.in_flight(&target_node) == 0
         {
@@ -1765,9 +1839,22 @@ async fn run_buffered(
             continue;
         }
 
+        let terminal_status = if client_error_failure { "client_error" } else { "error" };
+        info!(
+            "request complete: model={} status={} total_ms={} last_error={}",
+            model_id,
+            terminal_status,
+            started.elapsed().as_millis(),
+            err_message.as_deref().unwrap_or("-")
+        );
         metrics::REQUESTS_TOTAL
-            .with_label_values(&[&model_id, "error"])
+            .with_label_values(&[&model_id, terminal_status])
             .inc();
+        if client_error_failure {
+            return Err(GatewayError::BadRequest(
+                err_message.unwrap_or_else(|| "backend client error".into()),
+            ));
+        }
         return Err(GatewayError::AllUpstreamsFailed(
             err_message.unwrap_or_else(|| "unknown".into()),
         ));
@@ -2766,6 +2853,7 @@ pricing_completion: "0.00000020"
             None,
             &[],
             false,
+            0,
         )
         .await
         .expect("dispatch should retry on relay-open failure");
@@ -2803,6 +2891,7 @@ pricing_completion: "0.00000020"
             None,
             &[],
             false,
+            0,
         )
         .await
         .expect_err("second heavy must be refused");
@@ -2848,6 +2937,7 @@ pricing_completion: "0.00000020"
             None,
             &[],
             false,
+            0,
         )
         .await
         .expect("heavy should land on the heavy-free device");
@@ -2908,6 +2998,7 @@ pricing_completion: "0.00000020"
             None,
             &[],
             false,
+            0,
         )
         .await
         .expect("light request must admit beside an in-flight heavy");
@@ -2959,6 +3050,7 @@ pricing_completion: "0.00000020"
             None,
             &[],
             true,
+            0,
         )
         .await
         .expect("lane request should land on the employee device");
@@ -2987,11 +3079,93 @@ pricing_completion: "0.00000020"
             None,
             &[],
             false,
+            0,
         )
         .await
         .expect_err("default-lane request must not reach employee supply");
 
         assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
+    }
+
+    #[test]
+    fn backend_client_error_classification() {
+        assert!(is_backend_client_error(
+            "backend returned 400 Bad Request: {\"error\":{\"code\":400,\"type\":\"exceed_context_size_error\"}}"
+        ));
+        assert!(is_backend_client_error("backend returned 422 Unprocessable Entity: bad"));
+        assert!(!is_backend_client_error(
+            "backend returned 500 Internal Server Error: boom"
+        ));
+        assert!(!is_backend_client_error("relay closed"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_prompt_beyond_every_supplier_ceiling() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        let mut caps = dispatch_caps(&[&model.id], &[]);
+        caps.effective_context = Some(1024);
+        state.registry.upsert_device("node-a".into(), "A".into(), caps);
+
+        let err = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            5000,
+        )
+        .await
+        .expect_err("over-ceiling prompt must refuse at dispatch");
+
+        assert!(matches!(err, GatewayError::PromptExceedsContext { .. }));
+    }
+
+    #[tokio::test]
+    async fn dispatch_falls_through_to_supplier_without_advertised_ceiling() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        let mut capped = dispatch_caps(&[&model.id], &[]);
+        capped.effective_context = Some(1024);
+        state.registry.upsert_device("node-capped".into(), "C".into(), capped);
+        // Legacy node: no effective_context advertised - trusted.
+        state
+            .registry
+            .upsert_device("node-legacy".into(), "L".into(), dispatch_caps(&[&model.id], &[]));
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, _heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            5000,
+        )
+        .await
+        .expect("legacy supplier without a ceiling stays dispatchable");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "node-legacy");
     }
 
     #[tokio::test]
@@ -3032,6 +3206,7 @@ pricing_completion: "0.00000020"
             None,
             &["node-b".to_string()],
             false,
+            0,
         )
         .await
         .expect("dispatch should choose preferred node");
@@ -3060,6 +3235,7 @@ pricing_completion: "0.00000020"
             None,
             &[],
             false,
+            0,
         )
         .await
         .expect_err("loaded single large supplier should not get cold-start grace");
