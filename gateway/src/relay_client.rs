@@ -675,10 +675,25 @@ async fn dispatch_cluster(
 fn update_eligible_gauges(registry: &Arc<Registry>) {
     // Rebuild once a full discover lands. Clear then re-emit.
     metrics::DEVICES_ELIGIBLE.reset();
+    metrics::DEVICE_SLOTS_BUSY.reset();
+    metrics::DEVICE_SLOTS_TOTAL.reset();
     let mut per_model: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for dev in registry.snapshot_devices() {
         for m in &dev.capabilities.loaded_models {
             *per_model.entry(m.clone()).or_insert(0) += 1;
+        }
+        // Slot occupancy is self-reported (#288): emit a series only for
+        // devices whose heartbeats carry it - an absent series reads as
+        // "does not report", never as zero.
+        if let Some(busy) = dev.capabilities.backend_slots_busy {
+            metrics::DEVICE_SLOTS_BUSY
+                .with_label_values(&[&dev.display_name])
+                .set(busy as f64);
+        }
+        if let Some(total) = dev.capabilities.backend_slots_total {
+            metrics::DEVICE_SLOTS_TOTAL
+                .with_label_values(&[&dev.display_name])
+                .set(total as f64);
         }
     }
     for (m, n) in per_model {

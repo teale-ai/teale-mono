@@ -73,6 +73,24 @@ pub static DEVICES_ELIGIBLE: Lazy<GaugeVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static DEVICE_SLOTS_BUSY: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        "gateway_device_backend_slots_busy",
+        "Backend (llama.cpp /slots) slots currently processing, per device, self-reported in heartbeats (#288). Absent series = device does not report slot occupancy.",
+        &["device"]
+    )
+    .expect("metric init")
+});
+
+pub static DEVICE_SLOTS_TOTAL: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        "gateway_device_backend_slots_total",
+        "Backend (llama.cpp /slots) slots configured, per device, self-reported in heartbeats (#288). Absent series = device does not report slot occupancy.",
+        &["device"]
+    )
+    .expect("metric init")
+});
+
 pub static DEVICES_CONNECTED: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "gateway_devices_connected",
@@ -108,6 +126,8 @@ pub fn init() {
     let _ = &*TOTAL_LATENCY_SECONDS;
     let _ = &*DEVICES_ELIGIBLE;
     let _ = &*DEVICES_CONNECTED;
+    let _ = &*DEVICE_SLOTS_BUSY;
+    let _ = &*DEVICE_SLOTS_TOTAL;
     let _ = &*WS_RECONNECTS_TOTAL;
     let _ = &*TOKENS_OUT_TOTAL;
 }
