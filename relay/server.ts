@@ -257,26 +257,52 @@ function handleMessage(ws: ServerWebSocket<unknown>, rawMessage: string | Buffer
   }
 }
 
-function handleClose(ws: ServerWebSocket<unknown>) {
+// Mass-close detector (#284): a platform/proxy-edge event kills every socket
+// in the same instant with no deploy and no process start (observed
+// 2026-09-07 14:13Z: 7 peers in 1s). Per-close logs alone can't distinguish
+// that from ordinary churn, so closes within a tight window roll up into one
+// mass_close event carrying codes/reasons - the signature that separates an
+// edge event (abnormal/no code) from relay-initiated replaces (1012) and
+// clean client closes (1000).
+const recentCloses: { ts: number; nodeID: string; code: number; reason: string }[] = [];
+const MASS_CLOSE_WINDOW_MS = 2000;
+const MASS_CLOSE_MIN = 3;
+
+function handleClose(ws: ServerWebSocket<unknown>, code: number, reason: string) {
   const nodeID = sockets.get(ws);
   if (!nodeID) {
-    console.log(`[close] unknown websocket closed`);
-    logEvent("close", { outcome: "unknown_socket" });
+    console.log(`[close] unknown websocket closed code=${code} reason=${JSON.stringify(reason)}`);
+    logEvent("close", { outcome: "unknown_socket", code, reason });
     return;
   }
 
-  console.log(`[close] nodeID=${nodeID.substring(0, 16)}... peers_before=${peers.size}`);
+  console.log(`[close] nodeID=${nodeID.substring(0, 16)}... peers_before=${peers.size} code=${code} reason=${JSON.stringify(reason)}`);
   sockets.delete(ws);
   const peer = peers.get(nodeID);
   if (!peer || peer.ws !== ws) {
     console.log(`[close] stale ws for ${nodeID.substring(0, 16)}... (already replaced)`);
-    logEvent("close", { node: nodeID, outcome: "stale_replaced" });
+    logEvent("close", { node: nodeID, outcome: "stale_replaced", code, reason });
     return;
   }
 
   peers.delete(nodeID);
+  const now = Date.now();
+  recentCloses.push({ ts: now, nodeID, code, reason });
+  while (recentCloses.length && now - recentCloses[0].ts > MASS_CLOSE_WINDOW_MS) recentCloses.shift();
+  if (recentCloses.length >= MASS_CLOSE_MIN) {
+    const codes: Record<string, number> = {};
+    for (const c of recentCloses) codes[String(c.code)] = (codes[String(c.code)] ?? 0) + 1;
+    console.log(`[mass_close] ${recentCloses.length} sockets closed within ${MASS_CLOSE_WINDOW_MS}ms; codes=${JSON.stringify(codes)} peers_after=${peers.size} - platform/edge event signature, not per-socket churn`);
+    logEvent("mass_close", {
+      closed: recentCloses.map(c => ({ node: c.nodeID, code: c.code, reason: c.reason })),
+      window_ms: MASS_CLOSE_WINDOW_MS,
+      codes,
+      peers_after: peers.size
+    });
+    recentCloses.length = 0; // one roll-up per burst, not per close
+  }
   console.log(`[close] removed ${nodeID.substring(0, 16)}... peers_after=${peers.size}`);
-  logEvent("close", { node: nodeID, outcome: "removed", peers_after: peers.size });
+  logEvent("close", { node: nodeID, outcome: "removed", peers_after: peers.size, code, reason });
   broadcast({
     peerLeft: {
       nodeID,
@@ -325,8 +351,8 @@ const server = Bun.serve({
     message(ws, message) {
       handleMessage(ws, message);
     },
-    close(ws) {
-      handleClose(ws);
+    close(ws, code, reason) {
+      handleClose(ws, code, reason);
     }
   }
 });
