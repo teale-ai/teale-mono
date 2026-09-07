@@ -1483,8 +1483,7 @@ async fn run_buffered(
         )
         .await?;
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
-        let beside_heavy =
-            !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
+        let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
         let ttft_deadline =
             co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
 
