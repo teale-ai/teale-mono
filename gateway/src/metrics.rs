@@ -44,6 +44,16 @@ pub static TTFT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static DISPATCH_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "gateway_dispatch_seconds",
+        "Arrival-to-dispatch time (pick + admit + session open), by model. ttft minus this is upstream connect + prefill - the decomposition the Auto-vs-local latency work needs.",
+        &["model"],
+        vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
+    )
+    .expect("metric init")
+});
+
 pub static TOTAL_LATENCY_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "gateway_request_latency_seconds",
