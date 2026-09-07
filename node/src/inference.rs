@@ -33,7 +33,19 @@ pub const CHUNK_CHANNEL_CAPACITY: usize = 64;
 /// Surfaced in per-request failure lines when a stream dies at the cap
 /// (see cluster.rs) so the reason names the cap, not the raw transport
 /// error the budget fires as.
-pub const STREAM_BUDGET_SECONDS: u64 = 900;
+///
+/// Raised 900 -> 1800 (Sep 7): Citadel measured four 900s cap deaths in
+/// one night on 512g8 - long answers that cleared prefill fast, then
+/// starved at 4-6.5 tok/s beside heavy resident contexts and died at
+/// 3.8-5.9k tokens. At cap 2 with a 60k-class context resident, any
+/// answer over ~3.5k tokens could not finish inside 900s. 1800 covers
+/// ~8-11k tokens at those rates. The raise is the INTERIM lever; the
+/// real fix is generation-aware heavy-hold (#247). Cost: a genuinely
+/// hung backend stream now holds a slot up to 1800s - mitigated because
+/// consumer aborts cancel the backend request (#258/#260), so this
+/// budget is only the backstop for a backend that hangs while the
+/// consumer is still attached.
+pub const STREAM_BUDGET_SECONDS: u64 = 1800;
 
 fn http_backend_streaming_enabled() -> bool {
     match std::env::var("TEALE_HTTP_BACKEND_STREAMING") {
@@ -89,9 +101,7 @@ impl InferenceProxy {
             backend_model_id: backend_model_id.to_string(),
             client: reqwest::Client::builder()
                 // Total request budget, prefill + generation (see
-                // STREAM_BUDGET_SECONDS): at 38k context, shared decode
-                // runs ~4 tok/s, so a long answer needs real headroom
-                // past 300s.
+                // STREAM_BUDGET_SECONDS for the current value and why).
                 .timeout(std::time::Duration::from_secs(STREAM_BUDGET_SECONDS))
                 .build()
                 .expect("reqwest client build failed"),
