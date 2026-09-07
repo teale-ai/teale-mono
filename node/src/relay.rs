@@ -6,8 +6,8 @@
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{error, info};
+use tokio_tungstenite::{connect_async, tungstenite::Error as WsError, tungstenite::Message};
+use tracing::{error, info, warn};
 
 use teale_protocol::{IncomingRelayMessage, NodeCapabilities};
 
@@ -48,7 +48,28 @@ impl RelayClient {
             let mut write = write;
             while let Some(msg) = write_rx.recv().await {
                 if let Err(e) = write.send(msg).await {
-                    error!("WebSocket write error: {}", e);
+                    // Send-after-close family: a write that races a session or
+                    // socket close inside the reconnect window lands on an
+                    // already-closed handle. The read side and the next
+                    // cadence register prove the connection's liveness, so a
+                    // close-race io error (broken pipe/reset/abort) is not an
+                    // outage - log it as a warning instead of a false ERROR.
+                    // Control flow is unchanged: any write failure still ends
+                    // the write task and the reconnect path owns recovery.
+                    let close_race = matches!(&e, WsError::Io(io_err) if matches!(
+                        io_err.kind(),
+                        std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                    ));
+                    if close_race {
+                        warn!(
+                            "WebSocket write raced a close ({}); reconnect path owns recovery",
+                            e
+                        );
+                    } else {
+                        error!("WebSocket write error: {}", e);
+                    }
                     break;
                 }
             }
