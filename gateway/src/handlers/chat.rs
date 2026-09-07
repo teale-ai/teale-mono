@@ -1245,6 +1245,7 @@ async fn run_streaming(
                 Some(required_ctx),
                 &preferred_node_ids,
                 apmhelp_lane,
+                prompt_tokens,
             )
             .await;
 
@@ -1607,6 +1608,7 @@ async fn run_buffered(
             Some(required_ctx),
             &preferred_node_ids,
             apmhelp_lane,
+            prompt_tokens,
         )
         .await?;
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
@@ -2026,6 +2028,7 @@ pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::BudgetExhausted => "budget_exhausted",
         GatewayError::InsufficientCredits { .. } => "insufficient_credits",
         GatewayError::BadRequest(_) => "bad_request",
+        GatewayError::PromptExceedsContext { .. } => "prompt_exceeds_context",
         GatewayError::Unauthorized(_) => "unauthorized",
         GatewayError::UpstreamTimeout => "timeout",
         GatewayError::Upstream(_) | GatewayError::AllUpstreamsFailed(_) => "error",
