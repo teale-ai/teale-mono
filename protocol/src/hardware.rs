@@ -73,6 +73,23 @@ pub struct NodeCapabilities {
     /// Studios, desktops, Swift Teale.app, etc.).
     #[serde(rename = "onACPower", default, skip_serializing_if = "Option::is_none")]
     pub on_ac_power: Option<bool>,
+    /// Live llama.cpp /slots occupancy, self-reported by the node each
+    /// heartbeat (#273): sessions that arrive over the direct (PIN) path
+    /// hold backend slots without ever appearing in node request lines or
+    /// gateway-visible occupancy. Additive - older relays/gateways ignore
+    /// it, and nodes without a /slots-capable backend omit it.
+    #[serde(
+        rename = "backendSlotsBusy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backend_slots_busy: Option<u32>,
+    #[serde(
+        rename = "backendSlotsTotal",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backend_slots_total: Option<u32>,
 }
 
 /// Device capability tier. 1 = backbone (Ultra/Max, 64GB+), 4 = phone/SBC.

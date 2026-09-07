@@ -384,6 +384,37 @@ impl InferenceProxy {
         Ok(false)
     }
 
+    /// Live llama.cpp /slots occupancy: (busy, total), or None when the
+    /// backend has no /slots endpoint or the read fails. Self-reported in
+    /// the heartbeat so PIN-path sessions stop being invisible to
+    /// occupancy accounting (#273). Bounded hard at 5s so a hung backend
+    /// can't stall the heartbeat.
+    pub async fn slots_occupancy(&self) -> Option<(u32, u32)> {
+        let url = format!("{}/slots", self.base_url);
+        let read = async {
+            let response = self.client.get(&url).send().await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let payload = response.json::<Value>().await.ok()?;
+            let slots = payload.as_array()?;
+            let total = slots.len() as u32;
+            let busy = slots
+                .iter()
+                .filter(|s| {
+                    s.get("is_processing")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .count() as u32;
+            Some((busy, total))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), read)
+            .await
+            .ok()
+            .flatten()
+    }
+
     async fn backend_model_ready_via_ollama_ps(&self) -> anyhow::Result<Option<bool>> {
         let url = format!("{}/ollama/api/ps", self.base_url);
         let response = self.client.get(&url).send().await?;

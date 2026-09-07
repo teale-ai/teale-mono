@@ -631,6 +631,12 @@ async fn run_relay_session(
                     && !state.shutting_down.load(Ordering::Relaxed);
                 snapshot.effective_context = swap.current_context_size().await;
                 snapshot.on_ac_power = Some(state.on_ac_power.load(Ordering::Relaxed));
+                let (slots_busy, slots_total) = match swap.backend_slots_occupancy().await {
+                    Some((busy, total)) => (Some(busy), Some(total)),
+                    None => (None, None),
+                };
+                snapshot.backend_slots_busy = slots_busy;
+                snapshot.backend_slots_total = slots_total;
                 if !relay_backoff.lock().await.can_register() {
                     tracing::debug!("heartbeat re-register skipped during relay backoff");
                     continue;

@@ -709,6 +709,8 @@ fn make_register_payload(identity: &Arc<GatewayIdentity>, display_name: &str) ->
         max_concurrent_requests: Some(0),
         effective_context: None,
         on_ac_power: None,
+        backend_slots_busy: None,
+        backend_slots_total: None,
     };
     let signature = identity.sign_node_id();
     serde_json::json!({
@@ -756,6 +758,8 @@ mod tests {
             max_concurrent_requests: Some(2),
             effective_context: Some(131072),
             on_ac_power: Some(true),
+            backend_slots_busy: None,
+            backend_slots_total: None,
         }
     }
 

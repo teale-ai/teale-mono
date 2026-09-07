@@ -336,6 +336,8 @@ mod tests {
                     max_concurrent_requests: Some(1),
                     effective_context: Some(262_144),
                     on_ac_power: Some(true),
+                    backend_slots_busy: None,
+                    backend_slots_total: None,
                 },
                 employee: false,
                 last_heartbeat: heartbeat_at,

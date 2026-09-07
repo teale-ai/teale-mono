@@ -441,6 +441,8 @@ pub fn build_capabilities(
         max_concurrent_requests: Some(max_concurrent),
         effective_context,
         on_ac_power,
+        backend_slots_busy: None,
+        backend_slots_total: None,
     }
 }
 
