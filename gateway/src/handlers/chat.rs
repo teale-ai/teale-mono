@@ -238,6 +238,7 @@ pub async fn chat_completions(
                 state.clone(),
                 prepared.catalog_model,
                 prepared.req_body,
+                prepared.apmhelp_lane,
                 prepared.consumer,
                 prepared.required_ctx,
                 prepared.prompt_tokens,
@@ -250,6 +251,7 @@ pub async fn chat_completions(
                 state.clone(),
                 prepared.catalog_model,
                 prepared.req_body,
+                prepared.apmhelp_lane,
                 prepared.consumer,
                 prepared.required_ctx,
                 prepared.prompt_tokens,
@@ -315,6 +317,11 @@ pub(crate) struct PreparedChatRequest {
     /// decide whether a dispatch failure is recoverable by re-resolving with
     /// the failed model excluded.
     pub was_virtual_resolution: bool,
+    /// True when the caller is authorized for the apmhelp employee-supply
+    /// lane (#272): staff (account role) or active device member of the
+    /// configured PIN. Lane requests may draw on confirmed-employee
+    /// supply, strictly preferred over fleet.
+    pub apmhelp_lane: bool,
 }
 
 /// Maximum number of times a virtual `teale/auto` request may cascade to a
@@ -543,6 +550,8 @@ pub(crate) fn prepare_chat_request_excluding(
     let prompt_tokens = estimate_prompt_tokens(&parsed);
     let preferred_node_ids = preferred_linked_node_ids(state, headers, principal);
 
+    let apmhelp_lane = apmhelp_lane_request(state, principal);
+
     Ok(PreparedChatRequest {
         catalog_model,
         req_body: req,
@@ -553,6 +562,7 @@ pub(crate) fn prepare_chat_request_excluding(
         streaming,
         was_virtual_resolution,
         tools_lane_fallback,
+        apmhelp_lane,
     })
 }
 
@@ -826,6 +836,40 @@ pub(crate) fn reject_account_session(principal: &AuthPrincipal) -> Result<(), Ga
     Ok(())
 }
 
+/// apmhelp lane authorization (#272): the caller is staff (an account
+/// role on the configured PIN, via API key or account session) or an
+/// active device member of it. One sqlite read per prepare; the lane is
+/// disabled outright when no pin_id is configured.
+pub(crate) fn apmhelp_lane_request(state: &AppState, principal: &AuthPrincipal) -> bool {
+    let cfg = &state.config.apmhelp;
+    if !cfg.lane_enabled() {
+        return false;
+    }
+    let Some(pool) = state.db.as_ref() else {
+        return false;
+    };
+    let account: Option<String> = if let Some((account_user_id, _session_id)) =
+        principal.account_session()
+    {
+        Some(account_user_id.to_string())
+    } else {
+        principal
+            .api_key()
+            .map(|(_key_id, account_user_id, _role)| account_user_id.to_string())
+    };
+    if let Some(account) = account {
+        if let Ok(Some(_role)) = crate::pins::role_of(pool, &cfg.pin_id, &account) {
+            return true;
+        }
+    }
+    if let Some(device_id) = principal.device_id() {
+        if let Ok(Some(status)) = crate::pins::member_status(pool, &cfg.pin_id, device_id) {
+            return status == "active";
+        }
+    }
+    false
+}
+
 /// Build the ledger-facing consumer from an authenticated principal.
 /// Static tokens don't settle (they pre-date the credit system), so we
 /// return `None` for them.
@@ -854,6 +898,7 @@ pub(crate) async fn pick_and_dispatch(
     exclude: &[String],
     min_context: Option<u32>,
     preferred_node_ids: &[String],
+    apmhelp_lane: bool,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
@@ -893,7 +938,21 @@ pub(crate) async fn pick_and_dispatch(
     let open_timeout = Duration::from_secs(ttft_deadline_seconds.min(4));
 
     loop {
-        let candidates = state.registry.eligible_devices(&catalog_model.id);
+        // Supply pool by lane (#272): the default lane draws fleet supply
+        // only; the apmhelp lane adds confirmed-employee supply and
+        // STRICTLY prefers it - when any employee device can serve the
+        // model, fleet devices are not candidates this attempt.
+        let candidates = if apmhelp_lane {
+            let pool = state.registry.eligible_supply(&catalog_model.id, true);
+            let employees: Vec<_> = pool.iter().filter(|d| d.employee).cloned().collect();
+            if employees.is_empty() {
+                pool
+            } else {
+                employees
+            }
+        } else {
+            state.registry.eligible_devices(&catalog_model.id)
+        };
         let preferred_candidates: Vec<_> = if preferred_node_ids.is_empty() {
             Vec::new()
         } else {
@@ -1111,6 +1170,7 @@ async fn run_streaming(
     state: AppState,
     catalog_model: CatalogModel,
     req_body: Value,
+    apmhelp_lane: bool,
     consumer: Option<ledger::ConsumerPrincipal>,
     required_ctx: u32,
     prompt_tokens: u32,
@@ -1146,6 +1206,7 @@ async fn run_streaming(
                 &excluded,
                 Some(required_ctx),
                 &preferred_node_ids,
+                apmhelp_lane,
             )
             .await;
 
@@ -1449,6 +1510,7 @@ async fn run_buffered(
     state: AppState,
     catalog_model: CatalogModel,
     req_body: Value,
+    apmhelp_lane: bool,
     consumer: Option<ledger::ConsumerPrincipal>,
     required_ctx: u32,
     prompt_tokens: u32,
@@ -1480,6 +1542,7 @@ async fn run_buffered(
             &excluded,
             Some(required_ctx),
             &preferred_node_ids,
+            apmhelp_lane,
         )
         .await?;
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
@@ -2105,6 +2168,7 @@ quantization: null
             synthetic_probes: Default::default(),
             solana: Default::default(),
             fleet: Default::default(),
+            apmhelp: Default::default(),
         }
     }
 
@@ -2700,6 +2764,7 @@ pricing_completion: "0.00000020"
             &[],
             None,
             &[],
+            false,
         )
         .await
         .expect("dispatch should retry on relay-open failure");
@@ -2736,6 +2801,7 @@ pricing_completion: "0.00000020"
             &[],
             None,
             &[],
+            false,
         )
         .await
         .expect_err("second heavy must be refused");
@@ -2780,6 +2846,7 @@ pricing_completion: "0.00000020"
             &[],
             None,
             &[],
+            false,
         )
         .await
         .expect("heavy should land on the heavy-free device");
@@ -2839,6 +2906,7 @@ pricing_completion: "0.00000020"
             &[],
             None,
             &[],
+            false,
         )
         .await
         .expect("light request must admit beside an in-flight heavy");
@@ -2849,6 +2917,80 @@ pricing_completion: "0.00000020"
         assert!(!heavy);
         assert_eq!(state.registry.in_flight("node-a"), 2);
         assert_eq!(state.registry.heavy_in_flight("node-a"), 1);
+    }
+
+    #[tokio::test]
+    async fn apmhelp_lane_strictly_prefers_employee_supply() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device(
+            "fleet-a".into(),
+            "Fleet A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device_with_class(
+            "emp-b".into(),
+            "Emp B".into(),
+            dispatch_caps(&[&model.id], &[]),
+            true,
+        );
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, _heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            true,
+        )
+        .await
+        .expect("lane request should land on the employee device");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "emp-b");
+    }
+
+    #[tokio::test]
+    async fn default_lane_never_sees_employee_supply() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device_with_class(
+            "emp-b".into(),
+            "Emp B".into(),
+            dispatch_caps(&[&model.id], &[]),
+            true,
+        );
+
+        let err = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+        )
+        .await
+        .expect_err("default-lane request must not reach employee supply");
+
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
     }
 
     #[tokio::test]
@@ -2888,6 +3030,7 @@ pricing_completion: "0.00000020"
             &[],
             None,
             &["node-b".to_string()],
+            false,
         )
         .await
         .expect("dispatch should choose preferred node");
@@ -2915,6 +3058,7 @@ pricing_completion: "0.00000020"
             &[],
             None,
             &[],
+            false,
         )
         .await
         .expect_err("loaded single large supplier should not get cold-start grace");

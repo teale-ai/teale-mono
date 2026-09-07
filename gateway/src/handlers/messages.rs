@@ -454,6 +454,7 @@ async fn run_anthropic_buffered(
             &excluded,
             Some(prepared.required_ctx),
             &prepared.preferred_node_ids,
+            prepared.apmhelp_lane,
         )
         .await?;
         // Co-resident-beside-heavy: occupancy at dispatch; a slow first
@@ -610,6 +611,7 @@ async fn run_anthropic_streaming(
                 &excluded,
                 Some(prepared.required_ctx),
                 &prepared.preferred_node_ids,
+                prepared.apmhelp_lane,
             )
             .await;
 
