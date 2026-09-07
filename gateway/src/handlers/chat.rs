@@ -1839,7 +1839,11 @@ async fn run_buffered(
             continue;
         }
 
-        let terminal_status = if client_error_failure { "client_error" } else { "error" };
+        let terminal_status = if client_error_failure {
+            "client_error"
+        } else {
+            "error"
+        };
         info!(
             "request complete: model={} status={} total_ms={} last_error={}",
             model_id,
@@ -3092,7 +3096,9 @@ pricing_completion: "0.00000020"
         assert!(is_backend_client_error(
             "backend returned 400 Bad Request: {\"error\":{\"code\":400,\"type\":\"exceed_context_size_error\"}}"
         ));
-        assert!(is_backend_client_error("backend returned 422 Unprocessable Entity: bad"));
+        assert!(is_backend_client_error(
+            "backend returned 422 Unprocessable Entity: bad"
+        ));
         assert!(!is_backend_client_error(
             "backend returned 500 Internal Server Error: boom"
         ));
@@ -3105,7 +3111,9 @@ pricing_completion: "0.00000020"
         let state = dispatch_test_state(dispatch_test_config(1), &model);
         let mut caps = dispatch_caps(&[&model.id], &[]);
         caps.effective_context = Some(1024);
-        state.registry.upsert_device("node-a".into(), "A".into(), caps);
+        state
+            .registry
+            .upsert_device("node-a".into(), "A".into(), caps);
 
         let err = pick_and_dispatch(
             &state,
@@ -3129,11 +3137,15 @@ pricing_completion: "0.00000020"
         let state = dispatch_test_state(dispatch_test_config(1), &model);
         let mut capped = dispatch_caps(&[&model.id], &[]);
         capped.effective_context = Some(1024);
-        state.registry.upsert_device("node-capped".into(), "C".into(), capped);
-        // Legacy node: no effective_context advertised - trusted.
         state
             .registry
-            .upsert_device("node-legacy".into(), "L".into(), dispatch_caps(&[&model.id], &[]));
+            .upsert_device("node-capped".into(), "C".into(), capped);
+        // Legacy node: no effective_context advertised - trusted.
+        state.registry.upsert_device(
+            "node-legacy".into(),
+            "L".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
 
         let relay = state.relay.clone();
         let signal_ready = tokio::spawn(async move {
