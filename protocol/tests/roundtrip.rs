@@ -34,6 +34,8 @@ fn sample_capabilities() -> NodeCapabilities {
         max_concurrent_requests: Some(4),
         effective_context: Some(32768),
         on_ac_power: None,
+        backend_slots_busy: None,
+        backend_slots_total: None,
     }
 }
 

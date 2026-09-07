@@ -162,6 +162,16 @@ impl SwapManager {
         self.inner.read().await.context_size
     }
 
+    /// Live backend slot occupancy (busy, total) for heartbeat reporting
+    /// (#273); None for backends without slot visibility.
+    pub async fn backend_slots_occupancy(&self) -> Option<(u32, u32)> {
+        let inner = self.inner.read().await;
+        match &inner.backend {
+            Backend::Http(proxy) => proxy.slots_occupancy().await,
+            _ => None,
+        }
+    }
+
     /// Forward an inference request to whatever backend is loaded now.
     /// The read guard is dropped before the returned `Receiver` is used,
     /// so streams survive concurrent swaps (the spawned reader tasks hold

@@ -229,6 +229,8 @@ mod tests {
             max_concurrent_requests: Some(4),
             effective_context: Some(65_536),
             on_ac_power: Some(true),
+            backend_slots_busy: None,
+            backend_slots_total: None,
         }
     }
 
