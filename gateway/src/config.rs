@@ -175,6 +175,12 @@ pub struct ReliabilityConfig {
     /// and signals the caller to skip quarantine for that attempt.
     #[serde(default = "default_heavy_co_resident_ttft_bonus")]
     pub heavy_co_resident_ttft_bonus_seconds: u64,
+    /// Per-conversation supplier stickiness: follow-up turns prefer the
+    /// node that served the conversation before, so llama.cpp slot KV is
+    /// reused instead of re-prefilling the whole context. Seconds an
+    /// affinity stays valid; 0 disables.
+    #[serde(default = "default_convo_stickiness_ttl")]
+    pub convo_stickiness_ttl_seconds: u64,
 }
 
 impl Default for ReliabilityConfig {
@@ -193,6 +199,7 @@ impl Default for ReliabilityConfig {
             heavy_hold_prompt_tokens: default_heavy_hold_prompt_tokens(),
             heavy_hold_max_tokens: default_heavy_hold_max_tokens(),
             heavy_co_resident_ttft_bonus_seconds: default_heavy_co_resident_ttft_bonus(),
+            convo_stickiness_ttl_seconds: default_convo_stickiness_ttl(),
         }
     }
 }
@@ -332,6 +339,10 @@ fn default_heavy_hold_max_tokens() -> u32 {
 /// 180s on top of the normal TTFT deadline: Citadel's contention samples
 /// show co-resident first tokens of 123-216s on 512g8 behind a heavy's
 /// cold prefill, over the 120s base deadline.
+fn default_convo_stickiness_ttl() -> u64 {
+    1800
+}
+
 fn default_heavy_co_resident_ttft_bonus() -> u64 {
     180
 }
