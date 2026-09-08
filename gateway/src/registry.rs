@@ -214,7 +214,9 @@ impl Registry {
     /// request is refused when the node already carries an in-flight
     /// heavy: two heavies on one box share decode and starve each other
     /// until both die at the stream cap (Citadel measured five 900s
-    /// deaths and three 1800s deaths, all heavy-beside-heavy). Light
+    /// deaths and three 1800s deaths, all heavy-beside-heavy). It is
+    /// also refused when the node's self-reported slot occupancy shows
+    /// sessions this gateway did not dispatch (#273 PIN-path gap). Light
     /// requests always admit. The entry lock makes the check-and-inc one
     /// atomic step, so two racing heavy dispatches cannot both pass.
     /// Refusal leaves the counters untouched. Pair with `dec_in_flight`
@@ -223,6 +225,26 @@ impl Registry {
         let e = self.in_flight.entry(node_id.to_string()).or_default();
         if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
             return false;
+        }
+        if heavy {
+            // #273: a PIN-path (node-direct) session holds llama.cpp slots
+            // with no gateway-visible in-flight entry. When the node's
+            // self-reported slot occupancy (#288) exceeds what this gateway
+            // can account for, external sessions are resident - refuse the
+            // heavy rather than stack heavy-beside-heavy (the 05:03-05:16Z
+            // window: two starved requests died at the 300s cap beside
+            // invisible 33k-89k PIN heavies). Stale by one heartbeat, so a
+            // just-drained heavy may cost one interval's refusal - safe
+            // direction. Light admission is unchanged: the light-beside-
+            // heavy policy is #270's open question, not this fix.
+            if let Some(dev) = self.devices.get(node_id) {
+                if let Some(busy) = dev.capabilities.backend_slots_busy {
+                    let accounted = e.total.load(std::sync::atomic::Ordering::SeqCst);
+                    if busy > accounted {
+                        return false;
+                    }
+                }
+            }
         }
         e.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if heavy {
@@ -663,6 +685,32 @@ mod tests {
         assert_eq!(registry.heavy_in_flight("node-a"), 0);
         registry.dec_in_flight("node-a", false);
         assert_eq!(registry.in_flight("node-a"), 0);
+    }
+
+    #[test]
+    fn heavy_hold_admission_refuses_when_reported_slots_exceed_accounted() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let mut pin_caps = caps(vec!["m"], true);
+        pin_caps.backend_slots_busy = Some(1);
+        pin_caps.backend_slots_total = Some(4);
+        registry.upsert_device("node-a".into(), "A".into(), pin_caps);
+
+        // A PIN-path heavy holds a slot with no gateway-visible in-flight:
+        // reported busy (1) exceeds accounted (0) - the heavy is refused.
+        assert!(!registry.admit("node-a", true));
+        assert_eq!(registry.in_flight("node-a"), 0);
+        // Light traffic still admits beside reported occupancy.
+        assert!(registry.admit("node-a", false));
+        // Reported busy (1) now equals accounted (1): no external session,
+        // so a heavy may land.
+        assert!(registry.admit("node-a", true));
+        registry.dec_in_flight("node-a", true);
+        registry.dec_in_flight("node-a", false);
+
+        // A node whose heartbeats carry no occupancy (older build) keeps
+        // the old behaviour: gateway-visible heavies only.
+        registry.upsert_device("node-b".into(), "B".into(), caps(vec!["m"], true));
+        assert!(registry.admit("node-b", true));
     }
 
     #[test]
