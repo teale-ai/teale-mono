@@ -51,6 +51,14 @@ pub static HEAVY_HOLD_EXPIRED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static HEAVY_HOLD_SHARED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    prometheus::register_int_counter!(
+        "gateway_heavy_hold_shared_total",
+        "Heavy requests admitted beside the same consumer's own in-flight heavy (slot-capped co-residency, #247 follow-up)"
+    )
+    .expect("metric init")
+});
+
 pub static HEAVY_HOLDS: Lazy<IntGaugeVec> = Lazy::new(|| {
     prometheus::register_int_gauge_vec!(
         "gateway_heavy_holds",
@@ -149,6 +157,7 @@ pub fn init() {
     let _ = &*RETRIES_TOTAL;
     let _ = &*HEAVY_HOLD_REFUSED;
     let _ = &*HEAVY_HOLD_EXPIRED;
+    let _ = &*HEAVY_HOLD_SHARED;
     let _ = &*HEAVY_HOLDS;
     let _ = &*TTFT_SECONDS;
     let _ = &*TOTAL_LATENCY_SECONDS;

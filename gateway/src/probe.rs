@@ -149,7 +149,7 @@ async fn probe_target(
     target: &ProbeTarget,
     max_tokens: u32,
 ) -> anyhow::Result<()> {
-    state.registry.admit(&target.node_id, false);
+    state.registry.admit(&target.node_id, false, None);
 
     let ttft_deadline_seconds =
         ttft_deadline_seconds_for_model_size(&state.config.reliability, target.is_large);
