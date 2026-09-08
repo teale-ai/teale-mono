@@ -23,7 +23,12 @@ MODEL = "qwen/qwen3.6-35b-a3b"
 TURNS = 12
 KEY = ""
 
-def sse_chat(messages, tools=None, max_tokens=48):
+def sse_chat(messages, tools=None, max_tokens=256):
+    # max_tokens default 256: reasoning models (glm-5.3-flash class) can
+    # burn a small cap entirely on reasoning_content, finish=length with
+    # no content delta - that both hides TTFB and poisons the multiturn
+    # transcript with an empty assistant turn. TTFT comparability is
+    # unaffected; turn totals grow for talkative models.
     body = {"model": MODEL, "messages": messages, "stream": True,
             "max_tokens": max_tokens}
     if tools:
@@ -38,7 +43,7 @@ def sse_chat(messages, tools=None, max_tokens=48):
         resp = urllib.request.urlopen(req, timeout=300)
     except urllib.error.HTTPError as e:
         return {"error": "HTTP %s: %s" % (e.code, e.read()[:200])}
-    ttfb = None; chunks = 0; text = ""; tool_calls = []; finish = None
+    ttfb = None; chunks = 0; text = ""; reasoning = ""; tool_calls = []; finish = None
     for raw in resp:
         now = time.time()
         line = raw.decode("utf-8", "replace").strip()
@@ -54,11 +59,16 @@ def sse_chat(messages, tools=None, max_tokens=48):
             continue
         choice = (chunk.get("choices") or [{}])[0]
         delta = choice.get("delta") or {}
-        if delta.get("content") or delta.get("tool_calls"):
+        # First-token = first model output of ANY kind. Reasoning models
+        # stream reasoning_content before/without content; counting only
+        # content/tool_calls recorded ttfb=null for 9/12 Auto-leg turns.
+        if delta.get("content") or delta.get("tool_calls") or delta.get("reasoning_content"):
             if ttfb is None:
                 ttfb = now - t0
         if delta.get("content"):
             text += delta["content"]
+        if delta.get("reasoning_content"):
+            reasoning += delta["reasoning_content"]
         for tc in delta.get("tool_calls") or []:
             fn = tc.get("function") or {}
             if fn.get("name"):
@@ -72,7 +82,8 @@ def sse_chat(messages, tools=None, max_tokens=48):
             finish = choice["finish_reason"]
     total = time.time() - t0
     return {"ttfb": ttfb, "total": total, "chunks": chunks, "text": text,
-            "tool_calls": tool_calls, "finish": finish}
+            "reasoning_chars": len(reasoning), "tool_calls": tool_calls,
+            "finish": finish}
 
 TOOLS = [{"type": "function", "function": {
     "name": "get_weather",
