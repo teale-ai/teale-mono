@@ -1239,6 +1239,7 @@ async fn pick_and_dispatch_inner(
             info!(
                 device = %target_node,
                 model = %catalog_model.id,
+                req_owner = %crate::registry::owner_tag(owner_key),
                 "heavy-hold: refusing to co-schedule a heavy beside the in-flight heavy"
             );
             heavy_refused = true;

@@ -210,6 +210,21 @@ struct InFlight {
     heavy_owner: parking_lot::Mutex<Option<String>>,
 }
 
+/// A short, stable tag for a hold owner in logs: enough to tell same from
+/// different without logging the key itself (a convo key hashes prompt
+/// text; a consumer id is a ledger actor).
+pub(crate) fn owner_tag(owner: Option<&str>) -> String {
+    match owner {
+        Some(o) => {
+            use sha2::Digest;
+            let mut h = sha2::Sha256::new();
+            h.update(o.as_bytes());
+            hex::encode(&h.finalize()[..6])
+        }
+        None => "none".to_string(),
+    }
+}
+
 impl Registry {
     pub fn new(reliability: ReliabilityConfig) -> Arc<Self> {
         Arc::new(Self {
@@ -286,6 +301,7 @@ impl Registry {
     /// hold's own consumer shares the hold up to the device's slots.
     /// Pair with `dec_in_flight`
     /// on session close.
+
     pub fn admit(&self, node_id: &str, heavy: bool, owner: Option<&str>) -> bool {
         let e = self.in_flight.entry(node_id.to_string()).or_default();
         if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
@@ -299,11 +315,20 @@ impl Registry {
                 // Same-consumer sharing: the hold's owner may stack its own
                 // heavies up to the device's backend slots (its own choice,
                 // its own contention). Anyone else is refused.
-                let shared = {
+                let (shared, incumbent_tag) = {
                     let held = e.heavy_owner.lock();
-                    owner.is_some() && held.as_deref() == owner
+                    (
+                        owner.is_some() && held.as_deref() == owner,
+                        owner_tag(held.as_deref()),
+                    )
                 };
                 if !shared {
+                    tracing::info!(
+                        device = %node_id,
+                        req_owner = %owner_tag(owner),
+                        incumbent_owner = %incumbent_tag,
+                        "heavy-hold: refusing co-scheduled heavy (different owner)"
+                    );
                     return false;
                 }
                 let cap = self
@@ -313,7 +338,13 @@ impl Registry {
                     .unwrap_or(2)
                     .max(1);
                 if e.heavy.load(std::sync::atomic::Ordering::SeqCst) >= cap {
-                    return false; // slots genuinely full
+                    tracing::info!(
+                        device = %node_id,
+                        req_owner = %owner_tag(owner),
+                        cap = cap,
+                        "heavy-hold: owner's own slots genuinely full"
+                    );
+                    return false;
                 }
                 crate::metrics::HEAVY_HOLD_SHARED.inc();
             } else {
@@ -351,6 +382,13 @@ impl Registry {
                 if let Some(busy) = dev.capabilities.backend_slots_busy {
                     let accounted = e.total.load(std::sync::atomic::Ordering::SeqCst);
                     if busy > accounted {
+                        tracing::info!(
+                            device = %node_id,
+                            req_owner = %owner_tag(owner),
+                            busy = busy,
+                            accounted = accounted,
+                            "heavy-hold: refusing beside unaccounted external sessions"
+                        );
                         return false;
                     }
                 }
@@ -360,6 +398,17 @@ impl Registry {
         if heavy {
             if e.heavy.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                 *e.heavy_owner.lock() = owner.map(str::to_string);
+                tracing::info!(
+                    device = %node_id,
+                    owner = %owner_tag(owner),
+                    "heavy-hold: acquired"
+                );
+            } else {
+                tracing::info!(
+                    device = %node_id,
+                    owner = %owner_tag(owner),
+                    "heavy-hold: shared with its owner"
+                );
             }
             *e.heavy_since.lock() = Some(Instant::now());
             crate::metrics::HEAVY_HOLDS
@@ -379,9 +428,14 @@ impl Registry {
             if heavy {
                 let hprev = e.heavy.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                 if hprev <= 1 {
+                    let gone = e.heavy_owner.lock().take();
                     e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
                     *e.heavy_since.lock() = None;
-                    *e.heavy_owner.lock() = None;
+                    tracing::info!(
+                        device = %node_id,
+                        owner = %owner_tag(gone.as_deref()),
+                        "heavy-hold: released"
+                    );
                 }
                 crate::metrics::HEAVY_HOLDS
                     .with_label_values(&[node_id])
