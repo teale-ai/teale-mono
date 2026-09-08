@@ -351,6 +351,7 @@ mod tests {
                     throttle_level: 100,
                     thermal_level: ThermalLevel::Nominal,
                 },
+                busy_excess_since: None,
             }
         };
 

@@ -2540,6 +2540,7 @@ quantization: null
                 discover_interval_seconds: 10,
                 departed_grace_seconds: 180,
                 registry_warmup_seconds: 0,
+                busy_excess_grace_seconds: 120,
             },
             synthetic_probes: Default::default(),
             solana: Default::default(),
