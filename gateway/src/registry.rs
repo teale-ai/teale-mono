@@ -210,21 +210,6 @@ struct InFlight {
     heavy_owner: parking_lot::Mutex<Option<String>>,
 }
 
-/// A short, stable tag for a hold owner in logs: enough to tell same from
-/// different without logging the key itself (a convo key hashes prompt
-/// text; a consumer id is a ledger actor).
-pub(crate) fn owner_tag(owner: Option<&str>) -> String {
-    match owner {
-        Some(o) => {
-            use sha2::Digest;
-            let mut h = sha2::Sha256::new();
-            h.update(o.as_bytes());
-            hex::encode(&h.finalize()[..6])
-        }
-        None => "none".to_string(),
-    }
-}
-
 impl Registry {
     pub fn new(reliability: ReliabilityConfig) -> Arc<Self> {
         Arc::new(Self {
@@ -292,6 +277,21 @@ impl Registry {
     /// request is refused when the node already carries an in-flight
     /// heavy: two heavies on one box share decode and starve each other
     /// until both die at the stream cap (Citadel measured five 900s
+    /// A short, stable tag for a hold owner in logs: enough to tell same from
+    /// different without logging the key itself (a convo key hashes prompt
+    /// text; a consumer id is a ledger actor).
+    pub(crate) fn owner_tag(owner: Option<&str>) -> String {
+        match owner {
+            Some(o) => {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(o.as_bytes());
+                hex::encode(&h.finalize()[..6])
+            }
+            None => "none".to_string(),
+        }
+    }
+
     /// deaths and three 1800s deaths, all heavy-beside-heavy). It is
     /// also refused when the node's self-reported slot occupancy shows
     /// sessions this gateway did not dispatch (#273 PIN-path gap). Light
