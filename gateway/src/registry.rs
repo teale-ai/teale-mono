@@ -190,6 +190,8 @@ pub struct Registry {
     /// all still outrank it.
     convo_affinity: DashMap<String, (String, std::time::Instant)>,
     reliability: ReliabilityConfig,
+    /// Forensic ring of heavy-hold decisions (tags only, never raw keys).
+    heavy_events: parking_lot::Mutex<std::collections::VecDeque<HeavyEvent>>,
 }
 
 /// Per-node live load, split by request weight (#247).
@@ -225,6 +227,17 @@ pub(crate) fn owner_tag(owner: Option<&str>) -> String {
     }
 }
 
+/// One heavy-hold decision in the forensic ring. Owner identities are the
+/// same sha256[:12] tags the logs carry ("none" when absent).
+#[derive(serde::Serialize, Clone)]
+pub struct HeavyEvent {
+    pub ts_unix: u64,
+    pub kind: &'static str,
+    pub device: String,
+    pub req_owner: String,
+    pub incumbent_owner: String,
+}
+
 impl Registry {
     pub fn new(reliability: ReliabilityConfig) -> Arc<Self> {
         Arc::new(Self {
@@ -233,7 +246,40 @@ impl Registry {
             in_flight: DashMap::new(),
             convo_affinity: DashMap::new(),
             reliability,
+            heavy_events: parking_lot::Mutex::new(std::collections::VecDeque::new()),
         })
+    }
+
+    /// A copy of the forensic ring, oldest first.
+    pub fn heavy_events_snapshot(&self) -> Vec<HeavyEvent> {
+        self.heavy_events.lock().iter().cloned().collect()
+    }
+
+    /// Append one heavy-hold decision to the forensic ring (newest last,
+    /// capped): the durable answer when the log stream stalls mid-probe
+    /// (2026-09-09: two qqqs probes lost their refusal lines to a fly
+    /// buffer of ~2 minutes and a silently hung tail).
+    fn record_heavy(
+        &self,
+        kind: &'static str,
+        device: &str,
+        req: Option<&str>,
+        incumbent: Option<&str>,
+    ) {
+        let mut q = self.heavy_events.lock();
+        if q.len() >= 200 {
+            q.pop_front();
+        }
+        q.push_back(HeavyEvent {
+            ts_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            kind,
+            device: device.to_string(),
+            req_owner: owner_tag(req),
+            incumbent_owner: owner_tag(incumbent),
+        });
     }
 
     const CONVO_AFFINITY_CAP: usize = 4096;
@@ -314,10 +360,11 @@ impl Registry {
                 // Same-consumer sharing: the hold's owner may stack its own
                 // heavies up to the device's backend slots (its own choice,
                 // its own contention). Anyone else is refused.
-                let (shared, incumbent_tag) = {
+                let (shared, incumbent_raw, incumbent_tag) = {
                     let held = e.heavy_owner.lock();
                     (
                         owner.is_some() && held.as_deref() == owner,
+                        held.clone(),
                         owner_tag(held.as_deref()),
                     )
                 };
@@ -327,6 +374,12 @@ impl Registry {
                         req_owner = %owner_tag(owner),
                         incumbent_owner = %incumbent_tag,
                         "heavy-hold: refusing co-scheduled heavy (different owner)"
+                    );
+                    self.record_heavy(
+                        "refuse_different_owner",
+                        node_id,
+                        owner,
+                        incumbent_raw.as_deref(),
                     );
                     return false;
                 }
@@ -343,6 +396,7 @@ impl Registry {
                         cap = cap,
                         "heavy-hold: owner's own slots genuinely full"
                     );
+                    self.record_heavy("refuse_slots_full", node_id, owner, owner);
                     return false;
                 }
                 crate::metrics::HEAVY_HOLD_SHARED.inc();
@@ -353,8 +407,9 @@ impl Registry {
                 // and admit below.
                 e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
                 *e.heavy_since.lock() = None;
-                *e.heavy_owner.lock() = None;
+                let expired_owner = e.heavy_owner.lock().take();
                 let prev = e.total.swap(0, std::sync::atomic::Ordering::SeqCst);
+                self.record_heavy("expire", node_id, None, expired_owner.as_deref());
                 crate::metrics::HEAVY_HOLD_EXPIRED.inc();
                 crate::metrics::HEAVY_HOLDS
                     .with_label_values(&[node_id])
@@ -388,6 +443,7 @@ impl Registry {
                             accounted = accounted,
                             "heavy-hold: refusing beside unaccounted external sessions"
                         );
+                        self.record_heavy("refuse_external_resident", node_id, owner, None);
                         return false;
                     }
                 }
@@ -402,12 +458,14 @@ impl Registry {
                     owner = %owner_tag(owner),
                     "heavy-hold: acquired"
                 );
+                self.record_heavy("acquire", node_id, owner, None);
             } else {
                 tracing::info!(
                     device = %node_id,
                     owner = %owner_tag(owner),
                     "heavy-hold: shared with its owner"
                 );
+                self.record_heavy("share", node_id, owner, owner);
             }
             *e.heavy_since.lock() = Some(Instant::now());
             crate::metrics::HEAVY_HOLDS
@@ -435,6 +493,7 @@ impl Registry {
                         owner = %owner_tag(gone.as_deref()),
                         "heavy-hold: released"
                     );
+                    self.record_heavy("release", node_id, gone.as_deref(), None);
                 }
                 crate::metrics::HEAVY_HOLDS
                     .with_label_values(&[node_id])
@@ -1029,6 +1088,23 @@ mod tests {
         r.note_convo("conv-key", "node-a");
         assert_eq!(r.convo_node("conv-key").as_deref(), Some("node-a"));
         assert_eq!(r.convo_node("unknown"), None);
+    }
+
+    #[test]
+    fn heavy_ring_records_decisions_newest_last() {
+        let cfg = ReliabilityConfig {
+            convo_stickiness_ttl_seconds: 0,
+            ..Default::default()
+        };
+        let r = Registry::new(cfg);
+        assert!(r.admit("node-a", true, Some("consumer-x")));
+        assert!(!r.admit("node-a", true, Some("consumer-y")));
+        let ring = r.heavy_events_snapshot();
+        assert_eq!(ring.len(), 2);
+        assert_eq!(ring[0].kind, "acquire");
+        assert_eq!(ring[1].kind, "refuse_different_owner");
+        assert_eq!(ring[0].req_owner, ring[1].incumbent_owner);
+        assert_ne!(ring[1].req_owner, ring[1].incumbent_owner);
     }
 
     #[test]

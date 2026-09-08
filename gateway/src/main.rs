@@ -419,6 +419,10 @@ async fn main() -> anyhow::Result<()> {
         // like network/stats - public so the site panel and monitors can
         // read them unauthenticated.
         .route("/v1/pool", get(handlers::network::pool_status))
+        .route(
+            "/v1/debug/heavy-holds",
+            get(handlers::network::heavy_hold_events),
+        )
         .route("/v1/solvency", get(handlers::solvency::solvency))
         .route(
             "/v1/providers",
