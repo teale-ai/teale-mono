@@ -30,6 +30,12 @@ pub trait CompletionBackend: Send + Sync + 'static {
         &self,
         request: &ChatCompletionRequest,
     ) -> impl Future<Output = Result<mpsc::Receiver<crate::backend::StreamEvent>>> + Send;
+    /// Live backend slot occupancy (busy, total); None when the backend
+    /// has no slot visibility. Feeds the #299 pre-first-token watchdog
+    /// queued-vs-hung distinction.
+    fn slots_occupancy(&self) -> impl Future<Output = Option<(u32, u32)>> + Send {
+        async { None }
+    }
 }
 
 impl CompletionBackend for crate::swap::SwapManager {
@@ -41,6 +47,9 @@ impl CompletionBackend for crate::swap::SwapManager {
         request: &ChatCompletionRequest,
     ) -> Result<mpsc::Receiver<crate::backend::StreamEvent>> {
         crate::swap::SwapManager::stream_completion(self, request).await
+    }
+    async fn slots_occupancy(&self) -> Option<(u32, u32)> {
+        crate::swap::SwapManager::backend_slots_occupancy(self).await
     }
 }
 
@@ -255,6 +264,21 @@ async fn handle_request<B: CompletionBackend>(
                         } else {
                             "pre-first-token"
                         };
+                        // #299: same queued-not-hung distinction as the
+                        // cluster path - a busy backend means this request
+                        // is waiting behind in-flight work, so re-arm (the
+                        // stream budget still bounds the wait).
+                        if tokens_out == 0
+                            && crate::cluster::pre_first_token_queued(
+                                backend.slots_occupancy().await,
+                            )
+                        {
+                            tracing::info!(
+                                "PIN inference request {} pre-first-token watchdog re-armed: backend busy, request queued (#299)",
+                                request_id
+                            );
+                            continue;
+                        }
                         stream_failed = Some(format!(
                             "idle watchdog: no chunk for {}s ({})",
                             idle_cap.as_secs(),
