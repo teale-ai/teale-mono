@@ -943,7 +943,7 @@ pub(crate) async fn pick_and_dispatch(
     .await;
     if out.is_ok() {
         metrics::DISPATCH_SECONDS
-            .with_label_values(&[&catalog_model.id])
+            .with_label_values(&[&catalog_model.id, "traffic"])
             .observe(dispatch_started.elapsed().as_secs_f64());
     }
     out
@@ -1567,7 +1567,7 @@ async fn run_streaming(
                             got_first_token = true;
                             first_token_at = Some(Instant::now());
                             metrics::TTFT_SECONDS
-                                .with_label_values(&[&model_id])
+                                .with_label_values(&[&model_id, "traffic"])
                                 .observe(started.elapsed().as_secs_f64());
                         }
                         // Normalize the chunk so downstream clients see:
@@ -1915,7 +1915,7 @@ async fn run_buffered(
                         got_first = true;
                         first_token_at = Some(Instant::now());
                         metrics::TTFT_SECONDS
-                            .with_label_values(&[&model_id])
+                            .with_label_values(&[&model_id, "traffic"])
                             .observe(started.elapsed().as_secs_f64());
                     }
                     tokens_out += 1;
@@ -3716,7 +3716,7 @@ pricing_completion: "0.00000020"
         );
 
         let before = metrics::DISPATCH_SECONDS
-            .with_label_values(&[&model.id])
+            .with_label_values(&[&model.id, "traffic"])
             .get_sample_count();
 
         let relay = state.relay.clone();
@@ -3751,7 +3751,7 @@ pricing_completion: "0.00000020"
         signal_ready.await.expect("ready waiter task should finish");
 
         let after = metrics::DISPATCH_SECONDS
-            .with_label_values(&[&model.id])
+            .with_label_values(&[&model.id, "traffic"])
             .get_sample_count();
         assert_eq!(after, before + 1, "successful dispatch records one sample");
     }
