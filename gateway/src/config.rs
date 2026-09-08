@@ -146,6 +146,16 @@ pub struct ReliabilityConfig {
     pub quarantine_seconds: u64,
     #[serde(default = "default_discover_interval")]
     pub discover_interval_seconds: u64,
+    /// #309 grace window for the #273 external-resident guard. Backend
+    /// slot occupancy rides the node's heartbeat re-register (10s
+    /// default, 40s observed configs) plus this gateway's discover poll,
+    /// so a just-released gateway hold still reads busy for one full
+    /// reporting cycle. An unaccounted-occupancy excess younger than
+    /// this is grace-admitted while it proves stale or persistent; only
+    /// an excess older than this refuses as a real external resident.
+    /// Must exceed the slowest reporting cycle in the fleet.
+    #[serde(default = "default_busy_excess_grace")]
+    pub busy_excess_grace_seconds: u64,
     /// How long a departed (peerLeft) device's models stay listed before
     /// the registry removes it for real. Absorbs transient relay flaps.
     #[serde(default = "default_departed_grace")]
@@ -200,6 +210,7 @@ impl Default for ReliabilityConfig {
             heartbeat_stale_seconds: default_heartbeat_stale(),
             quarantine_seconds: default_quarantine(),
             discover_interval_seconds: default_discover_interval(),
+            busy_excess_grace_seconds: default_busy_excess_grace(),
             departed_grace_seconds: default_departed_grace(),
             registry_warmup_seconds: default_registry_warmup(),
             heavy_hold: default_heavy_hold(),
@@ -319,6 +330,10 @@ fn default_quarantine() -> u64 {
 }
 fn default_discover_interval() -> u64 {
     60
+}
+fn default_busy_excess_grace() -> u64 {
+    // 40s slowest observed node heartbeat + 60s discover poll + margin.
+    120
 }
 fn default_departed_grace() -> u64 {
     180

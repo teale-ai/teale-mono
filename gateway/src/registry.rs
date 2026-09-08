@@ -39,6 +39,10 @@ pub struct DeviceState {
     pub ewma_tokens_per_second: f64,
     /// Runtime-live heartbeat fields (queue_depth, thermal, throttle).
     pub live: LiveStats,
+    /// #309: when the current unaccounted-occupancy excess was first
+    /// observed by the #273 guard in admit(). None while no excess is
+    /// being tracked. See ReliabilityConfig::busy_excess_grace_seconds.
+    pub busy_excess_since: Option<Instant>,
     /// apmhelp confirmed-employee supply (#272): admitted to the registry
     /// but eligible ONLY for requests on the apmhelp PIN lane, never for
     /// the default lane.
@@ -428,24 +432,59 @@ impl Registry {
             // can account for, external sessions are resident - refuse the
             // heavy rather than stack heavy-beside-heavy (the 05:03-05:16Z
             // window: two starved requests died at the 300s cap beside
-            // invisible 33k-89k PIN heavies). Stale by one heartbeat, so a
-            // just-drained heavy may cost one interval's refusal - safe
-            // direction. Light admission is unchanged: the light-beside-
-            // heavy policy is #270's open question, not this fix.
-            if let Some(dev) = self.devices.get(node_id) {
-                if let Some(busy) = dev.capabilities.backend_slots_busy {
-                    let accounted = e.total.load(std::sync::atomic::Ordering::SeqCst);
-                    if busy > accounted {
-                        tracing::info!(
-                            device = %node_id,
-                            req_owner = %owner_tag(owner),
-                            busy = busy,
-                            accounted = accounted,
-                            "heavy-hold: refusing beside unaccounted external sessions"
-                        );
-                        self.record_heavy("refuse_external_resident", node_id, owner, None);
-                        return false;
+            // invisible 33k-89k PIN heavies). Light admission is unchanged:
+            // the light-beside-heavy policy is #270's open question, not
+            // this fix.
+            //
+            // #309: the occupancy sample rides the node's heartbeat
+            // re-register (10s default, 40s observed) plus this gateway's
+            // discover poll, so it lags reality by up to one reporting
+            // cycle. A hold this gateway just released still reads busy
+            // until the next sample lands - the qqqs third class: refusal
+            // 33s after the backend went verifiably idle. Treat a newly
+            // observed excess as suspect, not resident: grace-admit it,
+            // remember when it first appeared, and refuse only once it has
+            // persisted past busy_excess_grace_seconds (one full reporting
+            // cycle). A stale sample clears on the next re-register; a
+            // real external resident does not. The clock clears only when
+            // the registry is idle AND no excess is reported: while one of
+            // our holds is in flight a stale sample can mask the excess,
+            // and that must not reset it.
+            if let Some(mut dev) = self.devices.get_mut(node_id) {
+                let accounted = e.total.load(std::sync::atomic::Ordering::SeqCst);
+                let excess = dev
+                    .capabilities
+                    .backend_slots_busy
+                    .is_some_and(|busy| busy > accounted);
+                if excess {
+                    let grace =
+                        std::time::Duration::from_secs(self.reliability.busy_excess_grace_seconds);
+                    match dev.busy_excess_since {
+                        Some(since) if since.elapsed() >= grace => {
+                            tracing::info!(
+                                device = %node_id,
+                                req_owner = %owner_tag(owner),
+                                excess_age_secs = since.elapsed().as_secs(),
+                                "heavy-hold: refusing beside persistent external sessions"
+                            );
+                            self.record_heavy("refuse_external_resident", node_id, owner, None);
+                            return false;
+                        }
+                        Some(_) => {
+                            self.record_heavy("admit_grace_excess", node_id, owner, None);
+                        }
+                        None => {
+                            dev.busy_excess_since = Some(Instant::now());
+                            tracing::info!(
+                                device = %node_id,
+                                req_owner = %owner_tag(owner),
+                                "heavy-hold: unaccounted slot occupancy - grace-admitting while it proves stale or persistent"
+                            );
+                            self.record_heavy("observe_external_excess", node_id, owner, None);
+                        }
                     }
+                } else if accounted == 0 && dev.busy_excess_since.take().is_some() {
+                    self.record_heavy("clear_external_excess", node_id, owner, None);
                 }
             }
         }
@@ -552,6 +591,7 @@ impl Registry {
                     departed_at: None,
                     ewma_tokens_per_second: hardware_tps_prior(&caps),
                     live: LiveStats::fresh(),
+                    busy_excess_since: None,
                     employee: false,
                 });
             entry.display_name = display_name;
@@ -1002,20 +1042,33 @@ mod tests {
 
     #[test]
     fn heavy_hold_admission_refuses_when_reported_slots_exceed_accounted() {
-        let registry = Registry::new(ReliabilityConfig::default());
+        // #273 as amended by #309: a PERSISTENT unaccounted-occupancy
+        // excess refuses; the first observation is grace-admitted while
+        // it proves stale or persistent. grace = 0 collapses the window
+        // so the second observation is already "persistent".
+        let reliability = ReliabilityConfig {
+            busy_excess_grace_seconds: 0,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
         let mut pin_caps = caps(vec!["m"], true);
         pin_caps.backend_slots_busy = Some(1);
         pin_caps.backend_slots_total = Some(4);
         registry.upsert_device("node-a".into(), "A".into(), pin_caps);
 
         // A PIN-path heavy holds a slot with no gateway-visible in-flight:
-        // reported busy (1) exceeds accounted (0) - the heavy is refused.
+        // reported busy (1) exceeds accounted (0). First observation
+        // grace-admits - it may be a stale post-release sample (#309).
+        assert!(registry.admit("node-a", true, None));
+        registry.dec_in_flight("node-a", true);
+        // The excess persisted past the (collapsed) grace: refuse.
         assert!(!registry.admit("node-a", true, None));
         assert_eq!(registry.in_flight("node-a"), 0);
         // Light traffic still admits beside reported occupancy.
         assert!(registry.admit("node-a", false, None));
         // Reported busy (1) now equals accounted (1): no external session,
-        // so a heavy may land.
+        // so a heavy may land. The excess clock survives (registry not
+        // idle) but is irrelevant with no excess reported.
         assert!(registry.admit("node-a", true, None));
         registry.dec_in_flight("node-a", true);
         registry.dec_in_flight("node-a", false);
@@ -1138,5 +1191,93 @@ mod tests {
             r.note_convo(&format!("key-{}", i), "node-a");
         }
         assert!(r.convo_affinity.len() <= Registry::CONVO_AFFINITY_CAP);
+    }
+
+    #[test]
+    fn external_busy_excess_grace_admits_once_before_refusing_persistent_resident() {
+        // #309: a freshly observed unaccounted-occupancy excess is
+        // grace-admitted (it may be a stale post-release sample); only an
+        // excess that outlives the grace window refuses.
+        let reliability = ReliabilityConfig {
+            busy_excess_grace_seconds: 0,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
+        let mut c = caps(vec!["teale/auto"], true);
+        c.backend_slots_busy = Some(1);
+        registry.upsert_device("node-a".to_string(), "A".to_string(), c);
+
+        // First observation: grace-admit, hold taken.
+        assert!(registry.admit("node-a", true, Some("owner-1")));
+        registry.dec_in_flight("node-a", true);
+        // grace = 0: the same excess is instantly "persistent" -> refuse.
+        assert!(!registry.admit("node-a", true, Some("owner-1")));
+        // The refusal took no hold.
+        assert_eq!(registry.in_flight("node-a"), 0);
+    }
+
+    #[test]
+    fn stale_post_release_busy_sample_never_refuses() {
+        // #309 / qqqs third class: a heavy completes, but the node's
+        // occupancy sample still reads busy until the next re-register +
+        // discover poll while the backend is in fact idle. The retried
+        // request must grace-admit, not refuse.
+        let reliability = ReliabilityConfig {
+            busy_excess_grace_seconds: 3600,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
+        let mut c = caps(vec!["teale/auto"], true);
+        c.backend_slots_busy = Some(1);
+        registry.upsert_device("node-a".to_string(), "A".to_string(), c);
+
+        // While our own hold accounts for the slot there is no excess.
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        // Hold released; the sample has not caught up (still busy=1).
+        registry.dec_in_flight("node-a", true);
+        // Retry against the stale sample: grace-admit, not refuse.
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        registry.dec_in_flight("node-a", true);
+    }
+
+    #[test]
+    fn external_excess_clock_survives_masking_and_resets_when_idle() {
+        // #309: the excess clock must NOT clear while one of our holds is
+        // in flight (a stale sample can mask the excess then); it clears
+        // once the registry is idle with no excess reported, and a later
+        // excess starts a fresh clock.
+        let reliability = ReliabilityConfig {
+            busy_excess_grace_seconds: 0,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
+        let mut c = caps(vec!["teale/auto"], true);
+        c.backend_slots_busy = Some(1);
+        registry.upsert_device("node-a".to_string(), "A".to_string(), c);
+
+        // Start the excess clock with a grace-admitted hold.
+        assert!(registry.admit("node-a", true, Some("owner-1")));
+        // The fresh sample now counts OUR hold: no excess reported, but
+        // the registry is not idle - the clock must survive.
+        assert!(registry.admit("node-a", true, Some("owner-1"))); // share
+        registry.dec_in_flight("node-a", true);
+        registry.dec_in_flight("node-a", true);
+        // Registry idle; the excess (busy=1 > 0) is aged -> refuse.
+        assert!(!registry.admit("node-a", true, Some("owner-2")));
+        // Node reports idle; idle registry + no excess clears the clock.
+        {
+            let mut dev = registry.devices.get_mut("node-a").expect("device");
+            dev.capabilities.backend_slots_busy = Some(0);
+        }
+        assert!(registry.admit("node-a", true, Some("owner-2")));
+        registry.dec_in_flight("node-a", true);
+        // A reappearing excess starts a FRESH clock: even grace = 0
+        // grace-admits the first observation.
+        {
+            let mut dev = registry.devices.get_mut("node-a").expect("device");
+            dev.capabilities.backend_slots_busy = Some(1);
+        }
+        assert!(registry.admit("node-a", true, Some("owner-2")));
+        registry.dec_in_flight("node-a", true);
     }
 }
