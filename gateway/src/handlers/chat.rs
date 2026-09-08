@@ -1078,6 +1078,37 @@ async fn pick_and_dispatch_inner(
         } else {
             preferred_candidates
         };
+        // Slot-occupancy preference (#273): nodes self-report backend slot
+        // busy/total in heartbeats (#288), which covers PIN-path and direct
+        // sessions the gateway's own in-flight counters cannot see. Prefer
+        // devices with a free self-reported slot so a light request does
+        // not queue behind occupancy that is invisible from this side. A
+        // device that does not report is never filtered out, and when
+        // every candidate is full the full list stands - the signal lags
+        // by one heartbeat, so it ranks, it never refuses.
+        let slot_free =
+            |list: &[crate::registry::DeviceState]| -> Vec<crate::registry::DeviceState> {
+                let free: Vec<_> = list
+                    .iter()
+                    .filter(|c| {
+                        match (
+                            c.capabilities.backend_slots_busy,
+                            c.capabilities.backend_slots_total,
+                        ) {
+                            (Some(busy), Some(total)) => busy < total,
+                            _ => true,
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                if free.is_empty() {
+                    list.to_vec()
+                } else {
+                    free
+                }
+            };
+        let candidates = slot_free(&candidates);
+        let preferred_candidates = slot_free(&preferred_candidates);
         let target_node = match state
             .scheduler
             .pick(
@@ -3148,6 +3179,102 @@ pricing_completion: "0.00000020"
         assert!(heavy);
         assert_eq!(state.registry.in_flight("node-b"), 1);
         assert_eq!(state.registry.heavy_in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn slot_occupancy_prefers_device_with_free_slot() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(2), &model);
+        let mut full_caps = dispatch_caps(&[&model.id], &[]);
+        full_caps.backend_slots_busy = Some(2);
+        full_caps.backend_slots_total = Some(2);
+        state
+            .registry
+            .upsert_device("node-a".into(), "node-a".into(), full_caps);
+        let mut free_caps = dispatch_caps(&[&model.id], &[]);
+        free_caps.backend_slots_busy = Some(0);
+        free_caps.backend_slots_total = Some(2);
+        state
+            .registry
+            .upsert_device("node-b".into(), "node-b".into(), free_caps);
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, _heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", None)).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+        )
+        .await
+        .expect("light request should land on the slot-free device");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        assert_eq!(target_node, "node-b");
+        assert_eq!(state.registry.in_flight("node-b"), 1);
+    }
+
+    #[tokio::test]
+    async fn slot_occupancy_falls_back_when_every_device_is_full() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(2), &model);
+        for node in ["node-a", "node-b"] {
+            let mut caps = dispatch_caps(&[&model.id], &[]);
+            caps.backend_slots_busy = Some(2);
+            caps.backend_slots_total = Some(2);
+            state.registry.upsert_device(node.into(), node.into(), caps);
+        }
+
+        let relay = state.relay.clone();
+        let signal_ready = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
+                    assert!(relay.test_signal_ready(&session_id));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, _heavy) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", None)).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+        )
+        .await
+        .expect("fully occupied fleet must still dispatch, never refuse");
+        drop(rx);
+        signal_ready.await.expect("ready waiter task should finish");
+
+        assert!(target_node == "node-a" || target_node == "node-b");
+        assert_eq!(state.registry.in_flight(&target_node), 1);
     }
 
     #[test]
