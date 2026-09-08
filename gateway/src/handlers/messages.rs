@@ -456,6 +456,7 @@ async fn run_anthropic_buffered(
             &prepared.preferred_node_ids,
             prepared.apmhelp_lane,
             prepared.prompt_tokens,
+            prepared.consumer.as_ref().map(|c| c.ledger_actor_id()),
         )
         .await?;
         // #276: cleanup on every exit path, including future-drop on client
@@ -644,6 +645,7 @@ async fn run_anthropic_streaming(
                 &prepared.preferred_node_ids,
                 prepared.apmhelp_lane,
                 prepared.prompt_tokens,
+                prepared.consumer.as_ref().map(|c| c.ledger_actor_id()),
             )
             .await;
 

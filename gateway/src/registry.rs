@@ -202,6 +202,12 @@ struct InFlight {
     /// every heavy session within it), so admit() expires it lazily - a
     /// close path that never runs can no longer wedge a node forever.
     heavy_since: parking_lot::Mutex<Option<Instant>>,
+    /// The consumer/conversation the current heavy hold(s) belong to. One
+    /// consumer's own concurrent heavies (an agentic client firing a
+    /// parallel build while its first turn decodes) contend only with
+    /// themselves, so they share the hold up to the device's slot count.
+    /// A different consumer is still refused outright.
+    heavy_owner: parking_lot::Mutex<Option<String>>,
 }
 
 impl Registry {
@@ -276,9 +282,11 @@ impl Registry {
     /// sessions this gateway did not dispatch (#273 PIN-path gap). Light
     /// requests always admit. The entry lock makes the check-and-inc one
     /// atomic step, so two racing heavy dispatches cannot both pass.
-    /// Refusal leaves the counters untouched. Pair with `dec_in_flight`
+    /// Refusal leaves the counters untouched. A second heavy from the
+    /// hold's own consumer shares the hold up to the device's slots.
+    /// Pair with `dec_in_flight`
     /// on session close.
-    pub fn admit(&self, node_id: &str, heavy: bool) -> bool {
+    pub fn admit(&self, node_id: &str, heavy: bool, owner: Option<&str>) -> bool {
         let e = self.in_flight.entry(node_id.to_string()).or_default();
         if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
             let stale = {
@@ -288,23 +296,45 @@ impl Registry {
                     .unwrap_or(false)
             };
             if !stale {
-                return false;
+                // Same-consumer sharing: the hold's owner may stack its own
+                // heavies up to the device's backend slots (its own choice,
+                // its own contention). Anyone else is refused.
+                let shared = {
+                    let held = e.heavy_owner.lock();
+                    owner.is_some() && held.as_deref() == owner
+                };
+                if !shared {
+                    return false;
+                }
+                let cap = self
+                    .devices
+                    .get(node_id)
+                    .and_then(|d| d.capabilities.backend_slots_total)
+                    .unwrap_or(2)
+                    .max(1);
+                if e.heavy.load(std::sync::atomic::Ordering::SeqCst) >= cap {
+                    return false; // slots genuinely full
+                }
+                crate::metrics::HEAVY_HOLD_SHARED.inc();
+            } else {
+                // The stream cap ends every heavy session well inside the
+                // TTL, so this hold's close path never ran. Expire it:
+                // release both counters the leak held, count the expiry,
+                // and admit below.
+                e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
+                *e.heavy_since.lock() = None;
+                *e.heavy_owner.lock() = None;
+                let prev = e.total.swap(0, std::sync::atomic::Ordering::SeqCst);
+                crate::metrics::HEAVY_HOLD_EXPIRED.inc();
+                crate::metrics::HEAVY_HOLDS
+                    .with_label_values(&[node_id])
+                    .set(0);
+                tracing::warn!(
+                    device = %node_id,
+                    leaked_total = prev,
+                    "heavy hold exceeded TTL with no close: expiring the stale hold"
+                );
             }
-            // The stream cap ends every heavy session well inside the TTL,
-            // so this hold's close path never ran. Expire it: release both
-            // counters the leak held, count the expiry, and admit below.
-            e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
-            *e.heavy_since.lock() = None;
-            let prev = e.total.swap(0, std::sync::atomic::Ordering::SeqCst);
-            crate::metrics::HEAVY_HOLD_EXPIRED.inc();
-            crate::metrics::HEAVY_HOLDS
-                .with_label_values(&[node_id])
-                .set(0);
-            tracing::warn!(
-                device = %node_id,
-                leaked_total = prev,
-                "heavy hold exceeded TTL with no close: expiring the stale hold"
-            );
         }
         if heavy {
             // #273: a PIN-path (node-direct) session holds llama.cpp slots
@@ -328,7 +358,9 @@ impl Registry {
         }
         e.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if heavy {
-            e.heavy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if e.heavy.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                *e.heavy_owner.lock() = owner.map(str::to_string);
+            }
             *e.heavy_since.lock() = Some(Instant::now());
             crate::metrics::HEAVY_HOLDS
                 .with_label_values(&[node_id])
@@ -349,6 +381,7 @@ impl Registry {
                 if hprev <= 1 {
                     e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
                     *e.heavy_since.lock() = None;
+                    *e.heavy_owner.lock() = None;
                 }
                 crate::metrics::HEAVY_HOLDS
                     .with_label_values(&[node_id])
@@ -760,13 +793,13 @@ mod tests {
             heavy_hold_ttl_seconds: 60,
             ..ReliabilityConfig::default()
         });
-        assert!(registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
         {
             let e = registry.in_flight.get("node-a").expect("entry");
             *e.heavy_since.lock() = Some(Instant::now() - std::time::Duration::from_secs(120));
         }
         // The stale hold no longer refuses - and the leak's total is released.
-        assert!(registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
         assert_eq!(registry.heavy_in_flight("node-a"), 1);
         assert_eq!(registry.in_flight("node-a"), 1);
     }
@@ -777,22 +810,57 @@ mod tests {
             heavy_hold_ttl_seconds: 1900,
             ..ReliabilityConfig::default()
         });
-        assert!(registry.admit("node-a", true));
-        assert!(!registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
+        assert!(!registry.admit("node-a", true, None));
         assert_eq!(registry.heavy_in_flight("node-a"), 1);
     }
 
     #[test]
     fn heavy_hold_released_on_normal_close_clears_timestamp() {
         let registry = Registry::new(ReliabilityConfig::default());
-        assert!(registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
         registry.dec_in_flight("node-a", true);
         assert_eq!(registry.heavy_in_flight("node-a"), 0);
         {
             let e = registry.in_flight.get("node-a").expect("entry");
             assert!(e.heavy_since.lock().is_none());
         }
-        assert!(registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
+    }
+
+    #[test]
+    fn same_consumer_heavies_share_the_hold_up_to_slots() {
+        // 2026-09-08, qqqs grounded: one opencode session fired a parallel
+        // build request while its own heavy held the device, and the hold
+        // refused it as if it were a different consumer - four refusals,
+        // zero progress. The owner's own heavies co-reside up to slots.
+        let registry = Registry::new(ReliabilityConfig::default());
+        let mut c = caps(vec!["m"], true);
+        c.backend_slots_total = Some(2);
+        registry.upsert_device("node-a".into(), "A".into(), c);
+
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        // the owner's second heavy shares the hold
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        assert_eq!(registry.heavy_in_flight("node-a"), 2);
+        // slots full: even the owner stops there
+        assert!(!registry.admit("node-a", true, Some("qqqs")));
+        // a different consumer is refused while any heavy is resident
+        assert!(!registry.admit("node-a", true, Some("hz4g")));
+        // releasing one frees exactly one
+        registry.dec_in_flight("node-a", true);
+        assert_eq!(registry.heavy_in_flight("node-a"), 1);
+        // the last release clears ownership, so the next heavy starts fresh
+        registry.dec_in_flight("node-a", true);
+        assert!(registry.admit("node-a", true, Some("hz4g")));
+    }
+
+    #[test]
+    fn anonymous_heavies_never_share() {
+        // no owner key on either side: the hold behaves exactly as before
+        let registry = Registry::new(ReliabilityConfig::default());
+        assert!(registry.admit("node-a", true, None));
+        assert!(!registry.admit("node-a", true, None));
     }
 
     #[test]
@@ -801,16 +869,16 @@ mod tests {
         registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
         registry.upsert_device("node-b".into(), "B".into(), caps(vec!["m"], true));
 
-        assert!(registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
         // Second heavy on the same device is refused, counters untouched.
-        assert!(!registry.admit("node-a", true));
+        assert!(!registry.admit("node-a", true, None));
         assert_eq!(registry.in_flight("node-a"), 1);
         assert_eq!(registry.heavy_in_flight("node-a"), 1);
         // ...but the same heavy may still land on another device.
-        assert!(registry.admit("node-b", true));
+        assert!(registry.admit("node-b", true, None));
         assert_eq!(registry.heavy_in_flight("node-b"), 1);
         // Light traffic is unaffected by an in-flight heavy.
-        assert!(registry.admit("node-a", false));
+        assert!(registry.admit("node-a", false, None));
         assert_eq!(registry.in_flight("node-a"), 2);
         // Decrement tracks the class it was admitted with.
         registry.dec_in_flight("node-a", true);
@@ -830,20 +898,20 @@ mod tests {
 
         // A PIN-path heavy holds a slot with no gateway-visible in-flight:
         // reported busy (1) exceeds accounted (0) - the heavy is refused.
-        assert!(!registry.admit("node-a", true));
+        assert!(!registry.admit("node-a", true, None));
         assert_eq!(registry.in_flight("node-a"), 0);
         // Light traffic still admits beside reported occupancy.
-        assert!(registry.admit("node-a", false));
+        assert!(registry.admit("node-a", false, None));
         // Reported busy (1) now equals accounted (1): no external session,
         // so a heavy may land.
-        assert!(registry.admit("node-a", true));
+        assert!(registry.admit("node-a", true, None));
         registry.dec_in_flight("node-a", true);
         registry.dec_in_flight("node-a", false);
 
         // A node whose heartbeats carry no occupancy (older build) keeps
         // the old behaviour: gateway-visible heavies only.
         registry.upsert_device("node-b".into(), "B".into(), caps(vec!["m"], true));
-        assert!(registry.admit("node-b", true));
+        assert!(registry.admit("node-b", true, None));
     }
 
     #[test]

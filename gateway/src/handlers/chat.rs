@@ -926,6 +926,7 @@ pub(crate) async fn pick_and_dispatch(
     preferred_node_ids: &[String],
     apmhelp_lane: bool,
     prompt_tokens: u32,
+    consumer_id: Option<&str>,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     let dispatch_started = Instant::now();
     let out = pick_and_dispatch_inner(
@@ -937,6 +938,7 @@ pub(crate) async fn pick_and_dispatch(
         preferred_node_ids,
         apmhelp_lane,
         prompt_tokens,
+        consumer_id,
     )
     .await;
     if out.is_ok() {
@@ -994,6 +996,7 @@ async fn pick_and_dispatch_inner(
     preferred_node_ids: &[String],
     apmhelp_lane: bool,
     prompt_tokens: u32,
+    consumer_id: Option<&str>,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     // Rewrite the `model` field in the outbound payload to the canonical
     // OpenRouter id we advertise, in case the client used an alias.
@@ -1225,7 +1228,13 @@ async fn pick_and_dispatch_inner(
         // dispatch steps below fail before we successfully hand off a
         // Receiver to the caller (otherwise an open/send failure would
         // leave the counters permanently elevated).
-        if !state.registry.admit(&target_node, request_heavy) {
+        // Hold ownership (#247 follow-up): the consumer's stable identity,
+        // else the conversation key. A consumer's own parallel heavies
+        // share the hold (slot-capped) instead of self-refusing - the
+        // 2026-09-08 qqqs groundings, where one opencode session's parallel
+        // build requests contended as if they were different consumers.
+        let owner_key = consumer_id.or(convo_key.as_deref());
+        if !state.registry.admit(&target_node, request_heavy, owner_key) {
             metrics::HEAVY_HOLD_REFUSED.inc();
             info!(
                 device = %target_node,
@@ -1419,7 +1428,7 @@ mod session_cleanup_tests {
 
     fn armed_cleanup(heavy: bool) -> (SessionCleanup, std::sync::Arc<Registry>) {
         let registry = Registry::new(crate::config::ReliabilityConfig::default());
-        assert!(registry.admit("node1", heavy));
+        assert!(registry.admit("node1", heavy, None));
         assert_eq!(registry.in_flight("node1"), 1);
         let cleanup = SessionCleanup {
             relay: crate::relay_client::RelayHandle::dummy_for_tests(),
@@ -1442,7 +1451,7 @@ mod session_cleanup_tests {
         assert_eq!(registry.in_flight("node1"), 0);
         assert_eq!(registry.heavy_in_flight("node1"), 0);
         // The released heavy must immediately re-admit (heavy-hold cleared).
-        assert!(registry.admit("node1", true));
+        assert!(registry.admit("node1", true, None));
     }
 
     /// Normal exit runs cleanup once; the later Drop must not double-dec.
@@ -1453,7 +1462,7 @@ mod session_cleanup_tests {
         assert_eq!(registry.in_flight("node1"), 0);
         // run_now consumed the guard; dec happened exactly once. Re-admit and
         // confirm no phantom decrement from a lingering guard exists.
-        assert!(registry.admit("node1", false));
+        assert!(registry.admit("node1", false, None));
         assert_eq!(registry.in_flight("node1"), 1);
     }
 }
@@ -1502,6 +1511,7 @@ async fn run_streaming(
                 &preferred_node_ids,
                 apmhelp_lane,
                 prompt_tokens,
+                consumer.as_ref().map(|c| c.ledger_actor_id()),
             )
             .await;
 
@@ -1871,6 +1881,7 @@ async fn run_buffered(
             &preferred_node_ids,
             apmhelp_lane,
             prompt_tokens,
+            consumer.as_ref().map(|c| c.ledger_actor_id()),
         )
         .await?;
         // #276: armed for every exit path, including future-drop on client
@@ -3175,6 +3186,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("dispatch should retry on relay-open failure");
@@ -3202,7 +3214,7 @@ pricing_completion: "0.00000020"
             dispatch_caps(&[&model.id], &[]),
         );
         // An incumbent heavy holds the only eligible device.
-        assert!(state.registry.admit("node-a", true));
+        assert!(state.registry.admit("node-a", true, None));
 
         let err = pick_and_dispatch(
             &state,
@@ -3213,6 +3225,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect_err("second heavy must be refused");
@@ -3233,7 +3246,7 @@ pricing_completion: "0.00000020"
                 dispatch_caps(&[&model.id], &[]),
             );
         }
-        assert!(state.registry.admit("node-a", true));
+        assert!(state.registry.admit("node-a", true, None));
 
         let relay = state.relay.clone();
         let signal_ready = tokio::spawn(async move {
@@ -3259,6 +3272,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("heavy should land on the heavy-free device");
@@ -3312,6 +3326,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("light request should land on the slot-free device");
@@ -3357,6 +3372,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("fully occupied fleet must still dispatch, never refuse");
@@ -3390,7 +3406,7 @@ pricing_completion: "0.00000020"
             "Node A".into(),
             dispatch_caps(&[&model.id], &[]),
         );
-        assert!(state.registry.admit("node-a", true));
+        assert!(state.registry.admit("node-a", true, None));
 
         let relay = state.relay.clone();
         let signal_ready = tokio::spawn(async move {
@@ -3416,6 +3432,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("light request must admit beside an in-flight heavy");
@@ -3468,6 +3485,7 @@ pricing_completion: "0.00000020"
             &[],
             true,
             0,
+            None,
         )
         .await
         .expect("lane request should land on the employee device");
@@ -3497,6 +3515,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect_err("default-lane request must not reach employee supply");
@@ -3537,6 +3556,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             5000,
+            None,
         )
         .await
         .expect_err("over-ceiling prompt must refuse at dispatch");
@@ -3566,6 +3586,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             260_000, // prompt estimate alone fits
+            None,
         )
         .await
         .expect_err("claim over the ceiling must refuse at dispatch");
@@ -3621,6 +3642,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             5000,
+            None,
         )
         .await
         .expect("legacy supplier without a ceiling stays dispatchable");
@@ -3669,6 +3691,7 @@ pricing_completion: "0.00000020"
             &["node-b".to_string()],
             false,
             0,
+            None,
         )
         .await
         .expect("dispatch should choose preferred node");
@@ -3717,6 +3740,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("dispatch should succeed");
@@ -3748,6 +3772,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect_err("loaded single large supplier should not get cold-start grace");
@@ -3803,6 +3828,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("turn 1 should dispatch");
@@ -3816,6 +3842,7 @@ pricing_completion: "0.00000020"
             &[],
             false,
             0,
+            None,
         )
         .await
         .expect("turn 2 should dispatch");
@@ -3870,7 +3897,7 @@ pricing_completion: "0.00000020"
         });
 
         let (rx, target_node, _session_id, _heavy) =
-            pick_and_dispatch(&state, &model, &body, &[], None, &[], false, 0)
+            pick_and_dispatch(&state, &model, &body, &[], None, &[], false, 0, None)
                 .await
                 .expect("dispatch should retry on relay-open failure");
         drop(rx);
