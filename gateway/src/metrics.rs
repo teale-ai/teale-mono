@@ -26,6 +26,15 @@ pub static RETRIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static CONVO_STICKINESS: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "gateway_convo_stickiness_total",
+        "Conversation supplier-affinity lookups by result: hit (sticky node eligible and used), miss (no fresh entry or node not a candidate)",
+        &["result"]
+    )
+    .expect("metric init")
+});
+
 pub static HEAVY_HOLD_REFUSED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
     prometheus::register_int_counter!(
         "gateway_heavy_hold_refused_total",

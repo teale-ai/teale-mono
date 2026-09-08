@@ -948,6 +948,41 @@ pub(crate) async fn pick_and_dispatch(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Conversation stickiness key: model + the conversation's first user
+/// message. Turn N of a conversation carries turns 1..N-1 verbatim, so
+/// the first user message is a stable per-conversation identity - cheap
+/// to compute and never crosses conversations that merely share a system
+/// prompt. None when there is no user turn (one-shot requests stick to
+/// nothing, which is fine: there is no follow-up to accelerate).
+pub(crate) fn convo_stickiness_key(model_id: &str, req_body: &Value) -> Option<String> {
+    let messages = req_body.get("messages")?.as_array()?;
+    for m in messages {
+        if m.get("role")?.as_str()? != "user" {
+            continue;
+        }
+        let text = match m.get("content")? {
+            Value::String(s) => s.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => return None,
+        };
+        if text.is_empty() {
+            return None;
+        }
+        let mut h = sha2::Sha256::new();
+        use sha2::Digest;
+        h.update(model_id.as_bytes());
+        h.update(b"
+");
+        h.update(text.as_bytes());
+        return Some(hex::encode(h.finalize()));
+    }
+    None
+}
+
 async fn pick_and_dispatch_inner(
     state: &AppState,
     catalog_model: &CatalogModel,
@@ -982,6 +1017,11 @@ async fn pick_and_dispatch_inner(
         &state.config.reliability,
     );
     let mut excluded: Vec<String> = exclude.to_vec();
+    // Conversation supplier stickiness: follow-up turns prefer the node
+    // that served this conversation before, reusing its slot KV instead
+    // of re-prefilling the growing context (the bimodal 0.4s-vs-0.9s
+    // follow-up split measured 2026-09-08).
+    let convo_key = convo_stickiness_key(&catalog_model.id, req_body);
     let mut last_dispatch_error: Option<String> = None;
     let mut heavy_refused = false;
     let cold_start_grace = single_supplier_large_cold_start_grace(state, catalog_model);
@@ -1116,6 +1156,35 @@ async fn pick_and_dispatch_inner(
             };
         let candidates = slot_free(&candidates);
         let preferred_candidates = slot_free(&preferred_candidates);
+        // Stickiness composes last so it can only pick among nodes that
+        // already passed every hard gate and every other preference; it
+        // never forces a request onto a heavy-carrying or slot-full node,
+        // and a sticky node excluded by an earlier failed attempt this
+        // request is skipped rather than retried.
+        let sticky: Option<String> = convo_key
+            .as_deref()
+            .and_then(|key| state.registry.convo_node(key))
+            .filter(|node| !excluded.contains(node));
+        let sticky_of =
+            |list: &[crate::registry::DeviceState]| -> Vec<crate::registry::DeviceState> {
+                match &sticky {
+                    Some(node) => {
+                        let hit: Vec<crate::registry::DeviceState> = list
+                        .iter()
+                        .filter(|c| &c.node_id == node)
+                        .cloned()
+                        .collect();
+                    if hit.is_empty() {
+                        list.to_vec()
+                    } else {
+                        hit
+                    }
+                }
+                None => list.to_vec(),
+            }
+        };
+        let candidates = sticky_of(&candidates);
+        let preferred_candidates = sticky_of(&preferred_candidates);
         let target_node = match state
             .scheduler
             .pick(
@@ -1250,6 +1319,16 @@ async fn pick_and_dispatch_inner(
         // Successful hand-off; caller is responsible for dec_in_flight when
         // the session closes. Defuse the guard so we don't decrement here.
         inc_guard.defuse();
+        if let Some(key) = &convo_key {
+            crate::metrics::CONVO_STICKINESS
+                .with_label_values(&[if sticky.as_deref() == Some(target_node.as_str()) {
+                    "hit"
+                } else {
+                    "miss"
+                }])
+                .inc();
+            state.registry.note_convo(key, &target_node);
+        }
         return Ok((rx, target_node, session_id, request_heavy));
     }
 }
@@ -2441,6 +2520,7 @@ quantization: null
                 heavy_hold_prompt_tokens: 30_000,
                 heavy_hold_max_tokens: 4096,
                 heavy_co_resident_ttft_bonus_seconds: 180,
+                convo_stickiness_ttl_seconds: 1800,
                 discover_interval_seconds: 10,
                 departed_grace_seconds: 180,
                 registry_warmup_seconds: 0,
@@ -3673,5 +3753,141 @@ pricing_completion: "0.00000020"
         let eligible = state.registry.eligible_devices(&model.id);
         assert!(eligible.is_empty());
         assert_eq!(state.registry.in_flight("node-a"), 0);
+    }
+
+    #[tokio::test]
+    async fn pick_and_dispatch_sticks_follow_up_to_same_node() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(2), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-b".into(),
+            "Node B".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+
+        // Signal ready for every relay-open attempt, both turns.
+        let relay = state.relay.clone();
+        let signal_all = tokio::spawn(async move {
+            let mut seen = std::collections::HashSet::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while seen.len() < 2 {
+                for session_id in relay.test_ready_waiter_ids() {
+                    if seen.insert(session_id.clone()) {
+                        assert!(relay.test_signal_ready(&session_id));
+                    }
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for two relay-open attempts");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        // Turn 1 lands on either node; keep the receiver alive so that
+        // node stays in-flight and least-loaded scheduling would move
+        // turn 2 to the other node absent stickiness.
+        let (rx1, first_node, _s1, _h1) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("sticky convo", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+        )
+        .await
+        .expect("turn 1 should dispatch");
+
+        let (_rx2, second_node, _s2, _h2) = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("sticky convo", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+        )
+        .await
+        .expect("turn 2 should dispatch");
+        drop(rx1);
+
+        signal_all.await.expect("ready waiter task should finish");
+        assert_eq!(
+            first_node, second_node,
+            "follow-up turn should stick to the node that served turn 1"
+        );
+        assert_eq!(state.registry.in_flight(&first_node), 2);
+    }
+
+    #[tokio::test]
+    async fn pick_and_dispatch_stickiness_skips_excluded_node() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.upsert_device(
+            "node-b".into(),
+            "Node B".into(),
+            dispatch_caps(&[], &[&model.id]),
+        );
+
+        // Pin the conversation to node-a, then make its relay-open fail:
+        // the retry must fall through to node-b, not error out chasing
+        // the excluded sticky node.
+        let body = serde_json::to_value(req_with("doomed convo", Some(16))).unwrap();
+        let key = convo_stickiness_key(&model.id, &body).expect("user turn gives a key");
+        state.registry.note_convo(&key, "node-a");
+
+        let relay = state.relay.clone();
+        let signal_second_ready = tokio::spawn(async move {
+            let mut seen = std::collections::HashSet::new();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                for session_id in relay.test_ready_waiter_ids() {
+                    if seen.insert(session_id.clone()) && seen.len() == 2 {
+                        assert!(relay.test_signal_ready(&session_id));
+                        return;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    panic!("timed out waiting for second relay-open attempt");
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let (rx, target_node, _session_id, _heavy) =
+            pick_and_dispatch(&state, &model, &body, &[], None, &[], false, 0)
+                .await
+                .expect("dispatch should retry on relay-open failure");
+        drop(rx);
+
+        signal_second_ready
+            .await
+            .expect("ready waiter task should finish");
+        assert_eq!(target_node, "node-b");
+    }
+
+    #[test]
+    fn convo_stickiness_key_derives_from_first_user_message() {
+        let model = free_like();
+        let body = serde_json::to_value(req_with("hello there", Some(16))).unwrap();
+        let k1 = convo_stickiness_key(&model.id, &body).unwrap();
+        let k2 = convo_stickiness_key(&model.id, &body).unwrap();
+        assert_eq!(k1, k2, "same conversation gives a stable key");
+        let other = serde_json::to_value(req_with("different", Some(16))).unwrap();
+        assert_ne!(k1, convo_stickiness_key(&model.id, &other).unwrap());
+        let no_user = serde_json::json!({"messages": [{"role": "assistant", "content": "hi"}]});
+        assert_eq!(convo_stickiness_key(&model.id, &no_user), None);
     }
 }

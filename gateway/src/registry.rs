@@ -182,6 +182,13 @@ pub struct Registry {
     /// other's decode until both hit the stream cap, so a heavy is only
     /// admitted to a node with no in-flight heavy.
     in_flight: DashMap<String, InFlight>,
+    /// Conversation -> supplier affinity: follow-up turns re-prefill the
+    /// whole growing context when they land on a different node (the
+    /// bimodal 0.4s-vs-0.9s follow-up split in the 2026-09-08 Auto bench),
+    /// while the same node reuses the slot's KV. A preference cache only:
+    /// eligibility, exclusion, quarantine, heavy-hold and slot occupancy
+    /// all still outrank it.
+    convo_affinity: DashMap<String, (String, std::time::Instant)>,
     reliability: ReliabilityConfig,
 }
 
@@ -198,8 +205,54 @@ impl Registry {
             devices: DashMap::new(),
             model_to_devices: RwLock::new(DashMap::new()),
             in_flight: DashMap::new(),
+            convo_affinity: DashMap::new(),
             reliability,
         })
+    }
+
+    const CONVO_AFFINITY_CAP: usize = 4096;
+
+    /// The node this conversation last dispatched to, when the entry is
+    /// fresh (convo_stickiness_ttl_seconds; 0 disables). Expired entries
+    /// are dropped on read.
+    pub fn convo_node(&self, key: &str) -> Option<String> {
+        let ttl = self.reliability.convo_stickiness_ttl_seconds;
+        if ttl == 0 {
+            return None;
+        }
+        let fresh = self
+            .convo_affinity
+            .get(key)
+            .and_then(|e| {
+                if e.value().1.elapsed() <= std::time::Duration::from_secs(ttl) {
+                    Some(e.value().0.clone())
+                } else {
+                    None
+                }
+            });
+        if fresh.is_none() {
+            self.convo_affinity.remove(key);
+        }
+        fresh
+    }
+
+    /// Record the node that served this conversation. Bounded: past the
+    /// cap, stale entries are reaped first, and a still-full map is
+    /// cleared rather than grown - this is a cache, losing it is a perf
+    /// miss, never a correctness issue.
+    pub fn note_convo(&self, key: &str, node_id: &str) {
+        if self.reliability.convo_stickiness_ttl_seconds == 0 {
+            return;
+        }
+        if self.convo_affinity.len() >= Self::CONVO_AFFINITY_CAP {
+            let ttl = std::time::Duration::from_secs(self.reliability.convo_stickiness_ttl_seconds);
+            self.convo_affinity.retain(|_, v| v.1.elapsed() <= ttl);
+            if self.convo_affinity.len() >= Self::CONVO_AFFINITY_CAP {
+                self.convo_affinity.clear();
+            }
+        }
+        self.convo_affinity
+            .insert(key.to_string(), (node_id.to_string(), std::time::Instant::now()));
     }
 
     pub fn device_count(&self) -> usize {
@@ -767,5 +820,42 @@ mod tests {
             .snapshot_devices()
             .iter()
             .any(|d| d.node_id == "node-a"));
+    }
+
+    #[test]
+    fn convo_affinity_records_and_looks_up_fresh_entry() {
+        let r = Registry::new(ReliabilityConfig::default());
+        r.note_convo("conv-key", "node-a");
+        assert_eq!(r.convo_node("conv-key").as_deref(), Some("node-a"));
+        assert_eq!(r.convo_node("unknown"), None);
+    }
+
+    #[test]
+    fn convo_affinity_disabled_at_zero_ttl() {
+        let mut cfg = ReliabilityConfig::default();
+        cfg.convo_stickiness_ttl_seconds = 0;
+        let r = Registry::new(cfg);
+        r.note_convo("conv-key", "node-a");
+        assert_eq!(r.convo_node("conv-key"), None);
+    }
+
+    #[tokio::test]
+    async fn convo_affinity_expires_after_ttl() {
+        let mut cfg = ReliabilityConfig::default();
+        cfg.convo_stickiness_ttl_seconds = 1;
+        let r = Registry::new(cfg);
+        r.note_convo("conv-key", "node-a");
+        assert!(r.convo_node("conv-key").is_some());
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert_eq!(r.convo_node("conv-key"), None);
+    }
+
+    #[test]
+    fn convo_affinity_stays_bounded_at_cap() {
+        let r = Registry::new(ReliabilityConfig::default());
+        for i in 0..(Registry::CONVO_AFFINITY_CAP + 10) {
+            r.note_convo(&format!("key-{}", i), "node-a");
+        }
+        assert!(r.convo_affinity.len() <= Registry::CONVO_AFFINITY_CAP);
     }
 }
