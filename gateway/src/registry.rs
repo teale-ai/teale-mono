@@ -220,16 +220,13 @@ impl Registry {
         if ttl == 0 {
             return None;
         }
-        let fresh = self
-            .convo_affinity
-            .get(key)
-            .and_then(|e| {
-                if e.value().1.elapsed() <= std::time::Duration::from_secs(ttl) {
-                    Some(e.value().0.clone())
-                } else {
-                    None
-                }
-            });
+        let fresh = self.convo_affinity.get(key).and_then(|e| {
+            if e.value().1.elapsed() <= std::time::Duration::from_secs(ttl) {
+                Some(e.value().0.clone())
+            } else {
+                None
+            }
+        });
         if fresh.is_none() {
             self.convo_affinity.remove(key);
         }
@@ -251,8 +248,10 @@ impl Registry {
                 self.convo_affinity.clear();
             }
         }
-        self.convo_affinity
-            .insert(key.to_string(), (node_id.to_string(), std::time::Instant::now()));
+        self.convo_affinity.insert(
+            key.to_string(),
+            (node_id.to_string(), std::time::Instant::now()),
+        );
     }
 
     pub fn device_count(&self) -> usize {

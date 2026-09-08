@@ -975,8 +975,10 @@ pub(crate) fn convo_stickiness_key(model_id: &str, req_body: &Value) -> Option<S
         let mut h = sha2::Sha256::new();
         use sha2::Digest;
         h.update(model_id.as_bytes());
-        h.update(b"
-");
+        h.update(
+            b"
+",
+        );
         h.update(text.as_bytes());
         return Some(hex::encode(h.finalize()));
     }
@@ -1170,19 +1172,19 @@ async fn pick_and_dispatch_inner(
                 match &sticky {
                     Some(node) => {
                         let hit: Vec<crate::registry::DeviceState> = list
-                        .iter()
-                        .filter(|c| &c.node_id == node)
-                        .cloned()
-                        .collect();
-                    if hit.is_empty() {
-                        list.to_vec()
-                    } else {
-                        hit
+                            .iter()
+                            .filter(|c| &c.node_id == node)
+                            .cloned()
+                            .collect();
+                        if hit.is_empty() {
+                            list.to_vec()
+                        } else {
+                            hit
+                        }
                     }
+                    None => list.to_vec(),
                 }
-                None => list.to_vec(),
-            }
-        };
+            };
         let candidates = sticky_of(&candidates);
         let preferred_candidates = sticky_of(&preferred_candidates);
         let target_node = match state
