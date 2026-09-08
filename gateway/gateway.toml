@@ -107,7 +107,7 @@ employee_node_ids = [
 # boxes' logs + registerAck/exit-pin/health agreement); teale-512g8's id
 # additionally confirmed from live gateway dispatch logs. Excluded
 # deliberately: NICOLLE b8ff97d7..., TICO 1766594... (unidentified),
-# LAPTOP-EFKCAOHN, LAPTOP-GLSRB496, the 512g1 pair.
+# LAPTOP-EFKCAOHN, LAPTOP-GLSRB496, and 512g1's retired second id.
 allowed_node_ids = [
     # 96 Tailors-Mac-Studio
     "7af2b3cb4b1e745e4e9a71a63935619ef0fd30e89c0f5ea7447d3d7d76370430",
@@ -121,4 +121,7 @@ allowed_node_ids = [
     "fca7880a697e6a6e3669349b76eae604e3a801db67d5436f74421721dddeb0da",
     # Air ais-macbook-air
     "6d8a4f43fb03860648cb3f0e1d8c26d0123d42967a5e76f3354c21a4817c64ae",
+    # 512g1 tailor512g1s-mac-studio.local (fleet-confirmed 2026-09-08:
+    # gateway-identity-seed unchanged since Apr 24, llama.cpp supply live)
+    "77604e7a0173a9115f8e0301863a982ea8541dd15ec0a23348549ea205260ba3",
 ]
