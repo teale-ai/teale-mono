@@ -5,7 +5,7 @@
 use once_cell::sync::Lazy;
 use prometheus::{
     register_counter_vec, register_gauge_vec, register_histogram_vec, register_int_counter_vec,
-    register_int_gauge, CounterVec, GaugeVec, HistogramVec, IntCounterVec, IntGauge,
+    register_int_gauge, CounterVec, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
 };
 
 pub static REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -39,6 +39,23 @@ pub static HEAVY_HOLD_REFUSED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
     prometheus::register_int_counter!(
         "gateway_heavy_hold_refused_total",
         "Heavy requests refused admission because every eligible device already carries a heavy (#247)"
+    )
+    .expect("metric init")
+});
+
+pub static HEAVY_HOLD_EXPIRED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    prometheus::register_int_counter!(
+        "gateway_heavy_hold_expired_total",
+        "Heavy holds lazily expired after exceeding heavy_hold_ttl_seconds: the close path never ran, and the hold was stale by definition (#247 follow-up)"
+    )
+    .expect("metric init")
+});
+
+pub static HEAVY_HOLDS: Lazy<IntGaugeVec> = Lazy::new(|| {
+    prometheus::register_int_gauge_vec!(
+        "gateway_heavy_holds",
+        "Current heavy in-flight holds per node (#247) - the hold registry made observable",
+        &["node_id"]
     )
     .expect("metric init")
 });
@@ -131,6 +148,8 @@ pub fn init() {
     let _ = &*REQUESTS_TOTAL;
     let _ = &*RETRIES_TOTAL;
     let _ = &*HEAVY_HOLD_REFUSED;
+    let _ = &*HEAVY_HOLD_EXPIRED;
+    let _ = &*HEAVY_HOLDS;
     let _ = &*TTFT_SECONDS;
     let _ = &*TOTAL_LATENCY_SECONDS;
     let _ = &*DEVICES_ELIGIBLE;

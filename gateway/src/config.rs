@@ -181,6 +181,13 @@ pub struct ReliabilityConfig {
     /// affinity stays valid; 0 disables.
     #[serde(default = "default_convo_stickiness_ttl")]
     pub convo_stickiness_ttl_seconds: u64,
+    /// A heavy hold older than this is stale by definition: the stream cap
+    /// ends every heavy session well within it, so a hold past the TTL is
+    /// one whose close path never ran (a leaked hold wedged 512g8 for ~75
+    /// min on 2026-09-08 - slots idle, every heavy refused). admit()
+    /// expires it lazily, counts the expiry, and lets the new heavy in.
+    #[serde(default = "default_heavy_hold_ttl")]
+    pub heavy_hold_ttl_seconds: u64,
 }
 
 impl Default for ReliabilityConfig {
@@ -200,6 +207,7 @@ impl Default for ReliabilityConfig {
             heavy_hold_max_tokens: default_heavy_hold_max_tokens(),
             heavy_co_resident_ttft_bonus_seconds: default_heavy_co_resident_ttft_bonus(),
             convo_stickiness_ttl_seconds: default_convo_stickiness_ttl(),
+            heavy_hold_ttl_seconds: default_heavy_hold_ttl(),
         }
     }
 }
@@ -321,6 +329,12 @@ fn default_registry_warmup() -> u64 {
 
 fn default_heavy_hold() -> bool {
     true
+}
+
+fn default_heavy_hold_ttl() -> u64 {
+    // above the 1800s stream cap: a live heavy always finishes (or dies at
+    // the cap) before its hold can look stale
+    1900
 }
 
 /// 30k prompt tokens: CCC heavy steps run 36-100k; ordinary chat and

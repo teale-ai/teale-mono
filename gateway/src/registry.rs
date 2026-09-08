@@ -197,6 +197,11 @@ pub struct Registry {
 struct InFlight {
     total: std::sync::atomic::AtomicU32,
     heavy: std::sync::atomic::AtomicU32,
+    /// When the current heavy hold was taken. A hold older than
+    /// heavy_hold_ttl_seconds is stale by definition (the stream cap ends
+    /// every heavy session within it), so admit() expires it lazily - a
+    /// close path that never runs can no longer wedge a node forever.
+    heavy_since: parking_lot::Mutex<Option<Instant>>,
 }
 
 impl Registry {
@@ -276,7 +281,30 @@ impl Registry {
     pub fn admit(&self, node_id: &str, heavy: bool) -> bool {
         let e = self.in_flight.entry(node_id.to_string()).or_default();
         if heavy && e.heavy.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-            return false;
+            let stale = {
+                let since = e.heavy_since.lock();
+                (*since)
+                    .map(|t| t.elapsed().as_secs() > self.reliability.heavy_hold_ttl_seconds)
+                    .unwrap_or(false)
+            };
+            if !stale {
+                return false;
+            }
+            // The stream cap ends every heavy session well inside the TTL,
+            // so this hold's close path never ran. Expire it: release both
+            // counters the leak held, count the expiry, and admit below.
+            e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
+            *e.heavy_since.lock() = None;
+            let prev = e.total.swap(0, std::sync::atomic::Ordering::SeqCst);
+            crate::metrics::HEAVY_HOLD_EXPIRED.inc();
+            crate::metrics::HEAVY_HOLDS
+                .with_label_values(&[node_id])
+                .set(0);
+            tracing::warn!(
+                device = %node_id,
+                leaked_total = prev,
+                "heavy hold exceeded TTL with no close: expiring the stale hold"
+            );
         }
         if heavy {
             // #273: a PIN-path (node-direct) session holds llama.cpp slots
@@ -301,6 +329,10 @@ impl Registry {
         e.total.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if heavy {
             e.heavy.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *e.heavy_since.lock() = Some(Instant::now());
+            crate::metrics::HEAVY_HOLDS
+                .with_label_values(&[node_id])
+                .set(e.heavy.load(std::sync::atomic::Ordering::SeqCst) as i64);
         }
         true
     }
@@ -314,9 +346,13 @@ impl Registry {
             }
             if heavy {
                 let hprev = e.heavy.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                if hprev == 0 {
+                if hprev <= 1 {
                     e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
+                    *e.heavy_since.lock() = None;
                 }
+                crate::metrics::HEAVY_HOLDS
+                    .with_label_values(&[node_id])
+                    .set(e.heavy.load(std::sync::atomic::Ordering::SeqCst) as i64);
             }
             prev.saturating_sub(1)
         } else {
@@ -712,6 +748,51 @@ mod tests {
         // reverts the node to fleet supply on its next discover.
         registry.upsert_device_with_class("emp-b".into(), "E".into(), caps(vec!["m"], true), false);
         assert_eq!(registry.eligible_devices("m").len(), 2);
+    }
+
+    #[test]
+    fn heavy_hold_past_ttl_expires_and_readmits() {
+        // 2026-09-08, 512g8: a client stream died, the close path never
+        // ran, and the leaked hold refused every heavy for ~75 min while
+        // the node sat idle. A hold older than the TTL is stale by
+        // definition - admit() must expire it and let the new heavy in.
+        let registry = Registry::new(ReliabilityConfig {
+            heavy_hold_ttl_seconds: 60,
+            ..ReliabilityConfig::default()
+        });
+        assert!(registry.admit("node-a", true));
+        {
+            let e = registry.in_flight.get("node-a").expect("entry");
+            *e.heavy_since.lock() = Some(Instant::now() - std::time::Duration::from_secs(120));
+        }
+        // The stale hold no longer refuses - and the leak's total is released.
+        assert!(registry.admit("node-a", true));
+        assert_eq!(registry.heavy_in_flight("node-a"), 1);
+        assert_eq!(registry.in_flight("node-a"), 1);
+    }
+
+    #[test]
+    fn heavy_hold_within_ttl_still_refuses() {
+        let registry = Registry::new(ReliabilityConfig {
+            heavy_hold_ttl_seconds: 1900,
+            ..ReliabilityConfig::default()
+        });
+        assert!(registry.admit("node-a", true));
+        assert!(!registry.admit("node-a", true));
+        assert_eq!(registry.heavy_in_flight("node-a"), 1);
+    }
+
+    #[test]
+    fn heavy_hold_released_on_normal_close_clears_timestamp() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        assert!(registry.admit("node-a", true));
+        registry.dec_in_flight("node-a", true);
+        assert_eq!(registry.heavy_in_flight("node-a"), 0);
+        {
+            let e = registry.in_flight.get("node-a").expect("entry");
+            assert!(e.heavy_since.lock().is_none());
+        }
+        assert!(registry.admit("node-a", true));
     }
 
     #[test]
