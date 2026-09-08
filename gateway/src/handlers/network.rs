@@ -176,6 +176,15 @@ pub async fn network(State(state): State<AppState>) -> Json<Value> {
 /// rewards (the drip); when it runs low, supply stops earning unless
 /// recycling or a real USDC contribution refills it. `lowPool` is a coarse
 /// flag: under 10% of total minted remaining.
+/// The heavy-hold forensic ring: every acquire/share/refuse/expire/release
+/// with owner tags, newest last. Public like /v1/pool - tags are hashes,
+/// device ids are already public in network stats. This is the durable
+/// probe surface: fly's log buffer holds ~2 minutes and its tail can stall.
+pub async fn heavy_hold_events(State(state): State<AppState>) -> Json<Value> {
+    let events: Vec<_> = state.registry.heavy_events_snapshot();
+    Json(json!({ "heavyEvents": events }))
+}
+
 pub async fn pool_status(State(state): State<AppState>) -> Json<Value> {
     let snapshot = state
         .db
