@@ -22,6 +22,7 @@ fn reliability() -> ReliabilityConfig {
         heavy_hold_max_tokens: 4096,
         heavy_co_resident_ttft_bonus_seconds: 180,
         convo_stickiness_ttl_seconds: 1800,
+        heavy_hold_ttl_seconds: 1900,
         discover_interval_seconds: 10,
         departed_grace_seconds: 180,
         registry_warmup_seconds: 0,
