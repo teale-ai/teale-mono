@@ -298,6 +298,19 @@ pub async fn handle_relay_data(
     }
 }
 
+/// #299: should a pre-first-token idle-watchdog fire re-arm instead of
+/// killing? Yes when the backend reports any slot busy: the request is
+/// then queued behind in-flight work (llama-server queues internally
+/// across slots, and heavy turns routinely run multi-minute) or running
+/// its own long cold prefill - silence is expected, not a hang. No
+/// (kill) when the backend is fully idle: zero chunks with nothing
+/// processing is the #257 hung-stream case. No (kill) when occupancy is
+/// unreadable: a backend without /slots or a failed read keeps the #257
+/// policy.
+pub(crate) fn pre_first_token_queued(occupancy: Option<(u32, u32)>) -> bool {
+    matches!(occupancy, Some((busy, _)) if busy > 0)
+}
+
 async fn handle_inference_request(
     relay: &RelayClient,
     from: &str,
@@ -387,11 +400,18 @@ async fn handle_inference_request(
             // Idle watchdog (#257): a session that produces zero chunks
             // holds its backend slot hostage until the stream budget -
             // observed 15min on 512g8 from a direct relay client that never
-            // closed. 120s is far above any legitimate TTFT (gateway
-            // deadlines are 8-10s base + prompt term) and far below the
-            // budget; post-first-token stalls get a larger 300s. Both are
-            // env-overridable. Dropping rx on the timeout fires the #258
-            // consumer-gone path, so the backend request cancels now.
+            // closed. 120s is far below the budget; post-first-token stalls
+            // get a larger 300s. Both are env-overridable. Dropping rx on
+            // the timeout fires the #258 consumer-gone path, so the backend
+            // request cancels now.
+            // #299: 120s is NOT above every legitimate pre-first-token
+            // wait - llama-server queues internally across slots, so a
+            // request co-admitted under #303 sharing can sit silent behind
+            // another slot's multi-minute turn. A pre-first-token fire
+            // confirms against /slots first: any slot busy means queued,
+            // not hung, so re-arm (the stream budget still bounds the
+            // total wait); only an idle or unreadable backend confirms
+            // the #257 hang and kills.
             let first_chunk_idle = std::time::Duration::from_secs(
                 std::env::var("TEALE_FIRST_CHUNK_IDLE_SECONDS")
                     .ok()
@@ -419,6 +439,18 @@ async fn handle_inference_request(
                         } else {
                             "pre-first-token"
                         };
+                        // #299: pre-first-token silence with a busy backend
+                        // is a queued request, not a hung stream - re-arm
+                        // (the stream budget still bounds the wait).
+                        if !first_token_logged
+                            && pre_first_token_queued(swap.backend_slots_occupancy().await)
+                        {
+                            info!(
+                                "Inference request {} pre-first-token watchdog re-armed: backend busy, request queued (#299)",
+                                request_id
+                            );
+                            continue;
+                        }
                         terminal = Some(Err(format!(
                             "idle watchdog: no chunk for {}s ({})",
                             idle_cap.as_secs(),
@@ -751,8 +783,22 @@ pub fn peer_not_found_id(message: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{peer_not_found_id, SendFailureThrottle, SEND_FAILURE_LOG_INTERVAL};
+    use super::{
+        peer_not_found_id, pre_first_token_queued, SendFailureThrottle, SEND_FAILURE_LOG_INTERVAL,
+    };
     use std::time::Instant;
+
+    #[test]
+    fn pre_first_token_queued_only_when_backend_busy() {
+        // Any slot processing: queued behind in-flight work, or own long
+        // cold prefill - re-arm (#299).
+        assert!(pre_first_token_queued(Some((1, 2))));
+        assert!(pre_first_token_queued(Some((2, 2))));
+        // Backend idle but the stream is silent: the #257 hang - kill.
+        assert!(!pre_first_token_queued(Some((0, 2))));
+        // No slot visibility (non-llama backend or failed read): keep #257.
+        assert!(!pre_first_token_queued(None));
+    }
 
     #[test]
     fn parses_peer_not_found_message() {
