@@ -153,7 +153,8 @@ pub struct ReliabilityConfig {
     /// reporting cycle. An unaccounted-occupancy excess younger than
     /// this is grace-admitted while it proves stale or persistent; only
     /// an excess older than this refuses as a real external resident.
-    /// Must exceed the slowest reporting cycle in the fleet.
+    /// Must exceed the slowest reporting cycle in the fleet, including
+    /// heartbeat ticks slipping while the node decodes.
     #[serde(default = "default_busy_excess_grace")]
     pub busy_excess_grace_seconds: u64,
     /// How long a departed (peerLeft) device's models stay listed before
@@ -332,8 +333,12 @@ fn default_discover_interval() -> u64 {
     60
 }
 fn default_busy_excess_grace() -> u64 {
-    // 40s slowest observed node heartbeat + 60s discover poll + margin.
-    120
+    // 40s slowest observed node heartbeat + 60s discover poll + slack for
+    // heartbeat ticks slipping under decode load. 120s proved ~2s thin in
+    // production: a stale post-release sample stayed pinned 122s and ate
+    // a refuse (20:50:43Z). 180s stays inside the accepted bounded cost
+    // (~200s of one-at-a-time grace heavies on a masked real resident).
+    180
 }
 fn default_departed_grace() -> u64 {
     180
