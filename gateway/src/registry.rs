@@ -533,6 +533,22 @@ impl Registry {
                     let gone = e.heavy_owner.lock().take();
                     e.heavy.store(0, std::sync::atomic::Ordering::SeqCst);
                     *e.heavy_since.lock() = None;
+                    // #313: the node's busy sample keeps counting our just-
+                    // released occupancy for up to one reporting cycle
+                    // (heartbeat + discover + decode-load slip). An excess
+                    // clock armed before or during the hold has been aging
+                    // on our own echo, so re-anchor it at the drain: the
+                    // grace window now measures only post-release evidence
+                    // (the 20:10:43Z refuse fired 31s after a clean release
+                    // on a clock armed 122s earlier across an intervening
+                    // hold). A sample showing no excess at drain clears an
+                    // armed clock outright - same rule as #312's admit-time
+                    // clear. Re-anchor (not clear) on excess so a real
+                    // resident seen beside our hold keeps aging from the
+                    // moment our echo stopped contaminating the sample.
+                    if self.release_echo_reanchor(node_id, prev.saturating_sub(1)) {
+                        self.record_heavy("rearm_release_echo", node_id, None, None);
+                    }
                     tracing::info!(
                         device = %node_id,
                         owner = %owner_tag(gone.as_deref()),
@@ -548,6 +564,27 @@ impl Registry {
         } else {
             0
         }
+    }
+
+    /// #313 drain hook: re-anchor (or clear) the busy-excess clock when
+    /// the last heavy hold on a device releases. Returns true when an
+    /// armed clock was re-anchored (caller records the ring event).
+    fn release_echo_reanchor(&self, node_id: &str, accounted: u32) -> bool {
+        if let Some(mut dev) = self.devices.get_mut(node_id) {
+            let excess_now = dev
+                .capabilities
+                .backend_slots_busy
+                .is_some_and(|busy| busy > accounted);
+            if excess_now {
+                if let Some(since) = dev.busy_excess_since.as_mut() {
+                    *since = Instant::now();
+                    return true;
+                }
+            } else if dev.busy_excess_since.take().is_some() {
+                self.record_heavy("clear_external_excess", node_id, None, None);
+            }
+        }
+        false
     }
 
     pub fn in_flight(&self, node_id: &str) -> u32 {
@@ -1244,6 +1281,60 @@ mod tests {
         // Retry against the stale sample: grace-admit, not refuse.
         assert!(registry.admit("node-a", true, Some("qqqs")));
         registry.dec_in_flight("node-a", true);
+    }
+
+    #[test]
+    fn drain_reanchors_aged_excess_clock_before_post_release_retry() {
+        // #313 / 20:10:43Z qqqs: the clock was armed before a hold, the
+        // hold released cleanly, then a retry 31s later refused because
+        // the clock had aged 122s across the hold. The drain re-anchors
+        // that clock: grace is measured from release, not pre-hold echo.
+        let reliability = ReliabilityConfig {
+            busy_excess_grace_seconds: 3600,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
+        let mut c = caps(vec!["teale/auto"], true);
+        c.backend_slots_busy = Some(1);
+        registry.upsert_device("node-a".to_string(), "A".to_string(), c);
+
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        let before_release = registry
+            .devices
+            .get("node-a")
+            .expect("device")
+            .busy_excess_since
+            .expect("clock armed");
+        registry.dec_in_flight("node-a", true);
+        let after_release = registry
+            .devices
+            .get("node-a")
+            .expect("device")
+            .busy_excess_since
+            .expect("clock re-anchored");
+        assert!(after_release >= before_release);
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        registry.dec_in_flight("node-a", true);
+    }
+
+    #[test]
+    fn drain_clears_armed_clock_when_current_sample_is_balanced() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let mut c = caps(vec!["teale/auto"], true);
+        c.backend_slots_busy = Some(1);
+        registry.upsert_device("node-a".to_string(), "A".to_string(), c);
+        assert!(registry.admit("node-a", true, Some("qqqs")));
+        {
+            let mut dev = registry.devices.get_mut("node-a").expect("device");
+            dev.capabilities.backend_slots_busy = Some(0);
+        }
+        registry.dec_in_flight("node-a", true);
+        assert!(registry
+            .devices
+            .get("node-a")
+            .expect("device")
+            .busy_excess_since
+            .is_none());
     }
 
     #[test]
