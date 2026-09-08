@@ -71,8 +71,8 @@ pub static HEAVY_HOLDS: Lazy<IntGaugeVec> = Lazy::new(|| {
 pub static TTFT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "gateway_ttft_seconds",
-        "Time to first token, by model",
-        &["model"],
+        "Time to first token, by model and traffic kind (traffic = real requests, probe = synthetic probes)",
+        &["model", "kind"],
         vec![0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0]
     )
     .expect("metric init")
@@ -81,8 +81,8 @@ pub static TTFT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
 pub static DISPATCH_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "gateway_dispatch_seconds",
-        "Arrival-to-dispatch time (pick + admit + session open), by model. ttft minus this is upstream connect + prefill - the decomposition the Auto-vs-local latency work needs.",
-        &["model"],
+        "Arrival-to-dispatch time (pick + admit + session open), by model and traffic kind. ttft minus this is upstream connect + prefill - the decomposition the Auto-vs-local latency work needs. For probes this is session open only (target preselected).",
+        &["model", "kind"],
         vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
     )
     .expect("metric init")

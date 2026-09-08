@@ -495,7 +495,7 @@ async fn run_anthropic_buffered(
                         got_first = true;
                         first_token_at = Some(Instant::now());
                         metrics::TTFT_SECONDS
-                            .with_label_values(&[&model_id])
+                            .with_label_values(&[&model_id, "traffic"])
                             .observe(started.elapsed().as_secs_f64());
                     }
                     acc.observe_chunk(&chunk);
@@ -691,7 +691,7 @@ async fn run_anthropic_streaming(
                             got_first = true;
                             first_token_at = Some(Instant::now());
                             metrics::TTFT_SECONDS
-                                .with_label_values(&[&model_id])
+                                .with_label_values(&[&model_id, "traffic"])
                                 .observe(started.elapsed().as_secs_f64());
                         }
                         if !sent_message_start {

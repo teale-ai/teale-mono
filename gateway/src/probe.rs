@@ -157,12 +157,18 @@ async fn probe_target(
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
     let ttft_deadline = Duration::from_secs(ttft_deadline_seconds);
 
+    let open_started = Instant::now();
     let session_id = match state
         .relay
         .open_session(&target.node_id, open_timeout)
         .await
     {
-        Ok(session_id) => session_id,
+        Ok(session_id) => {
+            crate::metrics::DISPATCH_SECONDS
+                .with_label_values(&[&target.model_id, "probe"])
+                .observe(open_started.elapsed().as_secs_f64());
+            session_id
+        }
         Err(err) => {
             state.registry.dec_in_flight(&target.node_id, false);
             anyhow::bail!("relay open: {}", err);
@@ -242,6 +248,13 @@ async fn probe_target(
                 };
                 let completion_tokens = tokens_out.map(|v| v as u64).unwrap_or(chunk_count).max(1);
                 let ttft_ms = first_token_at.duration_since(started).as_millis() as u32;
+                // Feed the same histogram real traffic uses, under
+                // kind="probe", so the Auto-path TTFT series stays alive
+                // through quiet hours without biasing the user-traffic
+                // series (probe prompts are tiny by design).
+                crate::metrics::TTFT_SECONDS
+                    .with_label_values(&[&target.model_id, "probe"])
+                    .observe(ttft_ms as f64 / 1000.0);
                 debug!(
                     model = %target.model_id,
                     node = %target.node_id,
