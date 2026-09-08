@@ -3489,9 +3489,7 @@ pricing_completion: "0.00000020"
 
         match err {
             GatewayError::PromptExceedsContext {
-                estimated,
-                ceiling,
-                ..
+                estimated, ceiling, ..
             } => {
                 assert_eq!(estimated, 268_000);
                 assert_eq!(ceiling, 262_144);
@@ -3677,4 +3675,3 @@ pricing_completion: "0.00000020"
         assert_eq!(state.registry.in_flight("node-a"), 0);
     }
 }
-
