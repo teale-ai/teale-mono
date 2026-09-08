@@ -39,7 +39,7 @@ pub enum GatewayError {
     #[error("heavy-hold: all eligible devices for {0} are running a heavy request; retry after the incumbent finishes (#247)")]
     HeavyContention(String),
 
-    #[error("prompt (~{estimated} tokens) exceeds the advertised context ceiling ({ceiling}) of every supplier for model {model}; not dispatched and not retriable - compact the prompt or raise the supplier ceiling")]
+    #[error("request claim (~{estimated} tokens: prompt + completion budget) exceeds the advertised context ceiling ({ceiling}) of every supplier for model {model}; not dispatched and not retriable - compact the prompt, lower max_tokens, or raise the supplier ceiling")]
     PromptExceedsContext {
         model: String,
         estimated: u32,
