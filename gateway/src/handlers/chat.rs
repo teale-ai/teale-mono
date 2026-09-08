@@ -917,7 +917,6 @@ pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::Co
 /// `gateway_dispatch_seconds` on success, so Auto-vs-local latency work can
 /// decompose TTFT into gateway overhead vs upstream connect+prefill.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)] // dispatch needs the whole request context
 pub(crate) async fn pick_and_dispatch(
     state: &AppState,
     catalog_model: &CatalogModel,
