@@ -1012,18 +1012,25 @@ async fn pick_and_dispatch_inner(
             state.registry.eligible_devices(&catalog_model.id)
         };
         // Context-ceiling refusal: when every eligible supplier advertises
-        // an effective_context below the prompt estimate, the backend
+        // an effective_context below the request's full claim, the backend
         // refuses with a pre-first-token 400 on EVERY attempt - dispatching
         // buys a guaranteed failure cycle. Refuse non-retriably instead.
+        // The claim is prompt + completion budget (required_ctx, passed as
+        // min_context) - the same quantity the scheduler filters on - not
+        // the prompt alone: a prompt that fits but whose prompt+max_tokens
+        // does not is just as undispatchable, and must fail loud and
+        // terminal here rather than fall through to a retriable-looking
+        // "no eligible device" (hz4g's 02:29-02:57Z ghost hunt).
         // Nodes that omit effective_context are trusted (absent == unknown).
+        let claim = min_context.unwrap_or(prompt_tokens) as u64;
         let mut fits: Vec<crate::registry::DeviceState> = Vec::new();
-        let mut min_ceiling = u32::MAX;
+        let mut max_ceiling = 0u32;
         let mut saw_ceiling = false;
         for d in candidates.into_iter() {
             match d.capabilities.effective_context {
-                Some(ctx) if (ctx as u64) < prompt_tokens as u64 => {
+                Some(ctx) if (ctx as u64) < claim => {
                     saw_ceiling = true;
-                    min_ceiling = min_ceiling.min(ctx);
+                    max_ceiling = max_ceiling.max(ctx);
                 }
                 _ => fits.push(d),
             }
@@ -1031,8 +1038,8 @@ async fn pick_and_dispatch_inner(
         if fits.is_empty() && saw_ceiling {
             return Err(GatewayError::PromptExceedsContext {
                 model: catalog_model.id.clone(),
-                estimated: prompt_tokens,
-                ceiling: min_ceiling,
+                estimated: claim as u32,
+                ceiling: max_ceiling,
             });
         }
         let candidates = fits;
@@ -3455,6 +3462,45 @@ pricing_completion: "0.00000020"
     }
 
     #[tokio::test]
+    async fn dispatch_refuses_claim_when_prompt_fits_but_completion_budget_tips_it_over() {
+        // hz4g's ghost: prompt 260k fits a 262,144 ceiling, but
+        // prompt + max_tokens does not - this must refuse terminal and
+        // named, never surface as a retriable "no eligible device".
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        let mut caps = dispatch_caps(&[&model.id], &[]);
+        caps.effective_context = Some(262_144);
+        state
+            .registry
+            .upsert_device("node-a".into(), "A".into(), caps);
+
+        let err = pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            Some(268_000), // required_ctx: prompt + completion budget
+            &[],
+            false,
+            260_000, // prompt estimate alone fits
+        )
+        .await
+        .expect_err("claim over the ceiling must refuse at dispatch");
+
+        match err {
+            GatewayError::PromptExceedsContext {
+                estimated,
+                ceiling,
+                ..
+            } => {
+                assert_eq!(estimated, 268_000);
+                assert_eq!(ceiling, 262_144);
+            }
+            other => panic!("expected PromptExceedsContext, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatch_falls_through_to_supplier_without_advertised_ceiling() {
         let model = free_like();
         let state = dispatch_test_state(dispatch_test_config(1), &model);
@@ -3631,3 +3677,4 @@ pricing_completion: "0.00000020"
         assert_eq!(state.registry.in_flight("node-a"), 0);
     }
 }
+
