@@ -1034,8 +1034,10 @@ mod tests {
 
     #[test]
     fn convo_affinity_disabled_at_zero_ttl() {
-        let mut cfg = ReliabilityConfig::default();
-        cfg.convo_stickiness_ttl_seconds = 0;
+        let cfg = ReliabilityConfig {
+            convo_stickiness_ttl_seconds: 0,
+            ..Default::default()
+        };
         let r = Registry::new(cfg);
         r.note_convo("conv-key", "node-a");
         assert_eq!(r.convo_node("conv-key"), None);
@@ -1043,8 +1045,10 @@ mod tests {
 
     #[tokio::test]
     async fn convo_affinity_expires_after_ttl() {
-        let mut cfg = ReliabilityConfig::default();
-        cfg.convo_stickiness_ttl_seconds = 1;
+        let cfg = ReliabilityConfig {
+            convo_stickiness_ttl_seconds: 1,
+            ..Default::default()
+        };
         let r = Registry::new(cfg);
         r.note_convo("conv-key", "node-a");
         assert!(r.convo_node("conv-key").is_some());
