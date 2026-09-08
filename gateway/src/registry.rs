@@ -446,10 +446,16 @@ impl Registry {
             // remember when it first appeared, and refuse only once it has
             // persisted past busy_excess_grace_seconds (one full reporting
             // cycle). A stale sample clears on the next re-register; a
-            // real external resident does not. The clock clears only when
-            // the registry is idle AND no excess is reported: while one of
-            // our holds is in flight a stale sample can mask the excess,
-            // and that must not reset it.
+            // real external resident does not. The clock clears whenever
+            // the current sample shows no excess, mid-hold or not:
+            // requiring an idle registry first let a pre-turn stale
+            // observation age past grace through any turn longer than the
+            // grace window, refusing the post-release retry at a
+            // verifiably idle backend (the 19:14:46Z qqqs refuse). The
+            // cost of clearing mid-hold is bounded: a real resident
+            // masked by one stale sample gets at most one extra grace
+            // window, because fresh samples show the true excess and
+            // restart the clock at once.
             if let Some(mut dev) = self.devices.get_mut(node_id) {
                 let accounted = e.total.load(std::sync::atomic::Ordering::SeqCst);
                 let excess = dev
@@ -483,7 +489,7 @@ impl Registry {
                             self.record_heavy("observe_external_excess", node_id, owner, None);
                         }
                     }
-                } else if accounted == 0 && dev.busy_excess_since.take().is_some() {
+                } else if dev.busy_excess_since.take().is_some() {
                     self.record_heavy("clear_external_excess", node_id, owner, None);
                 }
             }
@@ -1241,11 +1247,13 @@ mod tests {
     }
 
     #[test]
-    fn external_excess_clock_survives_masking_and_resets_when_idle() {
-        // #309: the excess clock must NOT clear while one of our holds is
-        // in flight (a stale sample can mask the excess then); it clears
-        // once the registry is idle with no excess reported, and a later
-        // excess starts a fresh clock.
+    fn external_excess_clock_clears_on_any_balanced_sample() {
+        // #309 follow-up: the excess clock clears whenever the current
+        // sample shows
+        // no excess, mid-hold or not. Requiring an idle registry first
+        // let a pre-turn stale observation age past grace during any turn
+        // longer than the grace window (296s qqqs turn) and refuse the
+        // post-release retry at an idle backend (19:14:46Z).
         let reliability = ReliabilityConfig {
             busy_excess_grace_seconds: 0,
             ..ReliabilityConfig::default()
@@ -1255,29 +1263,35 @@ mod tests {
         c.backend_slots_busy = Some(1);
         registry.upsert_device("node-a".to_string(), "A".to_string(), c);
 
-        // Start the excess clock with a grace-admitted hold.
+        // Stale sample from before our hold: grace-admit, clock starts.
         assert!(registry.admit("node-a", true, Some("owner-1")));
-        // The fresh sample now counts OUR hold: no excess reported, but
-        // the registry is not idle - the clock must survive.
+        // Fresh sample now counts OUR hold (busy=1 == accounted=1): no
+        // excess, so the clock clears even though the registry is busy.
+        // A same-owner share must not re-arm it.
         assert!(registry.admit("node-a", true, Some("owner-1"))); // share
         registry.dec_in_flight("node-a", true);
         registry.dec_in_flight("node-a", true);
-        // Registry idle; the excess (busy=1 > 0) is aged -> refuse.
+        // Post-release retry against a still-stale sample: excess is
+        // observed FRESH (the old clock is gone) and grace-admits even
+        // with grace = 0 - the 19:14:46Z refuse cannot recur.
+        assert!(registry.admit("node-a", true, Some("owner-2")));
+        registry.dec_in_flight("node-a", true);
+        // A PERSISTENT excess still refuses once aged: grace = 0 makes
+        // the second observation of the same unbroken excess persistent.
         assert!(!registry.admit("node-a", true, Some("owner-2")));
-        // Node reports idle; idle registry + no excess clears the clock.
+        // The resident leaves; the next balanced sample clears the clock
+        // (registry idle this time) and a later excess starts fresh.
         {
             let mut dev = registry.devices.get_mut("node-a").expect("device");
             dev.capabilities.backend_slots_busy = Some(0);
         }
-        assert!(registry.admit("node-a", true, Some("owner-2")));
+        assert!(registry.admit("node-a", true, Some("owner-3")));
         registry.dec_in_flight("node-a", true);
-        // A reappearing excess starts a FRESH clock: even grace = 0
-        // grace-admits the first observation.
         {
             let mut dev = registry.devices.get_mut("node-a").expect("device");
             dev.capabilities.backend_slots_busy = Some(1);
         }
-        assert!(registry.admit("node-a", true, Some("owner-2")));
+        assert!(registry.admit("node-a", true, Some("owner-3")));
         registry.dec_in_flight("node-a", true);
     }
 }
