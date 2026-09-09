@@ -69,7 +69,6 @@ impl ChallengeLimiter {
         attempts.push(now_unix);
         true
     }
-
 }
 
 /// Allowlist for minting share keys. Loaded from `GATEWAY_SHARE_KEY_ISSUERS`
@@ -134,7 +133,10 @@ mod tests {
         for _ in 0..ChallengeLimiter::MAX_PER_WINDOW {
             assert!(l.allow("1.2.3.4", t0));
         }
-        assert!(!l.allow("1.2.3.4", t0), "11th challenge in-window must block");
+        assert!(
+            !l.allow("1.2.3.4", t0),
+            "11th challenge in-window must block"
+        );
         assert!(l.allow("5.6.7.8", t0), "limit is per-IP");
         // Window slides: an hour later the oldest attempt has expired.
         assert!(l.allow("1.2.3.4", t0 + ChallengeLimiter::WINDOW_SECONDS));
