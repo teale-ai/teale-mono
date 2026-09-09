@@ -42,6 +42,36 @@ impl PinJoinLimiter {
     }
 }
 
+/// Per-client-IP sliding-window rate limiter for /v1/auth/device/challenge.
+/// DeviceIDs are self-generated, so the welcome grant would otherwise be
+/// farmable without bound: each new device needs a fresh challenge, and the
+/// challenge is where the per-IP ceiling binds (10/hour = at most $1/hour of
+/// grants per source IP at the $0.10 welcome grant). Keyed by Fly's
+/// `fly-client-ip` header (proxy-set, not client-spoofable); requests
+/// without it share one "unknown" bucket - fail-closed by construction.
+#[derive(Debug, Clone, Default)]
+pub struct ChallengeLimiter {
+    inner: Arc<parking_lot::Mutex<std::collections::HashMap<String, Vec<i64>>>>,
+}
+
+impl ChallengeLimiter {
+    pub const MAX_PER_WINDOW: usize = 10;
+    pub const WINDOW_SECONDS: i64 = 3600;
+
+    /// Record an attempt; returns false when the caller is over the limit.
+    pub fn allow(&self, key: &str, now_unix: i64) -> bool {
+        let mut map = self.inner.lock();
+        let attempts = map.entry(key.to_string()).or_default();
+        attempts.retain(|t| now_unix - *t < Self::WINDOW_SECONDS);
+        if attempts.len() >= Self::MAX_PER_WINDOW {
+            return false;
+        }
+        attempts.push(now_unix);
+        true
+    }
+
+}
+
 /// Allowlist for minting share keys. Loaded from `GATEWAY_SHARE_KEY_ISSUERS`
 /// (comma-separated 64-char hex device IDs). Empty set ⇒ mint disabled —
 /// fail-closed default so a deploy without the secret can't be abused.
@@ -98,6 +128,19 @@ mod tests {
     }
 
     #[test]
+    fn challenge_limiter_blocks_over_limit_and_slides() {
+        let l = ChallengeLimiter::default();
+        let t0 = 1_000_000i64;
+        for _ in 0..ChallengeLimiter::MAX_PER_WINDOW {
+            assert!(l.allow("1.2.3.4", t0));
+        }
+        assert!(!l.allow("1.2.3.4", t0), "11th challenge in-window must block");
+        assert!(l.allow("5.6.7.8", t0), "limit is per-IP");
+        // Window slides: an hour later the oldest attempt has expired.
+        assert!(l.allow("1.2.3.4", t0 + ChallengeLimiter::WINDOW_SECONDS));
+    }
+
+    #[test]
     fn share_key_issuers_empty_when_var_unset() {
         std::env::remove_var("TEST_SKI_UNSET");
         let s = ShareKeyIssuers::from_env("TEST_SKI_UNSET");
@@ -133,4 +176,7 @@ pub struct AppState {
     pub started_at: std::time::Instant,
     /// Join-knock rate limiting for /v1/pins/join.
     pub pin_join_limiter: PinJoinLimiter,
+    /// Per-IP rate limiting for /v1/auth/device/challenge (welcome-grant
+    /// farming defense).
+    pub challenge_limiter: ChallengeLimiter,
 }

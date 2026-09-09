@@ -2306,6 +2306,7 @@ pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::Conflict(_) => "conflict",
         GatewayError::BudgetExhausted => "budget_exhausted",
         GatewayError::InsufficientCredits { .. } => "insufficient_credits",
+        GatewayError::RateLimited(_) => "rate_limited",
         GatewayError::BadRequest(_) => "bad_request",
         GatewayError::PromptExceedsContext { .. } => "prompt_exceeds_context",
         GatewayError::Unauthorized(_) => "unauthorized",
@@ -2594,6 +2595,7 @@ quantization: null
             providers: crate::providers::ProvidersHandle::empty_for_test(),
             identity: None,
             pin_join_limiter: Default::default(),
+            challenge_limiter: Default::default(),
             started_at: std::time::Instant::now(),
         }
     }
