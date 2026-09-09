@@ -83,12 +83,13 @@ returns `402` with `balance` and `required` in the error.
 ```bash
 curl -s $GW/v1/credits -H "Authorization: Bearer tk_live_..."
 
-# top-up: get your deposit coordinates, send USDC (Solana), claim the tx:
-curl -s $GW/v1/account/onchain -H "Authorization: Bearer tok_dev_..."
-#   -> your treasury deposit memo + address
-curl -s $GW/v1/account/deposit-treasury -H "Authorization: Bearer tok_dev_..." \
+# on-chain wallet state (deposit coordinates live here once enabled):
+curl -s $GW/v1/account/wallet/onchain -H "Authorization: Bearer tok_dev_..."
+# after sending USDC (Solana) to the treasury with your memo, claim the tx:
+curl -s $GW/v1/account/wallet/deposit-treasury -H "Authorization: Bearer tok_dev_..." \
   -H 'content-type: application/json' -d '{"txSignature":"<solana tx sig>"}'
-#   -> verified on-chain, credits land
+#   -> verified on-chain, credits land. Anyone can pay into any account:
+#   the sender never gets wallet access, only the deposit.
 ```
 
 ## Notes
