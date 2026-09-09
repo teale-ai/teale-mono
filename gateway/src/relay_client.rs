@@ -272,6 +272,7 @@ pub async fn spawn(
         let reliability = config.reliability.clone();
         let fleet = config.fleet.clone();
         let apmhelp = config.apmhelp.clone();
+        let stranger_supply = config.stranger_supply.clone();
         let idle_timeout = relay_idle_timeout(config.reliability.discover_interval_seconds);
 
         tokio::spawn(async move {
@@ -350,6 +351,7 @@ pub async fn spawn(
                                         reliability.quarantine_seconds,
                                         &fleet,
                                         &apmhelp,
+                                        &stranger_supply,
                                         &mut sent_discover_after_ack,
                                         &handle,
                                         &ghost_closes,
@@ -367,6 +369,7 @@ pub async fn spawn(
                                                 reliability.quarantine_seconds,
                                                 &fleet,
                                                 &apmhelp,
+                                                &stranger_supply,
                                                 &mut sent_discover_after_ack,
                                                 &handle,
                                                 &ghost_closes,
@@ -453,6 +456,7 @@ async fn handle_incoming(
     quarantine_seconds: u64,
     fleet: &crate::config::FleetConfig,
     apmhelp: &crate::config::ApmhelpConfig,
+    stranger_supply: &crate::config::StrangerSupplyConfig,
     sent_discover_after_ack: &mut bool,
     relay: &RelayHandle,
     ghost_closes: &Arc<DashMap<String, Instant>>,
@@ -497,13 +501,26 @@ async fn handle_incoming(
                 // class) even though they are not fleet; they never serve
                 // the default lane.
                 let employee = apmhelp.is_employee(node_id) && !fleet.allows(node_id);
-                if !fleet.allows(node_id) && !employee {
+                // Stranger supply, probation tier: with the config gate
+                // enabled, an unknown peer is admitted flagged probation -
+                // benchmarked (benchmark.rs), never dispatched client
+                // traffic, invisible to the catalog. With the gate closed
+                // (default) the allowlist denial below is unchanged.
+                let probation = !fleet.allows(node_id) && !employee && stranger_supply.enabled;
+                if !fleet.allows(node_id) && !employee && !stranger_supply.enabled {
                     warn!(
                         node = node_id,
                         display = %display_name,
                         "discover: peer denied by fleet allowlist - not eligible supply"
                     );
                     continue;
+                }
+                if probation {
+                    info!(
+                        node = node_id,
+                        display = %display_name,
+                        "discover: stranger peer admitted as PROBATION supply (benchmark only)"
+                    );
                 }
                 if employee && !fleet.allows(node_id) {
                     info!(
@@ -519,11 +536,12 @@ async fn handle_incoming(
                         continue;
                     }
                 };
-                registry.upsert_device_with_class(
+                registry.upsert_device_with_tier(
                     node_id.to_string(),
                     display_name,
                     caps,
                     employee,
+                    probation,
                 );
             }
             update_eligible_gauges(registry);
@@ -729,7 +747,14 @@ fn update_eligible_gauges(registry: &Arc<Registry>) {
     metrics::DEVICE_SLOTS_BUSY.reset();
     metrics::DEVICE_SLOTS_TOTAL.reset();
     let mut per_model: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut probation_count: u32 = 0;
     for dev in registry.snapshot_devices() {
+        if dev.probation {
+            // Probation supply is not eligible supply: keep it out of the
+            // per-model eligible gauges and report it on its own series.
+            probation_count += 1;
+            continue;
+        }
         for m in &dev.capabilities.loaded_models {
             *per_model.entry(m.clone()).or_insert(0) += 1;
         }
@@ -752,6 +777,7 @@ fn update_eligible_gauges(registry: &Arc<Registry>) {
             .with_label_values(&[&m])
             .set(n as f64);
     }
+    metrics::PROBATION_DEVICES.set(probation_count as f64);
 }
 
 fn make_register_payload(identity: &Arc<GatewayIdentity>, display_name: &str) -> String {
@@ -952,6 +978,7 @@ mod tests {
             60,
             &crate::config::FleetConfig::default(),
             &crate::config::ApmhelpConfig::default(),
+            &crate::config::StrangerSupplyConfig::default(),
             &mut sent_discover_after_ack,
             &RelayHandle::dummy_for_tests(),
             &Arc::new(DashMap::new()),

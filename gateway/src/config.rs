@@ -29,6 +29,8 @@ pub struct Config {
     #[serde(default)]
     pub fleet: FleetConfig,
     #[serde(default)]
+    pub stranger_supply: StrangerSupplyConfig,
+    #[serde(default)]
     pub apmhelp: ApmhelpConfig,
 }
 
@@ -43,6 +45,45 @@ pub struct Config {
 pub struct FleetConfig {
     #[serde(default)]
     pub allowed_node_ids: Vec<String>,
+}
+
+/// Stranger-supply probation gate. When disabled (default), the fleet
+/// allowlist remains the whole admission story: unknown peers are denied
+/// at discover. When enabled, an unknown peer is admitted as PROBATION
+/// supply: it enters the registry flagged `probation`, is excluded from
+/// every client-traffic path (eligible supply, model catalog/index,
+/// availability gauges), and is benchmarked by the probation probe loop
+/// (benchmark.rs) against behavioral fingerprints + performance floors.
+/// Probation nodes never serve client requests in this tier.
+#[derive(Debug, Deserialize, Clone)]
+pub struct StrangerSupplyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Seconds between probation benchmark sweeps.
+    #[serde(default = "default_benchmark_interval")]
+    pub benchmark_interval_seconds: u64,
+    /// Measured decode TPS below this fraction of the hardware prior
+    /// fails the benchmark: catches a node claiming hardware/model it
+    /// does not actually run.
+    #[serde(default = "default_tps_floor_ratio")]
+    pub tps_floor_ratio: f64,
+}
+
+fn default_benchmark_interval() -> u64 {
+    300
+}
+fn default_tps_floor_ratio() -> f64 {
+    0.3
+}
+
+impl Default for StrangerSupplyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            benchmark_interval_seconds: default_benchmark_interval(),
+            tps_floor_ratio: default_tps_floor_ratio(),
+        }
+    }
 }
 
 impl FleetConfig {
@@ -437,6 +478,7 @@ impl Config {
             reliability: ReliabilityConfig::default(),
             synthetic_probes: SyntheticProbeConfig::default(),
             solana: SolanaConfig::default(),
+            stranger_supply: StrangerSupplyConfig::default(),
             fleet: FleetConfig::default(),
             apmhelp: ApmhelpConfig::default(),
         }
