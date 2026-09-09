@@ -206,6 +206,7 @@ mod tests {
             },
             synthetic_probes: Default::default(),
             solana: Default::default(),
+            stranger_supply: Default::default(),
             fleet: Default::default(),
             apmhelp: Default::default(),
         }

@@ -125,6 +125,32 @@ pub static DEVICE_SLOTS_TOTAL: Lazy<GaugeVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static PROBATION_DEVICES: Lazy<prometheus::Gauge> = Lazy::new(|| {
+    prometheus::register_gauge!(
+        "gateway_probation_devices",
+        "Stranger-supply nodes currently admitted in the probation tier (benchmark only, never client traffic)"
+    )
+    .expect("metric init")
+});
+
+pub static PROBATION_BENCHMARK_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        "gateway_probation_benchmark_total",
+        "Probation benchmark sweeps by model and verdict",
+        &["model", "result"]
+    )
+    .expect("metric init")
+});
+
+pub static PROBATION_BENCHMARK_TPS: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "gateway_probation_benchmark_tps",
+        "Measured decode tokens/sec on probation nodes during benchmark sweeps",
+        &["model"]
+    )
+    .expect("metric init")
+});
+
 pub static DEVICES_CONNECTED: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "gateway_devices_connected",

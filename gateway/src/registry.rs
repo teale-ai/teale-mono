@@ -47,6 +47,11 @@ pub struct DeviceState {
     /// but eligible ONLY for requests on the apmhelp PIN lane, never for
     /// the default lane.
     pub employee: bool,
+    /// Stranger-supply probation tier (stranger_supply.enabled): admitted
+    /// to the registry for benchmarking only. Excluded from every
+    /// client-traffic path: eligible supply, catalog/model index,
+    /// availability + eligible gauges. Never serves a client request.
+    pub probation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -617,6 +622,23 @@ impl Registry {
         caps: NodeCapabilities,
         employee: bool,
     ) {
+        self.upsert_device_with_tier(node_id, display_name, caps, employee, false);
+    }
+
+    /// Upsert with the full supply tier (#272 employee lane +
+    /// stranger-supply probation). Both classes are config-driven and
+    /// restated on every upsert: a node admitted to the fleet allowlist
+    /// reverts to full fleet supply on its next discover response, and a
+    /// node dropped from the stranger-supply config reverts out of
+    /// probation only by being denied at the discover gate entirely.
+    pub fn upsert_device_with_tier(
+        &self,
+        node_id: String,
+        display_name: String,
+        caps: NodeCapabilities,
+        employee: bool,
+        probation: bool,
+    ) {
         let now = Instant::now();
         // Scope the entry RefMut so it drops before we call rebuild_model_index_for,
         // which would otherwise deadlock trying to re-acquire the same shard.
@@ -636,10 +658,12 @@ impl Registry {
                     live: LiveStats::fresh(),
                     busy_excess_since: None,
                     employee: false,
+                    probation: false,
                 });
             entry.display_name = display_name;
             entry.capabilities = caps;
             entry.employee = employee;
+            entry.probation = probation;
             entry.last_seen = now;
             // A discover response from this peer is a rejoin: clear any
             // departed mark instantly rather than waiting out the grace.
@@ -689,6 +713,16 @@ impl Registry {
                 );
             }
         }
+    }
+
+    /// Test-only view of the reverse model index (catalog/resolution
+    /// membership) for asserting tier exclusions.
+    #[cfg(test)]
+    pub(crate) fn model_index_node_ids(&self, model_id: &str) -> Vec<String> {
+        let idx = self.model_to_devices.read();
+        idx.get(&normalize_model_id(model_id))
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn remove_device(&self, node_id: &str) {
@@ -761,6 +795,10 @@ impl Registry {
                 if st.employee && !include_employee {
                     return None;
                 }
+                // Probation supply never serves client traffic.
+                if st.probation {
+                    return None;
+                }
                 if st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds) {
                     return None;
                 }
@@ -785,7 +823,8 @@ impl Registry {
         let mut any_fits = false;
         for r in self.devices.iter() {
             let st = r.value();
-            if st.is_quarantined()
+            if st.probation
+                || st.is_quarantined()
                 || !st.capabilities.is_available
                 || st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
             {
@@ -816,7 +855,8 @@ impl Registry {
             .iter()
             .filter(|r| {
                 let st = r.value();
-                !st.is_quarantined()
+                !st.probation
+                    && !st.is_quarantined()
                     && st.capabilities.is_available
                     && !st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
                     && model_matches_any(model_id, &st.capabilities.loaded_models)
@@ -830,7 +870,8 @@ impl Registry {
             .iter()
             .filter(|r| {
                 let st = r.value();
-                !st.is_quarantined()
+                !st.probation
+                    && !st.is_quarantined()
                     && st.capabilities.is_available
                     && !st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
                     && !st.capabilities.loaded_models.is_empty()
@@ -847,6 +888,12 @@ impl Registry {
             Some(d) => d.clone(),
             None => return,
         };
+        // Probation devices never enter the model index: their claimed
+        // models must stay out of the public catalog and out of Auto
+        // resolution until they promote out of probation.
+        if dev.probation {
+            return;
+        }
         for m in dev
             .capabilities
             .loaded_models
@@ -872,7 +919,7 @@ pub fn model_matches_any(requested: &str, loaded: &[String]) -> bool {
 
 /// Prior estimate for tokens/sec given a device's hardware (used until a
 /// real measurement is observed).
-fn hardware_tps_prior(caps: &NodeCapabilities) -> f64 {
+pub(crate) fn hardware_tps_prior(caps: &NodeCapabilities) -> f64 {
     // Rough model: bandwidth / 5 GB (treating a typical ~5GB Q4 8B model as
     // the reference). Gives ~14 t/s at 68GB/s M1 base, ~164 t/s at 819GB/s
     // Ultra. Will be replaced by observed EWMA as requests flow.
@@ -908,6 +955,49 @@ mod tests {
             backend_slots_busy: None,
             backend_slots_total: None,
         }
+    }
+
+    #[test]
+    fn probation_supply_never_serves_or_lists() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        registry.upsert_device(
+            "fleet-a".to_string(),
+            "A".to_string(),
+            caps(vec!["zai-org/glm-5.3-flash"], true),
+        );
+        registry.upsert_device_with_tier(
+            "stranger-b".to_string(),
+            "B".to_string(),
+            caps(vec!["zai-org/glm-5.3-flash", "qwen/qwen3.6-35b-a3b"], true),
+            false,
+            true,
+        );
+
+        // Never eligible for client traffic, even with employee lanes open.
+        let pool = registry.eligible_supply("zai-org/glm-5.3-flash", true);
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool[0].node_id, "fleet-a");
+        assert!(registry.eligible_devices("qwen/qwen3.6-35b-a3b").is_empty());
+
+        // Invisible to the catalog index, availability, and supply counts.
+        assert!(!registry
+            .model_index_node_ids("qwen/qwen3.6-35b-a3b")
+            .iter()
+            .any(|n| n == "stranger-b"));
+        assert_eq!(registry.loaded_count("qwen/qwen3.6-35b-a3b"), 0);
+        assert_eq!(registry.supplying_device_count(), 1);
+
+        // Tier is restated on every upsert: a stranger promoted to the
+        // fleet allowlist flips back to full supply on its next discover.
+        registry.upsert_device_with_tier(
+            "stranger-b".to_string(),
+            "B".to_string(),
+            caps(vec!["qwen/qwen3.6-35b-a3b"], true),
+            false,
+            false,
+        );
+        assert_eq!(registry.eligible_devices("qwen/qwen3.6-35b-a3b").len(), 1);
+        assert_eq!(registry.supplying_device_count(), 2);
     }
 
     #[test]

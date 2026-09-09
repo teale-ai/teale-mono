@@ -353,6 +353,7 @@ mod tests {
                     backend_slots_total: None,
                 },
                 employee: false,
+                probation: false,
                 last_heartbeat: heartbeat_at,
                 last_seen: heartbeat_at,
                 quarantined_until: None,
