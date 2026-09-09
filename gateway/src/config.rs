@@ -67,6 +67,27 @@ pub struct StrangerSupplyConfig {
     /// does not actually run.
     #[serde(default = "default_tps_floor_ratio")]
     pub tps_floor_ratio: f64,
+    /// Shadow replay: cap on max_tokens for replays (bounded extra load).
+    #[serde(default = "default_shadow_max_tokens_cap")]
+    pub shadow_max_tokens_cap: u32,
+    /// Shadow replay: similarity (normalized edit distance, [0,1]) below
+    /// this floor vs the trusted baseline counts as a mismatch.
+    #[serde(default = "default_shadow_similarity_floor")]
+    pub shadow_similarity_floor: f64,
+    /// Consecutive shadow mismatches before the probation node is
+    /// quarantined through the standard registry primitive.
+    #[serde(default = "default_shadow_quarantine_streak")]
+    pub shadow_quarantine_streak: u32,
+}
+
+fn default_shadow_max_tokens_cap() -> u32 {
+    256
+}
+fn default_shadow_similarity_floor() -> f64 {
+    0.6
+}
+fn default_shadow_quarantine_streak() -> u32 {
+    3
 }
 
 fn default_benchmark_interval() -> u64 {
@@ -82,6 +103,9 @@ impl Default for StrangerSupplyConfig {
             enabled: false,
             benchmark_interval_seconds: default_benchmark_interval(),
             tps_floor_ratio: default_tps_floor_ratio(),
+            shadow_max_tokens_cap: default_shadow_max_tokens_cap(),
+            shadow_similarity_floor: default_shadow_similarity_floor(),
+            shadow_quarantine_streak: default_shadow_quarantine_streak(),
         }
     }
 }

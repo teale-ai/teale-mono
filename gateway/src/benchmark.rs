@@ -28,17 +28,12 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
-use teale_protocol::{
-    openai::{ApiMessage, ChatCompletionRequest},
-    ClusterMessage, InferenceRequestPayload,
-};
+use teale_protocol::openai::{ApiMessage, ChatCompletionRequest};
 
+use crate::collect::collect_completion;
 use crate::registry::{hardware_tps_prior, DeviceState};
-use crate::relay_client::{PendingSession, SessionEvent};
 use crate::state::AppState;
 
 /// One fingerprint prompt and the check its (trimmed) output must pass.
@@ -237,31 +232,14 @@ struct PromptRun {
 }
 
 /// Run one fingerprint prompt against a probation node and collect the
-/// full output text. Mirrors the probe.rs dispatch path but aggregates
-/// chunk content instead of discarding it; duplicated on purpose so the
-/// hot freshness-probe path keeps its exact current behavior.
+/// output text via the shared out-of-band collect path.
 async fn run_prompt(
     state: &AppState,
     node_id: &str,
     model_id: &str,
     fp: &Fingerprint,
 ) -> anyhow::Result<PromptRun> {
-    state.registry.admit(node_id, false, None);
-
-    let open_timeout = Duration::from_secs(8);
-    let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
-    let ttft_deadline = Duration::from_secs(state.config.reliability.ttft_deadline_seconds);
-
-    let session_id = match state.relay.open_session(node_id, open_timeout).await {
-        Ok(session_id) => session_id,
-        Err(err) => {
-            state.registry.dec_in_flight(node_id, false);
-            anyhow::bail!("relay open: {}", err);
-        }
-    };
-
-    let request_id = Uuid::new_v4().to_string();
-    let outbound = ChatCompletionRequest {
+    let request = ChatCompletionRequest {
         model: Some(model_id.to_string()),
         messages: vec![ApiMessage {
             role: "user".to_string(),
@@ -285,91 +263,18 @@ async fn run_prompt(
         user: Some("gateway-probation-benchmark".to_string()),
         extra: Default::default(),
     };
-
-    let (tx, mut rx) = mpsc::channel::<SessionEvent>(64);
-    state.relay.register_session(PendingSession {
-        request_id: request_id.clone(),
-        device_node_id: node_id.to_string(),
-        session_id: session_id.clone(),
-        chunks_tx: tx,
-    });
-
-    let send = state.relay.send_cluster(
-        node_id,
-        &session_id,
-        &ClusterMessage::InferenceRequest(Box::new(InferenceRequestPayload {
-            request_id,
-            request: outbound,
-            streaming: true,
-        })),
-    );
-    if let Err(err) = send {
-        state.relay.close_session(node_id, &session_id);
-        state.registry.dec_in_flight(node_id, false);
-        anyhow::bail!("relay send: {}", err);
-    }
-
-    let _started = Instant::now();
-    let mut first_token_at: Option<Instant> = None;
-    let mut text = String::new();
-    let mut chunk_count = 0u64;
-
-    let result = loop {
-        let deadline = if first_token_at.is_some() {
-            request_timeout
-        } else {
-            ttft_deadline
-        };
-        match tokio::time::timeout(deadline, rx.recv()).await {
-            Ok(Some(SessionEvent::Chunk(chunk))) => {
-                if first_token_at.is_none() {
-                    first_token_at = Some(Instant::now());
-                }
-                chunk_count += 1;
-                if let Some(delta) = chunk
-                    .get("choices")
-                    .and_then(|c| c.get(0))
-                    .and_then(|c| c.get("delta"))
-                    .and_then(|d| d.get("content"))
-                    .and_then(|c| c.as_str())
-                {
-                    text.push_str(delta);
-                }
-            }
-            Ok(Some(SessionEvent::Complete { tokens_out })) => {
-                let Some(first_token_at) = first_token_at else {
-                    break Err(anyhow::anyhow!("completed without a first token"));
-                };
-                let completion_tokens = tokens_out.map(|v| v as u64).unwrap_or(chunk_count).max(1);
-                let decode_secs = first_token_at.elapsed().as_secs_f64();
-                let tps = if decode_secs > 0.0 {
-                    Some(completion_tokens as f64 / decode_secs)
-                } else {
-                    None
-                };
-                break Ok(PromptRun { text, tps });
-            }
-            Ok(Some(SessionEvent::Error { message, .. })) => {
-                break Err(anyhow::anyhow!("upstream error: {}", message));
-            }
-            Ok(Some(SessionEvent::Disconnect(reason))) => {
-                break Err(anyhow::anyhow!("disconnect: {}", reason));
-            }
-            Ok(None) => break Err(anyhow::anyhow!("channel closed")),
-            Err(_) => {
-                let phase = if first_token_at.is_some() {
-                    "timeout mid-stream"
-                } else {
-                    "ttft timeout"
-                };
-                break Err(anyhow::anyhow!("{}", phase));
-            }
-        }
+    let started = Instant::now();
+    let out = collect_completion(state, node_id, model_id, request).await?;
+    let decode_secs = (started.elapsed().as_secs_f64() - out.ttft_ms as f64 / 1000.0).max(0.0);
+    let tps = if decode_secs > 0.0 {
+        Some(out.completion_tokens as f64 / decode_secs)
+    } else {
+        None
     };
-
-    state.relay.close_session(node_id, &session_id);
-    state.registry.dec_in_flight(node_id, false);
-    result
+    Ok(PromptRun {
+        text: out.text,
+        tps,
+    })
 }
 
 #[cfg(test)]

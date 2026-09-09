@@ -1802,6 +1802,14 @@ async fn run_streaming(
             }
         }
 
+        // Stranger-supply shadow (config-gated, no-op unless probation
+        // supply exists): replay this prompt to probation + fresh trusted
+        // devices out of band and diff the outputs. Never on the client
+        // latency path.
+        if final_status == "ok" {
+            crate::shadow::maybe_spawn(&state, &catalog_model, &req_body);
+        }
+
         if final_status != "ok" {
             info!(
                 "request complete: model={} status={} total_ms={} last_error={}",
