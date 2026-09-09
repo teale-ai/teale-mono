@@ -124,4 +124,10 @@ allowed_node_ids = [
     # 512g1 tailor512g1s-mac-studio.local (fleet-confirmed 2026-09-08:
     # gateway-identity-seed unchanged since Apr 24, llama.cpp supply live)
     "77604e7a0173a9115f8e0301863a982ea8541dd15ec0a23348549ea205260ba3",
+    # 512g1 GLM teale-node (fresh identity generated on-box 2026-09-09,
+    # fleet-confirmed; Taylor directive: 512g8+512g1 both supply glm5.3.
+    # Distinct from 77604e7a above = 512g1's Teale.app qwen3.6-35b identity;
+    # the ds4-teale experiment home shared that id, and the two stray
+    # experiment-era keys stay excluded on murky provenance)
+    "2e58ab7eac8c7aeec0ce6cea9e6d5e556939b1f31325f86ed01af35e58b2676c",
 ]
