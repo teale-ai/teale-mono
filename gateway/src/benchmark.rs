@@ -44,17 +44,25 @@ struct Fingerprint {
 }
 
 enum Check {
-    /// Trimmed output must equal this exactly (case-sensitive).
-    Exact(&'static str),
     /// Lowercased output must contain this lowercase needle.
     ContainsLower(&'static str),
+    /// Output with ALL whitespace removed, lowercased, must contain this
+    /// lowercase needle:
+    /// models legitimately differ on spacing ("a,b,c" vs "a, b, c",
+    /// {"ok": true} vs {"ok":true}) and spacing is not a competence
+    /// signal. Found live in the Sep 10 dry-run: real stranger hermes
+    /// nodes answered the letter list without spaces and were falsely
+    /// failed.
+    ContainsStripped(&'static str),
 }
 
 const FINGERPRINTS: &[Fingerprint] = &[
     Fingerprint {
         prompt: "Reply with exactly this token and nothing else: TEALE_BENCH_7Q2",
         max_tokens: 16,
-        check: Check::Exact("TEALE_BENCH_7Q2"),
+        // Containment, not exact: models that wrap the token in quotes or
+        // punctuation are answering correctly.
+        check: Check::ContainsLower("teale_bench_7q2"),
     },
     Fingerprint {
         prompt: "What is 17 + 25? Reply with the number only.",
@@ -64,13 +72,13 @@ const FINGERPRINTS: &[Fingerprint] = &[
     Fingerprint {
         prompt: "Reply with only this JSON object, no other text: {\"ok\":true}",
         max_tokens: 16,
-        check: Check::ContainsLower("\"ok\":true"),
+        check: Check::ContainsStripped("{\"ok\":true}"),
     },
     Fingerprint {
         prompt:
             "List the first three letters of the alphabet as a comma-separated list. No other text.",
         max_tokens: 16,
-        check: Check::ContainsLower("a, b, c"),
+        check: Check::ContainsStripped("a,b,c"),
     },
     Fingerprint {
         prompt: "What is the capital of Japan? Answer with one word.",
@@ -82,8 +90,11 @@ const FINGERPRINTS: &[Fingerprint] = &[
 fn check_output(check: &Check, output: &str) -> bool {
     let trimmed = output.trim();
     match check {
-        Check::Exact(want) => trimmed == *want,
         Check::ContainsLower(needle) => trimmed.to_lowercase().contains(needle),
+        Check::ContainsStripped(needle) => {
+            let stripped: String = trimmed.split_whitespace().collect();
+            stripped.to_lowercase().contains(needle)
+        }
     }
 }
 
@@ -284,22 +295,28 @@ mod tests {
     #[test]
     fn fingerprint_checks() {
         assert!(check_output(
-            &Check::Exact("TEALE_BENCH_7Q2"),
+            &Check::ContainsLower("teale_bench_7q2"),
             "  TEALE_BENCH_7Q2\n"
         ));
+        assert!(check_output(
+            &Check::ContainsLower("teale_bench_7q2"),
+            "\"TEALE_BENCH_7Q2\""
+        ));
         assert!(!check_output(
-            &Check::Exact("TEALE_BENCH_7Q2"),
-            "TEALE_BENCH_7Q2!"
+            &Check::ContainsLower("teale_bench_7q2"),
+            "TEALE_BENCH_WRONG"
         ));
         assert!(check_output(
             &Check::ContainsLower("42"),
             "The answer is 42."
         ));
         assert!(check_output(
-            &Check::ContainsLower("\"ok\":true"),
-            "{ \"ok\":true }"
+            &Check::ContainsStripped("{\"ok\":true}"),
+            "{ \"ok\": true }"
         ));
-        assert!(check_output(&Check::ContainsLower("a, b, c"), "A, B, C"));
+        assert!(check_output(&Check::ContainsStripped("a,b,c"), "A, B, C"));
+        assert!(check_output(&Check::ContainsStripped("a,b,c"), "a,b,c"));
+        assert!(!check_output(&Check::ContainsStripped("a,b,c"), "a, c, b"));
         assert!(check_output(&Check::ContainsLower("tokyo"), "Tokyo."));
         assert!(!check_output(&Check::ContainsLower("tokyo"), "Osaka"));
     }
