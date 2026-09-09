@@ -2073,6 +2073,13 @@ async fn run_buffered(
                 }
             }
 
+            // Stranger-supply shadow (config-gated, no-op unless probation
+            // supply exists): replay this prompt to probation + fresh trusted
+            // devices out of band and diff the outputs. Never on the client
+            // latency path. Buffered requests get the same coverage as
+            // streaming - API/CLI consumers are the stranger-demand shape.
+            crate::shadow::maybe_spawn(&state, &catalog_model, &req_body);
+
             let reply = build_non_stream_response(
                 &model_id,
                 &accumulated_text,
