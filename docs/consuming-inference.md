@@ -35,9 +35,10 @@ curl -s $GW/v1/auth/device/challenge \
   -H 'content-type: application/json' -d "{\"deviceID\":\"$DID\"}"
 # -> {"nonce":"<base64>","expiresAt":<unix>}
 
-# sign the nonce BYTES (base64-decode first) with your device key:
-echo -n '<nonce>' | base64 -d | \
-  openssl pkeyutl -sign -inkey device_sk.pem -rawin | xxd -p -c 256
+# sign the nonce BYTES (base64-decode first) with your device key.
+# ed25519 is a one-shot algorithm: openssl needs the input as a file.
+echo -n '<nonce>' | base64 -d > nonce.bin
+openssl pkeyutl -sign -inkey device_sk.pem -rawin -in nonce.bin | xxd -p -c 256
 
 curl -s $GW/v1/auth/device/exchange \
   -H 'content-type: application/json' \
