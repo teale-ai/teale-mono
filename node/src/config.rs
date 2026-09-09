@@ -221,6 +221,16 @@ pub struct NodeConfig {
     /// Defaults: 2 for mini/Pro, 4 for Max/Ultra — tune per deployment.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_requests: u32,
+    /// Max DIN requests allowed to queue for a serving slot before new
+    /// ones fail fast (default 2). Co-residency (#309) makes transient
+    /// saturation structural; a queued request holds no slot and no
+    /// backend connection while it waits.
+    #[serde(default = "default_din_queue_depth")]
+    pub din_queue_depth: u32,
+    /// Max seconds a queued DIN request waits for a slot (default 600,
+    /// about two heavy turns).
+    #[serde(default = "default_din_queue_timeout_secs")]
+    pub din_queue_timeout_secs: u64,
     /// Advertised but not loaded-at-boot models. Ultra-only; gateway can issue
     /// `loadModel` to swap to any of these. Leave empty on non-Ultra nodes.
     #[serde(default)]
@@ -275,6 +285,12 @@ fn default_litert_context_size() -> u32 {
 }
 fn default_max_concurrent() -> u32 {
     2
+}
+fn default_din_queue_depth() -> u32 {
+    2
+}
+fn default_din_queue_timeout_secs() -> u64 {
+    600
 }
 fn default_shutdown_timeout() -> u64 {
     30

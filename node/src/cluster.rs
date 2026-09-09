@@ -44,6 +44,14 @@ pub struct NodeRuntimeState {
     pub semaphore: Arc<Semaphore>,
     /// PIN-over-DIN admission priority, sharing `semaphore`.
     pub pin_gate: Arc<crate::pin::gate::PriorityGate>,
+    /// DIN requests currently waiting for a serving permit (bounded
+    /// queue; see handle_inference_request step 1).
+    pub din_waiters: AtomicU32,
+    /// Max DIN requests allowed to wait for a permit; beyond this,
+    /// admission fails fast with QueueFull.
+    pub din_queue_depth: AtomicU32,
+    /// Max seconds a queued DIN request waits for a permit.
+    pub din_queue_timeout_secs: AtomicU64,
     /// Live inference worker tasks by relay session id (#229), each with
     /// its target peer id. RelayClose - or a peer_not_found / peerLeft
     /// naming the target (#237) - aborts the worker so a dead client
@@ -76,8 +84,33 @@ impl NodeRuntimeState {
             shutting_down: AtomicBool::new(false),
             semaphore: semaphore.clone(),
             pin_gate: crate::pin::gate::PriorityGate::new(semaphore),
+            din_waiters: AtomicU32::new(0),
+            din_queue_depth: AtomicU32::new(2),
+            din_queue_timeout_secs: AtomicU64::new(600),
             inference_tasks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn with_din_queue(self, depth: u32, timeout_secs: u64) -> Self {
+        self.din_queue_depth.store(depth, Ordering::Relaxed);
+        self.din_queue_timeout_secs
+            .store(timeout_secs, Ordering::Relaxed);
+        self
+    }
+
+    /// Try to join the bounded DIN queue. false = waiter pool full; the
+    /// caller should fail fast with QueueFull.
+    pub fn try_join_din_queue(&self) -> bool {
+        let waiting = self.din_waiters.fetch_add(1, Ordering::Relaxed) + 1;
+        if waiting > self.din_queue_depth.load(Ordering::Relaxed) {
+            self.din_waiters.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    pub fn leave_din_queue(&self) {
+        self.din_waiters.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn with_power_gating(mut self, battery_gated: bool, on_ac_power: bool) -> Self {
@@ -321,22 +354,73 @@ async fn handle_inference_request(
 ) {
     let request_id = req.request_id.clone();
 
-    // 1. Concurrency cap: fail fast if full — and yield to waiting PIN
-    // requests (PIN traffic holds queue priority; spec §9).
+    // 1. Concurrency cap: serve up to max_concurrent, then QUEUE (bounded)
+    // instead of dropping. Co-residency (#309) makes transient saturation
+    // structural, and a waiting request holds no slot and no backend
+    // connection, so the wait is cheap; #314 keeps the watchdog honest
+    // once the request is admitted. The waiter pool is capped; beyond it,
+    // fail fast with QueueFull as before. PIN priority is preserved: new
+    // DIN queue joins are refused while a PIN waits (gate door, spec §9).
     let permit = match state.pin_gate.try_acquire_din() {
         Some(p) => p,
         None => {
-            warn!("Queue full — dropping request {}", request_id);
-            state.failed_requests.fetch_add(1, Ordering::Relaxed);
-            reply_err(
-                relay,
-                from,
-                session,
-                &request_id,
-                "queue full",
-                Some(InferenceErrorCode::QueueFull),
+            if !state.try_join_din_queue() {
+                warn!(
+                    "Queue full ({} DIN waiting) - dropping request {}",
+                    state.din_waiters.load(Ordering::Relaxed),
+                    request_id
+                );
+                state.failed_requests.fetch_add(1, Ordering::Relaxed);
+                reply_err(
+                    relay,
+                    from,
+                    session,
+                    &request_id,
+                    "queue full",
+                    Some(InferenceErrorCode::QueueFull),
+                );
+                return;
+            }
+            let queued_at = Instant::now();
+            info!(
+                "Inference request {} queued - slots busy ({} waiting)",
+                request_id,
+                state.din_waiters.load(Ordering::Relaxed)
             );
-            return;
+            let waited = state
+                .pin_gate
+                .acquire_din(std::time::Duration::from_secs(
+                    state.din_queue_timeout_secs.load(Ordering::Relaxed),
+                ))
+                .await;
+            state.leave_din_queue();
+            match waited {
+                Some(p) => {
+                    info!(
+                        "Inference request {} admitted after {}s in queue",
+                        request_id,
+                        queued_at.elapsed().as_secs()
+                    );
+                    p
+                }
+                None => {
+                    warn!(
+                        "Queue wait timed out after {}s - dropping request {}",
+                        queued_at.elapsed().as_secs(),
+                        request_id
+                    );
+                    state.failed_requests.fetch_add(1, Ordering::Relaxed);
+                    reply_err(
+                        relay,
+                        from,
+                        session,
+                        &request_id,
+                        "queue wait timed out",
+                        Some(InferenceErrorCode::QueueFull),
+                    );
+                    return;
+                }
+            }
         }
     };
 
@@ -787,6 +871,24 @@ mod tests {
         peer_not_found_id, pre_first_token_queued, SendFailureThrottle, SEND_FAILURE_LOG_INTERVAL,
     };
     use std::time::Instant;
+
+    #[test]
+    fn din_queue_join_leave_respects_depth() {
+        let state = super::NodeRuntimeState::new(2);
+        assert!(state.try_join_din_queue());
+        assert!(state.try_join_din_queue());
+        // Pool full (default depth 2): third join fails fast.
+        assert!(!state.try_join_din_queue());
+        assert_eq!(
+            state.din_waiters.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        state.leave_din_queue();
+        assert!(state.try_join_din_queue());
+        // Configurable depth.
+        let state = super::NodeRuntimeState::new(2).with_din_queue(0, 600);
+        assert!(!state.try_join_din_queue());
+    }
 
     #[test]
     fn pre_first_token_queued_only_when_backend_busy() {
