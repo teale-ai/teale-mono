@@ -151,6 +151,24 @@ pub static PROBATION_BENCHMARK_TPS: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static SHADOW_REPLAY_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
+    register_counter_vec!(
+        "gateway_shadow_replay_total",
+        "Stranger shadow replays by model, probation node, and outcome (match|mismatch|quarantined|dispatch_error)",
+        &["model", "node", "outcome"]
+    )
+    .expect("metric init")
+});
+
+pub static SHADOW_SIMILARITY: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "gateway_shadow_similarity",
+        "Similarity ratio (normalized edit distance, 0..1) between probation and trusted-fleet outputs on the same shadowed prompt",
+        &["model", "node"]
+    )
+    .expect("metric init")
+});
+
 pub static DEVICES_CONNECTED: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "gateway_devices_connected",
