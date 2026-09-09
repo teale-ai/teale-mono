@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         providers: providers_handle,
         identity: Some(identity.clone()),
         pin_join_limiter: Default::default(),
+        challenge_limiter: Default::default(),
         started_at: std::time::Instant::now(),
     };
 

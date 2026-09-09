@@ -25,6 +25,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::db::unix_now;
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::state::AppState;
@@ -67,10 +68,41 @@ fn is_hex_pubkey(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Client IP for the challenge limiter: Fly's proxy sets `fly-client-ip`
+/// (overwriting any client-sent value), so it is not spoofable from the
+/// outside; fall back to the first X-Forwarded-For hop, then a shared
+/// "unknown" bucket so header-less callers are limited together, never free.
+fn client_ip_key(headers: &HeaderMap) -> String {
+    if let Some(v) = headers.get("fly-client-ip").and_then(|v| v.to_str().ok()) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    if let Some(v) = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+    {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
 pub async fn challenge(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<ChallengeReq>,
 ) -> Result<Json<ChallengeRes>, GatewayError> {
+    let ip_key = client_ip_key(&headers);
+    if !state.challenge_limiter.allow(&ip_key, unix_now()) {
+        return Err(GatewayError::RateLimited(
+            "too many device challenges from this network; try again within the hour".into(),
+        ));
+    }
     if !is_hex_pubkey(&req.device_id) {
         return Err(GatewayError::BadRequest(
             "deviceID must be 64-char hex pubkey".into(),

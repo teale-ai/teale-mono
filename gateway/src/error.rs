@@ -27,6 +27,9 @@ pub enum GatewayError {
     #[error("share-key budget exhausted")]
     BudgetExhausted,
 
+    #[error("rate limited: {0}")]
+    RateLimited(String),
+
     #[error("insufficient credits: balance {balance}, need {required}")]
     InsufficientCredits { balance: i64, required: i64 },
 
@@ -71,6 +74,7 @@ impl GatewayError {
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::BudgetExhausted => StatusCode::PAYMENT_REQUIRED,
+            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::InsufficientCredits { .. } => StatusCode::PAYMENT_REQUIRED,
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
             Self::NoEligibleDevice(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -92,6 +96,7 @@ impl GatewayError {
             Self::Forbidden(_) => "forbidden",
             Self::Conflict(_) => "conflict",
             Self::BudgetExhausted => "budget_exhausted",
+            Self::RateLimited(_) => "rate_limited",
             Self::InsufficientCredits { .. } => "insufficient_credits",
             Self::ModelNotFound(_) => "model_not_found",
             Self::NoEligibleDevice(_) => "model_unavailable",

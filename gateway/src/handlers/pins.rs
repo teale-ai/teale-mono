@@ -865,6 +865,7 @@ mod tests {
             providers: crate::providers::ProvidersHandle::empty_for_test(),
             identity: Some(Arc::new(identity)),
             pin_join_limiter: Default::default(),
+            challenge_limiter: Default::default(),
             started_at: std::time::Instant::now(),
         }
     }
