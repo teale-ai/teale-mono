@@ -1,11 +1,12 @@
 //! PIN-over-DIN admission priority.
 //!
-//! The node's concurrency cap is a semaphore with fail-fast DIN admission
-//! (no waiting queue). Priority is therefore expressed as:
+//! The node's concurrency cap is a semaphore. DIN admission is fail-fast
+//! on the fast path, with a bounded queue (`acquire_din`) behind it — the
+//! caller caps the waiter pool. Priority is therefore expressed as:
 //!   - PIN requests may WAIT for a permit (bounded), and
-//!   - while any PIN request is waiting, DIN admission is refused even if a
-//!     permit is free (`pin_first` mode) — PIN jumps the line, in-flight
-//!     work is never preempted.
+//!   - while any PIN request is waiting, DIN admission (and new DIN queue
+//!     joins) is refused even if a permit is free (`pin_first` mode) — PIN
+//!     jumps the line, in-flight work is never preempted.
 //!
 //! The per-device `din_priority_equal` setting restores plain fail-fast
 //! competition (spec §9 "unless otherwise notated").
@@ -47,6 +48,20 @@ impl PriorityGate {
         self.semaphore.clone().try_acquire_owned().ok()
     }
 
+    /// DIN admission with a bounded queue: wait up to `timeout` for a
+    /// permit. The pin_first door holds at join time - while a PIN
+    /// request is waiting, a new DIN queue join is refused even if a
+    /// permit is free. The caller caps the waiter pool.
+    pub async fn acquire_din(&self, timeout: Duration) -> Option<OwnedSemaphorePermit> {
+        if !self.din_priority_equal() && self.pin_waiters.load(Ordering::Acquire) > 0 {
+            return None;
+        }
+        tokio::time::timeout(timeout, self.semaphore.clone().acquire_owned())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+    }
+
     /// PIN admission: wait up to `timeout` for a permit.
     pub async fn acquire_pin(&self, timeout: Duration) -> Option<OwnedSemaphorePermit> {
         struct WaiterGuard<'a>(&'a AtomicU32);
@@ -67,6 +82,43 @@ impl PriorityGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn din_queue_wait_acquires_freed_permit() {
+        let gate = PriorityGate::new(Arc::new(Semaphore::new(1)));
+        let in_flight = gate.try_acquire_din().expect("free permit");
+        let gate_din = gate.clone();
+        let waiter =
+            tokio::spawn(async move { gate_din.acquire_din(Duration::from_secs(5)).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(in_flight);
+        assert!(
+            waiter.await.unwrap().is_some(),
+            "queued DIN gets the freed permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn din_queue_wait_times_out_when_never_freed() {
+        let gate = PriorityGate::new(Arc::new(Semaphore::new(1)));
+        let _in_flight = gate.try_acquire_din().expect("free permit");
+        assert!(gate.acquire_din(Duration::from_millis(50)).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn din_queue_join_refused_while_pin_waits() {
+        let gate = PriorityGate::new(Arc::new(Semaphore::new(1)));
+        let in_flight = gate.try_acquire_din().expect("free permit");
+        let gate_pin = gate.clone();
+        let waiter =
+            tokio::spawn(async move { gate_pin.acquire_pin(Duration::from_secs(5)).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The door holds for the waiting PIN even though the queue would
+        // otherwise let DIN wait for a permit.
+        assert!(gate.acquire_din(Duration::from_secs(1)).await.is_none());
+        drop(in_flight);
+        assert!(waiter.await.unwrap().is_some());
+    }
 
     #[tokio::test]
     async fn pin_waiters_block_din_admission() {

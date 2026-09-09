@@ -206,11 +206,17 @@ async fn main() -> anyhow::Result<()> {
     let initial_on_ac = initial_on_ac_power();
     let state = Arc::new(
         NodeRuntimeState::new(config.node.max_concurrent_requests)
-            .with_power_gating(cfg!(windows), initial_on_ac),
+            .with_power_gating(cfg!(windows), initial_on_ac)
+            .with_din_queue(
+                config.node.din_queue_depth,
+                config.node.din_queue_timeout_secs,
+            ),
     );
     info!(
-        "Runtime: max_concurrent={}, heartbeat_every={}s, shutdown_timeout={}s",
+        "Runtime: max_concurrent={}, din_queue(depth={}, timeout={}s), heartbeat_every={}s, shutdown_timeout={}s",
         config.node.max_concurrent_requests,
+        config.node.din_queue_depth,
+        config.node.din_queue_timeout_secs,
         config.node.heartbeat_interval_seconds,
         config.node.shutdown_timeout_seconds
     );
