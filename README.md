@@ -24,6 +24,12 @@ Relay is a pnpm/bun package. Mac-app is a SwiftPM package (`swift build` from
 `mac-app/`). Android-app is a Gradle project (`./gradlew assembleDebug` from
 `android-app/`).
 
+## Consuming inference
+
+Anyone can call the gateway - no invite: `docs/consuming-inference.md`
+(self-serve device key -> welcome credits -> OpenAI-compatible API ->
+earn-by-supplying or USDC top-up at zero).
+
 ## Quick start
 
 ```bash
