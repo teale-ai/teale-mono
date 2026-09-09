@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
@@ -220,6 +220,9 @@ pub async fn spawn(
 
     let (outbox_tx, mut outbox_rx) = mpsc::unbounded_channel::<Message>();
     let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
+    // Ghost sessions already answered with relayClose (#213 symmetry):
+    // one close per unknown session, not one per streamed chunk.
+    let ghost_closes: Arc<DashMap<String, Instant>> = Arc::new(DashMap::new());
     let ready_waiters: Arc<Mutex<HashMap<String, ReadyWaiter>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -261,8 +264,10 @@ pub async fn spawn(
         let registry = registry.clone();
         let display_name = config.display_name.clone();
         let sessions = sessions.clone();
+        let ghost_closes = ghost_closes.clone();
         let ready_waiters = ready_waiters.clone();
         let outbox_tx = outbox_tx.clone();
+        let handle = handle.clone();
         let current_tx = current_tx.clone();
         let reliability = config.reliability.clone();
         let fleet = config.fleet.clone();
@@ -346,6 +351,8 @@ pub async fn spawn(
                                         &fleet,
                                         &apmhelp,
                                         &mut sent_discover_after_ack,
+                                        &handle,
+                                        &ghost_closes,
                                     )
                                     .await;
                                 }
@@ -361,6 +368,8 @@ pub async fn spawn(
                                                 &fleet,
                                                 &apmhelp,
                                                 &mut sent_discover_after_ack,
+                                                &handle,
+                                                &ghost_closes,
                                             )
                                             .await;
                                         }
@@ -445,6 +454,8 @@ async fn handle_incoming(
     fleet: &crate::config::FleetConfig,
     apmhelp: &crate::config::ApmhelpConfig,
     sent_discover_after_ack: &mut bool,
+    relay: &RelayHandle,
+    ghost_closes: &Arc<DashMap<String, Instant>>,
 ) {
     match msg {
         IncomingRelayMessage::RegisterAck { node_id } => {
@@ -542,7 +553,16 @@ async fn handle_incoming(
                 debug!("relayData: unparseable ClusterMessage");
                 return;
             };
-            dispatch_cluster(msg, sessions, registry, &d.session_id, &d.from_node_id).await;
+            dispatch_cluster(
+                msg,
+                sessions,
+                registry,
+                &d.session_id,
+                &d.from_node_id,
+                relay,
+                ghost_closes,
+            )
+            .await;
         }
         IncomingRelayMessage::RelayClose(s) => {
             if let Some((_, pending)) = sessions.remove(&s.session_id) {
@@ -633,17 +653,48 @@ fn fail_sessions_for_target(
     failed
 }
 
+/// #213 symmetry, gateway side: a node streaming into a session the
+/// gateway has no record of (the in-memory session table died with a
+/// restart or relay flap) is streaming to nobody. Answer the first ghost
+/// chunk with relayClose so the node's consumer-gone path (#258) cancels
+/// the backend turn and frees the slot now, instead of running it to
+/// completion. One close per ghost session, cached 10min so a long ghost
+/// stream does not draw one close per chunk.
+fn ghost_close_once(
+    relay: &RelayHandle,
+    ghost_closes: &DashMap<String, Instant>,
+    from_node_id: &str,
+    session_id: &str,
+) {
+    if ghost_closes.contains_key(session_id) {
+        return;
+    }
+    if ghost_closes.len() >= 512 {
+        ghost_closes.retain(|_, t| t.elapsed() < Duration::from_secs(600));
+    }
+    ghost_closes.insert(session_id.to_string(), Instant::now());
+    info!(
+        "ghost session {} traffic from {} - answering relayClose",
+        session_id, from_node_id
+    );
+    relay.close_session(from_node_id, session_id);
+}
+
 async fn dispatch_cluster(
     msg: ClusterMessage,
     sessions: &Arc<DashMap<String, PendingSession>>,
     registry: &Arc<Registry>,
     session_id: &str,
     from_node_id: &str,
+    relay: &RelayHandle,
+    ghost_closes: &Arc<DashMap<String, Instant>>,
 ) {
     match msg {
         ClusterMessage::InferenceChunk(p) => {
             if let Some(entry) = sessions.get(session_id) {
                 let _ = entry.chunks_tx.try_send(SessionEvent::Chunk(p.chunk));
+            } else {
+                ghost_close_once(relay, ghost_closes, from_node_id, session_id);
             }
         }
         ClusterMessage::InferenceComplete(p) => {
@@ -745,6 +796,81 @@ mod tests {
     use super::*;
     use crate::config::ReliabilityConfig;
 
+    #[tokio::test]
+    async fn ghost_session_chunk_draws_one_relay_close() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
+        let ghost_closes: Arc<DashMap<String, Instant>> = Arc::new(DashMap::new());
+        let (outbox, mut rx) = mpsc::unbounded_channel();
+        let relay = RelayHandle {
+            node_id: "gw".to_string(),
+            sessions: sessions.clone(),
+            ready_waiters: Default::default(),
+            outbox,
+        };
+        let ghost_chunk = || {
+            ClusterMessage::InferenceChunk(teale_protocol::InferenceChunkPayload {
+                request_id: "req-x".to_string(),
+                chunk: serde_json::json!({"text": "hi"}),
+            })
+        };
+
+        // Unknown session: ghost - exactly one relayClose back to the node.
+        dispatch_cluster(
+            ghost_chunk(),
+            &sessions,
+            &registry,
+            "ghost-s1",
+            "node-a",
+            &relay,
+            &ghost_closes,
+        )
+        .await;
+        let Some(Message::Text(text)) = rx.try_recv().ok() else {
+            panic!("expected one relayClose frame")
+        };
+        assert!(text.contains("relayClose"));
+        assert!(text.contains("ghost-s1"));
+        assert!(text.contains("node-a"));
+
+        // Same ghost streams on: throttled, no per-chunk closes.
+        dispatch_cluster(
+            ghost_chunk(),
+            &sessions,
+            &registry,
+            "ghost-s1",
+            "node-a",
+            &relay,
+            &ghost_closes,
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "no second close for the same ghost");
+
+        // Known session: chunk delivered to the session channel, no close.
+        let (chunks_tx, mut chunks_rx) = mpsc::channel(8);
+        sessions.insert(
+            "live-s1".to_string(),
+            PendingSession {
+                request_id: "req-1".to_string(),
+                device_node_id: "node-a".to_string(),
+                session_id: "live-s1".to_string(),
+                chunks_tx,
+            },
+        );
+        dispatch_cluster(
+            ghost_chunk(),
+            &sessions,
+            &registry,
+            "live-s1",
+            "node-a",
+            &relay,
+            &ghost_closes,
+        )
+        .await;
+        assert!(matches!(chunks_rx.try_recv(), Ok(SessionEvent::Chunk(_))));
+        assert!(rx.try_recv().is_err(), "no close for a live session");
+    }
+
     #[test]
     fn relay_idle_timeout_has_reasonable_floor_and_scale() {
         assert_eq!(relay_idle_timeout(1), Duration::from_secs(30));
@@ -827,6 +953,8 @@ mod tests {
             &crate::config::FleetConfig::default(),
             &crate::config::ApmhelpConfig::default(),
             &mut sent_discover_after_ack,
+            &RelayHandle::dummy_for_tests(),
+            &Arc::new(DashMap::new()),
         )
         .await;
 
