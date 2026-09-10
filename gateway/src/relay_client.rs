@@ -431,10 +431,22 @@ pub async fn spawn(
         let registry = registry.clone();
         let interval = config.reliability.discover_interval_seconds;
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(interval));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // #311: cold-start - after a deploy the registry is empty and
+            // every request 503s until discover repopulates it. Poll every
+            // 5s during the warmup window (bounded to 90s) instead of the
+            // steady-state interval, shrinking the outage to the node's
+            // re-register cadence; resume the normal cadence once the
+            // registry has supply (or the window expires).
+            let boot = Instant::now();
             loop {
-                ticker.tick().await;
+                let warming =
+                    registry.device_count() == 0 && boot.elapsed() < Duration::from_secs(90);
+                let wait = if warming {
+                    Duration::from_secs(5)
+                } else {
+                    Duration::from_secs(interval)
+                };
+                tokio::time::sleep(wait).await;
                 let _ = handle.request_discover();
                 registry.sweep();
                 metrics::DEVICES_CONNECTED.set(registry.device_count() as i64);
