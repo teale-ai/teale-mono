@@ -169,6 +169,9 @@ fn unresolved_model_error(state: &AppState, requested_model: &str) -> GatewayErr
         metrics::REQUESTS_TOTAL
             .with_label_values(&[requested_model, "registry_warmup"])
             .inc();
+        metrics::ELIGIBILITY_DENIED_TOTAL
+            .with_label_values(&[requested_model, "registry_warmup"])
+            .inc();
         return GatewayError::NoEligibleDevice(requested_model.to_string());
     }
     metrics::REQUESTS_TOTAL
@@ -453,6 +456,9 @@ pub(crate) fn prepare_chat_request_excluding(
             metrics::REQUESTS_TOTAL
                 .with_label_values(&[&catalog_model.id, "no_supply"])
                 .inc();
+            metrics::ELIGIBILITY_DENIED_TOTAL
+                .with_label_values(&[&catalog_model.id, "resolve_empty"])
+                .inc();
             GatewayError::NoEligibleDevice(format!(
                 "{} (required_ctx={})",
                 catalog_model.id, required_ctx
@@ -480,6 +486,12 @@ pub(crate) fn prepare_chat_request_excluding(
     if state.registry.loaded_count(&catalog_model.id) < required {
         metrics::REQUESTS_TOTAL
             .with_label_values(&[&catalog_model.id, "no_supply"])
+            .inc();
+        metrics::ELIGIBILITY_DENIED_TOTAL
+            .with_label_values(&[
+                &catalog_model.id,
+                state.registry.deny_reason(&catalog_model.id),
+            ])
             .inc();
         return Err(GatewayError::NoEligibleDevice(catalog_model.id));
     }
@@ -1216,7 +1228,12 @@ async fn pick_and_dispatch_inner(
                     None if heavy_refused => {
                         GatewayError::HeavyContention(catalog_model.id.clone())
                     }
-                    None => GatewayError::NoEligibleDevice(catalog_model.id.clone()),
+                    None => {
+                        metrics::ELIGIBILITY_DENIED_TOTAL
+                            .with_label_values(&[&catalog_model.id, "dispatch_exhausted"])
+                            .inc();
+                        GatewayError::NoEligibleDevice(catalog_model.id.clone())
+                    }
                 });
             }
         };

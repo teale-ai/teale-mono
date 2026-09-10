@@ -169,6 +169,15 @@ pub static SHADOW_SIMILARITY: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static ELIGIBILITY_DENIED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "gateway_eligibility_denied_total",
+        "Eligibility denials (503 no-eligible-device) by model and reason (#311)",
+        &["model", "reason"]
+    )
+    .expect("metric init")
+});
+
 pub static DEVICES_CONNECTED: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "gateway_devices_connected",

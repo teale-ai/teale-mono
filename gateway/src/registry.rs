@@ -849,6 +849,58 @@ impl Registry {
         }
     }
 
+    /// Why a model has no eligible supply right now (#311): classify the
+    /// dominant exclusion reason for observability when dispatch or the
+    /// fleet floor denies a request. Walks the same exclusion cascade as
+    /// `eligible_supply` (probation/employee -> stale -> unavailable ->
+    /// quarantined) and reports the first reason that eliminates every
+    /// device. `"floor_or_other"` means healthy supply exists but the
+    /// caller's own gate (per-model floor, scheduler) still denied.
+    pub fn deny_reason(&self, model_id: &str) -> &'static str {
+        if self.devices.is_empty() {
+            return "empty_registry";
+        }
+        let mut any_supported = false;
+        let mut any_fresh = false;
+        let mut any_available = false;
+        let mut any_unquarantined = false;
+        for r in self.devices.iter() {
+            let st = r.value();
+            if st.probation || st.employee {
+                continue;
+            }
+            if !model_matches_any(model_id, &st.capabilities.loaded_models)
+                && !model_matches_any(model_id, &st.capabilities.swappable_models)
+            {
+                continue;
+            }
+            any_supported = true;
+            if st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds) {
+                continue;
+            }
+            any_fresh = true;
+            if !st.capabilities.is_available {
+                continue;
+            }
+            any_available = true;
+            if st.is_quarantined() {
+                continue;
+            }
+            any_unquarantined = true;
+        }
+        if !any_supported {
+            "unsupported"
+        } else if !any_fresh {
+            "stale"
+        } else if !any_available {
+            "unavailable"
+        } else if !any_unquarantined {
+            "quarantined"
+        } else {
+            "floor_or_other"
+        }
+    }
+
     /// Count of healthy devices that currently have `model_id` loaded.
     pub fn loaded_count(&self, model_id: &str) -> u32 {
         self.devices
@@ -1029,6 +1081,41 @@ mod tests {
     }
 
     #[test]
+    fn deny_reason_classifies_exclusion_cascade() {
+        let reliability = ReliabilityConfig {
+            heartbeat_stale_seconds: 3600,
+            ..ReliabilityConfig::default()
+        };
+        let registry = Registry::new(reliability);
+        assert_eq!(registry.deny_reason("test/model-a"), "empty_registry");
+
+        // Unsupported: device exists but does not carry the model.
+        registry.upsert_device(
+            "node-a".to_string(),
+            "node-a".to_string(),
+            caps(vec!["test/model-b"], true),
+        );
+        assert_eq!(registry.deny_reason("test/model-a"), "unsupported");
+
+        // Unavailable: carries the model, fresh, but self-reports away.
+        registry.upsert_device(
+            "node-a".to_string(),
+            "node-a".to_string(),
+            caps(vec!["test/model-a"], false),
+        );
+        assert_eq!(registry.deny_reason("test/model-a"), "unavailable");
+
+        // Quarantined: available but quarantined out.
+        registry.upsert_device(
+            "node-a".to_string(),
+            "node-a".to_string(),
+            caps(vec!["test/model-a"], true),
+        );
+        registry.quarantine("node-a", 120);
+        assert_eq!(registry.deny_reason("test/model-a"), "quarantined");
+    }
+
+    #[test]
     fn eligible_devices_excludes_stale_heartbeat_nodes() {
         let reliability = ReliabilityConfig {
             heartbeat_stale_seconds: 0,
@@ -1051,8 +1138,17 @@ mod tests {
     #[test]
     fn employee_supply_is_lane_scoped_and_restated_on_upsert() {
         let registry = Registry::new(ReliabilityConfig::default());
-        registry.upsert_device("fleet-a".into(), "F".into(), caps(vec!["m"], true));
-        registry.upsert_device_with_class("emp-b".into(), "E".into(), caps(vec!["m"], true), true);
+        registry.upsert_device(
+            "fleet-a".into(),
+            "F".into(),
+            caps(vec!["test/model-a"], true),
+        );
+        registry.upsert_device_with_class(
+            "emp-b".into(),
+            "E".into(),
+            caps(vec!["test/model-a"], true),
+            true,
+        );
 
         // Default lane: fleet only.
         let default_pool = registry.eligible_devices("m");
@@ -1064,7 +1160,12 @@ mod tests {
         assert!(lane_pool.iter().any(|d| d.employee && d.node_id == "emp-b"));
         // The class is restated on every upsert: leaving the employee set
         // reverts the node to fleet supply on its next discover.
-        registry.upsert_device_with_class("emp-b".into(), "E".into(), caps(vec!["m"], true), false);
+        registry.upsert_device_with_class(
+            "emp-b".into(),
+            "E".into(),
+            caps(vec!["test/model-a"], true),
+            false,
+        );
         assert_eq!(registry.eligible_devices("m").len(), 2);
     }
 
@@ -1120,7 +1221,7 @@ mod tests {
         // refused it as if it were a different consumer - four refusals,
         // zero progress. The owner's own heavies co-reside up to slots.
         let registry = Registry::new(ReliabilityConfig::default());
-        let mut c = caps(vec!["m"], true);
+        let mut c = caps(vec!["test/model-a"], true);
         c.backend_slots_total = Some(2);
         registry.upsert_device("node-a".into(), "A".into(), c);
 
@@ -1151,8 +1252,16 @@ mod tests {
     #[test]
     fn heavy_hold_admission_refuses_second_heavy_and_balances() {
         let registry = Registry::new(ReliabilityConfig::default());
-        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
-        registry.upsert_device("node-b".into(), "B".into(), caps(vec!["m"], true));
+        registry.upsert_device(
+            "node-a".into(),
+            "A".into(),
+            caps(vec!["test/model-a"], true),
+        );
+        registry.upsert_device(
+            "node-b".into(),
+            "B".into(),
+            caps(vec!["test/model-a"], true),
+        );
 
         assert!(registry.admit("node-a", true, None));
         // Second heavy on the same device is refused, counters untouched.
@@ -1184,7 +1293,7 @@ mod tests {
             ..ReliabilityConfig::default()
         };
         let registry = Registry::new(reliability);
-        let mut pin_caps = caps(vec!["m"], true);
+        let mut pin_caps = caps(vec!["test/model-a"], true);
         pin_caps.backend_slots_busy = Some(1);
         pin_caps.backend_slots_total = Some(4);
         registry.upsert_device("node-a".into(), "A".into(), pin_caps);
@@ -1208,7 +1317,11 @@ mod tests {
 
         // A node whose heartbeats carry no occupancy (older build) keeps
         // the old behaviour: gateway-visible heavies only.
-        registry.upsert_device("node-b".into(), "B".into(), caps(vec!["m"], true));
+        registry.upsert_device(
+            "node-b".into(),
+            "B".into(),
+            caps(vec!["test/model-a"], true),
+        );
         assert!(registry.admit("node-b", true, None));
     }
 
@@ -1254,12 +1367,20 @@ mod tests {
     #[test]
     fn rejoin_during_grace_clears_departed() {
         let registry = Registry::new(ReliabilityConfig::default());
-        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
+        registry.upsert_device(
+            "node-a".into(),
+            "A".into(),
+            caps(vec!["test/model-a"], true),
+        );
         registry.mark_departed("node-a");
         assert!(registry.devices.get("node-a").unwrap().is_departed());
 
         // Rejoin via discover upsert restores instantly.
-        registry.upsert_device("node-a".into(), "A".into(), caps(vec!["m"], true));
+        registry.upsert_device(
+            "node-a".into(),
+            "A".into(),
+            caps(vec!["test/model-a"], true),
+        );
         assert!(!registry.devices.get("node-a").unwrap().is_departed());
         registry.sweep();
         assert!(registry
