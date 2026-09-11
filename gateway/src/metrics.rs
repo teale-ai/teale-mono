@@ -17,6 +17,15 @@ pub static REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static DEVICE_CHALLENGES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "gateway_device_challenges_total",
+        "Device-auth challenge requests grouped by limiter decision",
+        &["decision"]
+    )
+    .expect("metric init")
+});
+
 pub static RETRIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     register_int_counter_vec!(
         "gateway_retries_total",
@@ -207,6 +216,7 @@ pub static TOKENS_OUT_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
 pub fn init() {
     // Force Lazy init so metrics appear in /metrics even before first request.
     let _ = &*REQUESTS_TOTAL;
+    let _ = &*DEVICE_CHALLENGES_TOTAL;
     let _ = &*RETRIES_TOTAL;
     let _ = &*HEAVY_HOLD_REFUSED;
     let _ = &*HEAVY_HOLD_EXPIRED;

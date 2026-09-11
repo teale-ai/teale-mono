@@ -97,15 +97,26 @@ pub async fn challenge(
     headers: HeaderMap,
     Json(req): Json<ChallengeReq>,
 ) -> Result<Json<ChallengeRes>, GatewayError> {
-    let ip_key = client_ip_key(&headers);
-    if !state.challenge_limiter.allow(&ip_key, unix_now()) {
-        return Err(GatewayError::RateLimited(
-            "too many device challenges from this network; try again within the hour".into(),
-        ));
-    }
     if !is_hex_pubkey(&req.device_id) {
         return Err(GatewayError::BadRequest(
             "deviceID must be 64-char hex pubkey".into(),
+        ));
+    }
+
+    let ip_key = client_ip_key(&headers);
+    let decision = state
+        .challenge_limiter
+        .allow(&ip_key, &req.device_id, unix_now());
+    crate::metrics::DEVICE_CHALLENGES_TOTAL
+        .with_label_values(&[match decision {
+            crate::state::ChallengeLimitDecision::NewDevice => "new_device",
+            crate::state::ChallengeLimitDecision::Retry => "retry",
+            crate::state::ChallengeLimitDecision::Denied => "denied",
+        }])
+        .inc();
+    if decision == crate::state::ChallengeLimitDecision::Denied {
+        return Err(GatewayError::RateLimited(
+            "too many new device identities from this network; retry an existing identity or try again within the hour".into(),
         ));
     }
 
