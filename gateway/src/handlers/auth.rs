@@ -21,8 +21,11 @@
 use axum::{extract::State, http::HeaderMap, Json};
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::db::unix_now;
@@ -68,6 +71,31 @@ fn is_hex_pubkey(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+const DEVICE_METRIC_PREFIX_LIMIT: usize = 1_024;
+static DEVICE_METRIC_PREFIXES: Lazy<Mutex<HashSet<String>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
+
+fn device_id_prefix(device_id: &str) -> String {
+    device_id
+        .chars()
+        .take(16)
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+/// Bound public-endpoint label cardinality. Existing prefixes remain named;
+/// once the cap is reached, unseen identities collapse into one series.
+fn device_metric_prefix(device_id: &str) -> String {
+    let prefix = device_id_prefix(device_id);
+    let mut seen = DEVICE_METRIC_PREFIXES.lock();
+    if seen.contains(&prefix) || seen.len() < DEVICE_METRIC_PREFIX_LIMIT {
+        seen.insert(prefix.clone());
+        prefix
+    } else {
+        "overflow".to_string()
+    }
+}
+
 /// Client IP for the challenge limiter: Fly's proxy sets `fly-client-ip`
 /// (overwriting any client-sent value), so it is not spoofable from the
 /// outside; fall back to the first X-Forwarded-For hop, then a shared
@@ -98,6 +126,9 @@ pub async fn challenge(
     Json(req): Json<ChallengeReq>,
 ) -> Result<Json<ChallengeRes>, GatewayError> {
     if !is_hex_pubkey(&req.device_id) {
+        crate::metrics::DEVICE_CHALLENGE_DENIED_TOTAL
+            .with_label_values(&["invalid_device_id"])
+            .inc();
         return Err(GatewayError::BadRequest(
             "deviceID must be 64-char hex pubkey".into(),
         ));
@@ -107,14 +138,21 @@ pub async fn challenge(
     let decision = state
         .challenge_limiter
         .allow(&ip_key, &req.device_id, unix_now());
+    let decision_label = match decision {
+        crate::state::ChallengeLimitDecision::NewDevice => "new_device",
+        crate::state::ChallengeLimitDecision::Retry => "retry",
+        crate::state::ChallengeLimitDecision::Denied => "denied",
+    };
     crate::metrics::DEVICE_CHALLENGES_TOTAL
-        .with_label_values(&[match decision {
-            crate::state::ChallengeLimitDecision::NewDevice => "new_device",
-            crate::state::ChallengeLimitDecision::Retry => "retry",
-            crate::state::ChallengeLimitDecision::Denied => "denied",
-        }])
+        .with_label_values(&[decision_label])
+        .inc();
+    crate::metrics::DEVICE_CHALLENGES_BY_DEVICE_TOTAL
+        .with_label_values(&[&device_metric_prefix(&req.device_id), decision_label])
         .inc();
     if decision == crate::state::ChallengeLimitDecision::Denied {
+        crate::metrics::DEVICE_CHALLENGE_DENIED_TOTAL
+            .with_label_values(&["network_unique_device_limit"])
+            .inc();
         return Err(GatewayError::RateLimited(
             "too many new device identities from this network; retry an existing identity or try again within the hour".into(),
         ));
@@ -290,5 +328,20 @@ fn map_referral_error(err: ledger::ReferralError) -> GatewayError {
         | ledger::ReferralError::AccountAlreadyClaimed => GatewayError::Conflict(err.to_string()),
         ledger::ReferralError::AccountNotLinked => GatewayError::NotFound(err.to_string()),
         ledger::ReferralError::Other(err) => GatewayError::Other(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_prefix_is_stable_lowercase_and_bounded() {
+        assert_eq!(
+            device_metric_prefix(
+                "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+            ),
+            "abcdef0123456789"
+        );
     }
 }
