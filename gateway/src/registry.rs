@@ -110,7 +110,10 @@ impl DeviceState {
     /// found" for every consumer (#239; supersedes the #220 departed-grace
     /// exception, which existed only to paper over quarantine hiding).
     pub fn catalog_visible(&self, stale_after_secs: u64) -> bool {
-        self.capabilities.is_available && !self.heartbeat_is_stale(stale_after_secs)
+        !self.employee
+            && !self.probation
+            && self.capabilities.is_available
+            && !self.heartbeat_is_stale(stale_after_secs)
     }
 
     pub fn is_quarantined(&self) -> bool {
@@ -824,6 +827,7 @@ impl Registry {
         for r in self.devices.iter() {
             let st = r.value();
             if st.probation
+                || st.employee
                 || st.is_quarantined()
                 || !st.capabilities.is_available
                 || st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
@@ -908,6 +912,7 @@ impl Registry {
             .filter(|r| {
                 let st = r.value();
                 !st.probation
+                    && !st.employee
                     && !st.is_quarantined()
                     && st.capabilities.is_available
                     && !st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
@@ -923,6 +928,7 @@ impl Registry {
             .filter(|r| {
                 let st = r.value();
                 !st.probation
+                    && !st.employee
                     && !st.is_quarantined()
                     && st.capabilities.is_available
                     && !st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds)
@@ -940,10 +946,11 @@ impl Registry {
             Some(d) => d.clone(),
             None => return,
         };
-        // Probation devices never enter the model index: their claimed
-        // models must stay out of the public catalog and out of Auto
-        // resolution until they promote out of probation.
-        if dev.probation {
+        // Non-default tiers never enter the public model index: their
+        // claimed models must stay out of the public catalog and Auto
+        // resolution. Employee supply is reachable only through its
+        // explicitly authorized PIN lane; probation never serves clients.
+        if dev.probation || dev.employee {
             return;
         }
         for m in dev
@@ -1150,10 +1157,26 @@ mod tests {
             true,
         );
 
-        // Default lane: fleet only.
+        // Default lane and its public availability/count surfaces: fleet only.
         let default_pool = registry.eligible_devices("m");
         assert_eq!(default_pool.len(), 1);
         assert_eq!(default_pool[0].node_id, "fleet-a");
+        assert_eq!(registry.loaded_count("m"), 1);
+        assert_eq!(registry.supplying_device_count(), 1);
+        assert_eq!(
+            registry.model_availability("m", 1.0),
+            ModelAvailability::Ready
+        );
+        let employee = registry
+            .snapshot_devices()
+            .into_iter()
+            .find(|d| d.node_id == "emp-b")
+            .expect("employee present");
+        assert!(!employee.catalog_visible(3600));
+        assert!(!registry
+            .model_index_node_ids("m")
+            .iter()
+            .any(|node_id| node_id == "emp-b"));
         // Lane pool: both, with the employee tagged.
         let lane_pool = registry.eligible_supply("m", true);
         assert_eq!(lane_pool.len(), 2);
