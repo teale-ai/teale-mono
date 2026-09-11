@@ -767,6 +767,11 @@ fn update_eligible_gauges(registry: &Arc<Registry>) {
             probation_count += 1;
             continue;
         }
+        if dev.employee {
+            // Employee supply is eligible only for its explicitly authorized
+            // PIN lane, never the public/default lane this gauge describes.
+            continue;
+        }
         for m in &dev.capabilities.loaded_models {
             *per_model.entry(m.clone()).or_insert(0) += 1;
         }
