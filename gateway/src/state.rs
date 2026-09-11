@@ -44,30 +44,46 @@ impl PinJoinLimiter {
 
 /// Per-client-IP sliding-window rate limiter for /v1/auth/device/challenge.
 /// DeviceIDs are self-generated, so the welcome grant would otherwise be
-/// farmable without bound: each new device needs a fresh challenge, and the
-/// challenge is where the per-IP ceiling binds (10/hour = at most $1/hour of
-/// grants per source IP at the $0.10 welcome grant). Keyed by Fly's
-/// `fly-client-ip` header (proxy-set, not client-spoofable); requests
-/// without it share one "unknown" bucket - fail-closed by construction.
+/// farmable without bound. The ceiling is on UNIQUE device IDs, not raw
+/// challenge attempts: legitimate nodes behind one NAT may retry the same
+/// exchange without consuming the shared fleet quota, while generated IDs
+/// are still capped at 10/hour ($1/hour at the $0.10 welcome grant).
+/// Keyed by Fly's proxy-set `fly-client-ip`; header-less callers share the
+/// fail-closed "unknown" bucket.
 #[derive(Debug, Clone, Default)]
 pub struct ChallengeLimiter {
-    inner: Arc<parking_lot::Mutex<std::collections::HashMap<String, Vec<i64>>>>,
+    inner: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<String, std::collections::HashMap<String, i64>>,
+        >,
+    >,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengeLimitDecision {
+    NewDevice,
+    Retry,
+    Denied,
 }
 
 impl ChallengeLimiter {
-    pub const MAX_PER_WINDOW: usize = 10;
+    pub const MAX_UNIQUE_PER_WINDOW: usize = 10;
     pub const WINDOW_SECONDS: i64 = 3600;
 
-    /// Record an attempt; returns false when the caller is over the limit.
-    pub fn allow(&self, key: &str, now_unix: i64) -> bool {
+    /// Record a device challenge. Retries for a device already counted in
+    /// the current window are allowed without spending another unique slot.
+    pub fn allow(&self, key: &str, device_id: &str, now_unix: i64) -> ChallengeLimitDecision {
         let mut map = self.inner.lock();
-        let attempts = map.entry(key.to_string()).or_default();
-        attempts.retain(|t| now_unix - *t < Self::WINDOW_SECONDS);
-        if attempts.len() >= Self::MAX_PER_WINDOW {
-            return false;
+        let devices = map.entry(key.to_string()).or_default();
+        devices.retain(|_, first_seen| now_unix - *first_seen < Self::WINDOW_SECONDS);
+        if devices.contains_key(device_id) {
+            return ChallengeLimitDecision::Retry;
         }
-        attempts.push(now_unix);
-        true
+        if devices.len() >= Self::MAX_UNIQUE_PER_WINDOW {
+            return ChallengeLimitDecision::Denied;
+        }
+        devices.insert(device_id.to_string(), now_unix);
+        ChallengeLimitDecision::NewDevice
     }
 }
 
@@ -127,19 +143,39 @@ mod tests {
     }
 
     #[test]
-    fn challenge_limiter_blocks_over_limit_and_slides() {
+    fn challenge_limiter_counts_unique_devices_and_allows_retries() {
         let l = ChallengeLimiter::default();
         let t0 = 1_000_000i64;
-        for _ in 0..ChallengeLimiter::MAX_PER_WINDOW {
-            assert!(l.allow("1.2.3.4", t0));
+        for i in 0..ChallengeLimiter::MAX_UNIQUE_PER_WINDOW {
+            assert_eq!(
+                l.allow("1.2.3.4", &format!("device-{i}"), t0),
+                ChallengeLimitDecision::NewDevice
+            );
         }
-        assert!(
-            !l.allow("1.2.3.4", t0),
-            "11th challenge in-window must block"
+        assert_eq!(
+            l.allow("1.2.3.4", "device-0", t0),
+            ChallengeLimitDecision::Retry,
+            "a retry must not consume another shared NAT slot"
         );
-        assert!(l.allow("5.6.7.8", t0), "limit is per-IP");
-        // Window slides: an hour later the oldest attempt has expired.
-        assert!(l.allow("1.2.3.4", t0 + ChallengeLimiter::WINDOW_SECONDS));
+        assert_eq!(
+            l.allow("1.2.3.4", "device-over-limit", t0),
+            ChallengeLimitDecision::Denied,
+            "11th unique device in-window must block"
+        );
+        assert_eq!(
+            l.allow("5.6.7.8", "device-over-limit", t0),
+            ChallengeLimitDecision::NewDevice,
+            "limit is per-IP"
+        );
+        assert_eq!(
+            l.allow(
+                "1.2.3.4",
+                "device-over-limit",
+                t0 + ChallengeLimiter::WINDOW_SECONDS
+            ),
+            ChallengeLimitDecision::NewDevice,
+            "window slides after an hour"
+        );
     }
 
     #[test]
