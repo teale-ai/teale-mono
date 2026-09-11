@@ -83,24 +83,44 @@ pub fn spawn_synthetic_probe_loop(state: AppState) {
                     continue;
                 }
 
-                if let Err(err) = probe_target(&state, &target, cfg.max_tokens).await {
-                    last_probed_at.insert(target.clone(), Instant::now());
-                    state
-                        .registry
-                        .quarantine(&target.node_id, state.config.reliability.quarantine_seconds);
-                    warn!(
-                        model = %target.model_id,
-                        node = %target.node_id,
-                        "synthetic probe failed: {}",
-                        err
-                    );
-                    continue;
+                match probe_target(&state, &target, cfg.max_tokens).await {
+                    Ok(ProbeResult::Completed) => {}
+                    Ok(ProbeResult::DeferredBusy) => {
+                        // Retry on the normal freshness cadence. This target is
+                        // serving real work, so its missed synthetic sample is
+                        // not evidence of bad health.
+                    }
+                    Err(err) => {
+                        state.registry.quarantine(
+                            &target.node_id,
+                            state.config.reliability.quarantine_seconds,
+                        );
+                        warn!(
+                            model = %target.model_id,
+                            node = %target.node_id,
+                            "synthetic probe failed: {}",
+                            err
+                        );
+                    }
                 }
 
                 last_probed_at.insert(target, Instant::now());
             }
         }
     });
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProbeResult {
+    Completed,
+    DeferredBusy,
+}
+
+fn probe_target_is_busy(target_node_id: &str, devices: Vec<crate::registry::DeviceState>) -> bool {
+    devices.into_iter().any(|device| {
+        device.node_id == target_node_id
+            && (device.live.is_generating || device.live.queue_depth > 0)
+    })
 }
 
 fn collect_probe_targets(
@@ -148,7 +168,19 @@ async fn probe_target(
     state: &AppState,
     target: &ProbeTarget,
     max_tokens: u32,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ProbeResult> {
+    // The collection snapshot can be up to one loop turn old. Re-check right
+    // before admission so a tiny health probe never queues behind real work
+    // and mistakes capacity contention for supplier failure.
+    if probe_target_is_busy(&target.node_id, state.registry.snapshot_devices()) {
+        info!(
+            model = %target.model_id,
+            node = %target.node_id,
+            "synthetic probe deferred because target became busy"
+        );
+        return Ok(ProbeResult::DeferredBusy);
+    }
+
     state.registry.admit(&target.node_id, false, None);
 
     let ttft_deadline_seconds =
@@ -286,7 +318,7 @@ async fn probe_target(
 
     state.relay.close_session(&target.node_id, &session_id);
     state.registry.dec_in_flight(&target.node_id, false);
-    result
+    result.map(|()| ProbeResult::Completed)
 }
 
 #[cfg(test)]
@@ -395,5 +427,18 @@ mod tests {
                 is_large: true,
             }]
         );
+
+        assert!(!probe_target_is_busy(
+            "idle-kimi",
+            vec![mk_device("idle-kimi", vec!["kimi"], now, false, 0)],
+        ));
+        assert!(probe_target_is_busy(
+            "queued-kimi",
+            vec![mk_device("queued-kimi", vec!["kimi"], now, false, 1,)],
+        ));
+        assert!(probe_target_is_busy(
+            "generating-kimi",
+            vec![mk_device("generating-kimi", vec!["kimi"], now, true, 0,)],
+        ));
     }
 }
