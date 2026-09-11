@@ -107,7 +107,7 @@ employee_node_ids = [
 # boxes' logs + registerAck/exit-pin/health agreement); teale-512g8's id
 # additionally confirmed from live gateway dispatch logs. Excluded
 # deliberately: NICOLLE b8ff97d7..., TICO 1766594... (unidentified),
-# LAPTOP-EFKCAOHN, LAPTOP-GLSRB496, and 512g1's retired second id.
+# LAPTOP-EFKCAOHN, and 512g1's retired second id.
 allowed_node_ids = [
     # 96 Tailors-Mac-Studio
     "7af2b3cb4b1e745e4e9a71a63935619ef0fd30e89c0f5ea7447d3d7d76370430",
@@ -134,6 +134,12 @@ allowed_node_ids = [
     "ea01aa5ba488aac15124eadb75737fe2d1f386e771c4a973a80cd2cd96fb0d18",
     # Air ais-macbook-air
     "838773be5098db3c5451a2d669da04f33a825b500452c0940c4c8c78ac569f58",
+    # Relay newcomers admitted by Taylor 2026-09-11 (currently demand-only;
+    # retained here so future supply advertisements can enter the registry).
+    # LAPTOP-GLSRB496
+    "feabf4638357ceb2b95cffa6c73de47bb7a384d5bf2c8767fcc68c38b0add141",
+    # workstation
+    "efc6802f4a80bff33fefca4ee3e06f6eca1d53501021074ea687c2635a78f1aa",
     # 512g1 GLM teale-node (fresh identity generated on-box 2026-09-09,
     # fleet-confirmed; Taylor directive: 512g8+512g1 both supply glm5.3.
     # Distinct from 77604e7a above = 512g1's Teale.app qwen3.6-35b identity;
