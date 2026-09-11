@@ -124,6 +124,16 @@ allowed_node_ids = [
     # 512g1 tailor512g1s-mac-studio.local (fleet-confirmed 2026-09-08:
     # gateway-identity-seed unchanged since Apr 24, llama.cpp supply live)
     "77604e7a0173a9115f8e0301863a982ea8541dd15ec0a23348549ea205260ba3",
+    # Dedicated Hermes teale-node identities (coexist with each box's
+    # Teale.app identity above; fleet-verified live 2026-09-11).
+    # 96 Tailors-Mac-Studio
+    "4e7e7f191eb6f5ed1cd94ff48ad65160b9853f8936d9ede4d5e635b9343b8943",
+    # 512g1 tailor512g1s-mac-studio.local
+    "85d4cae05922d16a393453648ec7cee002733133cb899d70bdf4b50deeddd9ac",
+    # 64 tailor64s-mac-studio
+    "ea01aa5ba488aac15124eadb75737fe2d1f386e771c4a973a80cd2cd96fb0d18",
+    # Air ais-macbook-air
+    "838773be5098db3c5451a2d669da04f33a825b500452c0940c4c8c78ac569f58",
     # 512g1 GLM teale-node (fresh identity generated on-box 2026-09-09,
     # fleet-confirmed; Taylor directive: 512g8+512g1 both supply glm5.3.
     # Distinct from 77604e7a above = 512g1's Teale.app qwen3.6-35b identity;
