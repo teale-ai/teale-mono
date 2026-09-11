@@ -17,6 +17,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     private var desktopWalletSyncedAt: UInt64?
     private var desktopWalletSyncError: String?
     private var desktopLastWalletRefreshAt: Date?
+    private var gatewayAuthClient: GatewayAuthClient?
+    private var gatewayAuthBaseURL: URL?
 
     init(appState: AppState) {
         self.appState = appState
@@ -576,14 +578,27 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
         }
     }
 
+    /// Keep one auth actor for the bridge lifetime. The wallet snapshot reads
+    /// balance + transactions every 15 seconds; constructing a client per read
+    /// discards its bearer cache and performs two challenge/exchange cycles per
+    /// refresh (eight challenges/minute). Reset only when the gateway changes.
+    private func desktopGatewayAuthClient() -> GatewayAuthClient {
+        let baseURL = gatewayRootURL()
+        if gatewayAuthClient == nil || gatewayAuthBaseURL != baseURL {
+            gatewayAuthBaseURL = baseURL
+            gatewayAuthClient = GatewayAuthClient(baseURL: baseURL)
+        }
+        return gatewayAuthClient!
+    }
+
     private func gatewayWalletBalance() async throws -> GatewayWalletBalanceSnapshot {
-        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        let client = desktopGatewayAuthClient()
         let token = try await client.bearer()
         return try await client.getJSON(path: "/v1/wallet/balance", bearerToken: token)
     }
 
     private func gatewayWalletTransactions(limit: Int) async throws -> [GatewayWalletTransactionSnapshot] {
-        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        let client = desktopGatewayAuthClient()
         let token = try await client.bearer()
         var components = URLComponents(
             url: gatewayRootURL().appendingPathComponent("/v1/wallet/transactions"),
@@ -1028,7 +1043,7 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     }
 
     private func desktopGatewayBearer(forceRefresh: Bool) async throws -> String {
-        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        let client = desktopGatewayAuthClient()
         if !forceRefresh, shouldReuseGatewayBearer(appState.gatewayAPIKey) {
             return appState.gatewayAPIKey
         }
@@ -1074,7 +1089,7 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         requiresAuth: Bool,
         bodyData: Data?
     ) async throws -> Response {
-        let client = GatewayAuthClient(baseURL: gatewayRootURL())
+        let client = desktopGatewayAuthClient()
 
         func perform(with token: String?) async throws -> Response {
             var request = URLRequest(url: gatewayRootURL().appending(path: path))
