@@ -132,7 +132,9 @@ fn collect_probe_targets(
     let mut targets = Vec::new();
 
     for device in devices {
-        if device.is_quarantined()
+        if device.employee
+            || device.probation
+            || device.is_quarantined()
             || !device.capabilities.is_available
             || device.heartbeat_is_stale(heartbeat_stale_seconds)
             || device.live.is_generating
@@ -401,10 +403,17 @@ mod tests {
             }
         };
 
+        let mut employee = mk_device("employee-kimi", vec!["kimi"], now, false, 0);
+        employee.employee = true;
+        let mut probation = mk_device("probation-kimi", vec!["kimi"], now, false, 0);
+        probation.probation = true;
+
         let targets = collect_probe_targets(
             &catalog,
             3600,
             vec![
+                employee,
+                probation,
                 mk_device("idle-kimi", vec!["kimi"], now, false, 0),
                 mk_device("busy-kimi", vec!["moonshotai/kimi-k2.6"], now, true, 0),
                 mk_device("queued-kimi", vec!["moonshotai/kimi-k2.6"], now, false, 1),
