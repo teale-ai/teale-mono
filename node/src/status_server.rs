@@ -31,8 +31,8 @@ use crate::privacy_filter::{
 };
 use crate::swap::SwapManager;
 use crate::windows_model_catalog::{
-    compatible_models, context_for_model, model_by_id, recommended_model, WindowsCatalogModel,
-    AVAILABILITY_TICK_SECONDS,
+    availability_credits_per_tick_for_id, compatible_models, context_for_model, model_by_id,
+    recommended_model, WindowsCatalogModel, AVAILABILITY_TICK_SECONDS,
 };
 use teale_protocol::openai::ChatCompletionRequest;
 
@@ -1009,12 +1009,9 @@ impl StatusState {
     ) -> WalletSnapshot {
         let (availability_credits_per_tick, availability_rate_credits_per_minute) =
             current_model_id
-                .and_then(model_by_id)
-                .map(|model| {
-                    (
-                        model.availability_credits_per_tick(),
-                        model.availability_credits_per_minute(),
-                    )
+                .map(|model_id| {
+                    let per_tick = availability_credits_per_tick_for_id(model_id);
+                    (per_tick, per_tick * (60 / AVAILABILITY_TICK_SECONDS) as i64)
                 })
                 .unwrap_or((0, 0));
 
@@ -1538,7 +1535,12 @@ impl StatusState {
             return 0;
         }
 
-        let Some(model) = current_model_id.and_then(model_by_id) else {
+        // Models missing from the local catalog (e.g. fleet models served
+        // from Mac nodes) still earn availability display at the floor rate
+        // rather than reporting a hard 0; the gateway ledger remains the
+        // source of truth for actual earnings.
+        let Some(credits_per_tick) = current_model_id.map(availability_credits_per_tick_for_id)
+        else {
             return 0;
         };
 
@@ -1553,7 +1555,7 @@ impl StatusState {
         let elapsed_ticks = now
             .saturating_sub(supplying_since)
             .div_euclid(AVAILABILITY_TICK_SECONDS);
-        elapsed_ticks as i64 * model.availability_credits_per_tick()
+        elapsed_ticks as i64 * credits_per_tick
     }
 
     async fn download_model_task(
