@@ -113,6 +113,44 @@ public actor LlamaCppProvider: InferenceProvider {
         _status = .idle
     }
 
+    /// One-shot server-truth probe, mirroring
+    /// RapidMLXProvider.refreshFromServer: make status follow what the
+    /// llama-server process is actually doing.
+    ///
+    /// Unlike waitForHealth this NEVER touches the subprocess - a dead
+    /// or busy server only throws here, it is never terminated. Any HTTP
+    /// response counts as alive because /health can return non-200 while
+    /// every slot is busy generating; the dead-backend case this exists
+    /// for is a refused connection or an exited child process. A healthy
+    /// probe re-adopts the descriptor loaded via loadModel() so a
+    /// recovered backend re-advertises without user action; an in-flight
+    /// generation state is never clobbered.
+    public func refreshFromServer() async throws {
+        // Managed child died out from under us (kill, OOM, fleet launchd
+        // bootout) - the cheapest, most deterministic truth.
+        if let process = serverProcess, !process.isRunning {
+            serverProcess = nil
+            throw LlamaCppError.serverUnreachable
+        }
+        let url = serverBaseURL.appendingPathComponent("health")
+        let probeConfig = URLSessionConfiguration.default
+        probeConfig.timeoutIntervalForRequest = 5
+        let probeSession = URLSession(configuration: probeConfig)
+        defer { probeSession.finishTasksAndInvalidate() }
+        let (_, response) = try await probeSession.data(from: url)
+        guard response is HTTPURLResponse else {
+            throw LlamaCppError.serverUnreachable
+        }
+        switch _status {
+        case .idle, .error:
+            if let descriptor = currentDescriptor {
+                _status = .ready(descriptor)
+            }
+        default:
+            break
+        }
+    }
+
     public nonisolated func generate(request: ChatCompletionRequest) -> AsyncThrowingStream<ChatCompletionChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -453,6 +491,7 @@ public enum LlamaCppError: LocalizedError {
     case binaryNotFound(String)
     case modelNotFound(String)
     case serverStartTimeout
+    case serverUnreachable
     case noModelLoaded
     case invalidResponse
     case serverError(String)
@@ -465,6 +504,8 @@ public enum LlamaCppError: LocalizedError {
             return "GGUF model file not found: \(path)"
         case .serverStartTimeout:
             return "llama-server failed to start within the timeout period."
+        case .serverUnreachable:
+            return "llama-server is unreachable (connection failed or no HTTP response)."
         case .noModelLoaded:
             return "No model is loaded in llama-server."
         case .invalidResponse:

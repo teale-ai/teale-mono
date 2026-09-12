@@ -1424,6 +1424,7 @@ public final class AppState {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
                 guard let self, !Task.isCancelled else { return }
                 self.reconcileRapidMLXServerTruth()
+                self.reconcileLlamaCppServerTruth()
             }
         }
     }
@@ -1458,6 +1459,41 @@ public final class AppState {
                     return
                 }
                 Self.wanLog("server-truth: rapid-mlx server unreachable (\(error.localizedDescription)); clearing advertisement")
+                self.engineStatus = .idle
+                self.syncAdvertisedLoadedModels()
+            }
+        }
+    }
+
+    /// One reconciliation tick for the llama.cpp lane: probe the local
+    /// llama-server and make advertised state follow server truth,
+    /// mirroring reconcileRapidMLXServerTruth. The app spawns this
+    /// server itself, but it can still die out from under us (fleet
+    /// operators boot out launchd jobs, OOM killer, manual pkill).
+    /// Without a probe the provider reports .ready forever and every
+    /// WAN sync re-advertises a model whose backend is dead - the
+    /// gateway then flaps the model's supply band as it re-adds and
+    /// prunes the ghost (#338).
+    private func reconcileLlamaCppServerTruth() {
+        guard inferenceBackend == .llamaCpp else { return }
+        // Never clobber a load in flight (same transient-state rule as
+        // syncAdvertisedLoadedModels).
+        if case .loadingModel = engineStatus { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.llamaCppProvider.refreshFromServer()
+                let serverStatus = await self.llamaCppProvider.status
+                let serverAdvertised = self.advertisedLoadedModels(for: serverStatus)
+                guard serverAdvertised != self.advertisedLoadedModels(for: self.engineStatus) else { return }
+                Self.wanLog("server-truth: llama.cpp serving \(serverAdvertised); updating engine status and re-advertising")
+                self.engineStatus = serverStatus
+                self.syncAdvertisedLoadedModels()
+            } catch {
+                if self.advertisedLoadedModels(for: self.engineStatus).isEmpty {
+                    return
+                }
+                Self.wanLog("server-truth: llama-server unreachable (\(error.localizedDescription)); clearing advertisement")
                 self.engineStatus = .idle
                 self.syncAdvertisedLoadedModels()
             }
