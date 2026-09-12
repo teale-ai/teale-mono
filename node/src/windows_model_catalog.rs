@@ -139,6 +139,21 @@ pub fn recommended_model(total_ram_gb: f64) -> Option<WindowsCatalogModel> {
         .cloned()
 }
 
+/// Availability rate used when the served model is not in this catalog
+/// (e.g. Mac nodes serving fleet models such as glm-5.3-flash): the
+/// hermes-reference floor, so the availability display stays uptime-scaled
+/// instead of pinning at 0.
+pub const UNKNOWN_MODEL_AVAILABILITY_CREDITS_PER_TICK: i64 = 1;
+
+/// Catalog availability rate for a model id, or the floor rate when the
+/// local catalog does not know the model. Display-only: the gateway ledger
+/// is the source of truth for actual earnings.
+pub fn availability_credits_per_tick_for_id(model_id: &str) -> i64 {
+    model_by_id(model_id)
+        .map(|m| m.availability_credits_per_tick())
+        .unwrap_or(UNKNOWN_MODEL_AVAILABILITY_CREDITS_PER_TICK)
+}
+
 pub fn model_by_id(model_id: &str) -> Option<WindowsCatalogModel> {
     WINDOWS_MODEL_CATALOG
         .iter()
@@ -190,8 +205,26 @@ pub fn context_for_model(
 #[cfg(test)]
 mod tests {
     use super::{
-        availability_credits_per_tick, context_for_model, recommended_model, WINDOWS_MODEL_CATALOG,
+        availability_credits_per_tick, availability_credits_per_tick_for_id, context_for_model,
+        recommended_model, WINDOWS_MODEL_CATALOG,
     };
+
+    #[test]
+    fn rate_for_id_uses_catalog_when_known_and_floor_when_unknown() {
+        let hermes = &WINDOWS_MODEL_CATALOG[0];
+        assert_eq!(
+            availability_credits_per_tick_for_id(hermes.id),
+            hermes.availability_credits_per_tick()
+        );
+        // Fleet models served from non-Windows nodes (e.g. glm-5.3-flash on a
+        // Mac) are absent from this catalog and must still display at the
+        // floor rate instead of 0.
+        assert_eq!(
+            availability_credits_per_tick_for_id("zai-org/glm-5.3-flash"),
+            1
+        );
+        assert_eq!(availability_credits_per_tick_for_id("no-such/model"), 1);
+    }
 
     #[test]
     fn recommendation_prefers_first_that_fits_budget() {
