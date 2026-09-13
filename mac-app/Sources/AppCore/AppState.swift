@@ -1410,10 +1410,13 @@ public final class AppState {
         // the pre-swap process can still hold :11435 while it drains
         // (#335), and a single failed bind otherwise leaves this build
         // listenerless for the life of the process while isServerRunning
-        // claims otherwise. 8 x 5s rides out the stale-image watchdog's
-        // worst-case 30s termination window.
+        // claims otherwise. The window must exceed the stale-image
+        // watchdog's worst-case drain (30s poll + 20s terminate ladder =
+        // 50s): 16 x 5s = 80s. The 0950 rollout proved the shorter 40s
+        // window real - air's old GUI held :11435 past it and the
+        // replacement went listenerless until restarted.
         Task.detached { [weak self] in
-            for attempt in 1...8 {
+            for attempt in 1...16 {
                 do {
                     try await server.start()
                     return
