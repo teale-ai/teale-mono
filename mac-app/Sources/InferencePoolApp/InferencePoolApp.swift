@@ -37,6 +37,10 @@ struct TealeApp: App {
         let state = AppState()
         Self.enableFleetSupplyModeIfRequested()
         state.updateChecker.startAutomaticChecks()
+        // #335: if an update swaps the bundle under this process (the
+        // updater can run in ANY Teale process on this Mac), notice the
+        // stale image and exit so the updated build can own :11435.
+        StaleImageWatchdog.shared.start()
         _appState = State(initialValue: state)
     }
 

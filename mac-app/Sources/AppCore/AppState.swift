@@ -1406,8 +1406,24 @@ public final class AppState {
                 }
             }
         )
-        Task.detached {
-            try? await server.start()
+        // Retry the bind instead of giving up silently: after an update
+        // the pre-swap process can still hold :11435 while it drains
+        // (#335), and a single failed bind otherwise leaves this build
+        // listenerless for the life of the process while isServerRunning
+        // claims otherwise. 8 x 5s rides out the stale-image watchdog's
+        // worst-case 30s termination window.
+        Task.detached { [weak self] in
+            for attempt in 1...8 {
+                do {
+                    try await server.start()
+                    return
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "local API server start attempt \(attempt) failed: \(error.localizedDescription)\n".utf8))
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                }
+            }
+            await MainActor.run { self?.isServerRunning = false }
         }
 
         startServerTruthReconciliation()

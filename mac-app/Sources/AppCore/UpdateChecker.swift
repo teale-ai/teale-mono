@@ -3,6 +3,11 @@ import Observation
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// Lightweight updater that checks GitHub Releases for newer versions,
 /// downloads them in the background, and can install/relaunch automatically.
@@ -426,11 +431,12 @@ public final class UpdateChecker {
             }
             try relaunch.run()
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-#if canImport(AppKit)
-                NSApplication.shared.terminate(nil)
-#endif
-            }
+            // Hand off to the relaunched process: exit promptly and
+            // guarantee the exit - a stalled terminate here strands the
+            // old image holding :11435 (#335). Processes this one cannot
+            // see (other login sessions) are covered by their own
+            // StaleImageWatchdog.
+            StaleImageWatchdog.terminateWithEscalation()
             return true
         } catch {
             if let releaseURL, latestTag == tag {
@@ -584,5 +590,93 @@ public final class UpdateChecker {
 
     private static func persistedString(for key: String) -> String? {
         UserDefaults.standard.string(forKey: key)
+    }
+}
+
+
+/// Watches for the bundle-swap case an in-app updater cannot fix by
+/// relaunching itself (#335): an update swaps /Applications/Teale.app on
+/// disk, but any OTHER Teale process already running (the pre-swap GUI,
+/// a fleet-supply daemon on another login session) keeps executing the
+/// old image in memory - holding :11435, re-running fixed bugs,
+/// invisible to the process that performed the swap. Sep 11 on 512g1 a
+/// stale GUI kept a pre-#334 auth client emitting ~8 device
+/// challenges/min after the fixed build was installed.
+///
+/// Cross-process signaling can't solve this reliably: old and new
+/// processes share the same executable path after the swap (path
+/// matching can't tell them apart), and the stale process may live in
+/// another user session where signaling needs privileges. What every
+/// process CAN do is notice that its own launch image no longer matches
+/// the bundle on disk, so each process terminates itself.
+public final class StaleImageWatchdog {
+    public static let shared = StaleImageWatchdog()
+
+    private let bundleURL: URL
+    private let launchVersion: String?
+    private var task: Task<Void, Never>?
+
+    public init(bundle: Bundle = .main) {
+        // Captured at construction (app startup): Bundle caches its info
+        // dictionary on first access, but a watchdog created post-swap
+        // would read the NEW plist as its "launch" version and never
+        // detect anything. Construction belongs at process start.
+        self.bundleURL = bundle.bundleURL
+        self.launchVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+    }
+
+    /// True when the bundle this process launched from has been replaced
+    /// on disk by a different build. Pure and non-killing, for tests.
+    public static func isStaleImage(launchVersion: String?, onDiskVersion: String?) -> Bool {
+        guard let launch = launchVersion, let disk = onDiskVersion,
+              !launch.isEmpty, !disk.isEmpty else { return false }
+        return launch != disk
+    }
+
+    /// The build version of the bundle currently at this process's
+    /// bundle path. After an updater swap this is the NEW build's plist.
+    private func onDiskVersion() -> String? {
+        let plist = bundleURL.appendingPathComponent("Contents/Info.plist")
+        return NSDictionary(contentsOf: plist)?["CFBundleVersion"] as? String
+    }
+
+    /// Poll every 30s. Only a positive version mismatch terminates: an
+    /// unreadable plist or a missing key never kills the process.
+    public func start(pollInterval: TimeInterval = 30) {
+        guard task == nil else { return }
+        task = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                if Self.isStaleImage(launchVersion: self.launchVersion,
+                                     onDiskVersion: self.onDiskVersion()) {
+                    let msg = "stale-image watchdog: on-disk bundle build \(self.onDiskVersion() ?? "?") no longer matches the launch image (\(self.launchVersion ?? "?")); terminating so the updated build can take over (#335)"
+                    FileHandle.standardError.write(Data((msg + "\n").utf8))
+                    Self.terminateWithEscalation()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Ask the app to exit, then make sure of it: a graceful terminate
+    /// can stall (modal state, a future shouldTerminate delegate), and a
+    /// stalled exit is exactly the #335 incident - an old image holding
+    /// :11435 indefinitely. SIGTERM at +10s, SIGKILL at +20s; a
+    /// self-directed kill cannot be cancelled by any delegate.
+    public static func terminateWithEscalation() {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+            kill(getpid(), SIGTERM)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
+            kill(getpid(), SIGKILL)
+        }
+        #if canImport(AppKit)
+        DispatchQueue.main.async {
+            NSApplication.shared.terminate(nil)
+        }
+        #else
+        kill(getpid(), SIGTERM)
+        #endif
     }
 }
