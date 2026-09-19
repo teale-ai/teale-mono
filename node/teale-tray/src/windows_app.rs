@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,9 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use windows::core::w;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows::Win32::System::Threading::CreateMutexW;
 use wry::{
     http::{header::CONTENT_TYPE, Request, Response},
     WebViewBuilder,
@@ -79,31 +82,26 @@ struct IpcMessage {
 
 pub fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let initial_auth_callback = args.iter().find(|arg| arg.starts_with("teale://")).cloned();
-    if let Some(callback_url) = initial_auth_callback.as_deref() {
-        if forward_ipc_message(IpcMessage {
-            kind: "authCallback".into(),
-            url: Some(callback_url.to_string()),
-        })
-        .is_ok()
-        {
-            return Ok(());
-        }
+    let instance = SingleInstance::acquire()?;
+    if instance.is_secondary() {
+        // The first tray may still be constructing its event loop/listener.
+        // Retry through that bounded startup window so simultaneous login-item
+        // and direct/deep-link launches reliably hand off instead of opening a
+        // second tray (#344 parity for Windows).
+        let message = args
+            .iter()
+            .find(|arg| arg.starts_with("teale://"))
+            .cloned()
+            .map(|url| IpcMessage { kind: "authCallback".into(), url: Some(url) })
+            .unwrap_or(IpcMessage { kind: "openWindow".into(), url: None });
+        forward_to_primary_with_retry(message, Duration::from_secs(10))?;
+        return Ok(());
     }
 
+    let initial_auth_callback = args.iter().find(|arg| arg.starts_with("teale://")).cloned();
     let launch_without_args = args.len() <= 1;
     let open_on_start =
         args.iter().any(|arg| arg == "--open-window") || initial_auth_callback.is_some();
-    if initial_auth_callback.is_none() && (open_on_start || launch_without_args) {
-        if forward_ipc_message(IpcMessage {
-            kind: "openWindow".into(),
-            url: None,
-        })
-        .is_ok()
-        {
-            return Ok(());
-        }
-    }
 
     let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
     let event_loop = event_loop_builder.build();
@@ -289,6 +287,49 @@ fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         .status(status)
         .body(Cow::Owned(body))
         .expect("custom protocol response")
+}
+
+struct SingleInstance {
+    handle: HANDLE,
+    secondary: bool,
+}
+
+impl SingleInstance {
+    fn acquire() -> anyhow::Result<Self> {
+        // Local\ scopes ownership to the interactive Windows session. That is
+        // where duplicate tray icons/windows can exist; the machine-level node
+        // service remains independently owned by NSSM.
+        let handle = unsafe { CreateMutexW(None, false, w!("Local\\TealeTraySingleInstance")) }
+            .context("create Teale tray single-instance mutex")?;
+        // CreateMutexW succeeds for both the first and later callers; the
+        // immediate last-error value distinguishes an existing owner.
+        let secondary = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        Ok(Self { handle, secondary })
+    }
+
+    fn is_secondary(&self) -> bool {
+        self.secondary
+    }
+}
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe { let _ = CloseHandle(self.handle); }
+    }
+}
+
+fn forward_to_primary_with_retry(message: IpcMessage, timeout: Duration) -> anyhow::Result<()> {
+    let started = Instant::now();
+    loop {
+        match forward_ipc_message(message.clone()) {
+            Ok(()) => return Ok(()),
+            Err(error) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(100));
+                let _ = error;
+            }
+            Err(error) => return Err(error).context("primary Teale tray did not accept IPC"),
+        }
+    }
 }
 
 fn show_window(window: &tao::window::Window) {
@@ -521,32 +562,45 @@ fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
 
 fn icon_for_state(state: IconState) -> Icon {
     match state {
-        IconState::Serving => head_icon(0x2d, 0xb7, 0x67),
-        IconState::Inactive => head_icon(0xd9, 0x3c, 0x35),
+        IconState::Serving => leaf_icon(0x2d, 0xb7, 0x67),
+        IconState::Inactive => leaf_icon(0x8a, 0x94, 0x9e),
     }
 }
 
-fn head_icon(r: u8, g: u8, b: u8) -> Icon {
+/// Final Teale leaf mark, status-tinted for the Windows tray. Keeping the
+/// alpha mask in-tree avoids an image-decoder/runtime asset dependency.
+fn leaf_icon(r: u8, g: u8, b: u8) -> Icon {
     const SIZE: u32 = 32;
+    const ALPHA: &[u8; (SIZE * SIZE) as usize] =
+        include_bytes!("../assets/teale-leaf-alpha-32.bin");
     let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE as i32 {
-        for x in 0..SIZE as i32 {
-            let dx = x - 13;
-            let dy = y - 13;
-            let skull = dx * dx + (dy * dy * 5) / 4 <= 100;
-            let jaw = x > 12 && x < 23 && y > 16 && y < 29;
-            let face_cut = x > 20 && y > 8 && y < 22 && (x + y) > 34;
-            let neck = x > 11 && x < 16 && y > 22;
-            let brain_cut = (x - 12) * (x - 12) + (y - 11) * (y - 11) <= 16
-                || (x - 16) * (x - 16) + (y - 11) * (y - 11) <= 12
-                || (x - 14) * (x - 14) + (y - 8) * (y - 8) <= 10;
-            let inside = (skull || jaw || neck) && !face_cut;
-            if inside {
-                rgba.extend_from_slice(&[r, g, b, if brain_cut { 0x90 } else { 0xFF }]);
-            } else {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
+    for alpha in ALPHA {
+        rgba.extend_from_slice(&[r, g, b, *alpha]);
     }
-    Icon::from_rgba(rgba, SIZE, SIZE).expect("build head icon")
+    Icon::from_rgba(rgba, SIZE, SIZE).expect("build Teale leaf icon")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaf_mask_is_embedded_at_expected_size() {
+        const ALPHA: &[u8; 32 * 32] = include_bytes!("../assets/teale-leaf-alpha-32.bin");
+        assert!(ALPHA.iter().any(|alpha| *alpha == 0));
+        assert!(ALPHA.iter().any(|alpha| *alpha > 200));
+    }
+
+    #[test]
+    fn tooltip_marks_serving_green() {
+        let snapshot = AppSnapshot {
+            service_state: "serving".into(),
+            state_reason: None,
+            loaded_model_id: Some("canary".into()),
+            active_transfer: None,
+        };
+        let (state, text) = tooltip_for(Some(&snapshot));
+        assert!(matches!(state, IconState::Serving));
+        assert!(text.contains("Serving"));
+    }
 }

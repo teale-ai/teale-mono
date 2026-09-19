@@ -12,7 +12,7 @@ Install the released Teale Windows app and use the same core flow as macOS: load
 
 ## Install
 
-1. Download the latest `Teale.exe` from the [GitHub releases page](https://github.com/teale-ai/teale-mono/releases/latest).
+1. Download the latest `Teale.exe` from the [Windows releases page](https://github.com/teale-ai/teale-mono/releases?q=teale-&expanded=true). Choose the newest `teale-*` release that contains `Teale.exe`; `releases/latest` may point at a macOS-only build.
 2. Run the installer.
 3. Launch Teale from the Start menu or desktop shortcut.
 
