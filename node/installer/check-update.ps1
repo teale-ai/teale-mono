@@ -35,6 +35,7 @@ $release = $releases |
     Where-Object {
         -not $_.draft -and
         -not $_.prerelease -and
+        $_.tag_name -like "teale-*" -and
         ($_.assets | Where-Object { $_.name -eq "Teale.exe" })
     } |
     Sort-Object { [DateTimeOffset]$_.published_at } -Descending |

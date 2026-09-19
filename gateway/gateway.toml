@@ -95,7 +95,7 @@ withdrawal_fee_bps = 180
 # inert). Confirmation is manual per machine on Taylor's word - relay
 # registration is unauthenticated (#252), display names prove nothing.
 # TICO confirmed 2026-09-07 (idle apmhelp employee install; no models yet).
-pin_id = ""
+pin_id = "cd8a30de-c68d-4c78-878a-c98e1c798450"
 employee_node_ids = [
     "176659403971565ff206c82dd023850e8ac30e39066358c8ad2e295335194c6d",
 ]

@@ -53,8 +53,8 @@ Use `scripts/deploy-windows.ps1` for silent / scripted installs.
 
 ## Installer build (`Teale.exe`)
 
-CI-based: push `teale-v<version>` tag → `.github/workflows/windows-installer.yml`
-builds, runs ISCC, uploads artifact. Download, upload to Drive, share link.
+CI-based: push `teale-<version>` tag → `.github/workflows/windows-installer.yml`
+builds, runs ISCC, and publishes `Teale.exe` on that release. Use the release asset's direct URL for staff; do not use GitHub `/releases/latest`, which can point at a macOS-only `mac-v*` release.
 
 Manual build: see `node/installer/BUILD-INSTALLER.txt`.
 
