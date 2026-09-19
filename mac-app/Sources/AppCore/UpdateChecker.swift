@@ -92,7 +92,10 @@ public final class UpdateChecker {
 
         automaticCheckTask = Task { [weak self] in
             guard let self else { return }
-            await self.checkIfNeeded()
+            // Always check once per process launch. The persisted interval is
+            // only for the long-running poll loop: a stale/corrupt defaults
+            // timestamp must never strand a field build indefinitely.
+            await self.check()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Self.pollIntervalNanos)
                 await self.checkIfNeeded()
@@ -116,8 +119,16 @@ public final class UpdateChecker {
         defer { checking = false }
 
         reconcilePreparedUpdateState()
+        Self.recordUpdateEvent("check started; currentBuild=\(Self.currentVersionNumber().map { String($0) } ?? "unknown") autoDownload=\(autoDownloadEnabled) autoInstall=\(autoInstallEnabled)")
 
-        guard let release = await fetchLatestRelease() else { return }
+        let release: GitHubRelease
+        do {
+            release = try await fetchLatestRelease()
+        } catch {
+            lastError = "Teale could not check for macOS updates: \(error.localizedDescription)"
+            Self.recordUpdateEvent("check failed: \(error)")
+            return
+        }
 
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.checkIntervalKey)
 
@@ -127,6 +138,8 @@ public final class UpdateChecker {
         latestTag = release.tagName
         releaseURL = release.htmlURL
         downloadURL = release.asset(named: Self.releaseAssetName)?.browserDownloadURL
+
+        Self.recordUpdateEvent("release selected tag=\(release.tagName) asset=\(downloadURL?.absoluteString ?? "missing") newer=\(remoteIsNewer)")
 
         guard remoteIsNewer else {
             clearAvailableUpdate()
@@ -142,6 +155,8 @@ public final class UpdateChecker {
 
         if autoDownloadEnabled {
             _ = await prepareLatestUpdateIfNeeded(triggerInstall: autoInstallEnabled)
+        } else {
+            Self.recordUpdateEvent("new release available but automatic download is disabled")
         }
     }
 
@@ -252,28 +267,51 @@ public final class UpdateChecker {
         }
     }
 
-    private func fetchLatestRelease() async -> GitHubRelease? {
+    private enum UpdateCheckError: LocalizedError {
+        case badHTTP(Int)
+        case invalidResponse
+        case noMacRelease
+
+        var errorDescription: String? {
+            switch self {
+            case .badHTTP(let status): return "GitHub returned HTTP \(status)."
+            case .invalidResponse: return "GitHub returned an unreadable release response."
+            case .noMacRelease: return "No published macOS release with Teale.zip was found."
+            }
+        }
+    }
+
+    private func fetchLatestRelease() async throws -> GitHubRelease {
         let apiURL = URL(string: "https://api.github.com/repos/\(Self.repo)/releases?per_page=20")!
         var request = URLRequest(url: apiURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Teale-macOS-updater", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
-            return nil
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw UpdateCheckError.invalidResponse
+        }
+        guard http.statusCode == 200 else {
+            throw UpdateCheckError.badHTTP(http.statusCode)
+        }
+        guard let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
+            throw UpdateCheckError.invalidResponse
         }
 
-        return releases
-            .filter {
-                !$0.draft &&
-                !$0.prerelease &&
-                $0.tagName.hasPrefix(Self.releaseTagPrefix) &&
-                $0.asset(named: Self.releaseAssetName) != nil
-            }
-            .max { lhs, rhs in
-                (releaseVersion(for: lhs.tagName) ?? 0) < (releaseVersion(for: rhs.tagName) ?? 0)
-            }
+        let candidates = releases.filter {
+            !$0.draft &&
+            !$0.prerelease &&
+            $0.tagName.hasPrefix(Self.releaseTagPrefix) &&
+            $0.asset(named: Self.releaseAssetName) != nil
+        }
+        guard let release = candidates.max(by: { lhs, rhs in
+            (Self.releaseVersion(for: lhs.tagName) ?? 0) <
+                (Self.releaseVersion(for: rhs.tagName) ?? 0)
+        }) else {
+            throw UpdateCheckError.noMacRelease
+        }
+        return release
     }
 
     private func prepareLatestUpdateIfNeeded(triggerInstall: Bool) async -> Bool {
@@ -300,6 +338,7 @@ public final class UpdateChecker {
         do {
             let updatesDirectory = try Self.updatesDirectory()
             let archiveURL = updatesDirectory.appendingPathComponent("Teale-\(latestTag).zip")
+            Self.recordUpdateEvent("download started tag=\(latestTag) url=\(downloadURL.absoluteString)")
             let (temporaryURL, response) = try await URLSession.shared.download(from: downloadURL)
 
             if let http = response as? HTTPURLResponse,
@@ -315,6 +354,7 @@ public final class UpdateChecker {
             downloadedTag = latestTag
             downloadedArchivePath = archiveURL.path
             persistPreparedUpdateState()
+            Self.recordUpdateEvent("download prepared tag=\(latestTag) path=\(archiveURL.path)")
             try? cleanupArchivedUpdates(keeping: archiveURL)
 
             if triggerInstall {
@@ -324,6 +364,7 @@ public final class UpdateChecker {
             return true
         } catch {
             lastError = "Teale could not download the latest macOS build: \(error.localizedDescription)"
+            Self.recordUpdateEvent("download failed: \(error)")
             return false
         }
     }
@@ -555,16 +596,21 @@ public final class UpdateChecker {
     }
 
     private func isNewer(tag: String) -> Bool {
-        guard let remote = releaseVersion(for: tag),
-              let local = Self.currentVersionNumber() else { return false }
-        return remote > local
+        guard let local = Self.currentVersionNumber() else { return false }
+        return Self.isNewerRelease(tag: tag, thanBuild: local)
     }
 
-    private func releaseVersion(for tag: String) -> Int64? {
+    static func releaseVersion(for tag: String) -> Int64? {
+        guard tag.hasPrefix(releaseTagPrefix) else { return nil }
         let numeric = tag
-            .replacingOccurrences(of: Self.releaseTagPrefix, with: "")
+            .dropFirst(releaseTagPrefix.count)
             .replacingOccurrences(of: ".", with: "")
         return Int64(numeric)
+    }
+
+    static func isNewerRelease(tag: String, thanBuild local: Int64) -> Bool {
+        guard let remote = releaseVersion(for: tag) else { return false }
+        return remote > local
     }
 
     private static func currentVersionNumber() -> Int64? {
@@ -587,6 +633,28 @@ public final class UpdateChecker {
 
     static var systemAutoInstallDisabled: Bool {
         FileManager.default.fileExists(atPath: systemDisableAutoInstallPath)
+    }
+
+    private static func recordUpdateEvent(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+        guard let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else { return }
+        let directory = base.appendingPathComponent("Teale", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let logURL = directory.appendingPathComponent("updater.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
+        defer { try? handle.close() }
+        try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data(line.utf8))
     }
 
     private static func persistedBool(for key: String, defaultValue: Bool) -> Bool {
