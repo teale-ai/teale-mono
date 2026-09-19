@@ -1,6 +1,7 @@
 import XCTest
 @testable import AppCore
 
+@MainActor
 final class UpdateCheckerTests: XCTestCase {
     func testMacReleaseTagBeatsOlderBuild() {
         XCTAssertTrue(UpdateChecker.isNewerRelease(
