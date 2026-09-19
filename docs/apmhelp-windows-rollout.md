@@ -29,10 +29,30 @@ Keep the APM join PIN out of chat, tickets, logs, and command transcripts. Fleet
 
 ### Model and employee-lane proof
 
-1. Apply the APM PIN's desired model policy or load the approved model. Confirm download, checksum, load, `/health`, and active model status.
-2. Send one bounded test request authenticated to the APM PIN lane.
-3. Require dispatch evidence naming the canary employee node and the APM PIN. Confirm response success, usage accounting, and no appearance in the public catalog/default lane.
-4. Kill/rework rule: any public-lane eligibility, unapproved node id, missing accounting, or fallback that hides an employee-lane miss stops rollout.
+The rollout target is one pinned model across 150+ staff machines, consumed by APM Help for its own bill-entry work. Do not promote a model from a generic chat smoke test. The current 16 GB-compatible starting candidate is `nousresearch/hermes-3-llama-3.1-8b` (5.7 GB Q5_K_M, 8k default context), but it is a candidate until it passes the bill-entry acceptance set. The Windows catalog's other 16 GB option is Llama 3.1 8B Q4_K_M. Qwen 3 8B is currently marked 24 GB and is not a 16 GB fleet default.
+
+If bills arrive as images or PDFs, extract text/OCR before this text-model lane unless the selected model and runtime have separately passed a multimodal test. Never infer a successful bill-entry field from an unread image.
+
+1. Build a de-identified, labeled acceptance set representative of APM's real bills: vendor, invoice number, invoice date, due date, subtotal, tax, total, currency, account/coding fields, line items, and duplicate indicators. Define exact-match and tolerance rules before testing.
+2. Benchmark both 16 GB-compatible candidates on the same Windows canary and acceptance set. Require valid schema output, field-level accuracy agreed with APM, no invented required fields, p50/p95 latency, peak working set below safe machine headroom, and stable behavior through at least 100 consecutive jobs. Record model file checksum, prompt/schema version, context size, and runtime flags.
+3. Select one winner and apply that single model as the APM PIN's desired model policy. Confirm download, checksum, load, `/health`, and active model status.
+4. Send the acceptance workload from an APM-side client authenticated to the APM PIN lane. This is the actual demand path, not a node-local ping.
+5. Require dispatch evidence naming the canary employee node and the APM PIN. Confirm schema-valid responses, usage accounting, and no appearance in the public catalog/default lane.
+6. Kill/rework rule: any public-lane eligibility, unapproved node id, missing accounting, hidden fleet fallback, schema drift, identity reset, or acceptance-threshold miss stops rollout.
+
+### Capacity proof
+
+Treat capacity as measured bill-entry jobs, not model tokens in isolation. Start each 16 GB laptop at one concurrent request; raising per-node concurrency competes for RAM and must pass a separate benchmark.
+
+For measured per-node throughput `r` completed bills/minute and simultaneously available staff fraction `a`, conservative fleet capacity is:
+
+```
+steady bills/minute = 150 * a * r
+hourly capacity      = 60 * 150 * a * r
+headroom-adjusted    = hourly capacity * 0.70
+```
+
+Use the 30% reserve for offline laptops, retries, tail latency, and workday churn until production telemetry justifies a different reserve. Before each rollout stage, load test the APM-authenticated PIN path at the expected arrival rate for 60 minutes and at 2x that rate for 15 minutes. Record completed/failed jobs, p50/p95/p99 latency, queue depth, retries, node utilization, and distinct serving nodes. The plan for 150 machines must show both the bill-entry arrival rate and measured `r`; machine count alone is not a capacity claim.
 
 ### Reboot and upgrade
 
