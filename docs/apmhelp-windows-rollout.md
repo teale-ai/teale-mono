@@ -6,7 +6,8 @@
 2. Push a `teale-YYYY.MM.DD.HHMM` tag from the exact green commit. The Windows workflow must publish `Teale.exe` and `checksums.txt` on that release.
 3. Verify the release asset checksum and confirm the installer embeds the same `teale-node.exe` and `teale-tray.exe` commit.
 4. Use the direct `Teale.exe` asset URL. Do not send `/releases/latest`, which can resolve to a Mac-only release.
-5. Until Authenticode is enabled, state plainly that Windows shows Unknown publisher and requires **More info -> Run anyway**, then UAC approval.
+5. On a disposable authenticated test node, confirm `teale-node pin create <temporary-name>` reaches the gateway create route instead of returning 404, then delete the temporary PIN. The September 19 shipped CLI was stale and failed this check; current source maps local `/v1/app/pins/create` to gateway `POST /v1/pins`.
+6. Until Authenticode is enabled, state plainly that Windows shows Unknown publisher and requires **More info -> Run anyway**, then UAC approval.
 
 ## One-machine canary
 
