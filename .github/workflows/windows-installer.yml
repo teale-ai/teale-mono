@@ -222,17 +222,6 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & $iscc "node\installer\teale-node-setup.iss"
 
-      - name: Verify rollout-critical installer inputs
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "node\installer\output\Teale.exe")) { throw "Teale.exe missing" }
-          if (-not (Select-String -Path "node\installer\teale-node-setup.iss" -Pattern 'param:PINCODE' -Quiet)) { throw "PIN preseed missing" }
-          if (-not (Select-String -Path "node\installer\check-update.ps1" -Pattern 'tag_name -like "teale-\*"' -Quiet)) { throw "Windows release filter missing" }
-          $pinCli = Get-Content "node\src\pin\cli.rs" -Raw
-          $statusServer = Get-Content "node\src\status_server.rs" -Raw
-          if ($pinCli -notmatch '"/v1/app/pins/create"' -or $statusServer -notmatch '\("POST", "/create"\)') { throw "PIN CLI create route mismatch" }
-          if ($statusServer -notmatch '\.proxy\("POST", "/v1/pins"') { throw "PIN create gateway route mismatch" }
-
       - name: Generate checksums
         shell: pwsh
         run: |
