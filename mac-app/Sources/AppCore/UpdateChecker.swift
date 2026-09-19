@@ -429,7 +429,18 @@ public final class UpdateChecker {
             if UserDefaults.standard.bool(forKey: "teale.fleetSupply") {
                 relaunch.arguments = ["--fleet-supply"]
             }
-            try relaunch.run()
+            // Let the replacement claim the process-wide ownership guard.
+            // Without this, the new image sees the old updater as a duplicate
+            // and exits before the handoff completes (#344).
+            AppInstanceLock.shared.release()
+            do {
+                try relaunch.run()
+            } catch {
+                // Keep this process viable if launch fails: reclaim ownership
+                // before surfacing the install error.
+                _ = AppInstanceLock.shared.acquire()
+                throw error
+            }
 
             // Hand off to the relaunched process: exit promptly and
             // guarantee the exit - a stalled terminate here strands the
