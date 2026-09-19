@@ -13,6 +13,15 @@ struct TealeApp: App {
     init() {
         Self.rejectCLIArguments()
 
+        // LaunchServices alone does not serialize a login item against the
+        // LaunchAgent or a direct executable launch (#344). Claim the
+        // kernel-backed per-user lock before AppState starts API, updater, or
+        // relay services. A crashed owner cannot leave a stale lock.
+        guard AppInstanceLock.shared.acquire() else {
+            Self.activateExistingInstance()
+            exit(0)
+        }
+
         // Disable Hub library's NetworkMonitor offline mode detection
         // which incorrectly reports "expensive" connections and blocks downloads
         setenv("CI_DISABLE_NETWORK_MONITOR", "1", 1)
@@ -29,9 +38,6 @@ struct TealeApp: App {
         let isFleetSupply = UserDefaults.standard.bool(forKey: "teale.fleetSupply")
         NSApplication.shared.setActivationPolicy(isFleetSupply ? .accessory : .regular)
 
-        if !isFleetSupply {
-            Self.installDockIcon()
-        }
         Self.patchAppMenuTitle("Teale")
 
         let state = AppState()
@@ -132,38 +138,23 @@ struct TealeApp: App {
         }
     }
 
-    private static func installDockIcon() {
-        let size: CGFloat = 512
-        let symbolConfig = NSImage.SymbolConfiguration(pointSize: size * 0.7, weight: .regular)
-        let colorConfig = NSImage.SymbolConfiguration(paletteColors: [.white])
-        let combined = symbolConfig.applying(colorConfig)
+    private static func activateExistingInstance() {
+        NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.teale.app"
+        )
+        .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier })?
+        .activate(options: [.activateAllWindows])
+    }
 
-        guard let symbol = NSImage(
-            systemSymbolName: "brain.head.profile",
-            accessibilityDescription: "Teale"
-        )?.withSymbolConfiguration(combined) else { return }
-
-        let icon = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            let cornerRadius: CGFloat = size * 0.22
-            let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
-            NSColor(red: 0.0, green: 0.6, blue: 0.6, alpha: 1.0).setFill()
-            path.fill()
-
-            let symbolSize = symbol.size
-            let origin = NSPoint(
-                x: (rect.width - symbolSize.width) / 2,
-                y: (rect.height - symbolSize.height) / 2
-            )
-            symbol.draw(
-                in: NSRect(origin: origin, size: symbolSize),
-                from: .zero,
-                operation: .sourceOver,
-                fraction: 1.0
-            )
-            return true
+    static var menuBarIcon: Image {
+        guard let url = Bundle.module.url(
+            forResource: "MenuBarIcon",
+            withExtension: "png"
+        ), let image = NSImage(contentsOf: url) else {
+            return Image(systemName: "leaf")
         }
-
-        NSApplication.shared.applicationIconImage = icon
+        image.isTemplate = true
+        return Image(nsImage: image)
     }
 
     var body: some Scene {
@@ -187,7 +178,8 @@ struct TealeApp: App {
             .environment(appState)
             .frame(width: 360, height: 400)
         } label: {
-            Label("Teale", systemImage: "brain.head.profile")
+            Self.menuBarIcon
+                .accessibilityLabel("Teale")
         }
         .menuBarExtraStyle(.window)
     }
@@ -296,13 +288,18 @@ struct CompanionMenuBarView: View {
     @StateObject private var model = MenuBarViewModel(port: 11435)
     @AppStorage("teale.menuBarEarningsUnit") private var earningsUnit = "credits"
 
+    private static var menuBarBrandMark: some View {
+        TealeApp.menuBarIcon
+            .frame(width: 18, height: 18)
+            .foregroundStyle(TealeDesign.teale)
+    }
+
     var body: some View {
         ZStack {
             TealeDesign.pageBackground
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Image(systemName: "brain.head.profile")
-                        .foregroundStyle(TealeDesign.teale)
+                    Self.menuBarBrandMark
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Teale")
                             .font(TealeDesign.mono)
