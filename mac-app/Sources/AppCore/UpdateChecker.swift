@@ -299,16 +299,16 @@ public final class UpdateChecker {
             throw UpdateCheckError.invalidResponse
         }
 
-        guard let release = releases
-            .filter {
-                !$0.draft &&
-                !$0.prerelease &&
-                $0.tagName.hasPrefix(Self.releaseTagPrefix) &&
-                $0.asset(named: Self.releaseAssetName) != nil
-            }
-            .max(by: { lhs, rhs in
-                (Self.releaseVersion(for: lhs.tagName) ?? 0) < (Self.releaseVersion(for: rhs.tagName) ?? 0)
-            }) else {
+        let candidates = releases.filter {
+            !$0.draft &&
+            !$0.prerelease &&
+            $0.tagName.hasPrefix(Self.releaseTagPrefix) &&
+            $0.asset(named: Self.releaseAssetName) != nil
+        }
+        guard let release = candidates.max(by: { lhs, rhs in
+            (Self.releaseVersion(for: lhs.tagName) ?? 0) <
+                (Self.releaseVersion(for: rhs.tagName) ?? 0)
+        }) else {
             throw UpdateCheckError.noMacRelease
         }
         return release
