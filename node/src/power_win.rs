@@ -166,12 +166,12 @@ fn cpu_tick_snapshot() -> Option<(u64, u64)> {
     // FILETIMEs and reports failure via the return value.
     let ok = unsafe {
         GetSystemTimes(
-            &mut idle as *mut _,
-            &mut kernel as *mut _,
-            &mut user as *mut _,
+            Some(&mut idle as *mut _),
+            Some(&mut kernel as *mut _),
+            Some(&mut user as *mut _),
         )
     };
-    if !ok.as_bool() {
+    if ok.is_err() {
         return None;
     }
     // Kernel time already includes idle time; subtract to get true busy.
