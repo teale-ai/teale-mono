@@ -92,8 +92,14 @@ pub fn run() -> anyhow::Result<()> {
             .iter()
             .find(|arg| arg.starts_with("teale://"))
             .cloned()
-            .map(|url| IpcMessage { kind: "authCallback".into(), url: Some(url) })
-            .unwrap_or(IpcMessage { kind: "openWindow".into(), url: None });
+            .map(|url| IpcMessage {
+                kind: "authCallback".into(),
+                url: Some(url),
+            })
+            .unwrap_or(IpcMessage {
+                kind: "openWindow".into(),
+                url: None,
+            });
         forward_to_primary_with_retry(message, Duration::from_secs(10))?;
         return Ok(());
     }
@@ -314,7 +320,9 @@ impl SingleInstance {
 
 impl Drop for SingleInstance {
     fn drop(&mut self) {
-        unsafe { let _ = CloseHandle(self.handle); }
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
     }
 }
 
