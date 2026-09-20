@@ -1182,13 +1182,7 @@ async fn pick_and_dispatch_inner(
         let sticky: Option<String> = convo_key
             .as_deref()
             .and_then(|key| state.registry.convo_node(key))
-            .filter(|node| !excluded.contains(node))
-            // A sticky hit saves prefill only when it is idle. Real traffic
-            // shows occupancy=2 raises GLM TTFT from ~5s to ~34s across
-            // prompt buckets; that penalty overwhelms any KV-cache reuse.
-            // Fall back to least-loaded scheduling while the sticky node is
-            // occupied, then refresh affinity to the node that actually wins.
-            .filter(|node| state.registry.in_flight(node) == 0);
+            .filter(|node| !excluded.contains(node));
         let sticky_of =
             |list: &[crate::registry::DeviceState]| -> Vec<crate::registry::DeviceState> {
                 match &sticky {
@@ -3907,51 +3901,11 @@ pricing_completion: "0.00000020"
         drop(rx1);
 
         signal_all.await.expect("ready waiter task should finish");
-        assert_ne!(
+        assert_eq!(
             first_node, second_node,
-            "an occupied sticky node must yield to idle supply"
+            "follow-up turn should stick to the node that served turn 1"
         );
-        assert_eq!(state.registry.in_flight(&first_node), 1);
-        assert_eq!(state.registry.in_flight(&second_node), 1);
-    }
-
-    #[tokio::test]
-    async fn pick_and_dispatch_sticks_when_affinity_node_is_idle() {
-        let model = free_like();
-        let state = dispatch_test_state(dispatch_test_config(2), &model);
-        for node in ["node-a", "node-b"] {
-            state.registry.upsert_device(
-                node.into(),
-                node.into(),
-                dispatch_caps(&[&model.id], &[]),
-            );
-        }
-        let body = serde_json::to_value(req_with("idle sticky convo", Some(16))).unwrap();
-        let key = convo_stickiness_key(&model.id, &body).expect("user turn gives a key");
-        state.registry.note_convo(&key, "node-a");
-
-        let relay = state.relay.clone();
-        let signal_ready = tokio::spawn(async move {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                if let Some(session_id) = relay.test_ready_waiter_ids().into_iter().next() {
-                    assert!(relay.test_signal_ready(&session_id));
-                    return;
-                }
-                if Instant::now() >= deadline {
-                    panic!("timed out waiting for relay-open attempt");
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-        });
-
-        let (rx, target_node, _session_id, _heavy) =
-            pick_and_dispatch(&state, &model, &body, &[], None, &[], false, 0, None)
-                .await
-                .expect("idle sticky node should dispatch");
-        drop(rx);
-        signal_ready.await.expect("ready waiter task should finish");
-        assert_eq!(target_node, "node-a");
+        assert_eq!(state.registry.in_flight(&first_node), 2);
     }
 
     #[tokio::test]
