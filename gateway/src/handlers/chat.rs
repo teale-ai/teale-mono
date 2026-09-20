@@ -1264,8 +1264,15 @@ async fn pick_and_dispatch_inner(
             excluded.push(target_node);
             continue;
         }
-        let inc_guard =
-            InFlightGuard::new(state.registry.clone(), target_node.clone(), request_heavy);
+        state
+            .registry
+            .note_model_in_flight(&target_node, &catalog_model.id);
+        let inc_guard = InFlightGuard::new(
+            state.registry.clone(),
+            target_node.clone(),
+            request_heavy,
+            catalog_model.id.clone(),
+        );
 
         // Open a relay session.
         let session_id = match state.relay.open_session(&target_node, open_timeout).await {
@@ -1369,6 +1376,7 @@ struct InFlightGuard {
     registry: Option<std::sync::Arc<crate::registry::Registry>>,
     node_id: String,
     heavy: bool,
+    model: String,
 }
 
 impl InFlightGuard {
@@ -1376,11 +1384,13 @@ impl InFlightGuard {
         registry: std::sync::Arc<crate::registry::Registry>,
         node_id: String,
         heavy: bool,
+        model: String,
     ) -> Self {
         Self {
             registry: Some(registry),
             node_id,
             heavy,
+            model,
         }
     }
     fn defuse(mut self) {
@@ -1391,6 +1401,7 @@ impl InFlightGuard {
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         if let Some(r) = self.registry.take() {
+            r.release_model_in_flight(&self.node_id, &self.model);
             r.dec_in_flight(&self.node_id, self.heavy);
         }
     }
@@ -1408,17 +1419,25 @@ pub(crate) struct SessionCleanup {
     node_id: String,
     session_id: String,
     heavy: bool,
+    model: String,
     armed: bool,
 }
 
 impl SessionCleanup {
-    pub(crate) fn new(state: &AppState, node_id: &str, session_id: &str, heavy: bool) -> Self {
+    pub(crate) fn new(
+        state: &AppState,
+        node_id: &str,
+        session_id: &str,
+        heavy: bool,
+        model: &str,
+    ) -> Self {
         Self {
             relay: state.relay.clone(),
             registry: state.registry.clone(),
             node_id: node_id.to_string(),
             session_id: session_id.to_string(),
             heavy,
+            model: model.to_string(),
             armed: true,
         }
     }
@@ -1426,6 +1445,8 @@ impl SessionCleanup {
     /// Run the cleanup now (normal exit path) and disarm the Drop impl.
     pub(crate) fn run_now(mut self) {
         self.relay.close_session(&self.node_id, &self.session_id);
+        self.registry
+            .release_model_in_flight(&self.node_id, &self.model);
         self.registry.dec_in_flight(&self.node_id, self.heavy);
         self.armed = false;
     }
@@ -1435,6 +1456,8 @@ impl Drop for SessionCleanup {
     fn drop(&mut self) {
         if self.armed {
             self.relay.close_session(&self.node_id, &self.session_id);
+            self.registry
+                .release_model_in_flight(&self.node_id, &self.model);
             self.registry.dec_in_flight(&self.node_id, self.heavy);
         }
     }
@@ -1455,6 +1478,7 @@ mod session_cleanup_tests {
             node_id: "node1".to_string(),
             session_id: "sess-1".to_string(),
             heavy,
+            model: "test/model".to_string(),
             armed: true,
         };
         (cleanup, registry)
@@ -1546,7 +1570,13 @@ async fn run_streaming(
             };
             // #276: armed for every exit path, including stream-drop on
             // client disconnect mid-prefill.
-            let cleanup = SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
+            let cleanup = SessionCleanup::new(
+                &state,
+                &target_node,
+                &session_id,
+                request_heavy,
+                &model_id,
+            );
             // Co-resident-beside-heavy: record occupancy at dispatch - a
             // heavy that finishes during our wait must not expose this
             // request to quarantine for the contention it actually saw.
@@ -1591,6 +1621,19 @@ async fn run_streaming(
                                 &model_id,
                                 prompt_tokens,
                                 state.registry.in_flight(&target_node),
+                                ttft,
+                            );
+
+                            let (gateway_same, gateway_other, reported_busy) = state
+                                .registry
+                                .occupancy_at_first_token(&target_node, &model_id);
+
+                            metrics::observe_ttft_occupancy_source(
+                                &model_id,
+                                prompt_tokens,
+                                gateway_same,
+                                gateway_other,
+                                reported_busy,
                                 ttft,
                             );
                         }
@@ -1920,7 +1963,8 @@ async fn run_buffered(
         .await?;
         // #276: armed for every exit path, including future-drop on client
         // disconnect mid-prefill.
-        let cleanup = SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
+        let cleanup =
+            SessionCleanup::new(&state, &target_node, &session_id, request_heavy, &model_id);
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
         let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
         let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;
@@ -1954,6 +1998,19 @@ async fn run_buffered(
                             &model_id,
                             prompt_tokens,
                             state.registry.in_flight(&target_node),
+                            ttft,
+                        );
+
+                        let (gateway_same, gateway_other, reported_busy) = state
+                            .registry
+                            .occupancy_at_first_token(&target_node, &model_id);
+
+                        metrics::observe_ttft_occupancy_source(
+                            &model_id,
+                            prompt_tokens,
+                            gateway_same,
+                            gateway_other,
+                            reported_busy,
                             ttft,
                         );
                     }

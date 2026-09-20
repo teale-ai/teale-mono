@@ -466,6 +466,7 @@ async fn run_anthropic_buffered(
             &target_node,
             &session_id,
             request_heavy,
+            &model_id,
         );
         // Co-resident-beside-heavy: occupancy at dispatch; a slow first
         // token there is contention on a live device, not device failure.
@@ -502,6 +503,19 @@ async fn run_anthropic_buffered(
                             &model_id,
                             prepared.prompt_tokens,
                             state.registry.in_flight(&target_node),
+                            ttft,
+                        );
+
+                        let (gateway_same, gateway_other, reported_busy) = state
+                            .registry
+                            .occupancy_at_first_token(&target_node, &model_id);
+
+                        metrics::observe_ttft_occupancy_source(
+                            &model_id,
+                            prepared.prompt_tokens,
+                            gateway_same,
+                            gateway_other,
+                            reported_busy,
                             ttft,
                         );
                     }
@@ -667,14 +681,19 @@ async fn run_anthropic_streaming(
             };
             // #276: armed for every exit path, including stream-drop on
             // client disconnect mid-prefill.
-            let cleanup = crate::handlers::chat::SessionCleanup::new(&state, &target_node, &session_id, request_heavy);
+            let cleanup = crate::handlers::chat::SessionCleanup::new(
+                &state,
+                &target_node,
+                &session_id,
+                request_heavy,
+                &model_id,
+            );
             // Co-resident-beside-heavy: occupancy at dispatch (see chat.rs).
             let beside_heavy =
                 !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
             let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;
             let ttft_deadline =
                 co_resident_ttft_adjust(ttft_deadline, beside_heavy, &state.config.reliability);
-
 
             info!(model = %model_id, device = %target_node, attempt = tried, "Anthropic streaming inference dispatched");
             let mut translator = AnthropicStreamTranslator::new(
@@ -705,6 +724,19 @@ async fn run_anthropic_streaming(
                                 &model_id,
                                 prepared.prompt_tokens,
                                 state.registry.in_flight(&target_node),
+                                ttft,
+                            );
+
+                            let (gateway_same, gateway_other, reported_busy) = state
+                                .registry
+                                .occupancy_at_first_token(&target_node, &model_id);
+
+                            metrics::observe_ttft_occupancy_source(
+                                &model_id,
+                                prepared.prompt_tokens,
+                                gateway_same,
+                                gateway_other,
+                                reported_busy,
                                 ttft,
                             );
                         }
