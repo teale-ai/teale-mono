@@ -1571,12 +1571,12 @@ async fn run_streaming(
             // #276: armed for every exit path, including stream-drop on
             // client disconnect mid-prefill.
             let cleanup = SessionCleanup::new(
-            &state,
-            &target_node,
-            &session_id,
-            request_heavy,
-            &model_id,
-        );
+                &state,
+                &target_node,
+                &session_id,
+                request_heavy,
+                &model_id,
+            );
             // Co-resident-beside-heavy: record occupancy at dispatch - a
             // heavy that finishes during our wait must not expose this
             // request to quarantine for the contention it actually saw.
@@ -1963,13 +1963,7 @@ async fn run_buffered(
         .await?;
         // #276: armed for every exit path, including future-drop on client
         // disconnect mid-prefill.
-        let cleanup = SessionCleanup::new(
-            &state,
-            &target_node,
-            &session_id,
-            request_heavy,
-            &model_id,
-        );
+        let cleanup = SessionCleanup::new(&state, &target_node, &session_id, request_heavy, &model_id);
         // Co-resident-beside-heavy: occupancy at dispatch (see run_streaming).
         let beside_heavy = !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
         let sole_supplier = state.registry.eligible_devices(&model_id).len() <= 1;

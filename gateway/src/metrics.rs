@@ -162,10 +162,7 @@ pub fn gateway_peer_bucket(same: u32, other: u32) -> &'static str {
     }
 }
 
-pub fn external_excess_bucket(
-    gateway_total: u32,
-    reported_busy: Option<u32>,
-) -> &'static str {
+pub fn external_excess_bucket(gateway_total: u32, reported_busy: Option<u32>) -> &'static str {
     match reported_busy {
         None => "unknown",
         Some(busy) if busy > gateway_total => "yes",
@@ -181,9 +178,7 @@ pub fn observe_ttft_occupancy_source(
     reported_busy: Option<u32>,
     seconds: f64,
 ) {
-    let gateway_total = gateway_same
-        .saturating_add(gateway_other)
-        .saturating_add(1);
+    let gateway_total = gateway_same.saturating_add(gateway_other).saturating_add(1);
     TTFT_OCCUPANCY_SOURCE_SECONDS
         .with_label_values(&[
             model,

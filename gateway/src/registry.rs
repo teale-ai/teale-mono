@@ -631,11 +631,7 @@ impl Registry {
     /// Bounded first-token occupancy attribution. `gateway_same` and
     /// `gateway_other` exclude the request being observed. `reported_busy`
     /// is heartbeat-visible backend occupancy and may be absent on old nodes.
-    pub fn occupancy_at_first_token(
-        &self,
-        node_id: &str,
-        model: &str,
-    ) -> (u32, u32, Option<u32>) {
+    pub fn occupancy_at_first_token(&self, node_id: &str, model: &str) -> (u32, u32, Option<u32>) {
         let total = self.in_flight(node_id);
         let same_including_self = self
             .in_flight
