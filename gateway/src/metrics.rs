@@ -135,7 +135,11 @@ pub fn in_flight_bucket(in_flight: u32) -> &'static str {
 
 pub fn observe_ttft_context(model: &str, prompt_tokens: u32, in_flight: u32, seconds: f64) {
     TTFT_CONTEXT_SECONDS
-        .with_label_values(&[model, prompt_bucket(prompt_tokens), in_flight_bucket(in_flight)])
+        .with_label_values(&[
+            model,
+            prompt_bucket(prompt_tokens),
+            in_flight_bucket(in_flight),
+        ])
         .observe(seconds);
 }
 
