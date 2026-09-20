@@ -494,9 +494,16 @@ async fn run_anthropic_buffered(
                     if !got_first {
                         got_first = true;
                         first_token_at = Some(Instant::now());
+                        let ttft = started.elapsed().as_secs_f64();
                         metrics::TTFT_SECONDS
                             .with_label_values(&[&model_id, "traffic"])
-                            .observe(started.elapsed().as_secs_f64());
+                            .observe(ttft);
+                        metrics::observe_ttft_context(
+                            &model_id,
+                            prepared.prompt_tokens,
+                            state.registry.in_flight(&target_node),
+                            ttft,
+                        );
                     }
                     acc.observe_chunk(&chunk);
                 }
@@ -690,9 +697,16 @@ async fn run_anthropic_streaming(
                         if !got_first {
                             got_first = true;
                             first_token_at = Some(Instant::now());
+                            let ttft = started.elapsed().as_secs_f64();
                             metrics::TTFT_SECONDS
                                 .with_label_values(&[&model_id, "traffic"])
-                                .observe(started.elapsed().as_secs_f64());
+                                .observe(ttft);
+                            metrics::observe_ttft_context(
+                                &model_id,
+                                prepared.prompt_tokens,
+                                state.registry.in_flight(&target_node),
+                                ttft,
+                            );
                         }
                         if !sent_message_start {
                             yield Ok(translator.message_start_event());

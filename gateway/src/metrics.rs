@@ -105,6 +105,44 @@ pub static TTFT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static TTFT_CONTEXT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "gateway_ttft_context_seconds",
+        "Traffic TTFT stratified by bounded prompt-size and dispatch occupancy buckets. Separates prompt/prefill sensitivity from co-resident queueing without device or request-id cardinality.",
+        &["model", "prompt_bucket", "in_flight_bucket"],
+        vec![0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0]
+    )
+    .expect("metric init")
+});
+
+pub fn prompt_bucket(tokens: u32) -> &'static str {
+    match tokens {
+        0..=511 => "0_511",
+        512..=2047 => "512_2047",
+        2048..=8191 => "2048_8191",
+        8192..=32767 => "8192_32767",
+        _ => "32768_plus",
+    }
+}
+
+pub fn in_flight_bucket(in_flight: u32) -> &'static str {
+    match in_flight {
+        0 | 1 => "1",
+        2 => "2",
+        _ => "3_plus",
+    }
+}
+
+pub fn observe_ttft_context(model: &str, prompt_tokens: u32, in_flight: u32, seconds: f64) {
+    TTFT_CONTEXT_SECONDS
+        .with_label_values(&[
+            model,
+            prompt_bucket(prompt_tokens),
+            in_flight_bucket(in_flight),
+        ])
+        .observe(seconds);
+}
+
 pub static DISPATCH_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "gateway_dispatch_seconds",
@@ -243,6 +281,8 @@ pub fn init() {
     let _ = &*HEAVY_HOLD_SHARED;
     let _ = &*HEAVY_HOLDS;
     let _ = &*TTFT_SECONDS;
+    let _ = &*TTFT_CONTEXT_SECONDS;
+    let _ = &*DISPATCH_SECONDS;
     let _ = &*TOTAL_LATENCY_SECONDS;
     let _ = &*DEVICES_ELIGIBLE;
     let _ = &*DEVICES_CONNECTED;
@@ -250,4 +290,24 @@ pub fn init() {
     let _ = &*DEVICE_SLOTS_TOTAL;
     let _ = &*WS_RECONNECTS_TOTAL;
     let _ = &*TOKENS_OUT_TOTAL;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ttft_context_buckets_are_bounded_and_stable() {
+        assert_eq!(prompt_bucket(0), "0_511");
+        assert_eq!(prompt_bucket(511), "0_511");
+        assert_eq!(prompt_bucket(512), "512_2047");
+        assert_eq!(prompt_bucket(2_048), "2048_8191");
+        assert_eq!(prompt_bucket(8_192), "8192_32767");
+        assert_eq!(prompt_bucket(32_768), "32768_plus");
+        assert_eq!(in_flight_bucket(0), "1");
+        assert_eq!(in_flight_bucket(1), "1");
+        assert_eq!(in_flight_bucket(2), "2");
+        assert_eq!(in_flight_bucket(3), "3_plus");
+        assert_eq!(in_flight_bucket(u32::MAX), "3_plus");
+    }
 }
