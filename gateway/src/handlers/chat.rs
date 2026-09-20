@@ -1583,9 +1583,16 @@ async fn run_streaming(
                         if !got_first_token {
                             got_first_token = true;
                             first_token_at = Some(Instant::now());
+                            let ttft = started.elapsed().as_secs_f64();
                             metrics::TTFT_SECONDS
                                 .with_label_values(&[&model_id, "traffic"])
-                                .observe(started.elapsed().as_secs_f64());
+                                .observe(ttft);
+                            metrics::observe_ttft_context(
+                                &model_id,
+                                prompt_tokens,
+                                state.registry.in_flight(&target_node),
+                                ttft,
+                            );
                         }
                         // Normalize the chunk so downstream clients see:
                         //  - canonical OpenRouter id in `model` (upstream
@@ -1939,9 +1946,16 @@ async fn run_buffered(
                     if !got_first {
                         got_first = true;
                         first_token_at = Some(Instant::now());
+                        let ttft = started.elapsed().as_secs_f64();
                         metrics::TTFT_SECONDS
                             .with_label_values(&[&model_id, "traffic"])
-                            .observe(started.elapsed().as_secs_f64());
+                            .observe(ttft);
+                        metrics::observe_ttft_context(
+                            &model_id,
+                            prompt_tokens,
+                            state.registry.in_flight(&target_node),
+                            ttft,
+                        );
                     }
                     tokens_out += 1;
                     if let Some(text) = extract_delta_content(&chunk) {
