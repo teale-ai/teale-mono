@@ -143,6 +143,57 @@ pub fn observe_ttft_context(model: &str, prompt_tokens: u32, in_flight: u32, sec
         .observe(seconds);
 }
 
+pub static TTFT_OCCUPANCY_SOURCE_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "gateway_ttft_occupancy_source_seconds",
+        "Traffic TTFT labeled at first token by gateway-visible same/other-model peers and heartbeat-visible occupancy beyond gateway accounting.",
+        &["model", "prompt_bucket", "gateway_peer", "external_excess"],
+        vec![0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0]
+    )
+    .expect("metric init")
+});
+
+pub fn gateway_peer_bucket(same: u32, other: u32) -> &'static str {
+    match (same > 0, other > 0) {
+        (false, false) => "none",
+        (true, false) => "same_model",
+        (false, true) => "other_model",
+        (true, true) => "mixed",
+    }
+}
+
+pub fn external_excess_bucket(
+    gateway_total: u32,
+    reported_busy: Option<u32>,
+) -> &'static str {
+    match reported_busy {
+        None => "unknown",
+        Some(busy) if busy > gateway_total => "yes",
+        Some(_) => "no",
+    }
+}
+
+pub fn observe_ttft_occupancy_source(
+    model: &str,
+    prompt_tokens: u32,
+    gateway_same: u32,
+    gateway_other: u32,
+    reported_busy: Option<u32>,
+    seconds: f64,
+) {
+    let gateway_total = gateway_same
+        .saturating_add(gateway_other)
+        .saturating_add(1);
+    TTFT_OCCUPANCY_SOURCE_SECONDS
+        .with_label_values(&[
+            model,
+            prompt_bucket(prompt_tokens),
+            gateway_peer_bucket(gateway_same, gateway_other),
+            external_excess_bucket(gateway_total, reported_busy),
+        ])
+        .observe(seconds);
+}
+
 pub static DISPATCH_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "gateway_dispatch_seconds",
@@ -282,6 +333,7 @@ pub fn init() {
     let _ = &*HEAVY_HOLDS;
     let _ = &*TTFT_SECONDS;
     let _ = &*TTFT_CONTEXT_SECONDS;
+    let _ = &*TTFT_OCCUPANCY_SOURCE_SECONDS;
     let _ = &*DISPATCH_SECONDS;
     let _ = &*TOTAL_LATENCY_SECONDS;
     let _ = &*DEVICES_ELIGIBLE;
@@ -309,5 +361,12 @@ mod tests {
         assert_eq!(in_flight_bucket(2), "2");
         assert_eq!(in_flight_bucket(3), "3_plus");
         assert_eq!(in_flight_bucket(u32::MAX), "3_plus");
+        assert_eq!(gateway_peer_bucket(0, 0), "none");
+        assert_eq!(gateway_peer_bucket(1, 0), "same_model");
+        assert_eq!(gateway_peer_bucket(0, 1), "other_model");
+        assert_eq!(gateway_peer_bucket(1, 1), "mixed");
+        assert_eq!(external_excess_bucket(2, Some(3)), "yes");
+        assert_eq!(external_excess_bucket(2, Some(2)), "no");
+        assert_eq!(external_excess_bucket(2, None), "unknown");
     }
 }

@@ -5,7 +5,7 @@
 //! reads from it, the handlers read its `healthy_devices_for_model` to decide
 //! whether to list a model as available.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -222,6 +222,11 @@ struct InFlight {
     /// themselves, so they share the hold up to the device's slot count.
     /// A different consumer is still refused outright.
     heavy_owner: parking_lot::Mutex<Option<String>>,
+    /// Gateway-dispatched traffic by canonical model. This is paired with
+    /// total so first-token telemetry can distinguish same-model contention
+    /// from another model sharing the backend. Synthetic/out-of-band work
+    /// remains in total only and therefore lands in the `other` bucket.
+    models: parking_lot::Mutex<HashMap<String, u32>>,
 }
 
 /// A short, stable tag for a hold owner in logs: enough to tell same from
@@ -600,6 +605,50 @@ impl Registry {
             .get(node_id)
             .map(|e| e.total.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(0)
+    }
+
+    /// Record the model carried by a successfully admitted gateway request.
+    pub fn note_model_in_flight(&self, node_id: &str, model: &str) {
+        if let Some(e) = self.in_flight.get(node_id) {
+            *e.models.lock().entry(model.to_string()).or_default() += 1;
+        }
+    }
+
+    /// Release one model-specific gateway request. Total lifecycle remains
+    /// owned by dec_in_flight so existing synthetic paths stay unchanged.
+    pub fn release_model_in_flight(&self, node_id: &str, model: &str) {
+        if let Some(e) = self.in_flight.get(node_id) {
+            let mut models = e.models.lock();
+            if let Some(count) = models.get_mut(model) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    models.remove(model);
+                }
+            }
+        }
+    }
+
+    /// Bounded first-token occupancy attribution. `gateway_same` and
+    /// `gateway_other` exclude the request being observed. `reported_busy`
+    /// is heartbeat-visible backend occupancy and may be absent on old nodes.
+    pub fn occupancy_at_first_token(
+        &self,
+        node_id: &str,
+        model: &str,
+    ) -> (u32, u32, Option<u32>) {
+        let total = self.in_flight(node_id);
+        let same_including_self = self
+            .in_flight
+            .get(node_id)
+            .and_then(|e| e.models.lock().get(model).copied())
+            .unwrap_or(0);
+        let gateway_same = same_including_self.saturating_sub(1);
+        let gateway_other = total.saturating_sub(same_including_self);
+        let reported_busy = self
+            .devices
+            .get(node_id)
+            .and_then(|d| d.capabilities.backend_slots_busy);
+        (gateway_same, gateway_other, reported_busy)
     }
 
     /// Live heavy in-flight count for a node (see `admit`).
@@ -1410,6 +1459,32 @@ mod tests {
             .snapshot_devices()
             .iter()
             .any(|d| d.node_id == "node-a"));
+    }
+
+    #[test]
+    fn first_token_occupancy_separates_same_other_and_reported_busy() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let mut device_caps = caps(vec!["test/model-a"], true);
+        device_caps.backend_slots_busy = Some(3);
+        registry.upsert_device("node-a".into(), "A".into(), device_caps);
+
+        assert!(registry.admit("node-a", false, None));
+        registry.note_model_in_flight("node-a", "test/model-a");
+        assert!(registry.admit("node-a", false, None));
+        registry.note_model_in_flight("node-a", "test/model-a");
+        assert!(registry.admit("node-a", false, None));
+        registry.note_model_in_flight("node-a", "test/model-b");
+
+        assert_eq!(
+            registry.occupancy_at_first_token("node-a", "test/model-a"),
+            (1, 1, Some(3))
+        );
+        registry.release_model_in_flight("node-a", "test/model-b");
+        registry.dec_in_flight("node-a", false);
+        assert_eq!(
+            registry.occupancy_at_first_token("node-a", "test/model-a"),
+            (1, 0, Some(3))
+        );
     }
 
     #[test]
