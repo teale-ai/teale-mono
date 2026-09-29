@@ -1,6 +1,9 @@
 //! Endpoint advertisement for the PIN data plane: which addresses peers can
-//! dial us on. LAN addresses come from the primary local interface; the
-//! reflexive (public) address from a STUN binding request. Both are
+//! dial us on. Every non-loopback private IPv4 is advertised — RFC1918
+//! physical LANs first, then 100.64/10 Tailscale CGNAT — plus the reflexive
+//! (public) address from a STUN binding request. Endpoints are dialed in
+//! order, so same-subnet stays fast and cross-subnet/Tailscale works. Both
+//! kinds are
 //! advertised via `/v1/pins/:id/sync` and distributed in netmaps — cached
 //! netmaps therefore keep LAN dialing working even when the gateway is
 //! unreachable (offline-LAN mode).
@@ -88,11 +91,80 @@ fn parse_stun_response(packet: &[u8], transaction_id: &[u8; 12]) -> Option<Socke
     None
 }
 
-/// Gather everything we can advertise for the given transport port.
-/// STUN failures degrade gracefully to LAN-only.
+/// True for RFC1918 private space (physical LANs).
+fn is_rfc1918(ip: &Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 10 || (o[0] == 192 && o[1] == 168) || (o[0] == 172 && (16..=31).contains(&o[1]))
+}
+
+/// True for 100.64.0.0/10 CGNAT space (Tailscale overlays).
+fn is_tailscale(ip: &Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+/// Non-loopback private IPv4 addresses, most-preferred first: RFC1918
+/// physical LANs, then 100.64/10 Tailscale. Peers dial in order, so a node
+/// reachable on both advertises both — same-subnet peers use the LAN
+/// address, cross-subnet/remote peers use the Tailscale one. Mirrors the
+/// Mac app's `localPrivateIPv4s` (commit 1ae535f).
+fn ordered_private_ipv4s(ips: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+    let mut ordered: Vec<Ipv4Addr> = Vec::new();
+    for pred in [is_rfc1918, is_tailscale] {
+        for ip in ips.iter().filter(|ip| pred(ip)) {
+            if !ordered.contains(ip) {
+                ordered.push(*ip);
+            }
+        }
+    }
+    ordered
+}
+
+/// Every non-loopback IPv4 on local interfaces (getifaddrs). Empty on
+/// non-Unix targets, where gather() falls back to the route-table probe.
+#[cfg(unix)]
+fn interface_ipv4s() -> Vec<Ipv4Addr> {
+    let mut out = Vec::new();
+    unsafe {
+        let mut addrs: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut addrs) != 0 {
+            return out;
+        }
+        let mut cur = addrs;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            if !ifa.ifa_addr.is_null() && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
+                let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                let ip = Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
+                if !ip.is_loopback() {
+                    out.push(ip);
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(addrs);
+    }
+    out
+}
+
+#[cfg(not(unix))]
+fn interface_ipv4s() -> Vec<Ipv4Addr> {
+    Vec::new()
+}
+
+/// Gather everything we can advertise for the given transport port: all
+/// private interface IPv4s (physical LAN + Tailscale), then the STUN
+/// reflexive. Enumeration and STUN failures degrade gracefully.
 pub async fn gather(transport_port: u16) -> Vec<PinEndpoint> {
     let mut endpoints = Vec::new();
-    if let Some(ip) = primary_lan_ip().await {
+    let mut private = ordered_private_ipv4s(&interface_ipv4s());
+    if private.is_empty() {
+        // Route-table fallback: at least the primary LAN address.
+        if let Some(ip) = primary_lan_ip().await {
+            private.push(ip);
+        }
+    }
+    for ip in private {
         endpoints.push(PinEndpoint {
             kind: "lan".into(),
             addr: format!("{ip}:{transport_port}"),
@@ -147,5 +219,40 @@ mod tests {
             p
         };
         assert!(parse_stun_response(&packet, &[7u8; 12]).is_none());
+    }
+
+    #[test]
+    fn classifies_private_ranges() {
+        assert!(is_rfc1918(&"10.0.0.1".parse().unwrap()));
+        assert!(is_rfc1918(&"192.168.0.1".parse().unwrap()));
+        assert!(is_rfc1918(&"172.16.0.1".parse().unwrap()));
+        assert!(is_rfc1918(&"172.31.255.1".parse().unwrap()));
+        assert!(!is_rfc1918(&"172.15.0.1".parse().unwrap()));
+        assert!(!is_rfc1918(&"172.32.0.1".parse().unwrap()));
+        assert!(is_tailscale(&"100.64.0.1".parse().unwrap()));
+        assert!(is_tailscale(&"100.127.255.254".parse().unwrap()));
+        assert!(!is_tailscale(&"100.63.0.1".parse().unwrap()));
+        assert!(!is_tailscale(&"100.128.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn orders_rfc1918_before_tailscale_and_dedupes() {
+        let ips: Vec<Ipv4Addr> = vec![
+            "100.102.196.73".parse().unwrap(), // tailscale
+            "192.168.18.164".parse().unwrap(), // lan
+            "10.10.8.2".parse().unwrap(),      // lan
+            "192.168.18.164".parse().unwrap(), // duplicate
+            "100.64.0.1".parse().unwrap(),     // tailscale
+            "8.8.8.8".parse().unwrap(),        // public: excluded
+            "127.0.0.1".parse().unwrap(),      // loopback: excluded
+        ];
+        let ordered = ordered_private_ipv4s(&ips);
+        let expected: Vec<Ipv4Addr> = vec![
+            "192.168.18.164".parse().unwrap(),
+            "10.10.8.2".parse().unwrap(),
+            "100.102.196.73".parse().unwrap(),
+            "100.64.0.1".parse().unwrap(),
+        ];
+        assert_eq!(ordered, expected);
     }
 }
