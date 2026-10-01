@@ -91,3 +91,50 @@ https://github.com/magnitudedev/magnitude/blob/9187740037f41fb208849ac66afb41b41
 https://github.com/magnitudedev/magnitude/blob/9187740037f41fb208849ac66afb41b41a00c304/inference/engine/executor/src/assessment/costs.rs
 
 This Rust code is independently written and no upstream implementation is copied.
+
+## Local artifact / KV payload inspection
+
+```sh
+teale models inspect --model /absolute/path/model.gguf \
+  --backend-binary /absolute/path/llama-server --backend-revision c96ffc869 \
+  --context-tokens 32768 --concurrency 2 --kv-codec q4_0
+```
+
+This independent read-only producer inspects little-endian GGUF v3 headers and
+validates tensor shapes, byte ranges, alignment and supported storage encodings.
+It hashes the full model and binary without executing the binary. It reports
+stored tensor payload, metadata key names and modeled total KV payload. No
+`assess` plan is synthesized: scratch, buffer overhead, memory placement, mmap
+resident copies, draft and live capacity remain unknown. Verdict is always
+`not_assessed`. Stored payload is not device-resident peak memory.
+
+The KV formula is narrowly reviewed for llama.cpp source revision `c96ffc869`
+(build 8805), plain dense Llama GQA and identical K/V codec (`f16`, `q4_0`,
+`q8_0`). Revision and runtime configuration are supplied assertions, not
+proved by the binary digest. It cannot certify that a particular binary was
+built from that source or actually launched with those flags. Missing head-width
+keys default to embedding/head count in this reviewed llama.cpp version, with
+every Q/K/V weight shape checked. This is **not** Seismic eligibility: Seismic's
+current loader requires explicit width keys. Unknown architectures/features,
+shards, arrays in required scalar geometry and unknown encodings fail closed.
+A header has a 128 MiB read limit; retained strings and directory counts are
+bounded. Tensor contents are not decoded. Q8_1 is excluded due to conflicting
+Python-vs-C layout descriptions in this revision, rather than guessing its size.
+
+Context means per request, rounded up to 256 cells, then multiplied by concurrency.
+Do not copy llama-server's combined `--ctx-size` into a per-request input without
+checking slot/unified-cache semantics. No TTFT, decode speed, fit or safe-load
+claim is made. Full-file hashing can take time on large local artifacts.
+Length/mtime changes during inspection are rejected; use immutable regular
+files for a consistent snapshot. These checks are not an adversarial snapshot
+or source-authentication guarantee.
+
+Reviewed sources:
+https://github.com/ggml-org/llama.cpp/blob/c96ffc869/src/llama-model.cpp
+https://github.com/ggml-org/llama.cpp/blob/c96ffc869/src/llama-context.cpp
+https://github.com/ggml-org/llama.cpp/blob/c96ffc869/src/llama-kv-cache.cpp
+https://github.com/ggml-org/llama.cpp/blob/c96ffc869/ggml/src/ggml-common.h
+
+Source freshness checks, benchmark evidence validation and held-out calibration
+are still separate work. Synthetic parser tests do not prove zero false-fit/OOM
+or <=20% decode error on hardware. Automatic selection remains disabled.

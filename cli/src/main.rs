@@ -8,6 +8,7 @@
 mod api;
 mod assessment;
 mod connections;
+mod gguf_inspect;
 mod mcp;
 mod pin_cmds;
 
@@ -74,6 +75,8 @@ enum Command {
 enum ModelsCommand {
     /// Read-only evidence-tagged per-domain fit estimate; no daemon or model load.
     Assess(assessment::AssessmentArgs),
+    /// Inspect local GGUF and pinned llama.cpp KV payload; never loads a model.
+    Inspect(gguf_inspect::InspectArgs),
     /// List models the daemon reports.
     List,
     /// Load a model into the inference engine.
@@ -128,6 +131,9 @@ async fn main() -> Result<()> {
     }
     if let Command::Models(ModelsCommand::Assess(assessment)) = args.command {
         return assessment::run(assessment);
+    }
+    if let Command::Models(ModelsCommand::Inspect(inspect)) = args.command {
+        return gguf_inspect::run(inspect);
     }
     let api = LocalApi::connect(args.addr.as_deref(), args.json).await?;
     match args.command {
@@ -249,7 +255,7 @@ fn render_models(v: &Value) -> String {
 
 async fn models(api: &LocalApi, cmd: ModelsCommand) -> Result<()> {
     match cmd {
-        ModelsCommand::Assess(_) => unreachable!(),
+        ModelsCommand::Assess(_) | ModelsCommand::Inspect(_) => unreachable!(),
         ModelsCommand::List => {
             let resp = api.call("GET", "/v1/models", None).await?;
             api.emit(&resp, render_models);
