@@ -6,6 +6,7 @@
 //! 127.0.0.1:11435, then teale-node on 127.0.0.1:11437.
 
 mod api;
+mod connections;
 mod mcp;
 mod pin_cmds;
 
@@ -37,6 +38,9 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Reversible local agent-harness configuration (no daemon required).
+    #[command(subcommand)]
+    Connections(connections::ConnectionsCommand),
     /// Snapshot: daemon state, loaded model, wallet, account.
     Status,
     /// Turn compute supply on or off.
@@ -116,8 +120,12 @@ enum SettingsCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if let Command::Connections(command) = args.command {
+        return connections::run(command, args.json);
+    }
     let api = LocalApi::connect(args.addr.as_deref(), args.json).await?;
     match args.command {
+        Command::Connections(_) => unreachable!(),
         Command::Status => status(&api).await,
         Command::Supply { state } => supply(&api, &state).await,
         Command::Models(cmd) => models(&api, cmd).await,

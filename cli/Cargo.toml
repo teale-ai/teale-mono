@@ -12,6 +12,12 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+fs2 = "0.4.3"
+jsonc-parser = { version = "0.34.0", features = ["cst", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_yaml = "0.9.34"
+tempfile = "3.27.0"
 tokio.workspace = true
+yaml-edit = "0.3.2"
