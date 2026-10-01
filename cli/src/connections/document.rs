@@ -19,7 +19,7 @@ fn input(value: &Value) -> CstInputValue {
 /// Refuse collisions even if values look like a previous Teale setup. Only a receipt owns them.
 pub fn project(harness: Harness, source: &str, edits: &[(Vec<String>, Value)]) -> Result<String> {
     match harness {
-        Harness::OpenCode => {
+        Harness::OpenCode | Harness::ClaudeCode => {
             let value: Value = jsonc_parser::parse_to_serde_value(source, &Default::default())?;
             if !value.is_object() {
                 bail!("config must be an object");
@@ -29,6 +29,26 @@ pub fn project(harness: Harness, source: &str, edits: &[(Vec<String>, Value)]) -
             }
             if value.get("provider").and_then(|p| p.get("teale")).is_some() {
                 bail!("existing Teale provider is not owned; preserved");
+            }
+            if matches!(harness, Harness::ClaudeCode) {
+                if value.get("env").is_some_and(|v| !v.is_object()) {
+                    bail!("env must be an object");
+                }
+                for name in [
+                    "ANTHROPIC_BASE_URL",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_API_KEY",
+                    "CLAUDE_CODE_USE_BEDROCK",
+                    "CLAUDE_CODE_USE_VERTEX",
+                    "CLAUDE_CODE_USE_FOUNDRY",
+                ] {
+                    if value.get("env").and_then(|v| v.get(name)).is_some() {
+                        bail!("existing Claude gateway/auth configuration is not owned; preserved");
+                    }
+                }
+                if value.get("apiKeyHelper").is_some() {
+                    bail!("existing credential helper is not owned; preserved");
+                }
             }
             let tree = CstRootNode::parse(source, &Default::default())?;
             for (path, value) in edits {
@@ -45,6 +65,7 @@ pub fn project(harness: Harness, source: &str, edits: &[(Vec<String>, Value)]) -
             }
             Ok(tree.to_string())
         }
+        Harness::Codex => bail!("Codex requires a native TOML projection"),
         Harness::Hermes => {
             let value: Value = serde_yaml::from_str(source).context("invalid YAML")?;
             if !value.is_object() {
@@ -118,6 +139,56 @@ pub fn project(harness: Harness, source: &str, edits: &[(Vec<String>, Value)]) -
         }
     }
 }
+/// Native Responses provider. A named profile is inert until selected, and never
+/// opts into OpenAI subscription auth, vendor fallback, or unproved WebSockets.
+pub fn codex(
+    source: &str,
+    model: &super::Model,
+    url: &str,
+    key_env: &str,
+    select: bool,
+) -> Result<String> {
+    use toml_edit::{value, DocumentMut, Item, Table};
+    let mut doc = source
+        .parse::<DocumentMut>()
+        .context("invalid Codex TOML")?;
+    for group in ["model_providers", "profiles"] {
+        if let Some(item) = doc.get(group) {
+            if !item.is_table() {
+                bail!("{group} must be a table");
+            }
+            if item.get("teale").is_some() {
+                bail!("existing Codex Teale provider/profile is not owned; preserved");
+            }
+        } else {
+            doc[group] = Item::Table(Table::new());
+        }
+    }
+    let mut provider = Table::new();
+    provider["name"] = value("Teale");
+    provider["base_url"] = value(url);
+    provider["wire_api"] = value("responses");
+    provider["env_key"] = value(key_env);
+    provider["requires_openai_auth"] = value(false);
+    provider["supports_websockets"] = value(false);
+    doc["model_providers"]["teale"] = Item::Table(provider);
+    let mut profile = Table::new();
+    profile["model_provider"] = value("teale");
+    profile["model"] = value(model.id.as_str());
+    profile["model_context_window"] =
+        value(i64::try_from(model.context_window).context("context exceeds TOML limit")?);
+    doc["profiles"]["teale"] = Item::Table(profile);
+    if select {
+        if doc.get("profile").is_some() {
+            bail!("active Codex profile may override default selection; preserved, use --profile teale explicitly");
+        }
+        doc["model_provider"] = value("teale");
+        doc["model"] = value(model.id.as_str());
+        doc["model_context_window"] = value(i64::try_from(model.context_window)?);
+    }
+    Ok(doc.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +198,107 @@ mod tests {
             vec!["provider".into(), "teale".into()],
             json!({"key":"quoted:secret"}),
         )]
+    }
+    #[test]
+    fn claude_preserves_comments_and_refuses_auth_collision() {
+        let e = vec![
+            (
+                vec!["env".into(), "ANTHROPIC_BASE_URL".into()],
+                json!("https://gateway.teale.com"),
+            ),
+            (
+                vec!["env".into(), "ANTHROPIC_AUTH_TOKEN".into()],
+                json!("fake"),
+            ),
+            (vec!["model".into()], json!("test/model")),
+        ];
+        let out=project(Harness::ClaudeCode,"{ // comment\n \"permissions\": {\"deny\": [\"Read(secret)\"]}, \"env\": {\"OTHER\": \"keep\"}}",&e).unwrap();
+        assert!(out.contains("// comment"));
+        let v: Value = jsonc_parser::parse_to_serde_value(&out, &Default::default()).unwrap();
+        assert_eq!(v["env"]["OTHER"], "keep");
+        assert_eq!(v["permissions"]["deny"][0], "Read(secret)");
+        assert!(project(
+            Harness::ClaudeCode,
+            r#"{"env":{"ANTHROPIC_API_KEY":"existing"}}"#,
+            &e
+        )
+        .is_err());
+        assert!(project(
+            Harness::ClaudeCode,
+            r#"{"apiKeyHelper":"existing-helper"}"#,
+            &e
+        )
+        .is_err());
+    }
+    #[test]
+    fn codex_provider_profile_and_comments_without_default_switch() {
+        let m = super::super::Model {
+            id: "test/model".into(),
+            name: "Test".into(),
+            context_window: 32000,
+            max_output_tokens: 8000,
+            vision: false,
+            tools: true,
+            reasoning_efforts: vec![],
+        };
+        let source =
+            "# user comment\nmodel = \"old\" # keep\n[model_providers.other]\nname = \"Other\"\n";
+        let out = codex(
+            source,
+            &m,
+            "https://gateway.teale.com/v1",
+            "TEALE_API_KEY",
+            false,
+        )
+        .unwrap();
+        assert!(out.contains("# user comment"));
+        assert!(out.contains("# keep"));
+        let v: toml_edit::DocumentMut = out.parse().unwrap();
+        assert_eq!(v["model"].as_str(), Some("old"));
+        assert_eq!(
+            v["model_providers"]["teale"]["wire_api"].as_str(),
+            Some("responses")
+        );
+        assert_eq!(
+            v["model_providers"]["teale"]["requires_openai_auth"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            v["model_providers"]["teale"]["supports_websockets"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            v["profiles"]["teale"]["model_context_window"].as_integer(),
+            Some(32000)
+        );
+        assert!(codex(
+            &out,
+            &m,
+            "https://gateway.teale.com/v1",
+            "TEALE_API_KEY",
+            false
+        )
+        .is_err());
+        assert!(codex(
+            "profile = \"other\"\n",
+            &m,
+            "https://gateway.teale.com/v1",
+            "TEALE_API_KEY",
+            true
+        )
+        .is_err());
+        let selected = codex(
+            source,
+            &m,
+            "https://gateway.teale.com/v1",
+            "TEALE_API_KEY",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            selected.parse::<toml_edit::DocumentMut>().unwrap()["model"].as_str(),
+            Some("test/model")
+        );
     }
     #[test]
     fn jsonc_keeps_unrelated_comments_and_values() {
