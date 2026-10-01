@@ -14,12 +14,16 @@ pub enum Harness {
     #[value(name = "opencode")]
     OpenCode,
     Hermes,
+    ClaudeCode,
+    Codex,
 }
 impl Harness {
     fn id(self) -> &'static str {
         match self {
             Self::OpenCode => "opencode",
             Self::Hermes => "hermes",
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
         }
     }
 }
@@ -128,6 +132,14 @@ fn config_path(home: &Path, harness: Harness) -> Result<PathBuf> {
                 _ => bail!("multiple OpenCode config files found; pass --config after reviewing precedence"),
             }
         }
+        Harness::ClaudeCode => Ok(std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude"))
+            .join("settings.json")),
+        Harness::Codex => Ok(std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"))
+            .join("config.toml")),
         Harness::Hermes => Ok(std::env::var_os("HERMES_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".hermes"))
@@ -198,6 +210,19 @@ fn edits(
             }
             result
         }
+        Harness::ClaudeCode => vec![
+            (
+                path(&["env", "ANTHROPIC_BASE_URL"]),
+                json!(url.trim_end_matches("/v1")),
+            ),
+            (path(&["env", "ANTHROPIC_AUTH_TOKEN"]), json!(key)),
+            (
+                path(&["env", "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"]),
+                json!("1"),
+            ),
+            (path(&["model"]), json!(model.id)),
+        ],
+        Harness::Codex => unreachable!("Codex uses a native TOML projection"),
         Harness::Hermes => {
             let mut result = vec![(
                 path(&["providers", "teale"]),
@@ -225,9 +250,19 @@ pub fn run(command: ConnectionsCommand, json_output: bool) -> Result<()> {
     let _lock = transaction::lock(&state)?;
     match command {
         ConnectionsCommand::List => {
-            let receipts = [Harness::OpenCode, Harness::Hermes].iter().map(|h| json!({
-                "harness": h.id(), "connected": state.join(format!("{}.json", h.id())).exists()
-            })).collect::<Vec<_>>();
+            let receipts = [
+                Harness::OpenCode,
+                Harness::Hermes,
+                Harness::ClaudeCode,
+                Harness::Codex,
+            ]
+            .iter()
+            .map(|h| {
+                json!({
+                    "harness": h.id(), "connected": state.join(format!("{}.json", h.id())).exists()
+                })
+            })
+            .collect::<Vec<_>>();
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({"connections": receipts,
@@ -247,6 +282,16 @@ pub fn run(command: ConnectionsCommand, json_output: bool) -> Result<()> {
             set_model,
         } => {
             transaction::require_clean(&state)?;
+            if matches!(harness, Harness::ClaudeCode) && !set_model {
+                bail!("Claude Code has one gateway route; --set-model is required to explicitly switch routing and model");
+            }
+            if key_env.is_empty()
+                || !key_env
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                bail!("invalid key environment variable name");
+            }
             let receipt_path = state.join(format!("{}.json", harness.id()));
             if receipt_path.exists() {
                 bail!("already connected; remove first (later user edits are never overwritten)");
@@ -267,12 +312,22 @@ pub fn run(command: ConnectionsCommand, json_output: bool) -> Result<()> {
                 bail!("config cannot be inside connector state directory");
             }
             let before = transaction::read(&config)?;
-            let source = before.as_deref().unwrap_or("{}\n");
-            let next = document::project(
-                harness,
-                source,
-                &edits(harness, &model, &url, &key, set_model),
-            )?;
+            let source = before
+                .as_deref()
+                .unwrap_or(if matches!(harness, Harness::Codex) {
+                    ""
+                } else {
+                    "{}\n"
+                });
+            let next = if matches!(harness, Harness::Codex) {
+                document::codex(source, &model, &url, &key_env, set_model)?
+            } else {
+                document::project(
+                    harness,
+                    source,
+                    &edits(harness, &model, &url, &key, set_model),
+                )?
+            };
             let change = transaction::Change {
                 path: config,
                 before,

@@ -1,8 +1,8 @@
-# Reversible agent connectors (first slice)
+# Reversible agent connectors
 
-The Rust `teale` CLI can add a Teale provider to OpenCode or Hermes. This
-command does not need the daemon and never calls inference. Claude Code and
-Codex are follow-up slices; the Swift mac-app CLI does not have this command.
+The Rust `teale` CLI can configure OpenCode, Hermes, Claude Code and Codex. This
+command does not need the daemon and never calls inference. The Swift mac-app
+CLI does not have this command.
 Use the Rust CLI binary built from `cli/`.
 
 ```sh
@@ -94,3 +94,51 @@ The transaction/projection design was informed by Magnitude, reviewed at
 no Magnitude TypeScript implementation is vendored. Consult
 `packages/harness-connections` in that source for the original design. Third-party
 crate licenses are carried by their distributions; audit them in release review.
+
+## Claude Code and Codex slice
+
+```sh
+teale connections add claude-code --model-file model.json --set-model
+teale connections add codex --model-file model.json
+# Start Codex deliberately with the provider profile (key must remain in its environment):
+codex --profile teale
+```
+
+Claude Code has one global gateway route, not an inert provider registry. Thus
+`--set-model` is required: this explicitly switches its gateway, auth and model.
+The connector writes `ANTHROPIC_BASE_URL` (without the `/v1` suffix),
+`ANTHROPIC_AUTH_TOKEN`, gateway discovery and the canonical model ID to user
+settings. It refuses existing gateway/auth/provider-switch settings or an
+apiKeyHelper. Existing saved vendor login is not deleted. Managed/project/shell
+settings can override user settings; inspect effective settings before use.
+No built-in model name is silently redirected to Teale or paid vendor fallback.
+This changes CLI user settings, not Claude Desktop's separate configuration.
+
+Codex gets `[model_providers.teale]` with `wire_api="responses"`, `env_key`,
+`requires_openai_auth=false`, and `supports_websockets=false`, plus an inert
+`[profiles.teale]` with model/provider/context. It does not write the secret key
+into TOML, a model catalog, or a subscription-auth proxy. Export the same key
+variable when starting Codex. `--set-model` changes top-level defaults; this is
+refused when an active `profile` could override them. Otherwise use the explicit
+profile. Existing provider/profile named teale is preserved with a conflict.
+TOML comments and unrelated tables survive and disconnect uses the same receipt.
+
+Codex context comes from explicit metadata. This slice does not publish its
+vision/reasoning/tool/output-limit capabilities through a generated custom
+catalog, because that catalog is harness-version-specific; do not infer those
+fields from the model ID. It does not spawn `codex debug models --bundled` or
+claim WebSocket, tool streaming or live model-picker compatibility. Those need
+version-pinned live harness tests before the connectors can be called proven.
+Likewise Claude gateway discovery depends on the gateway's discovery schema;
+explicit model selection avoids relying on successful discovery for routing.
+No API call is made to test it during setup.
+
+Grounding for native configuration semantics:
+- https://code.claude.com/docs/en/llm-gateway-connect
+- https://code.claude.com/docs/en/llm-gateway-protocol
+- https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs
+- https://learn.chatgpt.com/docs/config-file/config-advanced
+
+Local tests for this slice exercise native auth projection, default/profile
+selection, auth collisions, comment retention, exact-byte removal and user-edit
+conflicts. They do not validate a paid live harness conversation.
