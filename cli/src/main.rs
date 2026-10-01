@@ -7,6 +7,7 @@
 
 mod api;
 mod assessment;
+mod calibration;
 mod connections;
 mod gguf_inspect;
 mod mcp;
@@ -77,6 +78,8 @@ enum ModelsCommand {
     Assess(assessment::AssessmentArgs),
     /// Inspect local GGUF and pinned llama.cpp KV payload; never loads a model.
     Inspect(gguf_inspect::InspectArgs),
+    /// Check local held-out dataset integrity/freshness and finite calibration gates.
+    ValidateEvidence(calibration::CalibrationArgs),
     /// List models the daemon reports.
     List,
     /// Load a model into the inference engine.
@@ -134,6 +137,9 @@ async fn main() -> Result<()> {
     }
     if let Command::Models(ModelsCommand::Inspect(inspect)) = args.command {
         return gguf_inspect::run(inspect);
+    }
+    if let Command::Models(ModelsCommand::ValidateEvidence(evidence)) = args.command {
+        return calibration::run(evidence);
     }
     let api = LocalApi::connect(args.addr.as_deref(), args.json).await?;
     match args.command {
@@ -255,7 +261,9 @@ fn render_models(v: &Value) -> String {
 
 async fn models(api: &LocalApi, cmd: ModelsCommand) -> Result<()> {
     match cmd {
-        ModelsCommand::Assess(_) | ModelsCommand::Inspect(_) => unreachable!(),
+        ModelsCommand::Assess(_)
+        | ModelsCommand::Inspect(_)
+        | ModelsCommand::ValidateEvidence(_) => unreachable!(),
         ModelsCommand::List => {
             let resp = api.call("GET", "/v1/models", None).await?;
             api.emit(&resp, render_models);
