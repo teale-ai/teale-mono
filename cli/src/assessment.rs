@@ -11,6 +11,12 @@ pub struct AssessmentArgs {
     /// JSON load plan with per-domain charges and evidence (see docs/model-fit-assessment.md).
     #[arg(long)]
     plan: PathBuf,
+    /// Optional bounded local source-snapshot registry. No live fetch/authentication.
+    #[arg(long, requires = "source_max_age_seconds")]
+    source_registry: Option<PathBuf>,
+    /// Explicit maximum snapshot-check age, used only with --source-registry.
+    #[arg(long, requires = "source_registry")]
+    source_max_age_seconds: Option<u64>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -146,6 +152,7 @@ struct Assessment {
     limiting_domain: String,
     domains: Vec<DomainResult>,
     decode: Option<Estimate>,
+    source_audit: Option<crate::source_audit::Audit>,
     caveats: Vec<&'static str>,
 }
 fn evaluate(plan: Plan) -> Result<Assessment> {
@@ -228,7 +235,7 @@ fn evaluate(plan: Plan) -> Result<Assessment> {
     let decode = plan.decode.map(estimate).transpose()?;
     Ok(Assessment{version:1,device_id:plan.device_id,backend:plan.backend,backend_revision:plan.backend_revision,
         model_id:plan.model_id,artifact_id:plan.artifact_id,context_tokens:plan.context_tokens,concurrency:plan.concurrency,
-        verdict:if fits {"modeled_fit"} else {"modeled_does_not_fit"},limiting_domain:limiting,domains:results,decode,
+        verdict:if fits {"modeled_fit"} else {"modeled_does_not_fit"},limiting_domain:limiting,domains:results,decode,source_audit:None,
         caveats:vec!["Load-plan inputs are supplied evidence, not independently verified or freshness-checked.",
         "A modeled fit is not an allocation guarantee, measured safe load, or routing recommendation.",
         "Charges must include all shards, aliases charged once per physical domain, backend KV layout and peak scratch/draft at this workload.",
@@ -275,9 +282,23 @@ fn estimate(input: Decode) -> Result<Estimate> {
         caveat:"Prediction from supplied costs. Do not relabel measured even when individual inputs were measured."})
 }
 pub fn run(args: AssessmentArgs) -> Result<()> {
-    let plan: Plan = serde_json::from_slice(&std::fs::read(args.plan)?)
-        .context("invalid assessment load plan")?;
-    let assessed = evaluate(plan)?;
+    let metadata = std::fs::symlink_metadata(&args.plan)?;
+    if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
+        bail!("assessment plan must be a regular file <=8 MiB");
+    }
+    let bytes = std::fs::read(&args.plan)?;
+    let plan: Plan = serde_json::from_slice(&bytes).context("invalid assessment load plan")?;
+    let audit = match args.source_registry {
+        Some(registry) => Some(crate::source_audit::check(
+            &registry,
+            args.source_max_age_seconds
+                .context("source maximum age required")?,
+            &serde_json::from_slice(&bytes)?,
+        )?),
+        None => None,
+    };
+    let mut assessed = evaluate(plan)?;
+    assessed.source_audit = audit;
     println!("{}", serde_json::to_string_pretty(&assessed)?);
     Ok(())
 }
