@@ -138,3 +138,52 @@ https://github.com/ggml-org/llama.cpp/blob/c96ffc869/ggml/src/ggml-common.h
 Source freshness checks, benchmark evidence validation and held-out calibration
 are still separate work. Synthetic parser tests do not prove zero false-fit/OOM
 or <=20% decode error on hardware. Automatic selection remains disabled.
+
+## Optional local source-snapshot audit
+
+```sh
+teale models assess --plan /local/campaign/plan.json \
+  --source-registry /local/campaign/sources.json --source-max-age-seconds 86400
+```
+
+Registry schema:
+
+```json
+{
+  "version": 1,
+  "sources": [{
+    "source": "exact source string from evidence",
+    "asOf": "exact dated version string from evidence",
+    "basis": "published",
+    "checkedAtUnix": 1000,
+    "snapshotFile": "source.txt",
+    "snapshotSha256": "<64 lowercase hex digest of saved bytes>",
+    "benchmarkId": null
+  }]
+}
+```
+
+For every published/reported/measured evidence entry, the optional audit requires
+an exact source/asOf/basis match, local snapshot with matching digest, nonfuture
+check timestamp within explicitly selected maximum age, and matching benchmarkId
+for measured entries. Snapshot files must be single relative regular nonsymlink
+filenames alongside the registry. Registry and snapshots are bounded to 8 MiB;
+registry to 10,000 source entries. Missing/mismatched/stale snapshots stop output.
+Assumed/modeled entries are explicitly counted as unverified. Without these
+flags the original supplied-evidence assessment remains available, unaudited.
+
+Output `sourceAudit.status` is `local_snapshot_consistency_checked`, never
+`source_verified` or `fresh_live_source`. Check times are collector assertions,
+not proof a live publication/hardware source is still current. Exact asOf matches
+are not date parsing or authenticity. Snapshot digests bind saved bytes, not
+source author, truth, the extraction of a numeric charge, or immutable history.
+A synthetic or attacker-authored snapshot can satisfy consistency; do not use
+this as a trust gate. A measured snapshot identifier also does not validate a
+raw benchmark; that is separate `validate-evidence` work.
+
+No URL is fetched and no backend runs. Reported/published **live source freshness**
+therefore remains unproved until a trusted producer checks the actual owning
+source and records retrieval. This mechanism supports that producer's records
+without overstating what an offline reader can know. Fit stays modeled and no
+automatic admission or route changes follow. Full peak-memory extraction and
+hardware calibration also remain required.

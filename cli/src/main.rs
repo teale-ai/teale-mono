@@ -12,6 +12,7 @@ mod connections;
 mod gguf_inspect;
 mod mcp;
 mod pin_cmds;
+mod source_audit;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
