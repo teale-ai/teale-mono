@@ -6,6 +6,7 @@
 //! 127.0.0.1:11435, then teale-node on 127.0.0.1:11437.
 
 mod api;
+mod assessment;
 mod connections;
 mod mcp;
 mod pin_cmds;
@@ -71,6 +72,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ModelsCommand {
+    /// Read-only evidence-tagged per-domain fit estimate; no daemon or model load.
+    Assess(assessment::AssessmentArgs),
     /// List models the daemon reports.
     List,
     /// Load a model into the inference engine.
@@ -122,6 +125,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     if let Command::Connections(command) = args.command {
         return connections::run(command, args.json);
+    }
+    if let Command::Models(ModelsCommand::Assess(assessment)) = args.command {
+        return assessment::run(assessment);
     }
     let api = LocalApi::connect(args.addr.as_deref(), args.json).await?;
     match args.command {
@@ -243,6 +249,7 @@ fn render_models(v: &Value) -> String {
 
 async fn models(api: &LocalApi, cmd: ModelsCommand) -> Result<()> {
     match cmd {
+        ModelsCommand::Assess(_) => unreachable!(),
         ModelsCommand::List => {
             let resp = api.call("GET", "/v1/models", None).await?;
             api.emit(&resp, render_models);
