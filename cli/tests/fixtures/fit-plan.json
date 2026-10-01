@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "deviceId": "synthetic-lab",
+  "backend": "llama.cpp",
+  "backendRevision": "fixture-not-a-real-build",
+  "modelId": "synthetic-model",
+  "artifactId": "fixture-not-a-real-artifact",
+  "contextTokens": 4096,
+  "concurrency": 2,
+  "domains": [
+    {
+      "id": "unified",
+      "capacity": {
+        "value": 17179869184,
+        "evidence": {
+          "basis": "assumed",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "reserve": {
+        "value": 4294967296,
+        "evidence": {
+          "basis": "assumed",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "occupied": {
+        "value": 0,
+        "evidence": {
+          "basis": "assumed",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "weights": {
+        "value": 8589934592,
+        "evidence": {
+          "basis": "modeled",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "kvPerRequest": {
+        "value": 1073741824,
+        "evidence": {
+          "basis": "modeled",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "scratchPeak": {
+        "value": 536870912,
+        "evidence": {
+          "basis": "modeled",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "draftPeak": {
+        "value": 0,
+        "evidence": {
+          "basis": "modeled",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      },
+      "overhead": {
+        "value": 268435456,
+        "evidence": {
+          "basis": "modeled",
+          "source": "synthetic fixture, not a fleet measurement",
+          "asOf": "2026-10-01"
+        }
+      }
+    }
+  ]
+}
