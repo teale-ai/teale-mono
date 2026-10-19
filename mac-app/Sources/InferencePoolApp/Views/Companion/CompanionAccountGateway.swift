@@ -249,6 +249,24 @@ final class CompanionAccountState {
 }
 
 private enum CompanionAccountGatewayClient {
+    // One cached auth client per gateway root. Constructing a client per call
+    // drops its in-memory token cache, so every request ran a full
+    // challenge + exchange against the gateway (seen as a device-challenge
+    // retry storm). Sharing the client lets its 24h token cache do its job.
+    @MainActor
+    private static var cachedAuthClient: (rootURL: URL, client: GatewayAuthClient)?
+
+    @MainActor
+    private static func authClient(for appState: AppState) -> GatewayAuthClient {
+        let rootURL = companionGatewayRootURL(for: appState.gatewayFallbackURL)
+        if let cached = cachedAuthClient, cached.rootURL == rootURL {
+            return cached.client
+        }
+        let client = GatewayAuthClient(baseURL: rootURL)
+        cachedAuthClient = (rootURL, client)
+        return client
+    }
+
     @MainActor
     static func linkAndLoadSummary(
         appState: AppState,
@@ -352,7 +370,7 @@ private enum CompanionAccountGatewayClient {
         appState: AppState,
         path: String
     ) async throws -> Response {
-        let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        let client = authClient(for: appState)
         let token = try await bearer(using: client, appState: appState)
         do {
             return try await client.getJSON(path: path, bearerToken: token)
@@ -368,7 +386,7 @@ private enum CompanionAccountGatewayClient {
         path: String,
         body: Request
     ) async throws -> Response {
-        let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        let client = authClient(for: appState)
         let token = try await bearer(using: client, appState: appState)
         do {
             return try await client.postJSON(path: path, body: body, bearerToken: token)
@@ -383,7 +401,7 @@ private enum CompanionAccountGatewayClient {
         appState: AppState,
         path: String
     ) async throws -> Response {
-        let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        let client = authClient(for: appState)
         let token = try await bearer(using: client, appState: appState)
         do {
             return try await client.deleteJSON(path: path, bearerToken: token)
@@ -398,7 +416,7 @@ private enum CompanionAccountGatewayClient {
         appState: AppState,
         path: String
     ) async throws {
-        let client = GatewayAuthClient(baseURL: companionGatewayRootURL(for: appState.gatewayFallbackURL))
+        let client = authClient(for: appState)
         let token = try await bearer(using: client, appState: appState)
         do {
             let _: EmptyAccountGatewayResponse = try await client.deleteJSON(path: path, bearerToken: token)
@@ -427,7 +445,9 @@ private enum CompanionAccountGatewayClient {
     @MainActor
     private static func refreshBearer(using client: GatewayAuthClient, appState: AppState) async throws -> String {
         appState.gatewayAPIKey = ""
-        let token = try await client.bearer()
+        // Force a fresh token: with a shared cached client, bearer() would
+        // hand back the still-valid cached token instead of refreshing.
+        let token = try await client.exchange()
         appState.gatewayAPIKey = token
         return token
     }
