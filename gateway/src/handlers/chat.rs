@@ -3714,6 +3714,79 @@ pricing_completion: "0.00000020"
         assert_eq!(error_to_status_label(&err), "at_capacity");
     }
 
+    async fn heartbeat_dispatch_err(
+        queue_depth: u32,
+        throttle_level: u32,
+        thermal: teale_protocol::ThermalLevel,
+        admit: bool,
+    ) -> GatewayError {
+        let model = free_like();
+        let mut config = dispatch_test_config(18);
+        config.scheduler.max_queue_depth = 2;
+        config.reliability.saturation_429 = true;
+        let state = dispatch_test_state(config, &model);
+        state.registry.upsert_device(
+            "hb-a".into(),
+            "Hb A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.apply_heartbeat(
+            "hb-a",
+            &teale_protocol::HeartbeatPayload {
+                device_id: "hb-a".into(),
+                timestamp: 0.0,
+                thermal_level: thermal,
+                throttle_level,
+                loaded_models: vec![model.id.clone()],
+                is_generating: false,
+                queue_depth,
+                ewma_tokens_per_second: Some(50.0),
+            },
+        );
+        if admit {
+            assert!(state.registry.admit("hb-a", false, None));
+            assert!(state.registry.admit("hb-a", false, None));
+        }
+        pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+            None,
+        )
+        .await
+        .expect_err("must not dispatch")
+    }
+
+    #[tokio::test]
+    async fn saturation_from_heartbeat_queue_depth_is_429() {
+        use teale_protocol::ThermalLevel;
+        let err = heartbeat_dispatch_err(2, 100, ThermalLevel::Nominal, false).await;
+        assert!(matches!(err, GatewayError::AtCapacity(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn zero_throttle_is_not_saturation() {
+        use teale_protocol::ThermalLevel;
+        // At the in-flight cap but throttle 0: undispatchable regardless of
+        // queue, so it must stay a 503, not a retry-later 429.
+        let err = heartbeat_dispatch_err(0, 0, ThermalLevel::Nominal, true).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)), "{err:?}");
+        let err = heartbeat_dispatch_err(2, 0, ThermalLevel::Nominal, false).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn critical_thermal_with_full_queue_is_not_saturation() {
+        use teale_protocol::ThermalLevel;
+        let err = heartbeat_dispatch_err(2, 100, ThermalLevel::Critical, false).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)), "{err:?}");
+    }
+
     #[test]
     fn backend_client_error_classification() {
         assert!(is_backend_client_error(

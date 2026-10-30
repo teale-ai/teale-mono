@@ -39,9 +39,12 @@ impl Scheduler {
     }
 
     /// True when at least one candidate passes every `pick` filter except
-    /// the queue-depth cap, and every such candidate is at or over the cap.
+    /// the queue-depth caps (heartbeat `live.queue_depth` and gateway
+    /// `in_flight`), and every such candidate is blocked only by those caps.
     /// i.e. `pick` returned None purely because of saturation, not because
-    /// of missing supply, battery, context, exclusion or zero score.
+    /// of missing supply, quarantine, thermal/availability, model, battery,
+    /// context, exclusion, or a zero score (throttle/thermal) that would
+    /// make the device undispatchable even with an empty queue.
     pub fn saturated(
         &self,
         candidates: &[DeviceState],
@@ -55,7 +58,10 @@ impl Scheduler {
             if exclude.iter().any(|e| e == &d.node_id) {
                 continue;
             }
-            let loaded = match d.is_eligible_for(model_id, self.cfg.max_queue_depth) {
+            // Ignore ONLY the queue cap here; every other eligibility
+            // gate (quarantine, thermal critical, availability, model
+            // support) still applies.
+            let loaded = match d.is_eligible_for(model_id, u32::MAX) {
                 Eligibility::Loaded => true,
                 Eligibility::Swappable => false,
                 _ => continue,
@@ -70,12 +76,17 @@ impl Scheduler {
             if matches!(d.capabilities.on_ac_power, Some(false)) {
                 continue;
             }
-            let in_flight = registry.in_flight(&d.node_id);
-            if in_flight >= self.cfg.max_queue_depth {
-                blocked_by_depth += 1;
+            // Undispatchable even with an empty queue (throttle 0, thermal
+            // weight 0): not a saturation case.
+            if self.score_with_queue(d, loaded, 0) <= 0.0 {
                 continue;
             }
-            if self.score(d, loaded, in_flight) > 0.0 {
+            let in_flight = registry.in_flight(&d.node_id);
+            let at_cap = d.live.queue_depth >= self.cfg.max_queue_depth
+                || in_flight >= self.cfg.max_queue_depth;
+            if at_cap {
+                blocked_by_depth += 1;
+            } else {
                 // A device could take the request: not saturated.
                 return false;
             }
@@ -187,8 +198,11 @@ impl Scheduler {
     }
 
     fn score(&self, d: &DeviceState, loaded: bool, in_flight: u32) -> f64 {
+        self.score_with_queue(d, loaded, (d.live.queue_depth).max(in_flight))
+    }
+
+    fn score_with_queue(&self, d: &DeviceState, loaded: bool, effective_queue: u32) -> f64 {
         let tps = d.ewma_tokens_per_second.max(1.0);
-        let effective_queue = (d.live.queue_depth).max(in_flight);
         let queue_norm = (effective_queue as f64 / self.cfg.max_queue_depth as f64).min(1.0);
         let headroom = (1.0 - queue_norm).max(0.0);
         let throttle = (d.live.throttle_level as f64 / 100.0).clamp(0.0, 1.0);
