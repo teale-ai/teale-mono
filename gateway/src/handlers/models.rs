@@ -165,7 +165,11 @@ pub async fn openrouter_models(State(state): State<AppState>) -> Response {
         .iter()
         .filter(|m| !m.is_virtual && !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
         .filter(|m| {
-            let min = if is_large(m.params_b) { floor.large } else { floor.small };
+            let min = if is_large(m.params_b) {
+                floor.large
+            } else {
+                floor.small
+            };
             state.registry.loaded_count(&m.id) >= min
         })
         .collect();

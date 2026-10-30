@@ -31,7 +31,10 @@ fn supported_parameters(m: &CatalogModel) -> Map<String, Value> {
     let has = |name: &str| m.supported_parameters.iter().any(|p| p == name);
     let mut out = Map::new();
     if has("temperature") {
-        out.insert("temperature".into(), json!({"type": "range", "min": 0, "max": 2}));
+        out.insert(
+            "temperature".into(),
+            json!({"type": "range", "min": 0, "max": 2}),
+        );
     }
     if has("top_p") {
         out.insert("top_p".into(), json!({"type": "range", "min": 0, "max": 1}));
@@ -116,7 +119,13 @@ mod tests {
         let d = model_document(&model(&["temperature", "max_tokens"], None));
         assert_eq!(d["schema_version"], "2.4");
         assert_eq!(d["is_ready"], false);
-        for held in ["pricing", "datacenters", "deployment_region", "hugging_face_id", "capacity"] {
+        for held in [
+            "pricing",
+            "datacenters",
+            "deployment_region",
+            "hugging_face_id",
+            "capacity",
+        ] {
             assert!(d.get(held).is_none(), "{held} must not be emitted");
         }
         assert!(d["input_modalities"][0].get("pricing").is_none());
@@ -126,7 +135,10 @@ mod tests {
 
     #[test]
     fn typed_modalities_and_descriptors() {
-        let d = model_document(&model(&["temperature", "top_p", "max_tokens", "stop"], None));
+        let d = model_document(&model(
+            &["temperature", "top_p", "max_tokens", "stop"],
+            None,
+        ));
         assert_eq!(d["input_modalities"][0]["type"], "text");
         assert_eq!(
             d["input_modalities"][0]["supported_inputs"]["max_context_length"]["value"],
@@ -144,15 +156,22 @@ mod tests {
     #[test]
     fn tools_only_when_catalog_lists_them() {
         let without = model_document(&model(&["temperature"], None));
-        assert!(without["output_modalities"][0]["supported_parameters"].get("tools").is_none());
+        assert!(without["output_modalities"][0]["supported_parameters"]
+            .get("tools")
+            .is_none());
         let with = model_document(&model(&["temperature", "tools"], None));
-        assert_eq!(with["output_modalities"][0]["supported_parameters"]["tools"]["type"], "boolean");
+        assert_eq!(
+            with["output_modalities"][0]["supported_parameters"]["tools"]["type"],
+            "boolean"
+        );
     }
 
     #[test]
     fn response_format_alone_is_not_structured_outputs() {
         let d = model_document(&model(&["response_format", "include_reasoning"], None));
-        let p = d["output_modalities"][0]["supported_parameters"].as_object().unwrap();
+        let p = d["output_modalities"][0]["supported_parameters"]
+            .as_object()
+            .unwrap();
         assert!(p.get("structured_outputs").is_none());
         assert!(p.get("reasoning").is_none());
         let d = model_document(&model(&["structured_outputs", "reasoning"], None));
@@ -164,13 +183,18 @@ mod tests {
     #[test]
     fn empty_parameters_is_empty_object_and_unlisted_not_invented() {
         let d = model_document(&model(&["stream", "seed"], None));
-        let p = d["output_modalities"][0]["supported_parameters"].as_object().unwrap();
+        let p = d["output_modalities"][0]["supported_parameters"]
+            .as_object()
+            .unwrap();
         assert!(p.is_empty());
     }
 
     #[test]
     fn quantization_only_from_valid_set() {
-        assert_eq!(model_document(&model(&[], Some("MXFP4")))["quantization"], "mxfp4");
+        assert_eq!(
+            model_document(&model(&[], Some("MXFP4")))["quantization"],
+            "mxfp4"
+        );
         assert!(model_document(&model(&[], Some("8bit")))["quantization"].is_null());
         assert!(model_document(&model(&[], Some("Q4_K_M")))["quantization"].is_null());
         assert!(model_document(&model(&[], None))["quantization"].is_null());
