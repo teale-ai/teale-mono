@@ -58,6 +58,12 @@ pub enum GatewayError {
     #[error("timeout waiting for upstream")]
     UpstreamTimeout,
 
+    /// Every otherwise-eligible device is at max_queue_depth. Retriable
+    /// capacity signal (429 + Retry-After). Only produced when
+    /// `reliability.saturation_429` is on.
+    #[error("model {0} is at capacity, retry shortly")]
+    AtCapacity(String),
+
     #[error("relay unavailable: {0}")]
     RelayUnavailable(String),
 
@@ -79,6 +85,7 @@ impl GatewayError {
             Self::ModelNotFound(_) => StatusCode::NOT_FOUND,
             Self::NoEligibleDevice(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::HeavyContention(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::AtCapacity(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::PromptExceedsContext { .. } => StatusCode::BAD_REQUEST,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::AllUpstreamsFailed(_) => StatusCode::BAD_GATEWAY,
@@ -101,6 +108,7 @@ impl GatewayError {
             Self::ModelNotFound(_) => "model_not_found",
             Self::NoEligibleDevice(_) => "model_unavailable",
             Self::HeavyContention(_) => "heavy_contention",
+            Self::AtCapacity(_) => "at_capacity",
             Self::PromptExceedsContext { .. } => "prompt_exceeds_context",
             Self::Upstream(_) => "upstream_error",
             Self::AllUpstreamsFailed(_) => "upstream_failed",
@@ -123,6 +131,13 @@ impl IntoResponse for GatewayError {
             err["required"] = json!(*required);
         }
         let body = Json(json!({ "error": err }));
-        (self.status(), body).into_response()
+        let mut response = (self.status(), body).into_response();
+        if matches!(self, Self::AtCapacity(_)) {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("2"),
+            );
+        }
+        response
     }
 }

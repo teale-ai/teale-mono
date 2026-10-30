@@ -20,6 +20,7 @@ fn reliability() -> ReliabilityConfig {
         heavy_hold: true,
         heavy_hold_prompt_tokens: 30_000,
         heavy_hold_max_tokens: 4096,
+        saturation_429: false,
         heavy_co_resident_ttft_bonus_seconds: 180,
         convo_stickiness_ttl_seconds: 1800,
         heavy_hold_ttl_seconds: 1900,

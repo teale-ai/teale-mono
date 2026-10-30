@@ -311,7 +311,9 @@ pub(crate) fn should_cascade(err: &GatewayError, was_virtual: bool, excluded: &[
     }
     matches!(
         err,
-        GatewayError::NoEligibleDevice(_) | GatewayError::AllUpstreamsFailed(_)
+        GatewayError::NoEligibleDevice(_)
+            | GatewayError::AtCapacity(_)
+            | GatewayError::AllUpstreamsFailed(_)
     )
 }
 
@@ -1227,6 +1229,20 @@ async fn pick_and_dispatch_inner(
                     Some(message) => GatewayError::AllUpstreamsFailed(message),
                     None if heavy_refused => {
                         GatewayError::HeavyContention(catalog_model.id.clone())
+                    }
+                    None if state.config.reliability.saturation_429
+                        && state.scheduler.saturated(
+                            &candidates,
+                            &catalog_model.id,
+                            &excluded,
+                            &state.registry,
+                            min_context,
+                        ) =>
+                    {
+                        metrics::ELIGIBILITY_DENIED_TOTAL
+                            .with_label_values(&[&catalog_model.id, "at_capacity"])
+                            .inc();
+                        GatewayError::AtCapacity(catalog_model.id.clone())
                     }
                     None => {
                         metrics::ELIGIBILITY_DENIED_TOTAL
@@ -2403,6 +2419,7 @@ pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
     match err {
         GatewayError::NoEligibleDevice(_) => "no_supply",
         GatewayError::HeavyContention(_) => "heavy_contention",
+        GatewayError::AtCapacity(_) => "at_capacity",
         GatewayError::ModelNotFound(_) => "model_not_found",
         GatewayError::NotFound(_) => "not_found",
         GatewayError::Forbidden(_) => "forbidden",
@@ -2638,6 +2655,7 @@ quantization: null
                 heavy_hold: true,
                 heavy_hold_prompt_tokens: 30_000,
                 heavy_hold_max_tokens: 4096,
+                saturation_429: false,
                 heavy_co_resident_ttft_bonus_seconds: 180,
                 convo_stickiness_ttl_seconds: 1800,
                 heavy_hold_ttl_seconds: 1900,
@@ -3632,6 +3650,143 @@ pricing_completion: "0.00000020"
         assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
     }
 
+    async fn saturated_dispatch_err(saturation_429: bool, with_device: bool) -> GatewayError {
+        let model = free_like();
+        let mut config = dispatch_test_config(18);
+        config.scheduler.max_queue_depth = 1;
+        config.reliability.saturation_429 = saturation_429;
+        let state = dispatch_test_state(config, &model);
+        if with_device {
+            state.registry.upsert_device(
+                "sat-a".into(),
+                "Sat A".into(),
+                dispatch_caps(&[&model.id], &[]),
+            );
+            assert!(state.registry.admit("sat-a", false, None));
+            assert_eq!(state.registry.in_flight("sat-a"), 1);
+        }
+        pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+            None,
+        )
+        .await
+        .expect_err("saturated or empty fleet must not dispatch")
+    }
+
+    #[tokio::test]
+    async fn saturation_flag_off_keeps_503_no_eligible_device() {
+        let err = saturated_dispatch_err(false, true).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
+        assert_eq!(err.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn saturation_flag_on_returns_429_with_retry_after() {
+        let err = saturated_dispatch_err(true, true).await;
+        assert!(matches!(err, GatewayError::AtCapacity(_)));
+        assert_eq!(err.code(), "at_capacity");
+        let response = axum::response::IntoResponse::into_response(err);
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn saturation_flag_on_without_supply_stays_503() {
+        let err = saturated_dispatch_err(true, false).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
+    }
+
+    #[test]
+    fn at_capacity_still_cascades_for_virtual_models_only() {
+        let err = GatewayError::AtCapacity("m".into());
+        assert!(should_cascade(&err, true, &[]));
+        assert!(!should_cascade(&err, false, &[]));
+        assert_eq!(error_to_status_label(&err), "at_capacity");
+    }
+
+    async fn heartbeat_dispatch_err(
+        queue_depth: u32,
+        throttle_level: u32,
+        thermal: teale_protocol::ThermalLevel,
+        admit: bool,
+    ) -> GatewayError {
+        let model = free_like();
+        let mut config = dispatch_test_config(18);
+        config.scheduler.max_queue_depth = 2;
+        config.reliability.saturation_429 = true;
+        let state = dispatch_test_state(config, &model);
+        state.registry.upsert_device(
+            "hb-a".into(),
+            "Hb A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state.registry.apply_heartbeat(
+            "hb-a",
+            &teale_protocol::HeartbeatPayload {
+                device_id: "hb-a".into(),
+                timestamp: 0.0,
+                thermal_level: thermal,
+                throttle_level,
+                loaded_models: vec![model.id.clone()],
+                is_generating: false,
+                queue_depth,
+                ewma_tokens_per_second: Some(50.0),
+            },
+        );
+        if admit {
+            assert!(state.registry.admit("hb-a", false, None));
+            assert!(state.registry.admit("hb-a", false, None));
+        }
+        pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+            None,
+        )
+        .await
+        .expect_err("must not dispatch")
+    }
+
+    #[tokio::test]
+    async fn saturation_from_heartbeat_queue_depth_is_429() {
+        use teale_protocol::ThermalLevel;
+        let err = heartbeat_dispatch_err(2, 100, ThermalLevel::Nominal, false).await;
+        assert!(matches!(err, GatewayError::AtCapacity(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn zero_throttle_is_not_saturation() {
+        use teale_protocol::ThermalLevel;
+        // At the in-flight cap but throttle 0: undispatchable regardless of
+        // queue, so it must stay a 503, not a retry-later 429.
+        let err = heartbeat_dispatch_err(0, 0, ThermalLevel::Nominal, true).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)), "{err:?}");
+        let err = heartbeat_dispatch_err(2, 0, ThermalLevel::Nominal, false).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn critical_thermal_with_full_queue_is_not_saturation() {
+        use teale_protocol::ThermalLevel;
+        let err = heartbeat_dispatch_err(2, 100, ThermalLevel::Critical, false).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)), "{err:?}");
+    }
+
     #[test]
     fn backend_client_error_classification() {
         assert!(is_backend_client_error(
@@ -3813,7 +3968,11 @@ pricing_completion: "0.00000020"
 
     #[tokio::test]
     async fn pick_and_dispatch_records_dispatch_metric_on_success() {
-        let model = free_like();
+        // DISPATCH_SECONDS is a process-global histogram: use a model id no
+        // other test dispatches on, so concurrent successful dispatches on
+        // free/tiny cannot add samples between `before` and `after`.
+        let mut model = free_like();
+        model.id = "free/dispatch-metric-isolated".into();
         let state = dispatch_test_state(dispatch_test_config(2), &model);
         state.registry.upsert_device(
             "node-a".into(),
