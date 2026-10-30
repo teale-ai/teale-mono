@@ -155,6 +155,23 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .into_response()
 }
 
+/// Internal prep: OpenRouter provider document (schema 2.4). Read-only,
+/// every entry `is_ready: false`; lists only models that pass the same
+/// live fleet-floor gate as `/v1/models`.
+pub async fn openrouter_models(State(state): State<AppState>) -> Response {
+    let floor = &state.config.scheduler.per_model_floor;
+    let models: Vec<_> = state
+        .catalog
+        .iter()
+        .filter(|m| !m.is_virtual && !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
+        .filter(|m| {
+            let min = if is_large(m.params_b) { floor.large } else { floor.small };
+            state.registry.loaded_count(&m.id) >= min
+        })
+        .collect();
+    Json(crate::openrouter_doc::models_document(models)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

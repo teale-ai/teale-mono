@@ -416,6 +416,10 @@ async fn main() -> anyhow::Result<()> {
         // SDKs.
         .route("/", get(handlers::models::list_models))
         .route("/v1/models", get(handlers::models::list_models))
+        .route(
+            "/v1/openrouter/models",
+            get(handlers::models::openrouter_models),
+        )
         .route("/v1/network/stats", get(handlers::network::network_stats))
         // Mint-pool status and proof-of-reserves are aggregate economics,
         // like network/stats - public so the site panel and monitors can
