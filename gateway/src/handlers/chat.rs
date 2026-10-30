@@ -3968,7 +3968,11 @@ pricing_completion: "0.00000020"
 
     #[tokio::test]
     async fn pick_and_dispatch_records_dispatch_metric_on_success() {
-        let model = free_like();
+        // DISPATCH_SECONDS is a process-global histogram: use a model id no
+        // other test dispatches on, so concurrent successful dispatches on
+        // free/tiny cannot add samples between `before` and `after`.
+        let mut model = free_like();
+        model.id = "free/dispatch-metric-isolated".into();
         let state = dispatch_test_state(dispatch_test_config(2), &model);
         state.registry.upsert_device(
             "node-a".into(),
