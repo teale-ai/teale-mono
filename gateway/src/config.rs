@@ -244,6 +244,11 @@ pub struct ReliabilityConfig {
     pub heavy_hold_prompt_tokens: u32,
     #[serde(default = "default_heavy_hold_max_tokens")]
     pub heavy_hold_max_tokens: u32,
+    /// When every otherwise-eligible device is at max_queue_depth, answer
+    /// 429 `at_capacity` + Retry-After instead of 503 `model_unavailable`.
+    /// Default false: behavior is unchanged until turned on.
+    #[serde(default)]
+    pub saturation_429: bool,
     /// Extra first-token allowance for a LIGHT request admitted beside
     /// an in-flight heavy: its prefill waits on the heavy's decode, so
     /// a slow first token is contention on a live device, not device
@@ -282,6 +287,7 @@ impl Default for ReliabilityConfig {
             heavy_hold: default_heavy_hold(),
             heavy_hold_prompt_tokens: default_heavy_hold_prompt_tokens(),
             heavy_hold_max_tokens: default_heavy_hold_max_tokens(),
+            saturation_429: false,
             heavy_co_resident_ttft_bonus_seconds: default_heavy_co_resident_ttft_bonus(),
             convo_stickiness_ttl_seconds: default_convo_stickiness_ttl(),
             heavy_hold_ttl_seconds: default_heavy_hold_ttl(),

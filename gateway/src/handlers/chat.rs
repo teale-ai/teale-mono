@@ -311,7 +311,9 @@ pub(crate) fn should_cascade(err: &GatewayError, was_virtual: bool, excluded: &[
     }
     matches!(
         err,
-        GatewayError::NoEligibleDevice(_) | GatewayError::AllUpstreamsFailed(_)
+        GatewayError::NoEligibleDevice(_)
+            | GatewayError::AtCapacity(_)
+            | GatewayError::AllUpstreamsFailed(_)
     )
 }
 
@@ -1227,6 +1229,20 @@ async fn pick_and_dispatch_inner(
                     Some(message) => GatewayError::AllUpstreamsFailed(message),
                     None if heavy_refused => {
                         GatewayError::HeavyContention(catalog_model.id.clone())
+                    }
+                    None if state.config.reliability.saturation_429
+                        && state.scheduler.saturated(
+                            &candidates,
+                            &catalog_model.id,
+                            &excluded,
+                            &state.registry,
+                            min_context,
+                        ) =>
+                    {
+                        metrics::ELIGIBILITY_DENIED_TOTAL
+                            .with_label_values(&[&catalog_model.id, "at_capacity"])
+                            .inc();
+                        GatewayError::AtCapacity(catalog_model.id.clone())
                     }
                     None => {
                         metrics::ELIGIBILITY_DENIED_TOTAL
@@ -2403,6 +2419,7 @@ pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
     match err {
         GatewayError::NoEligibleDevice(_) => "no_supply",
         GatewayError::HeavyContention(_) => "heavy_contention",
+        GatewayError::AtCapacity(_) => "at_capacity",
         GatewayError::ModelNotFound(_) => "model_not_found",
         GatewayError::NotFound(_) => "not_found",
         GatewayError::Forbidden(_) => "forbidden",
@@ -2638,6 +2655,7 @@ quantization: null
                 heavy_hold: true,
                 heavy_hold_prompt_tokens: 30_000,
                 heavy_hold_max_tokens: 4096,
+                saturation_429: false,
                 heavy_co_resident_ttft_bonus_seconds: 180,
                 convo_stickiness_ttl_seconds: 1800,
                 heavy_hold_ttl_seconds: 1900,
@@ -3630,6 +3648,70 @@ pricing_completion: "0.00000020"
         .expect_err("default-lane request must not reach employee supply");
 
         assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
+    }
+
+    async fn saturated_dispatch_err(saturation_429: bool, with_device: bool) -> GatewayError {
+        let model = free_like();
+        let mut config = dispatch_test_config(18);
+        config.scheduler.max_queue_depth = 1;
+        config.reliability.saturation_429 = saturation_429;
+        let state = dispatch_test_state(config, &model);
+        if with_device {
+            state.registry.upsert_device(
+                "sat-a".into(),
+                "Sat A".into(),
+                dispatch_caps(&[&model.id], &[]),
+            );
+            assert!(state.registry.admit("sat-a", false, None));
+            assert_eq!(state.registry.in_flight("sat-a"), 1);
+        }
+        pick_and_dispatch(
+            &state,
+            &model,
+            &serde_json::to_value(req_with("hi", Some(16))).unwrap(),
+            &[],
+            None,
+            &[],
+            false,
+            0,
+            None,
+        )
+        .await
+        .expect_err("saturated or empty fleet must not dispatch")
+    }
+
+    #[tokio::test]
+    async fn saturation_flag_off_keeps_503_no_eligible_device() {
+        let err = saturated_dispatch_err(false, true).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
+        assert_eq!(err.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn saturation_flag_on_returns_429_with_retry_after() {
+        let err = saturated_dispatch_err(true, true).await;
+        assert!(matches!(err, GatewayError::AtCapacity(_)));
+        assert_eq!(err.code(), "at_capacity");
+        let response = axum::response::IntoResponse::into_response(err);
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn saturation_flag_on_without_supply_stays_503() {
+        let err = saturated_dispatch_err(true, false).await;
+        assert!(matches!(err, GatewayError::NoEligibleDevice(_)));
+    }
+
+    #[test]
+    fn at_capacity_still_cascades_for_virtual_models_only() {
+        let err = GatewayError::AtCapacity("m".into());
+        assert!(should_cascade(&err, true, &[]));
+        assert!(!should_cascade(&err, false, &[]));
+        assert_eq!(error_to_status_label(&err), "at_capacity");
     }
 
     #[test]

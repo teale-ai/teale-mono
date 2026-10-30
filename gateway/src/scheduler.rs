@@ -38,6 +38,51 @@ impl Scheduler {
         Self { cfg }
     }
 
+    /// True when at least one candidate passes every `pick` filter except
+    /// the queue-depth cap, and every such candidate is at or over the cap.
+    /// i.e. `pick` returned None purely because of saturation, not because
+    /// of missing supply, battery, context, exclusion or zero score.
+    pub fn saturated(
+        &self,
+        candidates: &[DeviceState],
+        model_id: &str,
+        exclude: &[String],
+        registry: &Registry,
+        min_context: Option<u32>,
+    ) -> bool {
+        let mut blocked_by_depth = 0usize;
+        for d in candidates {
+            if exclude.iter().any(|e| e == &d.node_id) {
+                continue;
+            }
+            let loaded = match d.is_eligible_for(model_id, self.cfg.max_queue_depth) {
+                Eligibility::Loaded => true,
+                Eligibility::Swappable => false,
+                _ => continue,
+            };
+            if let Some(need) = min_context {
+                if let Some(have) = d.capabilities.effective_context {
+                    if have < need {
+                        continue;
+                    }
+                }
+            }
+            if matches!(d.capabilities.on_ac_power, Some(false)) {
+                continue;
+            }
+            let in_flight = registry.in_flight(&d.node_id);
+            if in_flight >= self.cfg.max_queue_depth {
+                blocked_by_depth += 1;
+                continue;
+            }
+            if self.score(d, loaded, in_flight) > 0.0 {
+                // A device could take the request: not saturated.
+                return false;
+            }
+        }
+        blocked_by_depth > 0
+    }
+
     pub fn pick<'a>(
         &self,
         candidates: &'a [DeviceState],
