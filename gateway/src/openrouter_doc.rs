@@ -48,10 +48,10 @@ fn supported_parameters(m: &CatalogModel) -> Map<String, Value> {
     if has("tools") {
         out.insert("tools".into(), json!({"type": "boolean"}));
     }
-    if has("structured_outputs") || has("response_format") {
+    if has("structured_outputs") {
         out.insert("structured_outputs".into(), json!({"type": "boolean"}));
     }
-    if has("reasoning") || has("include_reasoning") {
+    if has("reasoning") {
         out.insert("reasoning".into(), json!({"type": "boolean"}));
     }
     out
@@ -147,6 +147,18 @@ mod tests {
         assert!(without["output_modalities"][0]["supported_parameters"].get("tools").is_none());
         let with = model_document(&model(&["temperature", "tools"], None));
         assert_eq!(with["output_modalities"][0]["supported_parameters"]["tools"]["type"], "boolean");
+    }
+
+    #[test]
+    fn response_format_alone_is_not_structured_outputs() {
+        let d = model_document(&model(&["response_format", "include_reasoning"], None));
+        let p = d["output_modalities"][0]["supported_parameters"].as_object().unwrap();
+        assert!(p.get("structured_outputs").is_none());
+        assert!(p.get("reasoning").is_none());
+        let d = model_document(&model(&["structured_outputs", "reasoning"], None));
+        let p = &d["output_modalities"][0]["supported_parameters"];
+        assert_eq!(p["structured_outputs"]["type"], "boolean");
+        assert_eq!(p["reasoning"]["type"], "boolean");
     }
 
     #[test]
