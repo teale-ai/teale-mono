@@ -155,6 +155,27 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .into_response()
 }
 
+/// Internal prep: OpenRouter provider document (schema 2.4). Read-only,
+/// every entry `is_ready: false`; lists only models that pass the same
+/// live fleet-floor gate as `/v1/models`.
+pub async fn openrouter_models(State(state): State<AppState>) -> Response {
+    let floor = &state.config.scheduler.per_model_floor;
+    let models: Vec<_> = state
+        .catalog
+        .iter()
+        .filter(|m| !m.is_virtual && !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
+        .filter(|m| {
+            let min = if is_large(m.params_b) {
+                floor.large
+            } else {
+                floor.small
+            };
+            state.registry.loaded_count(&m.id) >= min
+        })
+        .collect();
+    Json(crate::openrouter_doc::models_document(models)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +362,67 @@ mod tests {
             .data
             .iter()
             .any(|model| model.id == "acme/live-model"));
+    }
+
+    fn cat_model(id: &str, is_virtual: bool) -> crate::catalog::CatalogModel {
+        crate::catalog::CatalogModel {
+            id: id.into(),
+            display_name: id.into(),
+            owned_by: "acme".into(),
+            context_length: 32768,
+            max_output_tokens: 4096,
+            params_b: 8.0,
+            pricing_prompt: "0.1".into(),
+            pricing_completion: "0.2".into(),
+            quantization: None,
+            supported_parameters: vec!["temperature".into(), "max_tokens".into()],
+            description: None,
+            aliases: vec![],
+            is_virtual,
+            routing_tags: vec![],
+            estimated_ttft_ms: None,
+            estimated_tps: None,
+        }
+    }
+
+    async fn or_doc(state: AppState) -> serde_json::Value {
+        let response = openrouter_models(State(state)).await;
+        let (_parts, body) = response.into_parts();
+        let bytes = to_bytes(body, 1024 * 1024).await.expect("read body");
+        serde_json::from_slice(&bytes).expect("parse body")
+    }
+
+    #[tokio::test]
+    async fn openrouter_doc_lists_only_floor_satisfied_non_virtual_models() {
+        let mut state = test_state();
+        state.catalog = Arc::new(vec![
+            cat_model("acme/served", false),
+            cat_model("acme/unserved", false),
+            cat_model("teale/auto", true),
+            cat_model("moonshotai/kimi-k2", false),
+        ]);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Tailor 512g1".into(),
+            test_caps(&["acme/served", "moonshotai/kimi-k2", "teale/auto"]),
+        );
+        let doc = or_doc(state).await;
+        let ids: Vec<_> = doc["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids, vec!["acme/served".to_string()]);
+        assert_eq!(doc["data"][0]["is_ready"], false);
+        assert_eq!(doc["data"][0]["schema_version"], "2.4");
+    }
+
+    #[tokio::test]
+    async fn openrouter_doc_empty_when_no_supply() {
+        let mut state = test_state();
+        state.catalog = Arc::new(vec![cat_model("acme/served", false)]);
+        let doc = or_doc(state).await;
+        assert!(doc["data"].as_array().unwrap().is_empty());
     }
 }

@@ -15,6 +15,7 @@ pub mod identity;
 pub mod ledger;
 pub mod metrics;
 pub mod model_metrics;
+pub mod openrouter_doc;
 pub mod pins;
 pub mod probe;
 pub mod providers;
