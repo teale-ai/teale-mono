@@ -2,6 +2,9 @@ use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -13,9 +16,13 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
+    MB_TOPMOST, MB_YESNO,
+};
 use wry::{
     http::{header::CONTENT_TYPE, Request, Response},
     WebViewBuilder,
@@ -35,6 +42,22 @@ const SUPABASE_JS: &[u8] = include_bytes!(
 );
 const IPC_PORT: u16 = 11438;
 const REMOTE_DESKTOP_URL: &str = "https://teale.com/docs/desktop-companion/index.html";
+/// Local node control API (the tray's status source; also used to confirm the
+/// service is really down after a Quit).
+const NODE_STATUS_URL: &str = "http://127.0.0.1:11437/v1/app";
+/// NSSM service name registered by `node/installer/post-install.ps1`.
+const NODE_SERVICE_NAME: &str = "TealeNode";
+/// How long Quit waits for the service to stop answering. The node drains
+/// in-flight requests for up to `shutdown_timeout_seconds` (default 30 s)
+/// before NSSM/SCM report it stopped, so leave headroom beyond that.
+const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(60);
+/// `CREATE_NO_WINDOW`: the tray is a GUI-subsystem process, so a helper
+/// console process would otherwise flash a window.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Exit code the elevation script reports when the stop command never ran
+/// (UAC declined, PowerShell could not launch it). Distinguishes that from
+/// the stop command's own exit code.
+const ELEVATION_FAILED_EXIT_CODE: i32 = 255;
 static PENDING_OAUTH_CALLBACK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -44,6 +67,11 @@ enum UserEvent {
     Status(Option<AppSnapshot>),
     AuthCallback(String),
     OpenWindow,
+    /// The TealeNode service has stopped (or was already stopped): exit the tray.
+    Quit,
+    /// The user declined the Quit confirmation/UAC prompt, or the service did
+    /// not stop: keep running.
+    QuitAborted,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -158,6 +186,7 @@ pub fn run() -> anyhow::Result<()> {
     let item_resume = MenuItem::new("Resume supply", true, None);
     let item_open = MenuItem::new("Open Teale", true, None);
     let item_close_tray = MenuItem::new("Close tray icon (Teale keeps supplying)", true, None);
+    let item_quit = MenuItem::new("Quit Teale (stop supplying)", true, None);
 
     let tray_menu = Menu::new();
     tray_menu.append(&item_pause)?;
@@ -166,6 +195,7 @@ pub fn run() -> anyhow::Result<()> {
     tray_menu.append(&item_open)?;
     tray_menu.append(&PredefinedMenuItem::separator())?;
     tray_menu.append(&item_close_tray)?;
+    tray_menu.append(&item_quit)?;
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
@@ -189,6 +219,7 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let mut current_icon = IconState::Inactive;
+    let mut quit_in_progress = false;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -200,6 +231,10 @@ pub fn run() -> anyhow::Result<()> {
                 let _ = window.set_visible(false);
             }
             Event::UserEvent(UserEvent::Status(snapshot)) => {
+                if quit_in_progress {
+                    // Keep the "Stopping…" tooltip until the quit flow resolves.
+                    return;
+                }
                 let (next_icon, tooltip) = tooltip_for(snapshot.as_ref());
                 if next_icon != current_icon {
                     let _ = tray.set_icon(Some(icon_for_state(next_icon)));
@@ -217,6 +252,12 @@ pub fn run() -> anyhow::Result<()> {
                 dispatch_auth_callback(&webview, &callback_url);
             }
             Event::UserEvent(UserEvent::OpenWindow) => show_window(&window),
+            Event::UserEvent(UserEvent::Quit) => *control_flow = ControlFlow::Exit,
+            Event::UserEvent(UserEvent::QuitAborted) => {
+                quit_in_progress = false;
+                // The next status poll (≤5 s) restores the live tooltip.
+                let _ = tray.set_tooltip(Some("Teale — still running"));
+            }
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id == item_pause.id() {
                     post("http://127.0.0.1:11437/v1/app/service/pause");
@@ -226,6 +267,20 @@ pub fn run() -> anyhow::Result<()> {
                     show_window(&window);
                 } else if event.id == item_close_tray.id() {
                     *control_flow = ControlFlow::Exit;
+                } else if event.id == item_quit.id() && !quit_in_progress {
+                    quit_in_progress = true;
+                    let _ = tray.set_tooltip(Some("Teale — Stopping…"));
+                    // Confirmation + UAC + service drain can take tens of
+                    // seconds; keep the event loop (and the tray icon)
+                    // responsive by doing it off-thread.
+                    let quit_proxy = proxy.clone();
+                    std::thread::spawn(move || {
+                        let event = match run_quit_flow() {
+                            Ok(()) => UserEvent::Quit,
+                            Err(()) => UserEvent::QuitAborted,
+                        };
+                        let _ = quit_proxy.send_event(event);
+                    });
                 }
             }
             Event::UserEvent(UserEvent::Tray(event)) => match event {
@@ -344,6 +399,187 @@ fn show_window(window: &tao::window::Window) {
     window.set_visible(true);
     window.set_minimized(false);
     let _ = window.set_focus();
+}
+
+/// "Quit Teale" from the tray menu: confirm, stop the machine-level
+/// `TealeNode` service (which also ends the llama-server it spawned and frees
+/// the model's memory), then let the caller exit the tray.
+///
+/// The tray runs unelevated per user while the service is owned by the
+/// Service Control Manager, so the stop goes through a UAC-elevated helper.
+/// `Err(())` means nothing was stopped and the tray must keep running — the
+/// user already saw why (they declined, or a dialog explained the failure).
+fn run_quit_flow() -> Result<(), ()> {
+    let confirmed = unsafe {
+        MessageBoxW(
+            None,
+            w!("Quit Teale?\n\n\
+                This stops the Teale Node service, frees the memory used by the \
+                loaded model, and removes the tray icon. You stop earning credits \
+                until Teale starts again.\n\n\
+                Teale starts again automatically the next time Windows starts.\n\n\
+                Windows will ask for administrator approval to stop the service."),
+            w!("Quit Teale"),
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST,
+        )
+    };
+    if confirmed != IDYES {
+        return Err(());
+    }
+
+    match stop_node_service() {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            append_auth_log(&format!("quit: service stop failed: {reason}"));
+            let text = to_wide(&format!(
+                "Teale is still running.\n\n\
+                 The Teale Node service could not be stopped:\n{reason}\n\n\
+                 You can pause supply from the tray menu instead, or stop the \
+                 \"Teale Node\" service from Windows Services as an administrator."
+            ));
+            unsafe {
+                MessageBoxW(
+                    None,
+                    PCWSTR(text.as_ptr()),
+                    w!("Quit Teale"),
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
+                );
+            }
+            Err(())
+        }
+    }
+}
+
+/// Stop the node service with elevation and wait until its local control API
+/// stops answering. Returns a user-facing reason on failure.
+fn stop_node_service() -> Result<(), String> {
+    if !node_service_responding(Duration::from_secs(1)) {
+        // Nothing to stop (service already down); still fine to quit.
+        return Ok(());
+    }
+
+    let bin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let (program, args) = service_stop_command(bin_dir.as_deref());
+    let script = elevated_stop_script(&program, &args);
+
+    let output = Command::new(powershell_path())
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("could not launch PowerShell ({error})"))?;
+
+    if output.status.code() == Some(ELEVATION_FAILED_EXIT_CODE) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            "administrator approval was not given.".to_string()
+        } else {
+            detail.to_string()
+        });
+    }
+    // Any other exit code (including a non-zero one from nssm/sc, e.g. when
+    // the service is mid-transition) is judged by the outcome below.
+
+    wait_until_service_stopped(SERVICE_STOP_TIMEOUT).map_err(|()| {
+        format!(
+            "the service was still answering after {} seconds.",
+            SERVICE_STOP_TIMEOUT.as_secs()
+        )
+    })
+}
+
+/// Prefer the bundled NSSM (installed next to teale-tray.exe in
+/// `C:\Teale\bin`): `nssm stop` waits for the service and tears down the
+/// llama-server process tree. Fall back to `sc.exe stop`, which only requests
+/// the stop; the caller polls for the outcome either way.
+fn service_stop_command(bin_dir: Option<&Path>) -> (PathBuf, Vec<String>) {
+    let nssm = bin_dir.map(|dir| dir.join("nssm.exe"));
+    let program = match nssm {
+        Some(path) if path.is_file() => path,
+        _ => PathBuf::from("sc.exe"),
+    };
+    (
+        program,
+        vec!["stop".to_string(), NODE_SERVICE_NAME.to_string()],
+    )
+}
+
+/// PowerShell script that runs `program args` through `Start-Process -Verb
+/// RunAs` (UAC prompt) and relays its exit code. Exits with
+/// `ELEVATION_FAILED_EXIT_CODE` if the process never started, which is how a
+/// declined UAC prompt surfaces ("The operation was canceled by the user").
+fn elevated_stop_script(program: &Path, args: &[String]) -> String {
+    let program = ps_single_quote(&program.to_string_lossy());
+    let args = args
+        .iter()
+        .map(String::as_str)
+        .map(ps_single_quote)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "$ErrorActionPreference = 'Stop'; \
+         try {{ $p = Start-Process -FilePath {program} -ArgumentList @({args}) \
+         -Verb RunAs -WindowStyle Hidden -Wait -PassThru }} \
+         catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit {failed} }}; \
+         if ($null -eq $p.ExitCode) {{ exit 0 }}; exit $p.ExitCode",
+        failed = ELEVATION_FAILED_EXIT_CODE
+    )
+}
+
+/// Single-quoted PowerShell string literal (the only escape is `'` → `''`).
+fn ps_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn powershell_path() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| {
+            PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("powershell.exe"))
+}
+
+/// Any HTTP answer (even an error status) means the node process is up; only
+/// a transport failure (connection refused, timeout) counts as stopped.
+fn node_service_responding(timeout: Duration) -> bool {
+    !matches!(
+        ureq::get(NODE_STATUS_URL).timeout(timeout).call(),
+        Err(ureq::Error::Transport(_))
+    )
+}
+
+fn wait_until_service_stopped(timeout: Duration) -> Result<(), ()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !node_service_responding(Duration::from_secs(1)) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// NUL-terminated UTF-16 for Win32 string parameters built at runtime.
+fn to_wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn start_auth_callback_listener(proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
@@ -610,5 +846,54 @@ mod tests {
         let (state, text) = tooltip_for(Some(&snapshot));
         assert!(matches!(state, IconState::Serving));
         assert!(text.contains("Serving"));
+    }
+
+    #[test]
+    fn service_stop_prefers_bundled_nssm() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "teale-tray-quit-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (program, args) = service_stop_command(Some(&dir));
+        assert_eq!(program, PathBuf::from("sc.exe"));
+        assert_eq!(args, vec!["stop".to_string(), "TealeNode".to_string()]);
+
+        let nssm = dir.join("nssm.exe");
+        std::fs::write(&nssm, b"").unwrap();
+        let (program, args) = service_stop_command(Some(&dir));
+        assert_eq!(program, nssm);
+        assert_eq!(args, vec!["stop".to_string(), "TealeNode".to_string()]);
+
+        let (program, _) = service_stop_command(None);
+        assert_eq!(program, PathBuf::from("sc.exe"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn elevated_stop_script_quotes_and_relays_exit_code() {
+        let script = elevated_stop_script(
+            Path::new("C:\\Teale's bin\\nssm.exe"),
+            &["stop".to_string(), "TealeNode".to_string()],
+        );
+        assert!(script.contains("-FilePath 'C:\\Teale''s bin\\nssm.exe'"));
+        assert!(script.contains("-ArgumentList @('stop','TealeNode')"));
+        assert!(script.contains("-Verb RunAs"));
+        assert!(script.contains("-Wait -PassThru"));
+        assert!(script.contains("exit 255"));
+        assert!(script.ends_with("exit $p.ExitCode"));
+    }
+
+    #[test]
+    fn wide_strings_are_nul_terminated() {
+        let wide = to_wide("Teale");
+        assert_eq!(wide.last(), Some(&0));
+        assert_eq!(wide.len(), "Teale".encode_utf16().count() + 1);
     }
 }
