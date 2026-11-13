@@ -325,7 +325,7 @@ pub async fn handle_relay_data(
         }
 
         ClusterMessage::Invalid { kind, error, .. } => {
-            warn!("Malformed {} cluster message from {}: {}", kind, short(from), error);
+            warn!("Malformed {kind} message from {}: {error}", short(from));
         }
 
         _ => {

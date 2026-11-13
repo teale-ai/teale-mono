@@ -31,7 +31,10 @@ pub enum ClusterMessage {
     SocksData(SocksDataPayload),
     SocksClose(SocksClosePayload),
     /// A message type this build does not know (e.g. from a newer peer).
-    Unknown { kind: String, raw: Value },
+    Unknown {
+        kind: String,
+        raw: Value,
+    },
     /// A known message type whose payload failed to deserialize. Distinct
     /// from `Unknown` so corruption/drift is not mistaken for a future type.
     Invalid {
@@ -186,7 +189,11 @@ mod tests {
     fn malformed_known_message_is_invalid_not_unknown() {
         let raw = json!({ "heartbeat": { "_0": { "deviceID": 42 } } });
         match ClusterMessage::from_value(&raw) {
-            Some(ClusterMessage::Invalid { kind, error, raw: kept }) => {
+            Some(ClusterMessage::Invalid {
+                kind,
+                error,
+                raw: kept,
+            }) => {
                 assert_eq!(kind, "heartbeat");
                 assert!(!error.is_empty());
                 assert_eq!(kept, raw);
