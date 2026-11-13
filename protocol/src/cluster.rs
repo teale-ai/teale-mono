@@ -30,7 +30,15 @@ pub enum ClusterMessage {
     SocksOpenResult(SocksOpenResultPayload),
     SocksData(SocksDataPayload),
     SocksClose(SocksClosePayload),
+    /// A message type this build does not know (e.g. from a newer peer).
     Unknown { kind: String, raw: Value },
+    /// A known message type whose payload failed to deserialize. Distinct
+    /// from `Unknown` so corruption/drift is not mistaken for a future type.
+    Invalid {
+        kind: String,
+        error: String,
+        raw: Value,
+    },
 }
 
 impl ClusterMessage {
@@ -51,21 +59,29 @@ impl ClusterMessage {
         // tolerate both shapes.
         let unwrap_0 = |p: &Value| -> Value { p.get("_0").cloned().unwrap_or_else(|| p.clone()) };
 
+        let invalid = |kind: &str, error: serde_json::Error| Self::Invalid {
+            kind: kind.to_string(),
+            error: error.to_string(),
+            raw: v.clone(),
+        };
+
         macro_rules! try_variant {
             ($key:expr, $payload:ty, $variant:ident) => {
                 if let Some(p) = obj.get($key) {
                     let inner = unwrap_0(p);
-                    if let Ok(parsed) = serde_json::from_value::<$payload>(inner) {
-                        return Some(Self::$variant(parsed));
-                    }
+                    return Some(match serde_json::from_value::<$payload>(inner) {
+                        Ok(parsed) => Self::$variant(parsed),
+                        Err(e) => invalid($key, e),
+                    });
                 }
             };
             (boxed $key:expr, $payload:ty, $variant:ident) => {
                 if let Some(p) = obj.get($key) {
                     let inner = unwrap_0(p);
-                    if let Ok(parsed) = serde_json::from_value::<$payload>(inner) {
-                        return Some(Self::$variant(Box::new(parsed)));
-                    }
+                    return Some(match serde_json::from_value::<$payload>(inner) {
+                        Ok(parsed) => Self::$variant(Box::new(parsed)),
+                        Err(e) => invalid($key, e),
+                    });
                 }
             };
         }
@@ -124,23 +140,71 @@ impl ClusterMessage {
             Self::SocksClose(p) => serde_json::json!({ "socksClose": { "_0": p } }),
             Self::ModelLoaded(p) => serde_json::json!({ "modelLoaded": { "_0": p } }),
             Self::ModelLoadError(p) => serde_json::json!({ "modelLoadError": { "_0": p } }),
-            Self::Unknown { raw, .. } => raw.clone(),
+            Self::Unknown { raw, .. } | Self::Invalid { raw, .. } => raw.clone(),
         }
     }
 }
 
-/// Decode the `data` field from a relayData payload. Handles both
-/// Swift's default base64-string encoding and raw-JSON fallback.
+/// Decode the `data` field from a relayData payload: a standard base64
+/// string (Swift `Data` default encoding, and what every Rust sender emits)
+/// or a JSON array of byte values. Anything else - including a string that
+/// is not valid base64 or an array element outside 0..=255 - is rejected
+/// rather than reinterpreted, so corruption surfaces as a decode failure.
 pub fn decode_relay_data(data_value: &Value) -> Option<Vec<u8>> {
     match data_value {
-        Value::String(s) => {
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(s) {
-                return Some(bytes);
-            }
-            Some(s.as_bytes().to_vec())
-        }
-        Value::Array(arr) => arr.iter().map(|v| v.as_u64().map(|n| n as u8)).collect(),
+        Value::String(s) => base64::engine::general_purpose::STANDARD.decode(s).ok(),
+        Value::Array(arr) => arr
+            .iter()
+            .map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+            .collect(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn decode_relay_data_accepts_base64_and_byte_arrays() {
+        assert_eq!(decode_relay_data(&json!("aGk=")), Some(b"hi".to_vec()));
+        assert_eq!(decode_relay_data(&json!([104, 105])), Some(b"hi".to_vec()));
+    }
+
+    #[test]
+    fn decode_relay_data_rejects_corruption() {
+        // Not base64: previously fell back to the raw UTF-8 bytes.
+        assert_eq!(decode_relay_data(&json!("{\"hello\":1}")), None);
+        // Out-of-range byte: previously wrapped (256 -> 0).
+        assert_eq!(decode_relay_data(&json!([104, 256])), None);
+        assert_eq!(decode_relay_data(&json!([-1])), None);
+        assert_eq!(decode_relay_data(&json!({ "a": 1 })), None);
+    }
+
+    #[test]
+    fn malformed_known_message_is_invalid_not_unknown() {
+        let raw = json!({ "heartbeat": { "_0": { "deviceID": 42 } } });
+        match ClusterMessage::from_value(&raw) {
+            Some(ClusterMessage::Invalid { kind, error, raw: kept }) => {
+                assert_eq!(kind, "heartbeat");
+                assert!(!error.is_empty());
+                assert_eq!(kept, raw);
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+        // The raw message is preserved on re-encode.
+        let parsed = ClusterMessage::from_value(&raw).unwrap();
+        assert_eq!(parsed.to_value(), raw);
+    }
+
+    #[test]
+    fn unknown_kind_stays_unknown() {
+        let raw = json!({ "someFutureMessage": { "x": 1 } });
+        match ClusterMessage::from_value(&raw) {
+            Some(ClusterMessage::Unknown { kind, .. }) => assert_eq!(kind, "someFutureMessage"),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
     }
 }
 
