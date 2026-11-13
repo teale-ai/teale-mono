@@ -101,6 +101,19 @@ jobs:
         run: |
           cp ${{ github.workspace }}/target/release/teale .build/teale-macos-arm64
 
+      - name: Stage tag-pinned install.sh
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # The release copy of install.sh installs exactly this release, so
+          # the release notes never pipe an unpinned script from main.
+          sed "s/^PINNED_TAG=\"\"$/PINNED_TAG=\"${TAG}\"/" scripts/install.sh > .build/install.sh
+          grep -q "^PINNED_TAG=\"${TAG}\"$" .build/install.sh || {
+            echo "::error::could not stamp PINNED_TAG into install.sh"
+            exit 1
+          }
+          chmod +x .build/install.sh
+
       - name: Package artifacts
         run: |
           cd .build
@@ -108,11 +121,12 @@ jobs:
           shasum -a 256 Teale.dmg > checksums.txt
           shasum -a 256 Teale.zip >> checksums.txt
           shasum -a 256 teale-macos-arm64 >> checksums.txt
+          shasum -a 256 install.sh >> checksums.txt
           shasum -a 256 Teale.app/Contents/MacOS/Teale >> checksums.txt
 
       - name: Upload canary artifacts (artifact_only)
         if: inputs.artifact_only == true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.version.outputs.tag }}
           path: |
@@ -128,9 +142,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$TAG" \
-            --title "Teale $TAG" \
-            --notes "$(cat <<'EOF'
+          # Quoted heredoc (no shell expansion); __TAG__ is substituted below.
+          cat > .build/release-notes.md <<'EOF'
           ## Install
 
           **Recommended:** download **Teale.dmg** below, double-click to open, drag Teale to Applications, then launch from Launchpad.
@@ -139,9 +152,9 @@ jobs:
           1. Control-click or right-click `Teale.app` and choose **Open**
           2. If needed, go to **System Settings > Privacy & Security** and click **Open Anyway**
 
-          **Or one command:**
+          **Or one command** (installs exactly this release and verifies `Teale.zip` against `checksums.txt`):
           ```
-          curl -fsSL https://raw.githubusercontent.com/teale-ai/teale-mono/main/mac-app/scripts/install.sh | sh
+          curl -fsSL https://github.com/teale-ai/teale-mono/releases/download/__TAG__/install.sh | sh
           ```
 
           Requires macOS 14 Sonoma or later. Apple Silicon only.
@@ -167,11 +180,15 @@ jobs:
             brew install raullenchai/rapid-mlx/rapid-mlx
             ```
 
-            Then in Teale Settings, switch the engine to **Rapid-MLX** and set the model alias (e.g. \`qwen3.6-35b\`). See [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) for the full alias list.
+            Then in Teale Settings, switch the engine to **Rapid-MLX** and set the model alias (e.g. `qwen3.6-35b`). See [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) for the full alias list.
           EOF
-          )" \
+          sed -i '' "s/__TAG__/${TAG}/g" .build/release-notes.md
+          gh release create "$TAG" \
+            --title "Teale $TAG" \
+            --notes-file .build/release-notes.md \
             .build/Teale.dmg \
             .build/Teale.zip \
             .build/teale-macos-arm64 \
             .build/Teale.dSYM.zip \
+            .build/install.sh \
             .build/checksums.txt
