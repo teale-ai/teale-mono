@@ -116,6 +116,8 @@ android {
 
     packaging {
         jniLibs {
+            // Extract lib*.so to nativeLibraryDir so the supply binaries
+            // (libllamaserver.so, libtealenode.so) can be exec'd from there.
             useLegacyPackaging = true
         }
         resources {
@@ -196,9 +198,6 @@ dependencies {
 
     // Ed25519 keys (Android-compatible, pure-Java)
     implementation("net.i2p.crypto:eddsa:0.3.0")
-
-    // Location (FusedLocationProvider)
-    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
