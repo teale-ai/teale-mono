@@ -735,13 +735,6 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         return try await desktop_snapshot()
     }
 
-    func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot {
-        // Supabase-backed session validation is removed with the Supabase
-        // backend. The desktop companion signs in with gateway email login
-        // (desktop_request_email_code / desktop_verify_email_code) instead.
-        throw GatewayAuthError.network("Supabase auth has been removed; sign in with gateway email login")
-    }
-
     func desktop_network_models() async throws -> [DesktopCompanionNetworkModelSnapshot] {
         let response: DesktopGatewayModelsResponse = try await desktopGatewayJSON(
             method: "GET",

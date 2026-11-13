@@ -39,21 +39,6 @@ enum DesktopCompanionRoute {
         }
     }
 
-    static func authSession(
-        request: Request,
-        controller: (any DesktopCompanionControlling)?
-    ) async throws -> Response {
-        guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
-        struct Payload: Decodable { let accessToken: String }
-        do {
-            let body = try await request.body.collect(upTo: 1_048_576)
-            let payload = try JSONDecoder().decode(Payload.self, from: body)
-            return try jsonResponse(try await controller.desktop_auth_session(access_token: payload.accessToken))
-        } catch {
-            return errorResponse(error)
-        }
-    }
-
     static func networkModels(controller: (any DesktopCompanionControlling)?) async throws -> Response {
         guard let controller else { return errorResponse(message: RemoteControlError.unsupported.localizedDescription) }
         do {

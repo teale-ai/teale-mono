@@ -6,7 +6,6 @@ public protocol DesktopCompanionControlling: AnyObject {
     func desktop_snapshot() async throws -> DesktopCompanionAppSnapshot
     func desktop_set_privacy_filter_mode(_ mode: PrivacyFilterMode) async throws -> DesktopCompanionAppSnapshot
     func desktop_set_supply_enabled(_ enabled: Bool) async throws -> DesktopCompanionAppSnapshot
-    func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot
     func desktop_request_email_code(_ request: DesktopCompanionEmailCodeRequest) async throws -> DesktopCompanionEmailCodeRequestResponse
     func desktop_verify_email_code(_ request: DesktopCompanionEmailCodeVerifyRequest) async throws -> DesktopCompanionEmailCodeVerifyResponse
     func desktop_network_models() async throws -> [DesktopCompanionNetworkModelSnapshot]
@@ -523,72 +522,4 @@ public struct DesktopCompanionDepositInfo: Codable, Sendable {
         self.memo = memo
         self.explorerUrl = explorerUrl
     }
-}
-
-public struct DesktopCompanionAuthSessionSnapshot: Codable, Sendable {
-    public var user: DesktopCompanionAuthUserSnapshot
-    public var identities: [DesktopCompanionAuthIdentitySnapshot]
-    public var devices: [DesktopCompanionSupabaseDeviceSnapshot]
-
-    public init(
-        user: DesktopCompanionAuthUserSnapshot,
-        identities: [DesktopCompanionAuthIdentitySnapshot],
-        devices: [DesktopCompanionSupabaseDeviceSnapshot]
-    ) {
-        self.user = user
-        self.identities = identities
-        self.devices = devices
-    }
-}
-
-public struct DesktopCompanionAuthUserSnapshot: Codable, Sendable {
-    public var id: String
-    public var phone: String?
-    public var email: String?
-    public var app_metadata: [String: String]?
-    public var user_metadata: [String: String]?
-    public var identities: [DesktopCompanionAuthIdentitySnapshot]
-
-    public init(
-        id: String,
-        phone: String?,
-        email: String?,
-        app_metadata: [String: String]?,
-        user_metadata: [String: String]?,
-        identities: [DesktopCompanionAuthIdentitySnapshot]
-    ) {
-        self.id = id
-        self.phone = phone
-        self.email = email
-        self.app_metadata = app_metadata
-        self.user_metadata = user_metadata
-        self.identities = identities
-    }
-}
-
-public struct DesktopCompanionAuthIdentitySnapshot: Codable, Sendable {
-    public var id: String?
-    public var provider: String
-    public var identity_data: [String: String]?
-    public var email: String?
-
-    public init(id: String?, provider: String, identity_data: [String: String]?, email: String?) {
-        self.id = id
-        self.provider = provider
-        self.identity_data = identity_data
-        self.email = email
-    }
-}
-
-public struct DesktopCompanionSupabaseDeviceSnapshot: Codable, Sendable {
-    public var id: String
-    public var user_id: String
-    public var device_name: String?
-    public var platform: String?
-    public var chip_name: String?
-    public var ram_gb: Int64?
-    public var wan_node_id: String?
-    public var registered_at: String?
-    public var last_seen: String?
-    public var is_active: Bool?
 }

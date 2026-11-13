@@ -195,13 +195,6 @@ public actor LocalHTTPServer {
             )
         }
 
-        router.post("/v1/desktop/app/auth/session") { request, _ -> Response in
-            return try await DesktopCompanionRoute.authSession(
-                request: request,
-                controller: desktopController
-            )
-        }
-
         router.get("/v1/desktop/app/network/models") { _, _ -> Response in
             return try await DesktopCompanionRoute.networkModels(controller: desktopController)
         }
