@@ -6,19 +6,6 @@ import InferenceEngine
 
 // MARK: - HTTP Server
 
-struct PrivateNetworkAccessMiddleware<Context: RequestContext>: RouterMiddleware {
-    func handle(
-        _ request: Request,
-        context: Context,
-        next: (Request, Context) async throws -> Response
-    ) async throws -> Response {
-        let headerName = HTTPField.Name("Access-Control-Allow-Private-Network")!
-        var response = try await next(request, context)
-        response.headers[values: headerName].append("true")
-        return response
-    }
-}
-
 /// Returns model IDs available on connected peers (WAN + cluster).
 public typealias PeerModelProvider = @Sendable () async -> [(id: String, ownedBy: String)]
 
@@ -69,14 +56,14 @@ public actor LocalHTTPServer {
 
         let router = Router()
 
-        // CORS
+        // Origin / Host guard (contract shared with the Rust node): native
+        // clients without an Origin pass, only the bundled companion UI may
+        // call from a browser context, and the Host must be loopback while
+        // bound to loopback. Replaces the old reflect-any-origin CORS and
+        // the Access-Control-Allow-Private-Network header.
+        let port = self.port
         router.addMiddleware {
-            PrivateNetworkAccessMiddleware()
-            CORSMiddleware(
-                allowOrigin: .originBased,
-                allowHeaders: [.contentType, .authorization],
-                allowMethods: [.get, .post, .options]
-            )
+            LocalOriginGuardMiddleware(port: port, enforceLoopbackHost: !requireAuth)
         }
 
         // Auth (require key when network access is enabled)
