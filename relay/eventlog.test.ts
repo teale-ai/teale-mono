@@ -29,6 +29,23 @@ describe("eventlog", () => {
     expect(out[0].node).toBe("a".repeat(16) + "..."); // truncated via endpoint
   });
 
+  test("truncates node IDs nested inside arrays and objects (mass_close)", () => {
+    ev.logEvent("mass_close", {
+      closed: [
+        { node: "a".repeat(64), code: 1006, reason: "" },
+        { node: "b".repeat(64), code: 1006, reason: "" },
+      ],
+      codes: { "1006": 2 },
+      peers_after: 0,
+    });
+    const out = ev.queryEvents(new URLSearchParams("kind=mass_close"));
+    expect(out.length).toBe(1);
+    const closed = out[0]!.closed as { node: string }[];
+    expect(closed[0]!.node).toBe("a".repeat(16) + "...");
+    expect(closed[1]!.node).toBe("b".repeat(16) + "...");
+    expect(JSON.stringify(out)).not.toContain("a".repeat(17));
+  });
+
   test("fields can never clobber the event kind", () => {
     ev.logEvent("peer_not_found", { from: "x", to: "y", msg_kind: "relayOpen" });
     const out = ev.queryEvents(new URLSearchParams());
