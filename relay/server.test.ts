@@ -19,7 +19,8 @@ function toHex(bytes: Uint8Array): string {
 type Identity = { nodeID: string; sign: (text: string) => Promise<string> };
 
 async function makeIdentity(): Promise<Identity> {
-  const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  // Ed25519 generateKey yields a key pair; the lib overloads type it loosely.
+  const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as unknown as CryptoKeyPair;
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   return {
     nodeID: toHex(raw),
