@@ -1,3 +1,4 @@
+# EXPERIMENTAL: not runnable as-is (see stress/README.md, "Experimental scenarios").
 name = "mesh_kimi_fault_participant"
 gateway_url = "https://gateway.teale.com"
 token = "$GATEWAY_DEV_TOKEN"

@@ -41,6 +41,19 @@ The new mesh evaluation scenarios under `stress/scenarios/mesh_*` use these
 fields to drive tool-bearing, multi-turn, longer-context requests through the
 same `/v1/chat/completions` path as the existing readiness tests.
 
+### Experimental scenarios
+
+`stress/scenarios/experimental/` holds scenarios that cannot run as-is and
+are excluded from the nightly loop (which only globs the top-level
+`stress/scenarios/*.toml`):
+
+- `mesh_dense405_agentic_steady.toml` targets `nousresearch/hermes-4-405b`,
+  which is not in `gateway/models.yaml`.
+- `mesh_kimi_fault_head.toml` / `mesh_kimi_fault_participant.toml` carry
+  `REPLACE_WITH_*` SSH targets. `teale-stress` refuses to load a scenario
+  whose fault target still starts with `REPLACE_WITH`; copy the file and set
+  a real host first.
+
 ## Pass criteria (per scenario)
 
 | Scenario           | Must hit                                                          |
@@ -61,14 +74,19 @@ Phase D gate: re-run every scenario on a fresh deploy, then 48 h unattended.
 
 | Kind              | Effect                                                 |
 |-------------------|--------------------------------------------------------|
-| `kill_backend`    | `pkill llama-server` on the target host (supervisor should restart it) |
-| `kill_node`       | `pkill teale-node` (simulates crash)                   |
-| `block_ws`        | Block outbound TCP :443 via pfctl for N seconds        |
+| `kill_backend`    | `pkill -TERM llama-server` (or `mnn_llm`) on the target host (supervisor should restart it) |
+| `kill_node`       | `pkill -KILL teale-node` (SIGKILL, simulates a crash)  |
+| `block_ws`        | Block outbound TCP :443 for N seconds: pfctl anchor `teale-stress` on macOS, an iptables `OUTPUT` REJECT rule tagged `teale-stress` on Linux (removed afterwards) |
 | `pause_heartbeat` | `SIGSTOP` the node process for N seconds, then `SIGCONT` |
-| `malformed_chunk` | Requires the fault-injection proxy (see below)         |
+| `malformed_chunk` | Not implemented: logs a warning only (needs the proxy described below) |
 
-Requires passwordless SSH to targets. For macOS targets use `ssh-host-*`
-aliases in `~/.ssh/config`.
+Requires passwordless SSH (key auth, plus passwordless `sudo` for
+`block_ws`) to targets. For macOS targets use `ssh-host-*` aliases in
+`~/.ssh/config`. Host keys are verified: the harness runs `ssh -o
+BatchMode=yes`, so every target must already be in `~/.ssh/known_hosts`
+(connect once by hand, or set `StrictHostKeyChecking accept-new` for those
+hosts in your SSH config). On macOS, pf only evaluates the `teale-stress`
+anchor if `/etc/pf.conf` references it (`anchor "teale-stress"`).
 
 ## Analyzing
 
@@ -93,7 +111,8 @@ be paired with manual corruption.
 
 ## CI / automation
 
-For a nightly regression, wrap in a shell script:
+For a nightly regression, wrap in a shell script (top-level scenarios only;
+`experimental/` is skipped on purpose):
 
 ```bash
 #!/usr/bin/env bash
