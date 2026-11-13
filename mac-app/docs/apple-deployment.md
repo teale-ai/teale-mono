@@ -2,7 +2,7 @@
 
 End-to-end guide for releasing Teale on Apple devices.
 
-- **macOS** (`Teale.app`) — Developer ID signed + Apple-notarized, distributed as a direct `.zip` download via GitHub Releases. No App Store.
+- **macOS** (`Teale.app`) — Developer ID signed, distributed as `.dmg` / `.zip` downloads via GitHub Releases. No App Store. **CI release builds are currently NOT notarized or stapled** (the `Mac App Release` workflow has no `notarytool` step, and its release notes tell users how to get past Gatekeeper). Only the local `scripts/sign-macos.sh` path notarizes. Wiring notarization into CI is a tracked follow-up.
 - **iOS** (`TealeCompanion`) — TestFlight for beta testers. Public App Store deferred.
 
 Both paths work locally from your Mac and from GitHub Actions CI.
@@ -61,7 +61,9 @@ Download each, double-click to install.
 
 ## Local workflow
 
-### macOS: build + sign + notarize
+### macOS: build + sign + notarize (local only)
+
+This local path is the only one that notarizes today; CI release builds are signed but not notarized (see [CI workflow](#ci-workflow)).
 
 One-time per machine:
 
@@ -119,10 +121,9 @@ Add under Settings → Secrets and variables → Actions:
 - `DEVELOPER_ID_P12_BASE64` — `base64 -i DeveloperID.p12` output.
 - `DEVELOPER_ID_P12_PASSWORD` — the export password you set.
 - `DEVELOPER_ID_IDENTITY` — e.g. `Developer ID Application: Taylor Hou (TEAMID1234)`.
-- `APPLE_ID` — your Apple ID email.
-- `APPLE_APP_PASSWORD` — app-specific password from <https://appleid.apple.com> (**not** your login password).
+- `APPLE_ID`, `APPLE_APP_PASSWORD` — reserved for CI notarization (Apple ID email + app-specific password from <https://appleid.apple.com>, **not** your login password). These secrets exist but the workflow does **not** use them yet.
 
-**iOS TestFlight** (monorepo root `.github/workflows/mac-app-testflight.yml`)
+**iOS TestFlight** (monorepo root `.github/workflows/mac-app-testflight.yml`). These are not configured in the repo yet; until all of them are, the workflow skips its upload steps with a notice instead of failing.
 - `IOS_DISTRIBUTION_P12_BASE64`, `IOS_DISTRIBUTION_P12_PASSWORD` — Apple Distribution cert.
 - `IOS_APPSTORE_PROFILE_BASE64` — `base64 -i teale-companion.mobileprovision`.
 - `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID` — from App Store Connect API key.
@@ -137,7 +138,7 @@ git tag mac-v2026.04.21.1200
 git push origin mac-v2026.04.21.1200
 ```
 
-The `Mac App Release` workflow runs: imports cert → signs bundle (Hardened Runtime + timestamp) → notarizes `.app` → staples → builds + signs + notarizes + staples `Teale.dmg` → publishes to GitHub Releases.
+The `Mac App Release` workflow runs: imports cert → builds the `teale` CLI → signs the bundle (Hardened Runtime + timestamp) → verifies the signature → builds + signs `Teale.dmg` → writes `checksums.txt` → publishes to GitHub Releases (with a tag-pinned copy of `scripts/install.sh`). It does **not** notarize or staple, so users see a Gatekeeper prompt on first launch. Follow-up: add `xcrun notarytool submit --wait` + `xcrun stapler staple` for the `.app` and `.dmg` using the existing `APPLE_ID` / `APPLE_APP_PASSWORD` / `APPLE_TEAM_ID` secrets (or an App Store Connect API key).
 
 **iOS TestFlight** — either push an `ios-v*` tag or manually dispatch `TestFlight` from the Actions tab.
 
@@ -150,14 +151,14 @@ The `Mac App Release` workflow runs: imports cert → signs bundle (Hardened Run
 | `scripts/upload-testflight.sh` | Local: archive → export → upload IPA. |
 | `scripts/ExportOptions.plist` | Template; `__TEAM_ID__` is substituted at runtime. |
 | `.env.signing.example` | Copy to `mac-app/.env.signing`; gitignored. |
-| `../.github/workflows/mac-app-release.yml` | macOS CI: signed + notarized `.app` + `.dmg` release (monorepo root). |
+| `../.github/workflows/mac-app-release.yml` | macOS CI: Developer ID signed (not notarized) `.app` + `.dmg` release (monorepo root). |
 | `../.github/workflows/mac-app-testflight.yml` | iOS CI: TestFlight upload (monorepo root). |
 | `Sources/InferencePoolApp/InferencePool.entitlements` | App Sandbox off, network, multicast. |
 | `Sources/TealeCompanion/Info.plist` | `ITSAppUsesNonExemptEncryption=false` to skip the export-compliance prompt. |
 
 ## Troubleshooting
 
-- **`spctl` says "rejected"**: the bundle wasn't notarized, or the ticket wasn't stapled. Re-run `scripts/sign-macos.sh` end to end.
+- **`spctl` says "rejected"**: the bundle wasn't notarized, or the ticket wasn't stapled. This is expected for CI release builds today (they are not notarized). For a local build, re-run `scripts/sign-macos.sh` end to end.
 - **`notarytool submit` returns "Invalid"**: run `xcrun notarytool log <submission-id> --keychain-profile teale-notary` to see which binary failed. Usually hardened runtime or missing timestamp — `codesign -f -s "$SIGNING_IDENTITY" --timestamp --options runtime` on the offender.
 - **Multicast discovery broken in signed release**: the entitlement hasn't been approved yet. See request link above.
 - **TestFlight upload succeeds but build never appears**: check the encryption compliance key is present in `Info.plist` (`ITSAppUsesNonExemptEncryption = false`) and that the build number incremented.

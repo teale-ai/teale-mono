@@ -43,7 +43,7 @@ jobs:
         run: |
           echo '## KV-quant eval (kvBits:8 vs baseline, greedy)' >> $GITHUB_STEP_SUMMARY
           jq -r '"| model | identical | mean tps base | mean tps kv8 | speedup |","|---|---|---|---|---|","| \(.model) | \(.identicalCount)/\(.promptCount) | \(.meanBaselineTPS) | \(.meanQuantizedTPS) | \(.speedupPct)% |"' eval-results.json >> $GITHUB_STEP_SUMMARY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: eval-results

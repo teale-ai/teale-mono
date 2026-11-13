@@ -65,7 +65,7 @@ rate(gateway_retries_total[5m])
   - Often: llama-server OOM after a long completion; bump `context_size` down or reduce concurrency cap.
 
 ### "OpenRouter paged us — 5xx rate >1% for 15 min"
-- Status page: https://status.teale.com (update with whatever we set up)
+- Status page: none exists yet (no `status.teale.com` is deployed); communicate with OpenRouter directly until one is set up.
 - If gateway-side: roll back the most recent deploy (`fly releases rollback -a teale-gateway`)
 - If fleet-side: open `gateway_devices_connected` — if the number dropped suddenly, a shared dependency (relay, DNS) regressed. Check cloudflare / DNS providers.
 - Post-mortem template in `.context/postmortems/`
@@ -74,11 +74,11 @@ rate(gateway_retries_total[5m])
 
 | Component | Command |
 |---|---|
-| Gateway | `fly deploy -a teale-gateway` from `gateway/` |
-| Relay | `fly deploy -a teale-relay` from `relay/` |
-| Node (macOS) | `brew upgrade teale-node` (homebrew formula auto-bumps on release) |
-| Node (Linux) | `curl -sSL install.teale.com \| sh` or package manager |
-| Node (Windows) | Inno Setup installer auto-updates via GitHub releases |
+| Gateway | Automatic: `gateway-deploy` workflow after the `rust` workflow passes on `main` (GitHub environment `production`). Manual: `flyctl deploy --remote-only --config gateway/fly.toml --dockerfile gateway/Dockerfile` from the repo root |
+| Relay | Automatic: `relay-deploy` workflow after the `relay` workflow passes on `main` (environment `production`), or dispatch it. Manual: `flyctl deploy --remote-only --config fly.toml --dockerfile Dockerfile` from `relay/` |
+| Mac app | Push a `mac-v*` tag; users install via the release's `install.sh` asset or `Teale.dmg` (no Homebrew formula exists) |
+| Node (Linux desktop) | Push a `teale-*` tag; users download `Teale-linux-x86_64.tar.gz` from that GitHub release and run its `install.sh` (there is no `install.teale.com` host or distro package) |
+| Node (Windows) | Push a `teale-*` tag; users download `Teale.exe` from that GitHub release. The installed `check-update.ps1` only notifies about newer releases; it does not auto-update |
 
 ### Rollback
 
