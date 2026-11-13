@@ -1,15 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Filipino. Strings added in the 2026-11 audit fix were machine-assisted;
+     a native-speaker review is still pending. -->
 <resources>
     <!-- Bottom-nav tabs -->
-    <string name="tab_chats">Chats</string>
-    <string name="tab_groups">Mga Grupo</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_tasks">Mga Gawain</string>
     <string name="tab_wallet">Wallet</string>
-    <string name="tab_settings">Mga Setting</string>
+    <string name="tab_account">Account</string>
 
     <!-- Chat tab -->
     <string name="chat_hint">Mag-message kay Teale</string>
-    <string name="chat_presence_online">AI online · Teale WAN</string>
-    <string name="chat_typing">nagta-type…</string>
+    <string name="chat_new_thread">Bagong thread</string>
+    <string name="chat_close_thread">Isara ang thread</string>
+    <string name="chat_models_waiting">Naghihintay ng mga modelo mula sa network…</string>
+    <string name="chat_model_picker_title">Modelo para sa demand</string>
+    <string name="chat_model_picker_note">Piliin ang modelo sa network na gagamitin ng thread na ito.</string>
+    <string name="chat_thread_context_note">Ang mga mensahe lang sa thread na ito ang ipinapadala bilang context.</string>
+    <string name="chat_empty_title">Magsimula ng bagong thread</string>
+    <string name="chat_interrupted_title">Naputol na sagot</string>
+    <string name="chat_interrupted_body">Makikita pa rin ang bahagyang sagot na ito sa session na ito, pero hindi na ito ipinapadala ulit bilang context.</string>
+    <string name="chat_tokens_in">%1$s input token</string>
+    <string name="chat_tokens_in_approx">~%1$s input token</string>
+    <string name="chat_tokens_out">%1$s output token</string>
+    <string name="chat_tokens_out_approx">~%1$s output token</string>
+
+    <!-- Home -->
+    <string name="home_title">Teale sa bulsa mo</string>
+    <string name="home_subtitle">Humingi ng inference mula sa network, panatilihing hiwalay ang mga thread, at bantayan kung ano ang maiaambag ng phone mo.</string>
+    <string name="home_card_network">Network</string>
+    <string name="home_card_network_note">%1$d live na modelo sa WAN</string>
+    <string name="home_card_wallet">Wallet</string>
+    <string name="home_card_wallet_note">Mga credit na magagamit para sa demand</string>
+    <string name="home_card_supply">Supply</string>
+    <string name="home_card_supply_note">Pangalawa lang ang supply sa Android at inuuna ang pag-charge.</string>
+    <string name="home_supply_off">Naka-off</string>
+    <string name="home_supply_starting">Nagsisimula</string>
+    <string name="home_supply_serving">Nagse-serve</string>
+    <string name="home_supply_paused">Naka-pause</string>
+    <string name="home_supply_waiting">Naghihintay</string>
+    <string name="home_supply_error">Error</string>
+    <string name="home_supply_requests_today">%1$d request · %2$d credit ngayong araw</string>
 
     <!-- Generic actions -->
     <string name="action_send">Ipadala</string>
@@ -17,6 +47,9 @@
     <string name="action_cancel">Kanselahin</string>
     <string name="action_create">Gumawa</string>
     <string name="action_back">Bumalik</string>
+    <string name="action_pause">I-pause</string>
+    <string name="action_resume">Ituloy</string>
+    <string name="action_retry">Subukan ulit</string>
 
     <!-- Groups list -->
     <string name="groups_new">Bagong grupo</string>
@@ -39,6 +72,30 @@
     <string name="wallet_usdc">USDC</string>
     <string name="wallet_transactions">Mga Transaksyon</string>
     <string name="wallet_empty">Wala pang transaksyon.</string>
+    <string name="wallet_device_id">Device ID</string>
+    <string name="wallet_device_id_copied">Nakopya ang Device ID.</string>
+    <string name="wallet_device_id_note">I-tap para kopyahin ang buong Teale device ID ng wallet ng device na ito.</string>
+    <string name="wallet_send_title">Magpadala ng credits</string>
+    <string name="wallet_send_recipient">Tatanggap</string>
+    <string name="wallet_send_recipient_note">Gumamit ng device ID para pondohan ang wallet ng ibang device na may bearer token.</string>
+    <string name="wallet_send_amount">Credits</string>
+    <string name="wallet_send_memo">Memo (opsyonal)</string>
+    <string name="wallet_send_sending">Ipinapadala…</string>
+    <string name="wallet_send_note">Dumadaan ang mga padala sa bearer token ng device na ito at pumapasok sa wallet ng target na device kapag Teale device ID ang tatanggap.</string>
+
+    <!-- Tasks -->
+    <string name="tasks_title">Mga Gawain</string>
+    <string name="tasks_subtitle">Mga naka-iskedyul na gawain ng assistant na tumatakbo sa Teale sa network. Ang maaasahan ngayon ay mga WorkManager job, malinaw na kailangang kakayahan, at tapat na limitasyon ng Android.</string>
+    <string name="tasks_readiness_ready">Handa na</string>
+    <string name="tasks_readiness_sms">Kailangan ang SMS role</string>
+    <string name="tasks_readiness_email">Kailangan ang email integration</string>
+    <string name="tasks_readiness_sms_body">Kailangan ng Android ang SMS role para maaasahang ma-automate ang mga papasok na text.</string>
+    <string name="tasks_readiness_email_body">Kailangan ng mga email action ang Gmail o IMAP integration, hindi lang permission ng phone.</string>
+    <string name="tasks_last_run">Huling takbo</string>
+    <string name="tasks_never_run">Hindi pa tumatakbo ang gawaing ito.</string>
+    <string name="tasks_workmanager_note">Tumatakbo gamit ang WorkManager. Puwedeng maantala ng Android ang eksaktong oras ng pagsisimula, lalo na kapag naka-Doze.</string>
+    <string name="tasks_run_now">Patakbuhin ngayon</string>
+    <string name="tasks_run_empty">Tapos na ang gawain, pero walang mahalagang maiuulat.</string>
 
     <!-- Settings -->
     <string name="settings_device_id">Device ID</string>
@@ -47,8 +104,18 @@
     <string name="settings_model_label">Gustong modelo</string>
     <string name="settings_model_supporting">hal. nousresearch/hermes-3-llama-3.1-8b, google/gemma-3-1b-it</string>
     <string name="settings_supply_title">Mag-supply ng inference</string>
-    <string name="settings_supply_on">Kumikita ng Teale Credits — gumagana ang llama-server at teale-node</string>
-    <string name="settings_supply_off">Kapag naka-on, sasali ang phone na ito sa Teale WAN at kikita ng credits.</string>
+    <string name="settings_supply_on">Aktibo ang beta na inuuna ang pag-charge. Nagsu-supply ang Teale habang nagcha-charge ang phone at sapat ang lamig nito.</string>
+    <string name="settings_supply_off">Kapag naka-on, sasali ang phone na ito sa Teale WAN bilang beta supply node para sa maliliit na modelo.</string>
+    <string name="settings_supply_notifications_off">Naka-off ang notifications ng Teale, kaya sa Home tab lang makikita ang status at mga error ng supply.</string>
+    <string name="settings_supply_beta_title">Android supply beta</string>
+    <string name="settings_supply_beta_body">Best-effort na supply node ang mga phone. Nagpa-pause ang Teale kapag naka-unplug o masyadong mainit ang phone, at nakatutok ito sa dagdag na kapasidad para sa maliliit na modelo, hindi sa laging-bukas na backbone.</string>
+    <string name="settings_supply_charging_only_title">Mag-supply lang habang nagcha-charge</string>
+    <string name="settings_supply_charging_only_body">Inirerekomenda. Mas maaasahan ang Android sa pag-supply kapag naka-dock o nakasaksak ang phone.</string>
+    <string name="settings_supply_acceleration_title">Acceleration mode</string>
+    <string name="settings_supply_acceleration_auto">Auto (accelerated beta)</string>
+    <string name="settings_supply_acceleration_auto_body">Subukan ang profile na gumagamit ng Vulkan sa mga kayang phone, at bumalik sa CPU kung pumalya ang pagsisimula.</string>
+    <string name="settings_supply_acceleration_cpu">CPU lang (konserbatibo)</string>
+    <string name="settings_supply_acceleration_cpu_body">Gamitin ang maliit at konserbatibong CPU profile para sa mas ligtas na pag-setup at magdamag na stability test.</string>
     <string name="settings_invite">Mag-imbita ng kaibigan via SMS</string>
     <string name="settings_scale_title">Distributed inference na malakihan</string>
     <string name="settings_scale_body">Nag-sa-scale ang Teale sa paraang request-level parallelism: bawat online na phone ay nagpapatakbo ng buong maliit na modelo (Gemma 3 1B, Qwen 2.5 1.5B). Ini-ruta ng gateway ang bawat request sa isang phone. Libu-libong phone = libu-libong sabay-sabay na inference. Ang phone-mesh sharding para sa mas malalaking modelo ay uunang bumaba sa mga LAN-local na peer (iisang Wi-Fi).</string>
@@ -60,8 +127,19 @@
     <!-- Supply foreground-service -->
     <string name="supply_tile_label">Teale supply</string>
     <string name="supply_notification_channel">Teale supply</string>
+    <string name="tasks_notification_channel">Mga gawain ng Teale</string>
     <string name="supply_notification_title">Teale: kumikita ng credits</string>
-    <string name="supply_notification_text">Online ang inference node</string>
+    <string name="supply_notification_text_starting">Sinisimulan ang Android supply beta…</string>
+    <string name="supply_notification_text_running_gpu">Online ang accelerated beta node</string>
+    <string name="supply_notification_text_running_cpu">Online ang konserbatibong CPU node</string>
+    <string name="supply_notification_text_running_cpu_fallback">Pumalya ang accelerated na pagsisimula; tumatakbo ang konserbatibong CPU node</string>
+    <string name="supply_notification_text_waiting_for_charge">Naka-pause hanggang mag-charge ang phone</string>
+    <string name="supply_notification_text_paused_thermal">Naka-pause hanggang lumamig ang phone (thermal: %1$s)</string>
+    <string name="supply_notification_text_missing_artifacts">Hindi makapagsimula ang supply: kulang ang APK na ito ng native binaries o hindi pa na-push ang modelo gamit ang adb</string>
+    <string name="supply_notification_text_error">Huminto ang supply: %1$s</string>
+    <string name="supply_notification_text_restarting">Huminto ang isang supply process; nire-restart (subok %1$d sa %2$d)</string>
+    <string name="supply_notification_text_paused_user">Naka-pause mula sa Teale app</string>
+    <string name="supply_notification_text_node_not_serving">Tumatakbo ang node pero hindi pa nagse-serve (%1$s)</string>
 
     <!-- Calendar skill -->
     <string name="calendar_permission_not_granted">hindi pa naka-grant ang calendar permission</string>

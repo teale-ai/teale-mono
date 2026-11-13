@@ -1,15 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Simplified Chinese. Strings added in the 2026-11 audit fix were
+     machine-assisted; a native-speaker review is still pending. -->
 <resources>
     <!-- Bottom-nav tabs -->
-    <string name="tab_chats">对话</string>
-    <string name="tab_groups">群聊</string>
+    <string name="tab_home">首页</string>
+    <string name="tab_tasks">任务</string>
     <string name="tab_wallet">钱包</string>
-    <string name="tab_settings">设置</string>
+    <string name="tab_account">账户</string>
 
     <!-- Chat tab -->
     <string name="chat_hint">发消息给 Teale</string>
-    <string name="chat_presence_online">AI 在线 · Teale 网络</string>
-    <string name="chat_typing">正在输入…</string>
+    <string name="chat_new_thread">新对话</string>
+    <string name="chat_close_thread">关闭对话</string>
+    <string name="chat_models_waiting">正在等待网络模型…</string>
+    <string name="chat_model_picker_title">需求模型</string>
+    <string name="chat_model_picker_note">选择此对话要使用的网络模型。</string>
+    <string name="chat_thread_context_note">只有此对话中的消息会作为上下文发送。</string>
+    <string name="chat_empty_title">开始新对话</string>
+    <string name="chat_interrupted_title">回复已中断</string>
+    <string name="chat_interrupted_body">这段不完整的回复在本次会话中仍然可见，但不会再作为上下文发送。</string>
+    <string name="chat_tokens_in">%1$s 个输入 token</string>
+    <string name="chat_tokens_in_approx">约 %1$s 个输入 token</string>
+    <string name="chat_tokens_out">%1$s 个输出 token</string>
+    <string name="chat_tokens_out_approx">约 %1$s 个输出 token</string>
+
+    <!-- Home -->
+    <string name="home_title">口袋里的 Teale</string>
+    <string name="home_subtitle">向网络请求推理，保持各个对话独立，并查看你的手机能回馈多少算力。</string>
+    <string name="home_card_network">网络</string>
+    <string name="home_card_network_note">WAN 上有 %1$d 个在线模型</string>
+    <string name="home_card_wallet">钱包</string>
+    <string name="home_card_wallet_note">可用于需求的积分</string>
+    <string name="home_card_supply">供给</string>
+    <string name="home_card_supply_note">Android 供给是辅助性的，并优先在充电时进行。</string>
+    <string name="home_supply_off">已关闭</string>
+    <string name="home_supply_starting">正在启动</string>
+    <string name="home_supply_serving">服务中</string>
+    <string name="home_supply_paused">已暂停</string>
+    <string name="home_supply_waiting">等待中</string>
+    <string name="home_supply_error">出错</string>
+    <string name="home_supply_requests_today">今日 %1$d 个请求 · %2$d 积分</string>
 
     <!-- Generic actions -->
     <string name="action_send">发送</string>
@@ -17,6 +47,9 @@
     <string name="action_cancel">取消</string>
     <string name="action_create">创建</string>
     <string name="action_back">返回</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_resume">继续</string>
+    <string name="action_retry">重试</string>
 
     <!-- Groups list -->
     <string name="groups_new">新建群聊</string>
@@ -38,6 +71,30 @@
     <string name="wallet_usdc">USDC</string>
     <string name="wallet_transactions">交易记录</string>
     <string name="wallet_empty">暂无交易记录。</string>
+    <string name="wallet_device_id">设备 ID</string>
+    <string name="wallet_device_id_copied">已复制设备 ID。</string>
+    <string name="wallet_device_id_note">点按即可复制此设备钱包的完整 Teale 设备 ID。</string>
+    <string name="wallet_send_title">发送积分</string>
+    <string name="wallet_send_recipient">收款方</string>
+    <string name="wallet_send_recipient_note">使用设备 ID 为另一个持有 bearer 令牌的设备钱包充值。</string>
+    <string name="wallet_send_amount">积分</string>
+    <string name="wallet_send_memo">备注（可选）</string>
+    <string name="wallet_send_sending">正在发送…</string>
+    <string name="wallet_send_note">转账通过此设备的 bearer 令牌发出；当收款方是 Teale 设备 ID 时，积分会进入目标设备的钱包。</string>
+
+    <!-- Tasks -->
+    <string name="tasks_title">任务</string>
+    <string name="tasks_subtitle">通过网络由 Teale 执行的定时助手任务。目前可靠的做法是 WorkManager 任务、明确的能力门槛，以及如实说明 Android 的限制。</string>
+    <string name="tasks_readiness_ready">已就绪</string>
+    <string name="tasks_readiness_sms">需要短信角色</string>
+    <string name="tasks_readiness_email">需要邮件集成</string>
+    <string name="tasks_readiness_sms_body">Android 需要短信角色，才能可靠地自动处理收到的短信。</string>
+    <string name="tasks_readiness_email_body">邮件操作需要 Gmail 或 IMAP 集成，仅有手机权限是不够的。</string>
+    <string name="tasks_last_run">上次运行</string>
+    <string name="tasks_never_run">此任务尚未运行。</string>
+    <string name="tasks_workmanager_note">由 WorkManager 运行。Android 可能会推迟确切的开始时间，尤其是在低电耗（Doze）模式下。</string>
+    <string name="tasks_run_now">立即运行</string>
+    <string name="tasks_run_empty">任务已完成，但没有值得报告的内容。</string>
 
     <!-- Settings -->
     <string name="settings_device_id">设备 ID</string>
@@ -46,8 +103,18 @@
     <string name="settings_model_label">首选模型</string>
     <string name="settings_model_supporting">例如 nousresearch/hermes-3-llama-3.1-8b、google/gemma-3-1b-it</string>
     <string name="settings_supply_title">提供推理</string>
-    <string name="settings_supply_on">正在赚取 Teale 积分 — llama-server 与 teale-node 运行中</string>
-    <string name="settings_supply_off">开启后，此设备将加入 Teale 网络并赚取积分。</string>
+    <string name="settings_supply_on">充电优先的测试版已启用。手机在充电且温度足够低时，Teale 会提供算力。</string>
+    <string name="settings_supply_off">开启后，此手机将作为小模型测试版供给节点加入 Teale WAN。</string>
+    <string name="settings_supply_notifications_off">Teale 的通知已关闭，因此供给状态和错误只会显示在首页标签中。</string>
+    <string name="settings_supply_beta_title">Android 供给测试版</string>
+    <string name="settings_supply_beta_body">手机是尽力而为的供给节点。手机未接电源或过热时 Teale 会暂停；它面向小模型的溢出容量，而不是全天候的骨干吞吐。</string>
+    <string name="settings_supply_charging_only_title">仅在充电时供给</string>
+    <string name="settings_supply_charging_only_body">推荐。手机放在底座上或接通电源时，Android 的供给要可靠得多。</string>
+    <string name="settings_supply_acceleration_title">加速模式</string>
+    <string name="settings_supply_acceleration_auto">自动（加速测试版）</string>
+    <string name="settings_supply_acceleration_auto_body">在支持的手机上尝试基于 Vulkan 的配置，启动失败时回退到 CPU。</string>
+    <string name="settings_supply_acceleration_cpu">仅 CPU（保守）</string>
+    <string name="settings_supply_acceleration_cpu_body">使用小型、保守的 CPU 配置，降低启用风险，适合通宵稳定性测试。</string>
     <string name="settings_invite">通过短信邀请好友</string>
     <string name="settings_scale_title">大规模分布式推理</string>
     <string name="settings_scale_body">Teale 以请求级并行方式扩展：每台在线手机运行一个完整的小模型（Gemma 3 1B、Qwen 2.5 1.5B）。网关将每个请求路由到一台手机。上千台手机 = 上千路并行推理。更大模型将通过同一 Wi-Fi 内的 LAN 近邻手机做分片（sharding）。</string>
@@ -59,8 +126,19 @@
     <!-- Supply foreground-service -->
     <string name="supply_tile_label">Teale 供给</string>
     <string name="supply_notification_channel">Teale 供给</string>
+    <string name="tasks_notification_channel">Teale 任务</string>
     <string name="supply_notification_title">Teale：正在赚取积分</string>
-    <string name="supply_notification_text">推理节点在线</string>
+    <string name="supply_notification_text_starting">正在启动 Android 供给测试版…</string>
+    <string name="supply_notification_text_running_gpu">加速测试版节点在线</string>
+    <string name="supply_notification_text_running_cpu">保守 CPU 节点在线</string>
+    <string name="supply_notification_text_running_cpu_fallback">加速启动失败；正在运行保守 CPU 节点</string>
+    <string name="supply_notification_text_waiting_for_charge">已暂停，等待手机开始充电</string>
+    <string name="supply_notification_text_paused_thermal">已暂停，等待手机降温（温度状态：%1$s）</string>
+    <string name="supply_notification_text_missing_artifacts">供给无法启动：此 APK 缺少原生二进制文件，或尚未通过 adb 推送模型</string>
+    <string name="supply_notification_text_error">供给已停止：%1$s</string>
+    <string name="supply_notification_text_restarting">某个供给进程已停止；正在重启（第 %1$d 次，共 %2$d 次）</string>
+    <string name="supply_notification_text_paused_user">已在 Teale 应用中暂停</string>
+    <string name="supply_notification_text_node_not_serving">节点正在运行，但尚未提供服务（%1$s）</string>
 
     <!-- Calendar skill -->
     <string name="calendar_permission_not_granted">尚未授予日历权限</string>
