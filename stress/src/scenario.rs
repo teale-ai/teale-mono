@@ -83,15 +83,17 @@ pub struct FaultSchedule {
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FaultKind {
-    /// `pkill llama-server` on the target host (SSH).
+    /// SIGTERM `llama-server` (or `mnn_llm`) on the target host (SSH).
     KillBackend,
     /// Send SIGKILL to the `teale-node` process on the target.
     KillNode,
-    /// Block outgoing WebSocket on the target for `duration_seconds`.
+    /// Block outbound TCP :443 on the target for `duration_seconds`
+    /// (pfctl on macOS, iptables on Linux).
     BlockWs,
-    /// Stop responding to inbound probes for `duration_seconds`.
+    /// SIGSTOP `teale-node` for `duration_seconds`, then SIGCONT.
     PauseHeartbeat,
-    /// Return malformed chunk JSON (requires the fault-injection proxy).
+    /// Placeholder: would return malformed chunk JSON via a fault-injection
+    /// proxy, which does not exist yet. Only logs a warning.
     MalformedChunk,
 }
 
@@ -128,11 +130,67 @@ fn default_duration() -> u64 {
 impl Scenario {
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let mut scn: Scenario = toml::from_str(&content)?;
+        let mut scn = Self::parse(&content)?;
         if let Some(env_name) = scn.token.strip_prefix('$') {
             scn.token = std::env::var(env_name)
                 .map_err(|_| anyhow::anyhow!("env var {} not set", env_name))?;
         }
         Ok(scn)
+    }
+
+    /// Parse scenario TOML and reject unfilled `REPLACE_WITH_*` fault targets
+    /// so a template never fires faults at a bogus host.
+    pub fn parse(content: &str) -> anyhow::Result<Self> {
+        let scn: Scenario = toml::from_str(content)?;
+        for fault in &scn.faults {
+            if let Some(target) = &fault.target {
+                if target.starts_with("REPLACE_WITH") {
+                    anyhow::bail!(
+                        "scenario {}: fault target {target} is a placeholder",
+                        scn.name
+                    );
+                }
+            }
+        }
+        Ok(scn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = r#"
+name = "t"
+gateway_url = "http://localhost"
+token = "x"
+duration_seconds = 1
+rps = 1.0
+
+[[requests]]
+model = "m"
+weight = 1
+prompt_tokens_mean = 1
+prompt_tokens_stddev = 1
+max_tokens = 1
+"#;
+
+    fn with_fault(kind: &str, target: &str) -> String {
+        format!("{BASE}\n[[faults]]\nkind = \"{kind}\"\nat_seconds = 1\ntarget = \"{target}\"\n")
+    }
+
+    #[test]
+    fn placeholder_fault_targets_are_rejected() {
+        let toml = with_fault("kill_backend", "REPLACE_WITH_HEAD_SSH_HOST");
+        let err = Scenario::parse(&toml).unwrap_err().to_string();
+        assert!(err.contains("placeholder"), "{err}");
+    }
+
+    #[test]
+    fn real_fault_targets_are_accepted() {
+        let toml = with_fault("kill_node", "ssh-host-1");
+        let scn = Scenario::parse(&toml).unwrap();
+        assert_eq!(scn.faults.len(), 1);
+        assert_eq!(scn.faults[0].kind, FaultKind::KillNode);
     }
 }
