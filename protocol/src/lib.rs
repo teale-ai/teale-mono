@@ -21,13 +21,14 @@ pub use cluster::{
     InferenceRequestPayload, LoadModelPayload, ModelLoadErrorPayload, ModelLoadedPayload,
     ThermalLevel,
 };
-pub use hardware::{GpuBackend, HardwareCapability, NodeCapabilities, Tier};
+pub use hardware::{GpuBackend, HardwareCapability, NodeCapabilities};
 pub use openai::{ApiMessage, ChatCompletionRequest, ModelEntry, ModelsResponse, Pricing};
 pub use pin::{
     canonical_json, PinEndpoint, PinNetmap, PinNetmapMember, SignedPinNetmap,
     NETMAP_MAX_AGE_SECONDS,
 };
 pub use relay::{
-    DiscoverPayload, IncomingRelayMessage, OutgoingRelayMessage, PeerNotificationPayload,
-    RegisterPayload, RelayDataPayload, RelayErrorPayload, RelaySessionPayload,
+    DiscoverFilter, DiscoverPayload, IceCandidatePayload, IncomingRelayMessage, OfferAnswerPayload,
+    OutgoingRelayMessage, PeerNotificationPayload, RegisterPayload, RelayDataPayload,
+    RelayErrorPayload, RelaySessionPayload,
 };

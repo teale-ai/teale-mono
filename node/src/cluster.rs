@@ -324,6 +324,10 @@ pub async fn handle_relay_data(
             debug!("Ignoring unknown cluster message type: {}", kind);
         }
 
+        ClusterMessage::Invalid { kind, error, .. } => {
+            warn!("Malformed {kind} message from {}: {error}", short(from));
+        }
+
         _ => {
             // HelloAck / HeartbeatAck / InferenceChunk/Complete/Error / ModelLoaded*
             // are responses — a supply node doesn't expect to receive them.

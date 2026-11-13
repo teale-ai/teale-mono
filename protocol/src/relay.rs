@@ -19,6 +19,16 @@ pub enum OutgoingRelayMessage {
     Discover {
         discover: DiscoverPayload,
     },
+    Offer {
+        offer: OfferAnswerPayload,
+    },
+    Answer {
+        answer: OfferAnswerPayload,
+    },
+    IceCandidate {
+        #[serde(rename = "iceCandidate")]
+        ice_candidate: IceCandidatePayload,
+    },
     RelayOpen {
         #[serde(rename = "relayOpen")]
         relay_open: RelaySessionPayload,
@@ -72,6 +82,38 @@ pub struct DiscoverFilter {
     pub min_ram_gb: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_tier: Option<u32>,
+    /// Cap on the number of peers returned (random sample when more match).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peers: Option<u32>,
+}
+
+/// Direct-connection signaling (`offer` / `answer`), forwarded verbatim by
+/// the relay. `signature` is hex(Ed25519.sign(utf8("{from}:{to}:{session}"))).
+/// `connection_info` is kept as raw JSON (publicIP, publicPort, localIP,
+/// localPort, natType, wgPublicKey) because no Rust component consumes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfferAnswerPayload {
+    #[serde(rename = "fromNodeID")]
+    pub from_node_id: String,
+    #[serde(rename = "toNodeID")]
+    pub to_node_id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(rename = "connectionInfo")]
+    pub connection_info: Value,
+    pub signature: String,
+}
+
+/// ICE candidate signaling. `candidate` is raw JSON (ip, port, type, priority).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IceCandidatePayload {
+    #[serde(rename = "fromNodeID")]
+    pub from_node_id: String,
+    #[serde(rename = "toNodeID")]
+    pub to_node_id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub candidate: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +163,9 @@ pub struct RelayErrorPayload {
 pub enum IncomingRelayMessage {
     RegisterAck { node_id: String },
     DiscoverResponse { peers: Vec<Value> },
+    Offer(OfferAnswerPayload),
+    Answer(OfferAnswerPayload),
+    IceCandidate(IceCandidatePayload),
     RelayOpen(RelaySessionPayload),
     RelayReady(RelaySessionPayload),
     RelayData(RelayDataPayload),
@@ -143,6 +188,18 @@ impl IncomingRelayMessage {
         if let Some(payload) = obj.get("discoverResponse") {
             let peers = payload.get("peers")?.as_array()?.clone();
             return Some(Self::DiscoverResponse { peers });
+        }
+        if let Some(payload) = obj.get("offer") {
+            let p: OfferAnswerPayload = serde_json::from_value(payload.clone()).ok()?;
+            return Some(Self::Offer(p));
+        }
+        if let Some(payload) = obj.get("answer") {
+            let p: OfferAnswerPayload = serde_json::from_value(payload.clone()).ok()?;
+            return Some(Self::Answer(p));
+        }
+        if let Some(payload) = obj.get("iceCandidate") {
+            let p: IceCandidatePayload = serde_json::from_value(payload.clone()).ok()?;
+            return Some(Self::IceCandidate(p));
         }
         if let Some(payload) = obj.get("relayOpen") {
             let p: RelaySessionPayload = serde_json::from_value(payload.clone()).ok()?;
