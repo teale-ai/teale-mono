@@ -126,10 +126,17 @@ Invoke-Command -ComputerName $machines -ThrottleLimit 20 `
 2. Hover tooltip: *"Teale — Supplying · 12 requests · 4,800 credits today"*.
 3. Right-click menu:
    - **Pause supply** — toggles user-pause. Tray goes gray. Service keeps
-     running, just stops accepting new inference.
+     running (model stays loaded), just stops accepting new inference.
    - **Resume supply** — clears the user-pause flag.
-   - **Open Teale dashboard** — opens `https://teale.com/supply` in browser.
-   - **Quit** — closes the tray (service continues in background).
+   - **Open Teale** — opens the companion window.
+   - **Close tray icon (Teale keeps supplying)** — exits only the tray
+     process; the service continues in the background.
+   - **Quit Teale (stop supplying)** — after a confirmation and a UAC prompt,
+     stops the `TealeNode` service (which also ends `llama-server.exe` and
+     frees the model's memory), then exits the tray. Nothing restarts it
+     until the next Windows boot (service is `SERVICE_AUTO_START`) or an
+     admin runs `Start-Service TealeNode`. If the UAC prompt is declined the
+     tray stays up and says so.
 4. Lid-closed on AC → still supplying, screen dark, Wi-Fi up, fans may
    spin up slightly. Machine awake until lid opened again.
 5. Unplug AC → tray flips yellow within ~5 seconds, node deregisters from
