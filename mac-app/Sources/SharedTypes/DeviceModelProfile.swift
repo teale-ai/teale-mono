@@ -16,13 +16,13 @@ public enum DeviceClass: String, Codable, Sendable, CaseIterable {
 extension ChipFamily {
     public var deviceClass: DeviceClass {
         switch self {
-        case .m1Ultra, .m2Ultra, .m3Ultra, .m4Ultra:
+        case .m1Ultra, .m2Ultra, .m3Ultra, .appleSiliconUltra:
             return .ultraDesktop
-        case .m1Max, .m2Max, .m3Max, .m4Max:
+        case .m1Max, .m2Max, .m3Max, .m4Max, .m5Max, .appleSiliconMax:
             return .maxDesktop
-        case .m1Pro, .m2Pro, .m3Pro, .m4Pro:
+        case .m1Pro, .m2Pro, .m3Pro, .m4Pro, .m5Pro, .appleSiliconPro:
             return .proLaptop
-        case .m1, .m2, .m3, .m4:
+        case .m1, .m2, .m3, .m4, .m5, .appleSilicon:
             return .baseMac
         case .a14, .a15, .a16, .a17Pro, .a18, .a18Pro, .a19Pro:
             return .mobile
