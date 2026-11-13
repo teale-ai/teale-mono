@@ -44,6 +44,10 @@ jobs:
       - name: Unit tests, lint, debug APK
         run: ./gradlew --stacktrace testDebugUnitTest lintDebug assembleDebug
 
+      - name: Print lint findings
+        if: failure()
+        run: find app/build -name 'lint-results-debug.txt' -exec cat {} \; || true
+
       - name: Upload lint + test reports
         if: always()
         uses: actions/upload-artifact@v7

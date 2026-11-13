@@ -107,10 +107,8 @@ android {
     }
 
     lint {
-        // Print every finding to the build log so CI failures are readable
-        // without downloading the HTML report.
+        // Text report is printed by CI when lint fails (.github/workflows/android.yml).
         textReport = true
-        textOutput = file("stdout")
         abortOnError = true
         // Every user-facing string must exist in all shipped locales.
         error += "MissingTranslation"
