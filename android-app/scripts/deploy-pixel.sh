@@ -1,31 +1,72 @@
 #!/usr/bin/env bash
-# Pixel 9 Pro Fold deploy: rebuild APK (with bundled native binaries + libs),
-# push the Gemma 3 1B GGUF to /data/local/tmp, install, grant permissions,
-# and relaunch. Run from repo root.
+# Pixel deploy: rebuild the debug APK with bundled native binaries + libs,
+# push the Gemma 3 1B GGUF to /data/local/tmp, install and relaunch.
 #
 # Requires:
 #   JAVA_HOME pointing at a JDK 17
-#   ANDROID_HOME pointing at ~/Library/Android/sdk (NDK 26.1.10909125+)
-#   `adb` on PATH
+#   ANDROID_HOME pointing at the Android SDK, with NDK $ANDROID_NDK_VERSION
+#     installed (or ANDROID_NDK_HOME pointing at an NDK directly)
+#   `adb` and `cargo` (with the aarch64-linux-android target) on PATH
 #   A device attached via `adb devices`
-#   llama.cpp Android build + Gemma 3 1B Q4_K_M GGUF unpacked at /tmp/teale-models/
+#   The llama.cpp Android release and the Gemma 3 1B Q4_K_M GGUF unpacked under
+#   $TEALE_MODELS_DIR (default: ~/.cache/teale-models):
+#     $TEALE_MODELS_DIR/gemma-3-1b-it-Q4_K_M.gguf
+#     $TEALE_MODELS_DIR/llama-android/llama-<version>/{llama-server,lib*.so}
+#
+# Overrides: DEVICE, TEALE_MODELS_DIR, GGUF_SRC, LLAMA_BIN_DIR,
+#            ANDROID_NDK_VERSION, ANDROID_NDK_HOME, LLAMA_CPP_VERSION.
 
 set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+APP_DIR="$REPO_ROOT/android-app"
+APK="$APP_DIR/app/build/outputs/apk/debug/app-debug.apk"
+JNI_DIR="$APP_DIR/app/src/main/jniLibs/arm64-v8a"
+
+# llama.cpp release pin shared with the other deploy paths.
+LLAMA_VERSION_FILE="$REPO_ROOT/.github/llama-cpp-version"
+if [ -z "${LLAMA_CPP_VERSION:-}" ]; then
+    if [ -f "$LLAMA_VERSION_FILE" ]; then
+        LLAMA_CPP_VERSION="$(tr -d '[:space:]' < "$LLAMA_VERSION_FILE")"
+    fi
+    LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION:-b8840}"
+fi
+
+MODELS_DIR="${TEALE_MODELS_DIR:-$HOME/.cache/teale-models}"
+GGUF_SRC="${GGUF_SRC:-$MODELS_DIR/gemma-3-1b-it-Q4_K_M.gguf}"
+LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$MODELS_DIR/llama-android/llama-$LLAMA_CPP_VERSION}"
 
 DEVICE="${DEVICE:-$(adb devices | awk 'NR>1 && $2=="device" {print $1; exit}')}"
 if [ -z "$DEVICE" ]; then
     echo "no device connected" >&2; exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-APP_DIR="$REPO_ROOT/android-app"
-APK="$APP_DIR/app/build/outputs/apk/debug/app-debug.apk"
-JNI_DIR="$APP_DIR/app/src/main/jniLibs/arm64-v8a"
-GGUF_SRC="${GGUF_SRC:-/tmp/teale-models/gemma-3-1b-it-Q4_K_M.gguf}"
-LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-/tmp/teale-models/llama-android/llama-b8840}"
+for path in "$GGUF_SRC" "$LLAMA_BIN_DIR/llama-server"; do
+    if [ ! -e "$path" ]; then
+        echo "missing $path (set TEALE_MODELS_DIR, GGUF_SRC or LLAMA_BIN_DIR)" >&2
+        exit 1
+    fi
+done
 
-echo "[1/5] cross-compile teale-node for aarch64-linux-android"
-NDK_BIN="$ANDROID_HOME/ndk/26.1.10909125/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+# NDK prebuilt host tag. NDK r23+ ships universal macOS binaries under
+# darwin-x86_64, so Apple Silicon uses the same tag.
+case "$(uname -s)" in
+    Darwin) NDK_HOST_TAG="darwin-x86_64" ;;
+    Linux) NDK_HOST_TAG="linux-x86_64" ;;
+    MINGW* | MSYS* | CYGWIN*) NDK_HOST_TAG="windows-x86_64" ;;
+    *) echo "unsupported host $(uname -s) for the Android NDK" >&2; exit 1 ;;
+esac
+ANDROID_NDK_VERSION="${ANDROID_NDK_VERSION:-26.1.10909125}"
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    : "${ANDROID_HOME:?set ANDROID_HOME (Android SDK) or ANDROID_NDK_HOME}"
+    ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+fi
+NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$NDK_HOST_TAG/bin"
+if [ ! -d "$NDK_BIN" ]; then
+    echo "NDK toolchain not found at $NDK_BIN" >&2; exit 1
+fi
+
+echo "[1/5] cross-compile teale-node for aarch64-linux-android (llama.cpp $LLAMA_CPP_VERSION)"
 CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android29-clang" \
 CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android29-clang++" \
 AR_aarch64_linux_android="$NDK_BIN/llvm-ar" \
