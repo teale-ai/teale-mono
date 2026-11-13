@@ -334,9 +334,7 @@ class ChatViewModel : ViewModel() {
     }
 
     private fun buildSkillContext(text: String): String? {
-        val wantsCalendar = text.contains("@calendar", ignoreCase = true) ||
-            CALENDAR_TRIGGERS.any { it.containsMatchIn(text) }
-        if (!wantsCalendar) return null
+        if (!wantsCalendar(text)) return null
         val app = TealeApplication.instance
         if (!CalendarSkill.hasPermission(app)) {
             return app.getString(com.teale.android.R.string.calendar_permission_hint)
@@ -345,6 +343,11 @@ class ChatViewModel : ViewModel() {
     }
 
     companion object {
+        /** True when [text] should pull calendar events into the request context. */
+        fun wantsCalendar(text: String): Boolean =
+            text.contains("@calendar", ignoreCase = true) ||
+                CALENDAR_TRIGGERS.any { it.containsMatchIn(text) }
+
         private val CALENDAR_TRIGGERS = listOf(
             Regex("(?i)\\b(my calendar|on my calendar|this week|next week|tomorrow)\\b"),
             Regex("(?i)\\b(meu calend[áa]rio|minha agenda|essa semana|pr[óo]xima semana|amanh[ãa])\\b"),

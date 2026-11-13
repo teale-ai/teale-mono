@@ -1,6 +1,10 @@
 package com.teale.android.tasks
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
@@ -125,6 +129,15 @@ class AssistantTaskWorker(
     }
 
     private fun notify(title: String, summary: String) {
+        // Without POST_NOTIFICATIONS (Android 13+) the run is still recorded in the Tasks tab.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ActivityCompat.checkSelfPermission(
+                applicationContext,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         val notification = NotificationCompat.Builder(applicationContext, TealeApplication.TASKS_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_supply_tile)
             .setContentTitle(title)

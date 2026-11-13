@@ -1,15 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Brazilian Portuguese. Strings added in the 2026-11 audit fix were
+     machine-assisted; a native-speaker review is still pending. -->
 <resources>
     <!-- Bottom-nav tabs -->
-    <string name="tab_chats">Conversas</string>
-    <string name="tab_groups">Grupos</string>
+    <string name="tab_home">Início</string>
+    <string name="tab_tasks">Tarefas</string>
     <string name="tab_wallet">Carteira</string>
-    <string name="tab_settings">Configurações</string>
+    <string name="tab_account">Conta</string>
 
     <!-- Chat tab -->
     <string name="chat_hint">Mensagem para Teale</string>
-    <string name="chat_presence_online">IA online · Teale WAN</string>
-    <string name="chat_typing">digitando…</string>
+    <string name="chat_new_thread">Nova conversa</string>
+    <string name="chat_close_thread">Fechar conversa</string>
+    <string name="chat_models_waiting">Aguardando modelos da rede…</string>
+    <string name="chat_model_picker_title">Modelo de demanda</string>
+    <string name="chat_model_picker_note">Escolha o modelo da rede que esta conversa deve usar.</string>
+    <string name="chat_thread_context_note">Somente as mensagens desta conversa são enviadas como contexto.</string>
+    <string name="chat_empty_title">Comece uma nova conversa</string>
+    <string name="chat_interrupted_title">Resposta interrompida</string>
+    <string name="chat_interrupted_body">Esta resposta parcial continua visível nesta sessão, mas não é reenviada como contexto.</string>
+    <string name="chat_tokens_in">%1$s tokens de entrada</string>
+    <string name="chat_tokens_in_approx">~%1$s tokens de entrada</string>
+    <string name="chat_tokens_out">%1$s tokens de saída</string>
+    <string name="chat_tokens_out_approx">~%1$s tokens de saída</string>
+
+    <!-- Home -->
+    <string name="home_title">Teale no seu bolso</string>
+    <string name="home_subtitle">Peça inferência à rede, mantenha conversas separadas e acompanhe o que seu telefone pode contribuir.</string>
+    <string name="home_card_network">Rede</string>
+    <string name="home_card_network_note">%1$d modelos ativos na WAN</string>
+    <string name="home_card_wallet">Carteira</string>
+    <string name="home_card_wallet_note">Créditos disponíveis para demanda</string>
+    <string name="home_card_supply">Fornecimento</string>
+    <string name="home_card_supply_note">No Android, o fornecimento é secundário e prioriza o carregamento.</string>
+    <string name="home_supply_off">Desligado</string>
+    <string name="home_supply_starting">Iniciando</string>
+    <string name="home_supply_serving">Servindo</string>
+    <string name="home_supply_paused">Pausado</string>
+    <string name="home_supply_waiting">Aguardando</string>
+    <string name="home_supply_error">Erro</string>
+    <string name="home_supply_requests_today">%1$d requisições · %2$d créditos hoje</string>
 
     <!-- Generic actions -->
     <string name="action_send">Enviar</string>
@@ -17,6 +47,9 @@
     <string name="action_cancel">Cancelar</string>
     <string name="action_create">Criar</string>
     <string name="action_back">Voltar</string>
+    <string name="action_pause">Pausar</string>
+    <string name="action_resume">Retomar</string>
+    <string name="action_retry">Tentar de novo</string>
 
     <!-- Groups list -->
     <string name="groups_new">Novo grupo</string>
@@ -25,6 +58,7 @@
     <string name="groups_title_label">Título</string>
     <plurals name="groups_member_count">
         <item quantity="one">%1$d membro</item>
+        <item quantity="many">%1$d membros</item>
         <item quantity="other">%1$d membros</item>
     </plurals>
 
@@ -39,6 +73,30 @@
     <string name="wallet_usdc">USDC</string>
     <string name="wallet_transactions">Transações</string>
     <string name="wallet_empty">Nenhuma transação ainda.</string>
+    <string name="wallet_device_id">ID do dispositivo</string>
+    <string name="wallet_device_id_copied">ID do dispositivo copiado.</string>
+    <string name="wallet_device_id_note">Toque para copiar o ID completo do dispositivo Teale desta carteira.</string>
+    <string name="wallet_send_title">Enviar créditos</string>
+    <string name="wallet_send_recipient">Destinatário</string>
+    <string name="wallet_send_recipient_note">Use um ID de dispositivo para abastecer a carteira de outro dispositivo com token de portador.</string>
+    <string name="wallet_send_amount">Créditos</string>
+    <string name="wallet_send_memo">Observação (opcional)</string>
+    <string name="wallet_send_sending">Enviando…</string>
+    <string name="wallet_send_note">Os envios usam o token de portador deste dispositivo e chegam à carteira do dispositivo de destino quando o destinatário é um ID de dispositivo Teale.</string>
+
+    <!-- Tasks -->
+    <string name="tasks_title">Tarefas</string>
+    <string name="tasks_subtitle">Tarefas agendadas do assistente que rodam pelo Teale na rede. Confiável hoje significa jobs do WorkManager, requisitos de capacidade explícitos e limites honestos do Android.</string>
+    <string name="tasks_readiness_ready">Pronta agora</string>
+    <string name="tasks_readiness_sms">Requer a função de SMS</string>
+    <string name="tasks_readiness_email">Requer integração de e-mail</string>
+    <string name="tasks_readiness_sms_body">O Android exige a função de SMS para automatizar mensagens recebidas de forma confiável.</string>
+    <string name="tasks_readiness_email_body">Ações de e-mail precisam de integração com Gmail ou IMAP, não apenas permissões do telefone.</string>
+    <string name="tasks_last_run">Última execução</string>
+    <string name="tasks_never_run">Esta tarefa ainda não foi executada.</string>
+    <string name="tasks_workmanager_note">Roda com o WorkManager. O Android pode atrasar o horário exato de início, principalmente no modo Doze.</string>
+    <string name="tasks_run_now">Executar agora</string>
+    <string name="tasks_run_empty">Tarefa concluída, mas não havia nada relevante para relatar.</string>
 
     <!-- Settings -->
     <string name="settings_device_id">ID do dispositivo</string>
@@ -47,8 +105,18 @@
     <string name="settings_model_label">Modelo preferido</string>
     <string name="settings_model_supporting">ex.: nousresearch/hermes-3-llama-3.1-8b, google/gemma-3-1b-it</string>
     <string name="settings_supply_title">Fornecer inferência</string>
-    <string name="settings_supply_on">Ganhando créditos Teale — llama-server + teale-node em execução</string>
-    <string name="settings_supply_off">Quando ativado, este telefone entra na rede Teale e ganha créditos.</string>
+    <string name="settings_supply_on">Beta com prioridade de carregamento ativa. A Teale fornece enquanto o telefone está carregando e frio o suficiente.</string>
+    <string name="settings_supply_off">Quando ativado, este telefone entra na WAN da Teale como nó beta de fornecimento de modelos pequenos.</string>
+    <string name="settings_supply_notifications_off">As notificações da Teale estão desativadas, então o status e os erros do fornecimento só aparecem na aba Início.</string>
+    <string name="settings_supply_beta_title">Beta de fornecimento no Android</string>
+    <string name="settings_supply_beta_body">Telefones são nós de fornecimento de melhor esforço. A Teale pausa quando o telefone está desconectado ou quente demais e é ajustada para capacidade extra de modelos pequenos, não para vazão de backbone sempre ligada.</string>
+    <string name="settings_supply_charging_only_title">Fornecer só durante o carregamento</string>
+    <string name="settings_supply_charging_only_body">Recomendado. O Android é muito mais confiável para fornecer quando o telefone está em uma base ou na tomada.</string>
+    <string name="settings_supply_acceleration_title">Modo de aceleração</string>
+    <string name="settings_supply_acceleration_auto">Automático (beta acelerada)</string>
+    <string name="settings_supply_acceleration_auto_body">Tenta o perfil com Vulkan em telefones compatíveis e volta para a CPU se a inicialização falhar.</string>
+    <string name="settings_supply_acceleration_cpu">Somente CPU (conservador)</string>
+    <string name="settings_supply_acceleration_cpu_body">Usa o perfil de CPU pequeno e conservador para uma ativação de menor risco e testes de estabilidade durante a noite.</string>
     <string name="settings_invite">Convidar amigo por SMS</string>
     <string name="settings_scale_title">Inferência distribuída em escala</string>
     <string name="settings_scale_body">A Teale escala em paralelo por requisição: cada telefone online executa um modelo pequeno completo (Gemma 3 1B, Qwen 2.5 1.5B). O gateway encaminha cada requisição para um telefone. Milhares de telefones = milhares de inferências em paralelo. A divisão (sharding) de modelos maiores começará pelos vizinhos de LAN (mesma rede Wi-Fi).</string>
@@ -60,8 +128,19 @@
     <!-- Supply foreground-service -->
     <string name="supply_tile_label">Fornecimento Teale</string>
     <string name="supply_notification_channel">Fornecimento Teale</string>
+    <string name="tasks_notification_channel">Tarefas da Teale</string>
     <string name="supply_notification_title">Teale: ganhando créditos</string>
-    <string name="supply_notification_text">Nó de inferência online</string>
+    <string name="supply_notification_text_starting">Iniciando a beta de fornecimento no Android…</string>
+    <string name="supply_notification_text_running_gpu">Nó beta acelerado online</string>
+    <string name="supply_notification_text_running_cpu">Nó de CPU conservador online</string>
+    <string name="supply_notification_text_running_cpu_fallback">A inicialização acelerada falhou; nó de CPU conservador em execução</string>
+    <string name="supply_notification_text_waiting_for_charge">Pausado até o telefone estar carregando</string>
+    <string name="supply_notification_text_paused_thermal">Pausado até o telefone esfriar (estado térmico: %1$s)</string>
+    <string name="supply_notification_text_missing_artifacts">O fornecimento não pode iniciar: este APK não tem os binários nativos ou o modelo não foi enviado via adb</string>
+    <string name="supply_notification_text_error">Fornecimento parado: %1$s</string>
+    <string name="supply_notification_text_restarting">Um processo de fornecimento parou; reiniciando (tentativa %1$d de %2$d)</string>
+    <string name="supply_notification_text_paused_user">Pausado pelo app Teale</string>
+    <string name="supply_notification_text_node_not_serving">Nó em execução, mas ainda sem servir (%1$s)</string>
 
     <!-- Calendar skill -->
     <string name="calendar_permission_not_granted">permissão de calendário não concedida</string>

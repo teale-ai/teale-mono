@@ -7,16 +7,11 @@
     <!-- Bottom-nav tabs -->
     <string name="tab_home">Home</string>
     <string name="tab_tasks">Tasks</string>
-    <string name="tab_chats">Chats</string>
-    <string name="tab_groups">Groups</string>
     <string name="tab_wallet">Wallet</string>
-    <string name="tab_settings">Settings</string>
     <string name="tab_account">Account</string>
 
     <!-- Chat tab -->
     <string name="chat_hint">Message Teale</string>
-    <string name="chat_presence_online">AI online · Teale WAN</string>
-    <string name="chat_typing">typing…</string>
     <string name="chat_new_thread">New thread</string>
     <string name="chat_close_thread">Close thread</string>
     <string name="chat_models_waiting">Waiting for network models…</string>
@@ -40,8 +35,14 @@
     <string name="home_card_wallet_note">Credits available for demand</string>
     <string name="home_card_supply">Supply</string>
     <string name="home_card_supply_note">Android supply stays secondary and charging-first.</string>
-    <string name="home_supply_on">Ready</string>
     <string name="home_supply_off">Off</string>
+    <string name="home_supply_starting">Starting</string>
+    <string name="home_supply_serving">Serving</string>
+    <string name="home_supply_paused">Paused</string>
+    <string name="home_supply_waiting">Waiting</string>
+    <string name="home_supply_error">Error</string>
+    <!-- %1$d = requests served today, %2$d = credits earned today (from teale-node /status) -->
+    <string name="home_supply_requests_today">%1$d requests · %2$d credits today</string>
 
     <!-- Generic actions -->
     <string name="action_send">Send</string>
@@ -49,6 +50,9 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_create">Create</string>
     <string name="action_back">Back</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_resume">Resume</string>
+    <string name="action_retry">Retry</string>
 
     <!-- Groups list -->
     <string name="groups_new">New group</string>
@@ -105,6 +109,7 @@
     <string name="settings_supply_title">Supply inference</string>
     <string name="settings_supply_on">Charging-first beta active. Teale supplies while the phone is charging and cool enough.</string>
     <string name="settings_supply_off">When on, this phone joins the Teale WAN as a small-model beta supply node.</string>
+    <string name="settings_supply_notifications_off">Notifications are off for Teale, so supply status and errors only show on the Home tab.</string>
     <string name="settings_supply_beta_title">Android supply beta</string>
     <string name="settings_supply_beta_body">Phones are best-effort supply nodes. Teale pauses when the phone is unplugged or too hot and is tuned for small-model overflow capacity, not always-on backbone throughput.</string>
     <string name="settings_supply_charging_only_title">Only supply while charging</string>
@@ -128,15 +133,20 @@
     <string name="supply_notification_channel">Teale supply</string>
     <string name="tasks_notification_channel">Teale tasks</string>
     <string name="supply_notification_title">Teale: earning credits</string>
-    <string name="supply_notification_text">Inference node online</string>
     <string name="supply_notification_text_starting">Starting Android supply beta…</string>
     <string name="supply_notification_text_running_gpu">Accelerated beta node online</string>
     <string name="supply_notification_text_running_cpu">Conservative CPU node online</string>
     <string name="supply_notification_text_running_cpu_fallback">Accelerated start failed; running conservative CPU node</string>
     <string name="supply_notification_text_waiting_for_charge">Paused until the phone is charging</string>
     <string name="supply_notification_text_paused_thermal">Paused until the phone cools down (%1$s thermal)</string>
-    <string name="supply_notification_text_missing_artifacts">Supply ready — push the model and native binaries via adb</string>
-    <string name="supply_notification_text_error">Supply paused — check logcat for the launch failure</string>
+    <string name="supply_notification_text_missing_artifacts">Supply can\'t start: this APK lacks the native binaries or the model has not been pushed via adb</string>
+    <!-- %1$s = technical failure detail (not translated) -->
+    <string name="supply_notification_text_error">Supply stopped: %1$s</string>
+    <!-- %1$d = attempt number, %2$d = maximum attempts -->
+    <string name="supply_notification_text_restarting">A supply process stopped; restarting (attempt %1$d of %2$d)</string>
+    <string name="supply_notification_text_paused_user">Paused from the Teale app</string>
+    <!-- %1$s = reason reported by teale-node, e.g. "starting" or "offline" (not translated) -->
+    <string name="supply_notification_text_node_not_serving">Node running but not serving yet (%1$s)</string>
 
     <!-- Calendar skill (injected as LLM context; localised so the model
          replies in the user's language). %1$d = horizon in days. %2$s = the
