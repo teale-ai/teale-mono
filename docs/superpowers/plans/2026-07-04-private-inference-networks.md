@@ -1,5 +1,7 @@
 # Private Inference Networks (PIN) Implementation Plan
 
+> **Status: IMPLEMENTED — archived plan (2026-11).** PIN shipped: gateway `/v1/pins/*` (`gateway/src/handlers/pins.rs`, `gateway/src/pins.rs`), node data plane and local API (`node/src/pin/*`, `/v1/app/pins/*`), Mac client (`mac-app/Sources/PINKit/`), shared desktop UI, and the `teale` CLI / `teale mcp` PIN commands. The unchecked boxes below were never ticked as tasks landed; they are kept only as a historical record of the plan and do **not** indicate outstanding work. For current behaviour read the code and `docs/pin-enterprise-rollout.md` / `docs/pin-noise-protocol.md`, not this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship PIN per `docs/superpowers/specs/2026-07-04-private-inference-networks-design.md` — gateway control plane, cross-platform encrypted data plane, priority queueing, token accounting, shared desktop UI, CLI — rollout-ready for a 200+ employee company that is ~90% Windows, ~10% macOS.

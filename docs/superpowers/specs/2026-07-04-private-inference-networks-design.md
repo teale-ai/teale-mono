@@ -1,7 +1,7 @@
 # Private Inference Networks (PIN) — Design
 
 **Date:** 2026-07-04
-**Status:** Draft for review
+**Status:** Implemented (archived design; the shipped code is authoritative where it differs)
 **Supersedes:** Private TealeNet (PTN, `mac-app/Sources/TealeNetKit/`) and the passcode/organizationID routing experiment (commit `8f61ac0`).
 
 ## 1. Summary

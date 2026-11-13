@@ -20,8 +20,16 @@ sudo apt-get install -y libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0 libvulkan1 
 
 ## Install
 
-1. Download `Teale-linux-x86_64.tar.gz` from the [GitHub releases page](https://github.com/teale-ai/teale-mono/releases/latest).
-2. Extract it.
+1. Download `Teale-linux-x86_64.tar.gz` and `Teale-linux-x86_64-checksums.txt` from the [desktop releases list](https://github.com/teale-ai/teale-mono/releases?q=teale-&expanded=true). Choose the newest `teale-*` release that contains `Teale-linux-x86_64.tar.gz`; `releases/latest` may point at a macOS-only build.
+2. Verify and extract it:
+
+```bash
+sha256sum -c Teale-linux-x86_64-checksums.txt
+tar -xzf Teale-linux-x86_64.tar.gz
+```
+
+   Older releases list the file as `.build/Teale-linux-x86_64.tar.gz`, which makes `sha256sum -c` report it missing; for those, compare `sha256sum Teale-linux-x86_64.tar.gz` with the hash in the checksums file by eye.
+
 3. Run:
 
 ```bash
