@@ -509,7 +509,10 @@ fn service_stop_command(bin_dir: Option<&Path>) -> (PathBuf, Vec<String>) {
         Some(path) if path.is_file() => path,
         _ => PathBuf::from("sc.exe"),
     };
-    (program, vec!["stop".to_string(), NODE_SERVICE_NAME.to_string()])
+    (
+        program,
+        vec!["stop".to_string(), NODE_SERVICE_NAME.to_string()],
+    )
 }
 
 /// PowerShell script that runs `program args` through `Start-Process -Verb
