@@ -1,9 +1,44 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
 }
+
+// ── Release signing ─────────────────────────────────────────────────────────
+// No signing secrets live in this file or in git. Values come from
+// `android-app/keystore.properties` (gitignored) or, for CI, from environment
+// variables:
+//
+//   keystore.properties key   environment variable
+//   storeFile                 TEALE_RELEASE_STORE_FILE      (path, relative to android-app/)
+//   storePassword             TEALE_RELEASE_STORE_PASSWORD
+//   keyAlias                  TEALE_RELEASE_KEY_ALIAS       (default "teale")
+//   keyPassword               TEALE_RELEASE_KEY_PASSWORD
+//
+// Without them, release packaging fails with an explicit message. Local dev
+// can opt into a debug-signed release with -Pteale.allowDebugSignedRelease=true
+// (such an APK cannot update an install signed with the real key).
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
+
+fun signingValue(propertyKey: String, envKey: String): String? =
+    (keystoreProperties.getProperty(propertyKey) ?: System.getenv(envKey))
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+
+val releaseStoreFile = signingValue("storeFile", "TEALE_RELEASE_STORE_FILE")
+val releaseStorePassword = signingValue("storePassword", "TEALE_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "TEALE_RELEASE_KEY_ALIAS") ?: "teale"
+val releaseKeyPassword = signingValue("keyPassword", "TEALE_RELEASE_KEY_PASSWORD")
+val hasReleaseSigning =
+    releaseStoreFile != null && releaseStorePassword != null && releaseKeyPassword != null
+val allowDebugSignedRelease =
+    (project.findProperty("teale.allowDebugSignedRelease") as String?)?.toBoolean() == true
 
 android {
     namespace = "com.teale.android"
@@ -47,13 +82,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            // Pre-release keystore committed to the repo for sideload convenience.
-            // For Play Store: replace with a cold-stored signing key before v1.0.
-            storeFile = file("teale-release.keystore")
-            storePassword = "teale-pre-release"
-            keyAlias = "teale"
-            keyPassword = "teale-pre-release"
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
@@ -63,8 +98,22 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = when {
+                hasReleaseSigning -> signingConfigs.getByName("release")
+                allowDebugSignedRelease -> signingConfigs.getByName("debug")
+                else -> null
+            }
         }
+    }
+
+    lint {
+        // Print every finding to the build log so CI failures are readable
+        // without downloading the HTML report.
+        textReport = true
+        textOutput = file("stdout")
+        abortOnError = true
+        // Every user-facing string must exist in all shipped locales.
+        error += "MissingTranslation"
     }
 
     packaging {
@@ -86,6 +135,26 @@ android {
             kotlin.srcDirs("src/main/kotlin")
         }
     }
+}
+
+val checkReleaseSigning by tasks.registering {
+    group = "verification"
+    description = "Fails release packaging when no release signing config is available."
+    doLast {
+        if (!hasReleaseSigning && !allowDebugSignedRelease) {
+            throw GradleException(
+                "Release signing is not configured. Create android-app/keystore.properties " +
+                    "(storeFile, storePassword, keyAlias, keyPassword) or set " +
+                    "TEALE_RELEASE_STORE_FILE / TEALE_RELEASE_STORE_PASSWORD / " +
+                    "TEALE_RELEASE_KEY_PASSWORD [/ TEALE_RELEASE_KEY_ALIAS]. For a local " +
+                    "debug-signed release build pass -Pteale.allowDebugSignedRelease=true."
+            )
+        }
+    }
+}
+
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(checkReleaseSigning)
 }
 
 dependencies {
