@@ -91,9 +91,10 @@ pub fn spawn_synthetic_probe_loop(state: AppState) {
                         // not evidence of bad health.
                     }
                     Err(err) => {
-                        state.registry.quarantine(
+                        state.registry.quarantine_for(
                             &target.node_id,
                             state.config.reliability.quarantine_seconds,
+                            "probe_failed",
                         );
                         warn!(
                             model = %target.model_id,

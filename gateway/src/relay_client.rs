@@ -605,7 +605,11 @@ async fn handle_incoming(
             warn!("relay error: {} — {}", e.code, e.message);
             if e.code == "peer_not_found" {
                 if let Some(peer_node_id) = extract_peer_node_id(&e.message) {
-                    registry.quarantine(peer_node_id, quarantine_seconds);
+                    registry.quarantine_for(
+                        peer_node_id,
+                        quarantine_seconds,
+                        "relay_peer_not_found",
+                    );
                     fail_ready_waiters_for_target(
                         ready_waiters,
                         peer_node_id,
