@@ -1316,7 +1316,11 @@ async fn pick_and_dispatch_inner(
                 }
                 state
                     .registry
-                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                    .quarantine_for(
+                        &target_node,
+                        state.config.reliability.quarantine_seconds,
+                        "stream_dispatch_relay_open_failed",
+                    );
                 excluded.push(target_node);
                 last_dispatch_error = Some(message);
                 continue;
@@ -1363,7 +1367,11 @@ async fn pick_and_dispatch_inner(
             }
             state
                 .registry
-                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                .quarantine_for(
+                    &target_node,
+                    state.config.reliability.quarantine_seconds,
+                    "stream_dispatch_relay_send_failed",
+                );
             excluded.push(target_node);
             last_dispatch_error = Some(message);
             continue;
@@ -1784,7 +1792,11 @@ async fn run_streaming(
             {
                 state
                     .registry
-                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                    .quarantine_for(
+                        &target_node,
+                        state.config.reliability.quarantine_seconds,
+                        "stream_failed_before_first_token",
+                    );
             }
 
             if completed {
@@ -1814,7 +1826,11 @@ async fn run_streaming(
             if !beside_heavy {
                 state
                     .registry
-                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                    .quarantine_for(
+                        &target_node,
+                        state.config.reliability.quarantine_seconds,
+                        "stream_retry_next_device",
+                    );
             }
             excluded.push(target_node);
         }
@@ -2124,7 +2140,11 @@ async fn run_buffered(
         {
             state
                 .registry
-                .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                .quarantine_for(
+                    &target_node,
+                    state.config.reliability.quarantine_seconds,
+                    "buffered_failed_before_first_token",
+                );
         }
 
         if completed {
@@ -2230,7 +2250,11 @@ async fn run_buffered(
             if !queue_full_failure && !beside_heavy {
                 state
                     .registry
-                    .quarantine(&target_node, state.config.reliability.quarantine_seconds);
+                    .quarantine_for(
+                        &target_node,
+                        state.config.reliability.quarantine_seconds,
+                        "buffered_retry_next_device",
+                    );
             }
             excluded.push(target_node);
             metrics::RETRIES_TOTAL
