@@ -164,13 +164,11 @@ async fn run_shadow(
                     node = %target,
                     "shadow mismatch streak hit - quarantining probation node"
                 );
-                state
-                    .registry
-                    .quarantine_for(
-                        &target,
-                        state.config.reliability.quarantine_seconds,
-                        "shadow_mismatch_streak",
-                    );
+                state.registry.quarantine_for(
+                    &target,
+                    state.config.reliability.quarantine_seconds,
+                    "shadow_mismatch_streak",
+                );
                 crate::metrics::SHADOW_REPLAY_TOTAL
                     .with_label_values(&[model_id, &target, "quarantined"])
                     .inc();
