@@ -166,7 +166,11 @@ async fn run_shadow(
                 );
                 state
                     .registry
-                    .quarantine(&target, state.config.reliability.quarantine_seconds);
+                    .quarantine_for(
+                        &target,
+                        state.config.reliability.quarantine_seconds,
+                        "shadow_mismatch_streak",
+                    );
                 crate::metrics::SHADOW_REPLAY_TOTAL
                     .with_label_values(&[model_id, &target, "quarantined"])
                     .inc();
