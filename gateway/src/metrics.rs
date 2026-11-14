@@ -44,6 +44,17 @@ pub static DEVICE_CHALLENGE_DENIED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric init")
 });
 
+/// Quarantines applied, by trigger. Observability only: quarantine
+/// behavior and duration are unchanged.
+pub static QUARANTINES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "gateway_quarantines_total",
+        "Device quarantines applied by trigger reason",
+        &["reason"]
+    )
+    .expect("metric init")
+});
+
 pub static RETRIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     register_int_counter_vec!(
         "gateway_retries_total",
@@ -322,6 +333,7 @@ pub fn init() {
     let _ = &*DEVICE_CHALLENGES_BY_DEVICE_TOTAL;
     let _ = &*DEVICE_CHALLENGE_DENIED_TOTAL;
     let _ = &*RETRIES_TOTAL;
+    let _ = &*QUARANTINES_TOTAL;
     let _ = &*HEAVY_HOLD_REFUSED;
     let _ = &*HEAVY_HOLD_EXPIRED;
     let _ = &*HEAVY_HOLD_SHARED;
