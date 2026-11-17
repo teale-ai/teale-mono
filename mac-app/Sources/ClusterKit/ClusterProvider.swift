@@ -145,9 +145,22 @@ public actor ClusterProvider: InferenceProvider {
         let messages = await peer.connection.incomingMessages
         try await peer.connection.send(.inferenceRequest(payload))
 
-        for await message in messages {
+        let watched = Self.withDeadlines(messages)
+        defer { watched.stop() }
+        var deadline = RemoteDeadline()
+
+        for await event in watched.events {
+            let message: ClusterMessage
+            switch event {
+            case .tick:
+                if deadline.isExpired() { throw ClusterError.peerTimeout }
+                continue
+            case .message(let received):
+                message = received
+            }
             switch message {
             case .inferenceChunk(let chunkPayload) where chunkPayload.requestID == requestID:
+                deadline.recordActivity()
                 modelID = modelID ?? chunkPayload.chunk.model
                 if let content = chunkPayload.chunk.choices.first?.delta.content, !content.isEmpty {
                     tokenCount += 1
@@ -176,7 +189,62 @@ public actor ClusterProvider: InferenceProvider {
             }
         }
 
+        if Task.isCancelled { throw CancellationError() }
         throw ClusterError.peerDisconnected
+    }
+
+    // MARK: - Deadlines
+
+    /// First response may take long (prompt processing on a busy peer);
+    /// after that, a peer that goes silent for `idleTimeout` is abandoned
+    /// instead of holding the request open forever.
+    static let firstResponseTimeout: TimeInterval = 300
+    static let idleTimeout: TimeInterval = 120
+
+    private enum RemoteEvent {
+        case message(ClusterMessage)
+        case tick
+    }
+
+    private struct RemoteDeadline {
+        private var lastActivity = Date()
+        private var sawResponse = false
+
+        mutating func recordActivity() {
+            lastActivity = Date()
+            sawResponse = true
+        }
+
+        func isExpired(now: Date = Date()) -> Bool {
+            let limit = sawResponse ? ClusterProvider.idleTimeout : ClusterProvider.firstResponseTimeout
+            return now.timeIntervalSince(lastActivity) > limit
+        }
+    }
+
+    /// Merges the peer's messages with a 1 s tick so the consuming loop can
+    /// enforce deadlines. `stop` tears both pumps down (also unsubscribing
+    /// from the peer connection).
+    private static func withDeadlines(
+        _ messages: AsyncStream<ClusterMessage>
+    ) -> (events: AsyncStream<RemoteEvent>, stop: @Sendable () -> Void) {
+        let (events, continuation) = AsyncStream<RemoteEvent>.makeStream()
+        let pump = Task {
+            for await message in messages {
+                continuation.yield(.message(message))
+            }
+            continuation.finish()
+        }
+        let ticker = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                continuation.yield(.tick)
+            }
+        }
+        return (events, {
+            pump.cancel()
+            ticker.cancel()
+            continuation.finish()
+        })
     }
 
     /// Look up a connected peer by device ID.
@@ -200,9 +268,25 @@ public actor ClusterProvider: InferenceProvider {
         let messages = await peer.connection.incomingMessages
         try await peer.connection.send(.inferenceRequest(payload))
 
-        for await message in messages {
+        let watched = Self.withDeadlines(messages)
+        defer { watched.stop() }
+        var deadline = RemoteDeadline()
+
+        for await event in watched.events {
+            let message: ClusterMessage
+            switch event {
+            case .tick:
+                if deadline.isExpired() {
+                    continuation.finish(throwing: ClusterError.peerTimeout)
+                    return
+                }
+                continue
+            case .message(let received):
+                message = received
+            }
             switch message {
             case .inferenceChunk(let chunkPayload) where chunkPayload.requestID == requestID:
+                deadline.recordActivity()
                 modelID = modelID ?? chunkPayload.chunk.model
                 if let content = chunkPayload.chunk.choices.first?.delta.content, !content.isEmpty {
                     tokenCount += 1
@@ -226,6 +310,11 @@ public actor ClusterProvider: InferenceProvider {
             }
         }
 
+        // Consumer went away: not a peer failure.
+        if Task.isCancelled {
+            continuation.finish(throwing: CancellationError())
+            return
+        }
         // Connection ended unexpectedly
         continuation.finish(throwing: ClusterError.peerDisconnected)
     }
@@ -239,9 +328,11 @@ public enum ClusterError: LocalizedError, Sendable {
     case remoteError(String)
     case routingFailed
     case capacityReserved
+    case peerTimeout
 
     public var errorDescription: String? {
         switch self {
+        case .peerTimeout: return "Peer stopped responding during inference"
         case .noModelAvailable: return "No model loaded on any device in the cluster"
         case .peerDisconnected: return "Peer disconnected during inference"
         case .remoteError(let msg): return "Remote error: \(msg)"

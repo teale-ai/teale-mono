@@ -75,7 +75,11 @@ public final class ClusterManager: @unchecked Sendable {
     private var peerResolver: PeerResolver?
     private let healthMonitor = PeerHealthMonitor()
     private let modelSharingService = ModelSharingService()
-    private let tlsManager = ClusterTLSManager()
+    /// Real thermal state for heartbeats (previously hard-coded .nominal).
+    private let thermalMonitor = ThermalMonitor()
+    /// Supplies the local AdaptiveThrottler level (0-100) for heartbeats.
+    /// When unset, the level is derived from the thermal state.
+    public var throttleLevelProvider: (@Sendable () -> Int)?
     private var heartbeatTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
     private var scanStopTask: Task<Void, Never>?
@@ -96,7 +100,10 @@ public final class ClusterManager: @unchecked Sendable {
     }
 
     // Model sharing
-    private var modelQueryContinuation: AsyncStream<ModelQueryResult>.Continuation?
+    /// One continuation per in-flight availability query, keyed by a query
+    /// id, so overlapping queries no longer steal each other's results.
+    private var modelQueryContinuations: [UUID: (modelID: String, continuation: AsyncStream<ModelQueryResult>.Continuation)] = [:]
+    private let modelQueryLock = NSLock()
     public private(set) var activeTransfers: [UUID: TransferProgress] = [:]
 
     // Load tracking
@@ -148,7 +155,7 @@ public final class ClusterManager: @unchecked Sendable {
         let passcodeHash = passcode.map { ClusterSecurity.hashPasscode($0) }
         self.organizationID = passcodeHash  // Nodes with same passcode form an org
         connectionNotice = nil
-        let parameters = NWParameters.clusterParameters(passcode: passcode, tlsManager: tlsManager)
+        let parameters = NWParameters.clusterParameters(passcode: passcode)
 
         bonjourService = BonjourService(localDeviceID: localDeviceInfo.id, parameters: parameters)
         peerResolver = PeerResolver(
@@ -163,9 +170,9 @@ public final class ClusterManager: @unchecked Sendable {
             Task { await self?.handlePeerDiscovered(endpoint: endpoint, txtDict: txtDict) }
         }
 
-        bonjourService?.onPeerRemoved = { [weak self] endpoint in
-            self?.handlePeerRemoved(endpoint: endpoint)
-        }
+        // Bonjour removal events are not acted on: an NWEndpoint cannot be
+        // mapped back to a peer reliably, and connected peers are aged out
+        // by the heartbeat health monitor (degraded at 15 s, dropped at 30 s).
 
         // Handle incoming connections
         bonjourService?.onIncomingConnection = { [weak self] connection in
@@ -257,12 +264,6 @@ public final class ClusterManager: @unchecked Sendable {
             connectionNotice = connectionNotice(for: error)
             Self.logger.error("Cluster resolve failed for endpoint=\(String(describing: endpoint), privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
-    }
-
-    private func handlePeerRemoved(endpoint: NWEndpoint) {
-        // Remove peer associated with this endpoint
-        // Since we can't easily match endpoint to peer, mark all as needing revalidation
-        // The health monitor will handle cleanup
     }
 
     private func handleIncomingConnection(_ connection: NWConnection) async {
@@ -383,26 +384,37 @@ public final class ClusterManager: @unchecked Sendable {
             try? await modelSharingService.handleModelQuery(payload, connection: peer.connection)
 
         case .modelQueryResponse(let payload):
-            modelQueryContinuation?.yield(ModelQueryResult(
+            let result = ModelQueryResult(
                 peerID: peer.id,
                 modelID: payload.modelID,
                 available: payload.available,
                 sizeBytes: payload.totalSizeBytes
-            ))
+            )
+            for continuation in pendingQueryContinuations(forModelID: payload.modelID) {
+                continuation.yield(result)
+            }
 
         case .modelTransferRequest(let payload):
             try? await modelSharingService.handleTransferRequest(payload, connection: peer.connection)
 
         case .modelTransferChunk(let payload):
-            try? await modelSharingService.handleTransferChunk(payload)
-            // Update transfer progress
-            if var progress = activeTransfers[payload.transferID] {
-                progress.bytesReceived += UInt64(payload.data.count)
-                activeTransfers[payload.transferID] = progress
+            do {
+                try await modelSharingService.handleTransferChunk(payload, from: peer.id)
+                if var progress = activeTransfers[payload.transferID] {
+                    progress.bytesReceived += UInt64(payload.data.count)
+                    activeTransfers[payload.transferID] = progress
+                }
+            } catch {
+                Self.logger.error("Rejected model transfer chunk from \(peer.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                activeTransfers.removeValue(forKey: payload.transferID)
             }
 
         case .modelTransferComplete(let payload):
-            try? await modelSharingService.handleTransferComplete(payload)
+            do {
+                try await modelSharingService.handleTransferComplete(payload, from: peer.id)
+            } catch {
+                Self.logger.error("Rejected model transfer completion from \(peer.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
             activeTransfers.removeValue(forKey: payload.transferID)
 
         case .hello, .helloAck:
@@ -488,10 +500,11 @@ public final class ClusterManager: @unchecked Sendable {
     private func sendHeartbeatNow() async {
         guard isEnabled else { return }
 
+        let thermal = thermalMonitor.thermalLevel
         var heartbeat = await healthMonitor.makeHeartbeat(
             deviceID: localDeviceInfo.id,
-            thermalLevel: .nominal,  // TODO: wire to actual throttler
-            throttleLevel: 100,
+            thermalLevel: thermal,
+            throttleLevel: currentThrottleLevel(thermal: thermal),
             loadedModels: localDeviceInfo.loadedModels,
             isGenerating: localQueueDepth > 0,
             queueDepth: localQueueDepth
@@ -501,6 +514,22 @@ public final class ClusterManager: @unchecked Sendable {
 
         for peer in peersSnapshot() where peer.status == .connected || peer.status == .degraded {
             try? await peer.connection.send(.heartbeat(heartbeat))
+        }
+    }
+
+    /// Throttle level (0-100) advertised in heartbeats: the AdaptiveThrottler
+    /// level when the app wires one, otherwise derived from thermal state
+    /// with the same steps the throttler uses (full / reduced / minimal /
+    /// paused).
+    private func currentThrottleLevel(thermal: ThermalLevel) -> Int {
+        if let provider = throttleLevelProvider {
+            return max(0, min(100, provider()))
+        }
+        switch thermal {
+        case .nominal: return 100
+        case .fair: return 75
+        case .serious: return 25
+        case .critical: return 0
         }
     }
 
@@ -529,7 +558,10 @@ public final class ClusterManager: @unchecked Sendable {
     /// Query all connected peers for model availability
     public func queryModelAvailability(modelID: String) -> AsyncStream<ModelQueryResult> {
         let (stream, continuation) = AsyncStream<ModelQueryResult>.makeStream()
-        self.modelQueryContinuation = continuation
+        let queryID = UUID()
+        modelQueryLock.lock()
+        modelQueryContinuations[queryID] = (modelID: modelID, continuation: continuation)
+        modelQueryLock.unlock()
 
         let query = ModelQueryPayload(modelID: modelID)
         for peer in peersSnapshot() where peer.status == .connected {
@@ -537,25 +569,48 @@ public final class ClusterManager: @unchecked Sendable {
         }
 
         // Auto-close after timeout
-        Task {
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
             continuation.finish()
-            self.modelQueryContinuation = nil
+            self?.removeQueryContinuation(queryID)
         }
 
         return stream
     }
 
-    /// Request a model transfer from a specific peer
+    private func removeQueryContinuation(_ queryID: UUID) {
+        modelQueryLock.lock(); defer { modelQueryLock.unlock() }
+        modelQueryContinuations.removeValue(forKey: queryID)
+    }
+
+    /// Every in-flight query for `modelID` gets each response (responses
+    /// carry only the model id, which stays wire-compatible with peers).
+    private func pendingQueryContinuations(forModelID modelID: String) -> [AsyncStream<ModelQueryResult>.Continuation] {
+        modelQueryLock.lock(); defer { modelQueryLock.unlock() }
+        return modelQueryContinuations.values
+            .filter { $0.modelID == modelID }
+            .map(\.continuation)
+    }
+
+    /// Request a model transfer from a specific peer. Only transfers
+    /// registered here are accepted when chunks arrive, and only from the
+    /// peer that was asked.
     public func requestModelFromPeer(modelID: String, peerID: UUID) async throws {
         guard let peer = peer(forID: peerID) else {
             throw ClusterError.routingFailed
         }
 
         let transferID = UUID()
+        try await modelSharingService.expectTransfer(transferID: transferID, modelID: modelID, from: peerID)
         let request = ModelTransferRequestPayload(transferID: transferID, modelID: modelID)
         activeTransfers[transferID] = TransferProgress(modelID: modelID, bytesReceived: 0, totalBytes: nil)
-        try await peer.connection.send(.modelTransferRequest(request))
+        do {
+            try await peer.connection.send(.modelTransferRequest(request))
+        } catch {
+            activeTransfers.removeValue(forKey: transferID)
+            await modelSharingService.cancelExpectedTransfer(transferID)
+            throw error
+        }
     }
 }
 

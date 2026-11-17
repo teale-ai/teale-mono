@@ -49,7 +49,11 @@ final class GatewayAccountCoordinator {
         }
 
         let now = Date()
-        let accountUserID = user.id.uuidString
+        // The raw gateway account id (UUID or `email:{addr}`), not the
+        // derived local profile UUID - the gateway checks it against the
+        // account session sent with the link (contract B).
+        let accountUserID = authManager.gatewayAccountUserID ?? user.id.uuidString
+        let sessionToken = authManager.currentGatewaySessionToken()
         let shouldLink = force
             || linkedAccountUserID != accountUserID
             || shouldRefresh(lastFetchedAt: linkedAt, now: now, interval: 60)
@@ -72,7 +76,8 @@ final class GatewayAccountCoordinator {
                         phone: user.phone,
                         email: user.email,
                         githubUsername: nil
-                    )
+                    ),
+                    accountSessionToken: sessionToken
                 )
                 linkedAccountUserID = accountUserID
                 linkedAt = now
@@ -112,12 +117,16 @@ actor GatewayCompanionAccountClient {
         self.authClient = authClient
     }
 
-    func linkAccount(_ request: CompanionGatewayAccountLinkRequest) async throws -> CompanionGatewayAccountSummary {
+    func linkAccount(
+        _ request: CompanionGatewayAccountLinkRequest,
+        accountSessionToken: String?
+    ) async throws -> CompanionGatewayAccountSummary {
         let token = try await authClient.bearer()
         return try await authClient.postJSON(
             path: "/v1/account/link",
             body: request,
-            bearerToken: token
+            bearerToken: token,
+            headers: GatewayAccountSessionHeader.fields(for: accountSessionToken)
         )
     }
 

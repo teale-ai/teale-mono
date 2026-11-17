@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Push the locally-built Teale.app to every Mac in the Tailscale fleet.
 # Usage:
-#   ./scripts/fleet-deploy-mac.sh                # deploy to all 6 Macs
-#   ./scripts/fleet-deploy-mac.sh tailor64       # deploy to one host
+#   ./scripts/fleet-deploy-mac.sh                # deploy to every configured host
+#   ./scripts/fleet-deploy-mac.sh my-mac-mini    # deploy to one host
 #   ./scripts/fleet-deploy-mac.sh --skip-build   # reuse existing .build/Teale.app
+#
+# Fleet hosts are NOT kept in the repo. Provide them, in priority order, via:
+#   TEALE_FLEET_HOSTS="host-a host-b"            # space- or comma-separated
+#   TEALE_FLEET_HOSTS_FILE=/path/to/hosts        # one SSH alias per line
+#   ~/.config/teale/fleet-hosts                  # default hosts file
+# Hosts files ignore blank lines and '#' comments.
 #
 # Requires: Tailscale SSH aliases for the fleet hosts, local Xcode (for
 # bundle.sh), and an ad-hoc or Developer ID signing identity.
@@ -12,15 +18,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-TARGETS=(
-  tailor16s-mac-mini
-  tailor64
-  tailor96s-mac-studio
-  tailor512g1
-  tailor512g8
-  tailor8s-macbook-air
-)
-# thou24s-mac-mini skipped: SSH key not enrolled yet.
+HOSTS_FILE="${TEALE_FLEET_HOSTS_FILE:-$HOME/.config/teale/fleet-hosts}"
+TARGETS=()
+if [ -n "${TEALE_FLEET_HOSTS:-}" ]; then
+  read -r -a TARGETS <<< "${TEALE_FLEET_HOSTS//,/ }"
+elif [ -f "$HOSTS_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(echo "$line" | tr -d '[:space:]')"
+    [ -n "$line" ] && TARGETS+=("$line")
+  done < "$HOSTS_FILE"
+fi
 
 SKIP_BUILD=0
 SELECTED=""
@@ -34,6 +42,12 @@ done
 
 if [ -n "$SELECTED" ]; then
   TARGETS=("$SELECTED")
+fi
+
+if [ ${#TARGETS[@]} -eq 0 ]; then
+  echo "ERROR: no fleet hosts. Set TEALE_FLEET_HOSTS, or list SSH aliases in $HOSTS_FILE," >&2
+  echo "       or pass a single host as an argument." >&2
+  exit 2
 fi
 
 APP=".build/Teale.app"

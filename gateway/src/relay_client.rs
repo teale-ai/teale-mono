@@ -33,6 +33,31 @@ use crate::registry::Registry;
 fn relay_idle_timeout(discover_interval_seconds: u64) -> Duration {
     Duration::from_secs((discover_interval_seconds.saturating_mul(6)).max(30))
 }
+
+/// Per-session event buffer between the relay reader and the request
+/// handler. A handler that falls this many chunks behind the node fails
+/// the session loudly (see `fail_overflowed_session`) instead of losing
+/// chunks.
+pub const SESSION_CHANNEL_CAPACITY: usize = 1024;
+
+/// `SessionEvent::Error` code for a session failed by buffer overflow.
+pub const SESSION_OVERFLOW_CODE: &str = "session_overflow";
+
+/// Longest prefix of a raw relay frame written to the log.
+const MAX_LOGGED_FRAME_BYTES: usize = 256;
+
+/// `s` cut to at most `max` bytes on a char boundary, for logging
+/// untrusted frames without dumping whole payloads.
+fn truncate_for_log(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 /// One in-flight session waiting for its upstream response.
 pub struct PendingSession {
     pub request_id: String,
@@ -124,6 +149,10 @@ impl RelayHandle {
             Ok(Err(_)) => anyhow::bail!("session ready waiter dropped"),
             Err(_) => {
                 self.ready_waiters.lock().remove(&session_id);
+                // The node may still answer relayReady (or already be
+                // holding the half-open session): close it so no session
+                // dangles on the node side for a request we abandoned.
+                self.close_session(target_node_id, &session_id);
                 anyhow::bail!("timeout waiting for relayReady")
             }
         }
@@ -313,7 +342,6 @@ pub async fn spawn(
 
                         // reader loop: every incoming message until close.
                         let mut reader = read;
-                        let mut sent_discover_after_ack = false;
                         loop {
                             let result =
                                 match tokio::time::timeout(idle_timeout, reader.next()).await {
@@ -340,7 +368,11 @@ pub async fn spawn(
                             match result {
                                 Ok(Message::Text(text)) => {
                                     let Some(msg) = IncomingRelayMessage::parse(&text) else {
-                                        debug!("unparseable relay message: {}", text);
+                                        debug!(
+                                            bytes = text.len(),
+                                            "unparseable relay message: {}",
+                                            truncate_for_log(&text, MAX_LOGGED_FRAME_BYTES)
+                                        );
                                         continue;
                                     };
                                     handle_incoming(
@@ -352,7 +384,6 @@ pub async fn spawn(
                                         &fleet,
                                         &apmhelp,
                                         &stranger_supply,
-                                        &mut sent_discover_after_ack,
                                         &handle,
                                         &ghost_closes,
                                     )
@@ -370,7 +401,6 @@ pub async fn spawn(
                                                 &fleet,
                                                 &apmhelp,
                                                 &stranger_supply,
-                                                &mut sent_discover_after_ack,
                                                 &handle,
                                                 &ghost_closes,
                                             )
@@ -403,12 +433,15 @@ pub async fn spawn(
                         write_task.abort();
 
                         // Fail in-flight sessions.
-                        for entry in sessions.iter_mut() {
-                            let _ = entry
-                                .chunks_tx
-                                .try_send(SessionEvent::Disconnect("relay disconnected".into()));
-                        }
+                        let senders: Vec<mpsc::Sender<SessionEvent>> =
+                            sessions.iter().map(|e| e.chunks_tx.clone()).collect();
                         sessions.clear();
+                        for tx in senders {
+                            deliver_terminal(
+                                tx,
+                                SessionEvent::Disconnect("relay disconnected".into()),
+                            );
+                        }
                         ready_waiters.lock().clear();
                     }
                     Err(e) => {
@@ -469,7 +502,6 @@ async fn handle_incoming(
     fleet: &crate::config::FleetConfig,
     apmhelp: &crate::config::ApmhelpConfig,
     stranger_supply: &crate::config::StrangerSupplyConfig,
-    sent_discover_after_ack: &mut bool,
     relay: &RelayHandle,
     ghost_closes: &Arc<DashMap<String, Instant>>,
 ) {
@@ -479,10 +511,13 @@ async fn handle_incoming(
                 "relay registerAck (nodeID: {}...)",
                 &node_id[..16.min(node_id.len())]
             );
-            // Request a full peer dump now.
-            *sent_discover_after_ack = true;
-            // The next tick of the discover-interval task will fire; we could
-            // send an immediate one here too — but the first tick fires now.
+            // Request a full peer dump now: the periodic discover task
+            // sleeps first, so after a reconnect it could be a whole
+            // interval before the registry refreshes while peer_not_found
+            // quarantines fire against stale entries.
+            if let Err(e) = relay.request_discover() {
+                warn!("discover after registerAck: {}", e);
+            }
         }
         IncomingRelayMessage::DiscoverResponse { peers } => {
             debug!("discover response: {} peer(s)", peers.len());
@@ -596,9 +631,10 @@ async fn handle_incoming(
         }
         IncomingRelayMessage::RelayClose(s) => {
             if let Some((_, pending)) = sessions.remove(&s.session_id) {
-                let _ = pending
-                    .chunks_tx
-                    .try_send(SessionEvent::Disconnect("peer closed session".into()));
+                deliver_terminal(
+                    pending.chunks_tx,
+                    SessionEvent::Disconnect("peer closed session".into()),
+                );
             }
         }
         IncomingRelayMessage::Error(e) => {
@@ -675,9 +711,10 @@ fn fail_sessions_for_target(
     for session_id in session_ids {
         if let Some((_, pending)) = sessions.remove(&session_id) {
             failed += 1;
-            let _ = pending
-                .chunks_tx
-                .try_send(SessionEvent::Disconnect(message.to_string()));
+            deliver_terminal(
+                pending.chunks_tx,
+                SessionEvent::Disconnect(message.to_string()),
+            );
         }
     }
     failed
@@ -710,6 +747,58 @@ fn ghost_close_once(
     relay.close_session(from_node_id, session_id);
 }
 
+/// Deliver an event the handler must see (Complete / Error / Disconnect)
+/// without ever blocking the shared relay reader. A full channel finishes
+/// the send on a task: ordering is preserved because the session was
+/// already removed from the table, so nothing else is enqueued after it,
+/// and the task ends as soon as the handler drains the buffer or drops the
+/// receiver.
+fn deliver_terminal(tx: mpsc::Sender<SessionEvent>, event: SessionEvent) {
+    match tx.try_send(event) {
+        Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+        Err(mpsc::error::TrySendError::Full(event)) => {
+            tokio::spawn(async move {
+                let _ = tx.send(event).await;
+            });
+        }
+    }
+}
+
+/// The handler fell `SESSION_CHANNEL_CAPACITY` chunks behind the node (a
+/// client slower than generation). Dropping chunks would silently corrupt
+/// the response, and blocking would stall every other session on this
+/// relay connection, so the session fails loudly instead: the node is told
+/// to stop (relayClose) and the handler gets an Error after the chunks it
+/// already has.
+fn fail_overflowed_session(
+    sessions: &Arc<DashMap<String, PendingSession>>,
+    relay: &RelayHandle,
+    from_node_id: &str,
+    session_id: &str,
+) {
+    let Some((_, entry)) = sessions.remove(session_id) else {
+        return;
+    };
+    metrics::SESSION_OVERFLOW_TOTAL.inc();
+    warn!(
+        device = %from_node_id,
+        session = %session_id,
+        capacity = SESSION_CHANNEL_CAPACITY,
+        "session buffer overflow: consumer fell behind the node; failing the session"
+    );
+    relay.close_session(from_node_id, session_id);
+    deliver_terminal(
+        entry.chunks_tx,
+        SessionEvent::Error {
+            message: format!(
+                "gateway session buffer overflow ({} chunks behind the supplier)",
+                SESSION_CHANNEL_CAPACITY
+            ),
+            code: Some(SESSION_OVERFLOW_CODE.to_string()),
+        },
+    );
+}
+
 async fn dispatch_cluster(
     msg: ClusterMessage,
     sessions: &Arc<DashMap<String, PendingSession>>,
@@ -721,26 +810,40 @@ async fn dispatch_cluster(
 ) {
     match msg {
         ClusterMessage::InferenceChunk(p) => {
-            if let Some(entry) = sessions.get(session_id) {
-                let _ = entry.chunks_tx.try_send(SessionEvent::Chunk(p.chunk));
-            } else {
-                ghost_close_once(relay, ghost_closes, from_node_id, session_id);
+            let overflowed = match sessions.get(session_id) {
+                Some(entry) => matches!(
+                    entry.chunks_tx.try_send(SessionEvent::Chunk(p.chunk)),
+                    Err(mpsc::error::TrySendError::Full(_))
+                ),
+                None => {
+                    ghost_close_once(relay, ghost_closes, from_node_id, session_id);
+                    return;
+                }
+            };
+            if overflowed {
+                fail_overflowed_session(sessions, relay, from_node_id, session_id);
             }
         }
         ClusterMessage::InferenceComplete(p) => {
             if let Some((_, entry)) = sessions.remove(session_id) {
-                let _ = entry.chunks_tx.try_send(SessionEvent::Complete {
-                    tokens_out: p.tokens_out,
-                });
+                deliver_terminal(
+                    entry.chunks_tx,
+                    SessionEvent::Complete {
+                        tokens_out: p.tokens_out,
+                    },
+                );
             }
         }
         ClusterMessage::InferenceError(p) => {
             if let Some((_, entry)) = sessions.remove(session_id) {
                 let code = p.code.map(|c| format!("{:?}", c).to_lowercase());
-                let _ = entry.chunks_tx.try_send(SessionEvent::Error {
-                    message: p.error_message,
-                    code,
-                });
+                deliver_terminal(
+                    entry.chunks_tx,
+                    SessionEvent::Error {
+                        message: p.error_message,
+                        code,
+                    },
+                );
             }
         }
         ClusterMessage::HeartbeatAck(hb) | ClusterMessage::Heartbeat(hb) => {
@@ -914,6 +1017,184 @@ mod tests {
         assert!(rx.try_recv().is_err(), "no close for a live session");
     }
 
+    fn relay_with_outbox(
+        sessions: &Arc<DashMap<String, PendingSession>>,
+    ) -> (RelayHandle, mpsc::UnboundedReceiver<Message>) {
+        let (outbox, rx) = mpsc::unbounded_channel();
+        let relay = RelayHandle {
+            node_id: "gw".to_string(),
+            sessions: sessions.clone(),
+            ready_waiters: Default::default(),
+            outbox,
+        };
+        (relay, rx)
+    }
+
+    fn chunk(text: &str) -> ClusterMessage {
+        ClusterMessage::InferenceChunk(teale_protocol::InferenceChunkPayload {
+            request_id: "req-1".to_string(),
+            chunk: serde_json::json!({ "text": text }),
+        })
+    }
+
+    fn insert_session(
+        sessions: &Arc<DashMap<String, PendingSession>>,
+        capacity: usize,
+    ) -> mpsc::Receiver<SessionEvent> {
+        let (chunks_tx, chunks_rx) = mpsc::channel(capacity);
+        sessions.insert(
+            "s1".to_string(),
+            PendingSession {
+                request_id: "req-1".to_string(),
+                device_node_id: "node-a".to_string(),
+                session_id: "s1".to_string(),
+                chunks_tx,
+            },
+        );
+        chunks_rx
+    }
+
+    /// Q3: a consumer that falls a full buffer behind must not lose chunks
+    /// silently. The session fails loudly: buffered chunks first, then an
+    /// overflow Error, and the node is told to stop.
+    #[tokio::test]
+    async fn chunk_overflow_fails_session_loudly_instead_of_dropping() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
+        let ghost_closes: Arc<DashMap<String, Instant>> = Arc::new(DashMap::new());
+        let (relay, mut outbox_rx) = relay_with_outbox(&sessions);
+        let mut chunks_rx = insert_session(&sessions, 1);
+
+        for text in ["a", "b"] {
+            dispatch_cluster(
+                chunk(text),
+                &sessions,
+                &registry,
+                "s1",
+                "node-a",
+                &relay,
+                &ghost_closes,
+            )
+            .await;
+        }
+
+        assert!(sessions.is_empty(), "overflowed session is removed");
+        let Some(Message::Text(close)) = outbox_rx.try_recv().ok() else {
+            panic!("expected a relayClose toward the node")
+        };
+        assert!(close.contains("relayClose") && close.contains("s1"));
+        assert!(matches!(
+            chunks_rx.recv().await,
+            Some(SessionEvent::Chunk(_))
+        ));
+        match chunks_rx.recv().await {
+            Some(SessionEvent::Error { code, .. }) => {
+                assert_eq!(code.as_deref(), Some(SESSION_OVERFLOW_CODE));
+            }
+            other => panic!("expected overflow error, got {:?}", other),
+        }
+    }
+
+    /// Q3: Complete must never be lost, even when it lands on a full buffer.
+    #[tokio::test]
+    async fn complete_on_full_buffer_is_delivered_after_the_chunks() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
+        let ghost_closes: Arc<DashMap<String, Instant>> = Arc::new(DashMap::new());
+        let (relay, _outbox_rx) = relay_with_outbox(&sessions);
+        let mut chunks_rx = insert_session(&sessions, 1);
+
+        dispatch_cluster(
+            chunk("a"),
+            &sessions,
+            &registry,
+            "s1",
+            "node-a",
+            &relay,
+            &ghost_closes,
+        )
+        .await;
+        dispatch_cluster(
+            ClusterMessage::InferenceComplete(teale_protocol::InferenceCompletePayload {
+                request_id: "req-1".to_string(),
+                tokens_in: None,
+                tokens_out: Some(7),
+            }),
+            &sessions,
+            &registry,
+            "s1",
+            "node-a",
+            &relay,
+            &ghost_closes,
+        )
+        .await;
+
+        assert!(matches!(
+            chunks_rx.recv().await,
+            Some(SessionEvent::Chunk(_))
+        ));
+        match chunks_rx.recv().await {
+            Some(SessionEvent::Complete { tokens_out }) => assert_eq!(tokens_out, Some(7)),
+            other => panic!("expected Complete, got {:?}", other),
+        }
+    }
+
+    /// Q20: an abandoned relayOpen is closed toward the node.
+    #[tokio::test]
+    async fn open_session_timeout_sends_relay_close() {
+        let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
+        let (relay, mut outbox_rx) = relay_with_outbox(&sessions);
+        let err = relay
+            .open_session("node-a", Duration::from_millis(10))
+            .await
+            .expect_err("no relayReady arrives");
+        assert!(err.to_string().contains("timeout"));
+        let Some(Message::Text(open)) = outbox_rx.try_recv().ok() else {
+            panic!("expected relayOpen")
+        };
+        assert!(open.contains("relayOpen"));
+        let Some(Message::Text(close)) = outbox_rx.try_recv().ok() else {
+            panic!("expected relayClose after the open timed out")
+        };
+        assert!(close.contains("relayClose") && close.contains("node-a"));
+    }
+
+    /// Q12: registerAck triggers an immediate discover.
+    #[tokio::test]
+    async fn register_ack_requests_discover_immediately() {
+        let registry = Registry::new(ReliabilityConfig::default());
+        let sessions: Arc<DashMap<String, PendingSession>> = Arc::new(DashMap::new());
+        let (relay, mut outbox_rx) = relay_with_outbox(&sessions);
+        handle_incoming(
+            IncomingRelayMessage::RegisterAck {
+                node_id: "gw-node-id-0123456789".to_string(),
+            },
+            &registry,
+            &sessions,
+            &Default::default(),
+            60,
+            &crate::config::FleetConfig::default(),
+            &crate::config::ApmhelpConfig::default(),
+            &crate::config::StrangerSupplyConfig::default(),
+            &relay,
+            &Arc::new(DashMap::new()),
+        )
+        .await;
+        let Some(Message::Text(discover)) = outbox_rx.try_recv().ok() else {
+            panic!("expected a discover right after registerAck")
+        };
+        assert!(discover.contains("discover"));
+    }
+
+    #[test]
+    fn truncate_for_log_respects_limit_and_char_boundaries() {
+        assert_eq!(truncate_for_log("short", 256), "short");
+        let long = "x".repeat(1000);
+        assert_eq!(truncate_for_log(&long, 256).len(), 256);
+        // 'é' is two bytes; cutting at 2 must back off to a boundary.
+        assert_eq!(truncate_for_log("aéé", 2), "a");
+    }
+
     #[test]
     fn relay_idle_timeout_has_reasonable_floor_and_scale() {
         assert_eq!(relay_idle_timeout(1), Duration::from_secs(30));
@@ -982,7 +1263,6 @@ mod tests {
             },
         );
 
-        let mut sent_discover_after_ack = false;
         handle_incoming(
             IncomingRelayMessage::Error(teale_protocol::RelayErrorPayload {
                 code: "peer_not_found".to_string(),
@@ -996,7 +1276,6 @@ mod tests {
             &crate::config::FleetConfig::default(),
             &crate::config::ApmhelpConfig::default(),
             &crate::config::StrangerSupplyConfig::default(),
-            &mut sent_discover_after_ack,
             &RelayHandle::dummy_for_tests(),
             &Arc::new(DashMap::new()),
         )

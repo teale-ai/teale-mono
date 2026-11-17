@@ -3,6 +3,9 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod app_icon;
+
 #[cfg(target_os = "windows")]
 mod windows_app;
 

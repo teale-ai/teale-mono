@@ -2,6 +2,19 @@ import Foundation
 import Network
 import OSLog
 
+// MARK: - Errors
+
+public enum PeerConnectionError: LocalizedError, Sendable {
+    case messageTooLarge(Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .messageTooLarge(let bytes):
+            return "Cluster message of \(bytes) bytes exceeds the \(ClusterMessageFramer.maxMessageLength)-byte frame limit"
+        }
+    }
+}
+
 // MARK: - Peer Connection
 
 /// Wraps NWConnection to provide typed async message send/receive
@@ -75,6 +88,11 @@ public actor PeerConnection {
     /// Send a message to the peer
     public func send(_ message: ClusterMessage) async throws {
         let data = try JSONEncoder().encode(message)
+        // The receiver drops the connection on frames over the cap; fail
+        // this one send instead.
+        guard data.count <= Int(ClusterMessageFramer.maxMessageLength) else {
+            throw PeerConnectionError.messageTooLarge(data.count)
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             connection.send(

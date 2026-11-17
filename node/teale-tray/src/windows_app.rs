@@ -8,6 +8,7 @@ use anyhow::Context;
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::platform::windows::WindowBuilderExtWindows;
 use tao::window::WindowBuilder;
 use tray_icon::menu::MenuEvent;
 use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -107,6 +108,8 @@ pub fn run() -> anyhow::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("Teale")
+        .with_window_icon(crate::app_icon::small())
+        .with_taskbar_icon(crate::app_icon::large())
         .with_visible(open_on_start)
         .with_inner_size(LogicalSize::new(920.0, 700.0))
         .with_min_inner_size(LogicalSize::new(760.0, 580.0))

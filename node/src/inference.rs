@@ -45,7 +45,10 @@ pub const CHUNK_CHANNEL_CAPACITY: usize = 64;
 /// consumer aborts cancel the backend request (#258/#260), so this
 /// budget is only the backstop for a backend that hangs while the
 /// consumer is still attached.
-pub const STREAM_BUDGET_SECONDS: u64 = 1800;
+///
+/// The value is defined once in `teale_protocol` so the gateway's
+/// first-token ceiling and heavy-hold TTL stay consistent with it.
+pub use teale_protocol::STREAM_BUDGET_SECONDS;
 
 fn http_backend_streaming_enabled() -> bool {
     match std::env::var("TEALE_HTTP_BACKEND_STREAMING") {

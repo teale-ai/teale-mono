@@ -1,30 +1,30 @@
 name: Windows installer (Teale.exe)
 
 # Builds the partner-pilot Windows installer:
-#   - cargo builds teale-node.exe + teale-tray.exe (x86_64-pc-windows-msvc)
-#   - downloads llama-server with Vulkan backend from llama.cpp's releases
-#   - stages Supabase auth config so the shipped app exposes sign-in
-#   - stages all artifacts next to the .iss script and compiles with ISCC
+#   - cargo builds teale-node.exe + teale-tray.exe (x86_64-pc-windows-msvc);
+#     either build failing fails the job
+#   - downloads llama-server (Vulkan backend) at the version pinned in
+#     .github/llama-cpp-version
+#   - stages all artifacts next to the .iss script and compiles with ISCC,
+#     passing /DAppVer=<version> (tag minus "teale-" on release builds)
 #   - uploads Teale.exe + checksums as workflow artifacts
-#   - publishes the installer to the GitHub release for tag builds
+#   - uploads the installer to the GitHub release on tag builds
 #
-# Triggered on:
-#   - push of a tag matching `teale-*`
-#   - manual dispatch from the Actions tab (for testing the pipeline)
+# Triggered by:
+#   - desktop-release.yml (workflow_call) for `teale-*` tags; that workflow
+#     creates the GitHub release once before this and the Linux build run,
+#     so the two never race to create it
+#   - manual dispatch from the Actions tab (for testing the pipeline; only
+#     uploads a workflow artifact, never touches a release)
 
 on:
-  push:
-    tags:
-      # Timestamp-style tags like `teale-2026.04.21.1722` (matches the
-      # mac-app's CFBundleShortVersionString format in Info.plist).
-      - 'teale-*'
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  LLAMA_RELEASE: b8840  # keep in sync with node/installer/post-install.ps1
   RUST_BACKTRACE: 1
 
 jobs:
@@ -35,25 +35,65 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Derive installer version
+        id: version
+        shell: pwsh
+        env:
+          REF: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if ($env:REF.StartsWith("refs/tags/")) {
+            $tag = $env:REF.Substring("refs/tags/".Length)
+            if (-not $tag.StartsWith("teale-")) {
+              throw "Release builds expect a teale-* tag, got '$tag'"
+            }
+            $ver = $tag.Substring("teale-".Length)
+            # Inno Setup / Windows version resources need 1-4 numeric parts,
+            # each 0..65535 (teale-YYYY.MM.DD.HHMM fits).
+            if ($ver -notmatch '^\d+(\.\d+){0,3}$') {
+              throw "Cannot derive an installer version from tag '$tag' (expected teale-YYYY.MM.DD.HHMM)"
+            }
+            foreach ($part in $ver.Split('.')) {
+              if ([int64]$part -gt 65535) {
+                throw "Version part '$part' in tag '$tag' exceeds 65535"
+              }
+            }
+          } else {
+            # Dev build (manual dispatch): obviously-not-a-release version.
+            $ver = "0.0.0.$([int64]$env:RUN_NUMBER % 65536)"
+          }
+          Write-Host "Installer version: $ver"
+          "app_ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Read pinned llama.cpp version
+        shell: pwsh
+        run: |
+          $llama = (Get-Content ".github\llama-cpp-version" -Raw).Trim()
+          if ($llama -notmatch '^b\d+$') {
+            throw ".github/llama-cpp-version must contain a single llama.cpp tag like b8840, got '$llama'"
+          }
+          Write-Host "llama.cpp release: $llama"
+          "LLAMA_RELEASE=$llama" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install Rust toolchain (MSVC)
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache cargo registry and target
-        uses: actions/cache@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: windows-release
 
       - name: Build teale-node.exe and teale-tray.exe (release)
+        shell: pwsh
         run: |
+          # Separate builds keep each binary's feature set identical to a
+          # standalone build; check each exit code explicitly because pwsh
+          # does not stop on a failing native command.
           cargo build --release --target x86_64-pc-windows-msvc -p teale-node
-          # teale-tray is a separate binary crate in node/teale-tray/
-          cargo build --release --target x86_64-pc-windows-msvc -p teale-tray || echo "teale-tray not yet defined; installer treats it as skipifsourcedoesntexist"
+          if ($LASTEXITCODE -ne 0) { throw "cargo build -p teale-node failed ($LASTEXITCODE)" }
+          cargo build --release --target x86_64-pc-windows-msvc -p teale-tray
+          if ($LASTEXITCODE -ne 0) { throw "cargo build -p teale-tray failed ($LASTEXITCODE)" }
 
       - name: Download llama-server (Vulkan build)
         shell: pwsh
@@ -136,72 +176,15 @@ jobs:
       - name: Stage teale-node.exe + teale-tray.exe
         shell: pwsh
         run: |
-          Copy-Item -Path "target\x86_64-pc-windows-msvc\release\teale-node.exe" -Destination "node\installer\teale-node.exe" -Force
-          $trayPath = "target\x86_64-pc-windows-msvc\release\teale-tray.exe"
-          if (Test-Path $trayPath) {
-            Copy-Item -Path $trayPath -Destination "node\installer\teale-tray.exe" -Force
+          foreach ($bin in @("teale-node.exe", "teale-tray.exe")) {
+            $src = "target\x86_64-pc-windows-msvc\release\$bin"
+            if (-not (Test-Path $src)) { throw "$src missing after cargo build" }
+            Copy-Item -Path $src -Destination "node\installer\$bin" -Force
           }
 
-      - name: Stage Supabase auth config
-        shell: pwsh
-        env:
-          TEALE_SUPABASE_URL: ${{ secrets.TEALE_SUPABASE_URL }}
-          TEALE_SUPABASE_ANON_KEY: ${{ secrets.TEALE_SUPABASE_ANON_KEY }}
-          TEALE_SUPABASE_REDIRECT_URL: ${{ secrets.TEALE_SUPABASE_REDIRECT_URL }}
-        run: |
-          # The mac-app Supabase.plist was removed with the app's Supabase
-          # auth; teale-node still reads its config from Actions secrets.
-          $plistValues = @{}
-          $plistPath = "mac-app\Sources\AuthKit\Resources\Supabase.plist"
-          if (Test-Path $plistPath) {
-            [xml]$supabasePlist = Get-Content $plistPath
-            $plistNodes = @(
-              $supabasePlist.plist.dict.ChildNodes |
-                Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element }
-            )
-
-            for ($i = 0; $i -lt $plistNodes.Count - 1; $i++) {
-              if ($plistNodes[$i].Name -ne "key") {
-                continue
-              }
-              $plistValues[$plistNodes[$i].InnerText] = $plistNodes[$i + 1].InnerText
-            }
-          }
-
-          $supabaseUrl = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_URL)) {
-            [string]$plistValues["SUPABASE_URL"]
-          } else {
-            $env:TEALE_SUPABASE_URL
-          }
-
-          $supabaseAnonKey = if ([string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_ANON_KEY)) {
-            [string]$plistValues["SUPABASE_ANON_KEY"]
-          } else {
-            $env:TEALE_SUPABASE_ANON_KEY
-          }
-
-          $redirectUrl = if (-not [string]::IsNullOrWhiteSpace($env:TEALE_SUPABASE_REDIRECT_URL)) {
-            $env:TEALE_SUPABASE_REDIRECT_URL
-          } elseif (-not [string]::IsNullOrWhiteSpace([string]$plistValues["SUPABASE_REDIRECT_URL"])) {
-            [string]$plistValues["SUPABASE_REDIRECT_URL"]
-          } else {
-            "teale://auth/callback"
-          }
-
-          if ([string]::IsNullOrWhiteSpace($supabaseUrl)) {
-            throw "Missing Supabase URL in Actions secrets (TEALE_SUPABASE_URL)"
-          }
-          if ([string]::IsNullOrWhiteSpace($supabaseAnonKey)) {
-            throw "Missing Supabase anon key in Actions secrets (TEALE_SUPABASE_ANON_KEY)"
-          }
-
-          $config = @{
-            supabase_url = $supabaseUrl
-            supabase_anon_key = $supabaseAnonKey
-            supabase_redirect_url = $redirectUrl
-          }
-
-          $config | ConvertTo-Json -Compress | Set-Content "node\installer\supabase-config.json" -Encoding UTF8
+      # No Supabase config is staged: Supabase was decommissioned and Windows
+      # sign-in goes through the gateway (/v1/auth/email/*) via teale-node.
+      # The .iss lists supabase-config.json with skipifsourcedoesntexist.
 
       - name: Install Inno Setup
         shell: pwsh
@@ -218,9 +201,13 @@ jobs:
 
       - name: Compile installer (ISCC)
         shell: pwsh
+        env:
+          APP_VER: ${{ steps.version.outputs.app_ver }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:APP_VER)) { throw "installer version was not derived" }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc "node\installer\teale-node-setup.iss"
+          & $iscc "/DAppVer=$env:APP_VER" "node\installer\teale-node-setup.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
       - name: Generate checksums
         shell: pwsh
@@ -246,27 +233,28 @@ jobs:
         with:
           # ref_name can contain slashes on branch builds (feat/foo) -
           # artifact names forbid them, so use a safe run label instead.
-          name: Teale-run-${{ github.run_id }}-unsigned
+          name: Teale-run-${{ github.run_id }}-${{ steps.version.outputs.app_ver }}-unsigned
           path: |
             node/installer/output/Teale.exe
             node/installer/output/checksums.txt
           if-no-files-found: error
           retention-days: 90
 
-      - name: Publish GitHub release assets
+      - name: Upload to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          gh release view $tag *> $null
+          # The release is created once by desktop-release.yml before this
+          # job starts; never create it here (that raced the Linux job).
+          gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag `
-              --title "Teale $tag" `
-              --notes "Desktop release assets for Teale."
+            throw "GitHub release $env:TAG does not exist; tag builds must run through desktop-release.yml"
           }
-          gh release upload $tag `
+          gh release upload $env:TAG `
             "node\installer\output\Teale.exe" `
             "node\installer\output\checksums.txt" `
             --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed ($LASTEXITCODE)" }

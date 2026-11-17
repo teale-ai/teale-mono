@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 #if canImport(AppKit)
@@ -21,10 +22,14 @@ public final class UpdateChecker {
     private static let autoInstallKey = "teale.macAutoInstallUpdates"
     private static let downloadedTagKey = "teale.macDownloadedUpdateTag"
     private static let downloadedArchivePathKey = "teale.macDownloadedUpdateArchivePath"
+    private static let downloadedSHA256Key = "teale.macDownloadedUpdateSHA256"
     private static let checkInterval: TimeInterval = 4 * 3600
     private static let pollIntervalNanos: UInt64 = 15 * 60 * 1_000_000_000
     private static let releaseTagPrefix = "mac-v"
     private static let releaseAssetName = "Teale.zip"
+    private static let checksumsAssetName = "checksums.txt"
+    private static let releasesPerPage = 100
+    private static let maxReleasePages = 10
     private static let updatesDirectoryName = "updates"
 
     public var autoDownloadEnabled: Bool {
@@ -56,6 +61,7 @@ public final class UpdateChecker {
     public private(set) var latestTag: String?
     public private(set) var releaseURL: URL?
     public private(set) var downloadURL: URL?
+    public private(set) var checksumsURL: URL?
     public private(set) var checking = false
     public private(set) var downloading = false
     public private(set) var installing = false
@@ -68,6 +74,9 @@ public final class UpdateChecker {
     @ObservationIgnored
     private var downloadedArchivePath: String?
 
+    @ObservationIgnored
+    private var downloadedSHA256: String?
+
     public init() {
         autoDownloadEnabled = Self.persistedBool(
             for: Self.autoDownloadKey,
@@ -79,6 +88,7 @@ public final class UpdateChecker {
         )
         downloadedTag = Self.persistedString(for: Self.downloadedTagKey)
         downloadedArchivePath = Self.persistedString(for: Self.downloadedArchivePathKey)
+        downloadedSHA256 = Self.persistedString(for: Self.downloadedSHA256Key)
         reconcilePreparedUpdateState()
     }
 
@@ -138,6 +148,7 @@ public final class UpdateChecker {
         latestTag = release.tagName
         releaseURL = release.htmlURL
         downloadURL = release.asset(named: Self.releaseAssetName)?.browserDownloadURL
+        checksumsURL = release.asset(named: Self.checksumsAssetName)?.browserDownloadURL
 
         Self.recordUpdateEvent("release selected tag=\(release.tagName) asset=\(downloadURL?.absoluteString ?? "missing") newer=\(remoteIsNewer)")
 
@@ -271,19 +282,43 @@ public final class UpdateChecker {
         case badHTTP(Int)
         case invalidResponse
         case noMacRelease
+        case checksumUnavailable
+        case checksumMismatch
 
         var errorDescription: String? {
             switch self {
             case .badHTTP(let status): return "GitHub returned HTTP \(status)."
             case .invalidResponse: return "GitHub returned an unreadable release response."
             case .noMacRelease: return "No published macOS release with Teale.zip was found."
+            case .checksumUnavailable: return "The release has no checksums.txt entry for Teale.zip, so the download cannot be verified."
+            case .checksumMismatch: return "The downloaded Teale.zip does not match the release checksum."
             }
         }
     }
 
+    /// The monorepo publishes Windows/Linux/node releases too, so the newest
+    /// Mac release can be far down the list. Page through (newest first)
+    /// until a page contains a stable `mac-v*` release with Teale.zip.
     private func fetchLatestRelease() async throws -> GitHubRelease {
-        let apiURL = URL(string: "https://api.github.com/repos/\(Self.repo)/releases?per_page=20")!
-        var request = URLRequest(url: apiURL)
+        for page in 1...Self.maxReleasePages {
+            let releases = try await fetchReleasesPage(page)
+            if let release = Self.newestMacRelease(in: releases) {
+                return release
+            }
+            if releases.count < Self.releasesPerPage {
+                break
+            }
+        }
+        throw UpdateCheckError.noMacRelease
+    }
+
+    private func fetchReleasesPage(_ page: Int) async throws -> [GitHubRelease] {
+        var components = URLComponents(string: "https://api.github.com/repos/\(Self.repo)/releases")!
+        components.queryItems = [
+            URLQueryItem(name: "per_page", value: String(Self.releasesPerPage)),
+            URLQueryItem(name: "page", value: String(page)),
+        ]
+        var request = URLRequest(url: components.url!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Teale-macOS-updater", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
@@ -298,20 +333,21 @@ public final class UpdateChecker {
         guard let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else {
             throw UpdateCheckError.invalidResponse
         }
+        return releases
+    }
 
-        let candidates = releases.filter {
-            !$0.draft &&
-            !$0.prerelease &&
-            $0.tagName.hasPrefix(Self.releaseTagPrefix) &&
-            $0.asset(named: Self.releaseAssetName) != nil
-        }
-        guard let release = candidates.max(by: { lhs, rhs in
-            (Self.releaseVersion(for: lhs.tagName) ?? 0) <
-                (Self.releaseVersion(for: rhs.tagName) ?? 0)
-        }) else {
-            throw UpdateCheckError.noMacRelease
-        }
-        return release
+    private static func newestMacRelease(in releases: [GitHubRelease]) -> GitHubRelease? {
+        releases
+            .filter {
+                !$0.draft &&
+                !$0.prerelease &&
+                !isCanaryTag($0.tagName) &&
+                releaseVersion(for: $0.tagName) != nil &&
+                $0.asset(named: releaseAssetName) != nil
+            }
+            .max(by: { lhs, rhs in
+                (releaseVersion(for: lhs.tagName) ?? 0) < (releaseVersion(for: rhs.tagName) ?? 0)
+            })
     }
 
     private func prepareLatestUpdateIfNeeded(triggerInstall: Bool) async -> Bool {
@@ -319,6 +355,11 @@ public final class UpdateChecker {
 
         guard let latestTag, let downloadURL else {
             lastError = "The macOS update asset was not published on the release."
+            return false
+        }
+        guard let checksumsURL else {
+            lastError = "Teale could not verify the macOS update: \(UpdateCheckError.checksumUnavailable.localizedDescription)"
+            Self.recordUpdateEvent("download refused tag=\(latestTag): release has no checksums.txt")
             return false
         }
 
@@ -346,6 +387,16 @@ public final class UpdateChecker {
                 throw URLError(.badServerResponse)
             }
 
+            // Verify against the release's checksums.txt before keeping
+            // the archive (fail closed: no entry, no install).
+            let expected = try await fetchExpectedSHA256(from: checksumsURL)
+            let actual = try Self.sha256Hex(of: temporaryURL)
+            guard actual == expected else {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                Self.recordUpdateEvent("checksum mismatch tag=\(latestTag) expected=\(expected) actual=\(actual)")
+                throw UpdateCheckError.checksumMismatch
+            }
+
             if FileManager.default.fileExists(atPath: archiveURL.path) {
                 try FileManager.default.removeItem(at: archiveURL)
             }
@@ -353,6 +404,7 @@ public final class UpdateChecker {
 
             downloadedTag = latestTag
             downloadedArchivePath = archiveURL.path
+            downloadedSHA256 = actual
             persistPreparedUpdateState()
             Self.recordUpdateEvent("download prepared tag=\(latestTag) path=\(archiveURL.path)")
             try? cleanupArchivedUpdates(keeping: archiveURL)
@@ -394,6 +446,18 @@ public final class UpdateChecker {
 
         let dismissed = UserDefaults.standard.string(forKey: Self.dismissedVersionKey)
         if !force, dismissed == downloadedTag {
+            return false
+        }
+
+        // Re-check the archive right before replacing the app: it sat on
+        // disk since download, and archives prepared by builds older than
+        // checksum verification have no recorded hash at all.
+        guard let expected = downloadedSHA256,
+              let actual = try? Self.sha256Hex(of: archiveURL),
+              actual == expected else {
+            Self.recordUpdateEvent("prepared archive failed verification tag=\(downloadedTag); discarding")
+            clearPreparedUpdate(deleteArchive: true)
+            lastError = "The downloaded macOS update failed verification and was discarded."
             return false
         }
 
@@ -518,6 +582,51 @@ public final class UpdateChecker {
         latestTag = nil
         releaseURL = nil
         downloadURL = nil
+        checksumsURL = nil
+    }
+
+    private func fetchExpectedSHA256(from url: URL) async throws -> String {
+        var request = URLRequest(url: url)
+        request.setValue("Teale-macOS-updater", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200 ... 299).contains(http.statusCode) {
+            throw UpdateCheckError.checksumUnavailable
+        }
+        guard let text = String(data: data, encoding: .utf8),
+              let expected = Self.expectedSHA256(in: text, for: Self.releaseAssetName) else {
+            throw UpdateCheckError.checksumUnavailable
+        }
+        return expected
+    }
+
+    /// Parses `shasum -a 256` output ("<hex>  <name>" or "<hex> *<name>")
+    /// and returns the lowercase hex digest for `assetName`.
+    static func expectedSHA256(in checksums: String, for assetName: String) -> String? {
+        for rawLine in checksums.split(whereSeparator: \.isNewline) {
+            let parts = rawLine.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count == 2 else { continue }
+            let hash = parts[0].lowercased()
+            var name = parts[1].trimmingCharacters(in: .whitespaces)
+            if name.hasPrefix("*") { name.removeFirst() }
+            if (name as NSString).lastPathComponent == assetName,
+               hash.count == 64,
+               hash.allSatisfy({ $0.isHexDigit }) {
+                return hash
+            }
+        }
+        return nil
+    }
+
+    /// Streaming SHA-256 of a file, lowercase hex.
+    static func sha256Hex(of fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func reconcilePreparedUpdateState() {
@@ -547,8 +656,10 @@ public final class UpdateChecker {
         }
         self.downloadedTag = nil
         self.downloadedArchivePath = nil
+        self.downloadedSHA256 = nil
         UserDefaults.standard.removeObject(forKey: Self.downloadedTagKey)
         UserDefaults.standard.removeObject(forKey: Self.downloadedArchivePathKey)
+        UserDefaults.standard.removeObject(forKey: Self.downloadedSHA256Key)
     }
 
     private func persistPreparedUpdateState() {
@@ -562,6 +673,12 @@ public final class UpdateChecker {
             UserDefaults.standard.set(downloadedArchivePath, forKey: Self.downloadedArchivePathKey)
         } else {
             UserDefaults.standard.removeObject(forKey: Self.downloadedArchivePathKey)
+        }
+
+        if let downloadedSHA256 {
+            UserDefaults.standard.set(downloadedSHA256, forKey: Self.downloadedSHA256Key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.downloadedSHA256Key)
         }
     }
 
@@ -600,12 +717,26 @@ public final class UpdateChecker {
         return Self.isNewerRelease(tag: tag, thanBuild: local)
     }
 
+    /// Build number for a `mac-vYYYY.MM.DD.HHMM` tag (`202609190334`),
+    /// ignoring a `-canary-<sha>` (or any `-suffix`) so canary tags
+    /// compare by their timestamp instead of parsing as 0.
     static func releaseVersion(for tag: String) -> Int64? {
         guard tag.hasPrefix(releaseTagPrefix) else { return nil }
-        let numeric = tag
-            .dropFirst(releaseTagPrefix.count)
-            .replacingOccurrences(of: ".", with: "")
-        return Int64(numeric)
+        let body = tag.dropFirst(releaseTagPrefix.count)
+        let core = body.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let components = core.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 4,
+              components[0].count == 4, components[1].count == 2,
+              components[2].count == 2, components[3].count == 4,
+              components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+        else { return nil }
+        return Int64(components.joined())
+    }
+
+    /// `mac-v...-canary-<sha>` builds are benchmarking artifacts, never a
+    /// stable update target.
+    static func isCanaryTag(_ tag: String) -> Bool {
+        tag.hasPrefix(releaseTagPrefix) && tag.contains("-canary")
     }
 
     static func isNewerRelease(tag: String, thanBuild local: Int64) -> Bool {

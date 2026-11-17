@@ -352,6 +352,7 @@ mod tests {
             routing_tags: vec![],
             estimated_ttft_ms: None,
             estimated_tps: None,
+            default_reasoning_effort: None,
         }];
 
         let mk_device = |node_id: &str,

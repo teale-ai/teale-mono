@@ -14,6 +14,7 @@ use axum::{
 use futures_util::stream::Stream;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -21,9 +22,10 @@ use crate::auth::AuthPrincipal;
 use crate::catalog::{is_large, CatalogModel};
 use crate::error::GatewayError;
 use crate::handlers::chat::{
-    co_resident_ttft_adjust, error_to_status_label, pick_and_dispatch, PreparedChatRequest,
+    billable_usage, chunk_carries_output, co_resident_ttft_adjust, error_to_status_label,
+    pick_and_dispatch_classified, retry_should_quarantine, settle_completed, BillableUsage,
+    PreparedChatRequest, SessionCleanup,
 };
-use crate::ledger;
 use crate::metrics;
 use crate::relay_client::SessionEvent;
 use crate::state::AppState;
@@ -86,7 +88,7 @@ pub async fn messages(
                 .await
                 .map(IntoResponse::into_response)
         } else {
-            run_anthropic_buffered(state.clone(), prepared, input_tokens)
+            run_anthropic_buffered(state.clone(), prepared)
                 .await
                 .map(IntoResponse::into_response)
         };
@@ -431,10 +433,11 @@ fn convert_tool_choice(tool_choice: Option<&Value>) -> Result<Option<Value>, Gat
 async fn run_anthropic_buffered(
     state: AppState,
     prepared: PreparedChatRequest,
-    input_tokens_estimate: u64,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
     let model_id = prepared.catalog_model.id.clone();
+    // Reported usage uses the same prompt estimate billing does.
+    let input_tokens_estimate = prepared.prompt_tokens_estimate;
     let max_retries = state.config.reliability.max_retries;
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
     let mut excluded = Vec::new();
@@ -447,18 +450,8 @@ async fn run_anthropic_buffered(
         let cold_start_grace =
             single_supplier_large_cold_start_grace(&state, &prepared.catalog_model);
         let ttft_deadline = pre_first_token_deadline(&state, &prepared.catalog_model);
-        let (mut rx, target_node, session_id, request_heavy) = pick_and_dispatch(
-            &state,
-            &prepared.catalog_model,
-            &prepared.req_body,
-            &excluded,
-            Some(prepared.required_ctx),
-            &prepared.preferred_node_ids,
-            prepared.apmhelp_lane,
-            prepared.prompt_tokens,
-            prepared.consumer.as_ref().map(|c| c.ledger_actor_id()),
-        )
-        .await?;
+        let (mut rx, target_node, session_id, request_heavy) =
+            dispatch_prepared(&state, &prepared, &excluded).await?;
         // #276: cleanup on every exit path, including future-drop on client
         // disconnect mid-prefill.
         let cleanup = crate::handlers::chat::SessionCleanup::new(
@@ -480,6 +473,7 @@ async fn run_anthropic_buffered(
         let mut got_first = false;
         let mut retriable = false;
         let mut client_error_failure = false;
+        let mut queue_full_failure = false;
         let mut completed = false;
         let mut err_message: Option<String> = None;
 
@@ -528,7 +522,8 @@ async fn run_anthropic_buffered(
                     completed = true;
                     break;
                 }
-                Ok(Some(SessionEvent::Error { message, .. })) => {
+                Ok(Some(SessionEvent::Error { message, code })) => {
+                    queue_full_failure = code.as_deref() == Some("queuefull");
                     if crate::handlers::chat::is_backend_client_error(&message) {
                         client_error_failure = true;
                         err_message = Some(message);
@@ -573,6 +568,7 @@ async fn run_anthropic_buffered(
         if !completed
             && !got_first
             && !cold_start_grace
+            && !queue_full_failure
             && !client_error_failure
             && !beside_heavy
             && !sole_supplier
@@ -583,13 +579,7 @@ async fn run_anthropic_buffered(
         }
 
         if completed {
-            settle_success(
-                &state,
-                &prepared.catalog_model,
-                prepared.consumer.as_ref(),
-                Some(target_node.as_str()),
-                &acc,
-            );
+            settle_success(&state, &prepared, Some(target_node.as_str()), &acc);
             record_success_metrics(&state, &model_id, started, first_token_at, &acc);
             return Ok(Json(build_anthropic_message(
                 &model_id,
@@ -606,7 +596,12 @@ async fn run_anthropic_buffered(
                     .inc();
                 continue;
             }
-            if !beside_heavy {
+            if retry_should_quarantine(
+                queue_full_failure,
+                sole_supplier,
+                beside_heavy,
+                cold_start_grace,
+            ) {
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -642,52 +637,54 @@ async fn run_anthropic_streaming(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
     let model_id = prepared.catalog_model.id.clone();
+    // First dispatch before the SSE response is committed: no supply,
+    // saturation (429 + Retry-After) and heavy contention return real HTTP
+    // status codes and drive the teale/auto cascade, instead of an error
+    // event after a 200.
+    let first_attempt = match open_attempt(&state, &prepared, &[]).await {
+        Ok(attempt) => attempt,
+        Err(e) => {
+            metrics::REQUESTS_TOTAL
+                .with_label_values(&[&model_id, error_to_status_label(&e)])
+                .inc();
+            return Err(e);
+        }
+    };
     let stream = async_stream::stream! {
         let max_retries = state.config.reliability.max_retries;
         let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
+        let mut pending_attempt = Some(first_attempt);
         let mut excluded = Vec::new();
         let mut tried = 0u32;
         let mut acc = OpenAiAccumulator::default();
         let mut first_token_at: Option<Instant> = None;
-        let mut served_by: Option<String> = None;
         let mut final_status = "error";
         let message_id = format!("msg_{}", Uuid::new_v4().simple());
 
         loop {
             tried += 1;
-            let cold_start_grace = single_supplier_large_cold_start_grace(&state, &prepared.catalog_model);
-            let ttft_deadline = pre_first_token_deadline(&state, &prepared.catalog_model);
-            let dispatch = pick_and_dispatch(
-                &state,
-                &prepared.catalog_model,
-                &prepared.req_body,
-                &excluded,
-                Some(prepared.required_ctx),
-                &prepared.preferred_node_ids,
-                prepared.apmhelp_lane,
-                prepared.prompt_tokens,
-                prepared.consumer.as_ref().map(|c| c.ledger_actor_id()),
-            )
-            .await;
-
-            let (mut rx, target_node, session_id, request_heavy) = match dispatch {
-                Ok(v) => v,
-                Err(e) => {
-                    let status = error_to_status_label(&e);
-                    metrics::REQUESTS_TOTAL.with_label_values(&[&model_id, status]).inc();
-                    yield Ok(anthropic_error_event(&e));
-                    return;
-                }
+            let attempt = match pending_attempt.take() {
+                Some(attempt) => attempt,
+                None => match open_attempt(&state, &prepared, &excluded).await {
+                    Ok(attempt) => attempt,
+                    Err(e) => {
+                        let status = error_to_status_label(&e);
+                        metrics::REQUESTS_TOTAL.with_label_values(&[&model_id, status]).inc();
+                        yield Ok(anthropic_error_event(&e));
+                        return;
+                    }
+                },
             };
-            // #276: armed for every exit path, including stream-drop on
-            // client disconnect mid-prefill.
-            let cleanup = crate::handlers::chat::SessionCleanup::new(
-                &state,
-                &target_node,
-                &session_id,
+            // #276: `cleanup` is armed for every exit path, including
+            // stream-drop on client disconnect mid-prefill.
+            let AnthropicAttempt {
+                mut rx,
+                target_node,
                 request_heavy,
-                &model_id,
-            );
+                cleanup,
+                cold_start_grace,
+                ttft_deadline,
+            } = attempt;
             // Co-resident-beside-heavy: occupancy at dispatch (see chat.rs).
             let beside_heavy =
                 !request_heavy && state.registry.heavy_in_flight(&target_node) > 0;
@@ -706,6 +703,7 @@ async fn run_anthropic_streaming(
             let mut got_first = false;
             let mut retriable_failure = false;
             let mut client_error_failure = false;
+            let mut queue_full_failure = false;
             let mut completed = false;
 
             loop {
@@ -757,8 +755,9 @@ async fn run_anthropic_streaming(
                         final_status = "ok";
                         break;
                     }
-                    Ok(Some(SessionEvent::Error { message, .. })) => {
+                    Ok(Some(SessionEvent::Error { message, code })) => {
                         warn!(device = %target_node, "upstream error: {}", message);
+                        queue_full_failure = code.as_deref() == Some("queuefull");
                         if crate::handlers::chat::is_backend_client_error(&message) {
                             client_error_failure = true;
                             yield Ok(anthropic_error_event(&GatewayError::BadRequest(message)));
@@ -805,6 +804,7 @@ async fn run_anthropic_streaming(
             if !completed
                 && !got_first
                 && !cold_start_grace
+                && !queue_full_failure
                 && !client_error_failure
                 && !beside_heavy
                 && !sole_supplier
@@ -815,11 +815,15 @@ async fn run_anthropic_streaming(
             }
 
             if completed {
-                served_by = Some(target_node);
+                // Settle and record before the closing events are yielded:
+                // a client that disconnects on message_stop drops this
+                // generator at that yield.
+                settle_success(&state, &prepared, Some(target_node.as_str()), &acc);
+                record_success_metrics(&state, &model_id, started, first_token_at, &acc);
                 if !sent_message_start {
                     yield Ok(translator.message_start_event());
                 }
-                for event in translator.finish_events(&acc, input_tokens_estimate) {
+                for event in translator.finish_events(&acc, prepared.prompt_tokens_estimate) {
                     yield Ok(event);
                 }
                 break;
@@ -834,7 +838,7 @@ async fn run_anthropic_streaming(
                     .inc();
                 continue;
             }
-            if !beside_heavy {
+            if retry_should_quarantine(queue_full_failure, sole_supplier, beside_heavy, cold_start_grace) {
                 state
                     .registry
                     .quarantine(&target_node, state.config.reliability.quarantine_seconds);
@@ -846,14 +850,8 @@ async fn run_anthropic_streaming(
         }
 
         if final_status == "ok" {
-            settle_success(
-                &state,
-                &prepared.catalog_model,
-                prepared.consumer.as_ref(),
-                served_by.as_deref(),
-                &acc,
-            );
-            record_success_metrics(&state, &model_id, started, first_token_at, &acc);
+            // Already recorded with the settlement above.
+            return;
         }
         metrics::REQUESTS_TOTAL
             .with_label_values(&[&model_id, final_status])
@@ -873,7 +871,8 @@ struct OpenAiAccumulator {
     tool_calls: BTreeMap<usize, ToolCallState>,
     finish_reason: Option<String>,
     usage: Option<Value>,
-    tokens_out: u64,
+    /// Output-carrying chunks seen by the gateway (the billing count).
+    output_chunks: u64,
     reported_tokens: Option<u32>,
 }
 
@@ -881,6 +880,9 @@ impl OpenAiAccumulator {
     fn observe_chunk(&mut self, chunk: &Value) {
         if let Some(usage) = chunk.get("usage").filter(|u| !u.is_null()).cloned() {
             self.usage = Some(usage);
+        }
+        if chunk_carries_output(chunk) {
+            self.output_chunks += 1;
         }
         let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {
             return;
@@ -891,9 +893,6 @@ impl OpenAiAccumulator {
         if let Some(delta) = choice.get("delta") {
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
                 self.text.push_str(text);
-                if !text.is_empty() {
-                    self.tokens_out += 1;
-                }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 self.merge_tool_calls(tool_calls);
@@ -931,20 +930,23 @@ impl OpenAiAccumulator {
         }
     }
 
-    fn output_tokens(&self) -> u64 {
-        self.usage
-            .as_ref()
-            .and_then(|u| u.get("completion_tokens").and_then(Value::as_u64))
-            .or_else(|| self.reported_tokens.map(|t| t as u64))
-            .unwrap_or(self.tokens_out)
-            .max(1)
+    /// What this request bills (and reports): see `chat::billable_usage`.
+    fn billed(&self, prompt_tokens_estimate: u64) -> BillableUsage {
+        billable_usage(
+            self.usage.as_ref(),
+            self.reported_tokens,
+            self.output_chunks,
+            prompt_tokens_estimate,
+        )
     }
 
-    fn prompt_tokens(&self, fallback: u64) -> u64 {
-        self.usage
-            .as_ref()
-            .and_then(|u| u.get("prompt_tokens").and_then(Value::as_u64))
-            .unwrap_or(fallback)
+    fn output_tokens(&self) -> u64 {
+        self.billed(0).completion_tokens
+    }
+
+    /// Supplier-reported prompt tokens capped at `estimate`, else `estimate`.
+    fn prompt_tokens(&self, estimate: u64) -> u64 {
+        self.billed(estimate).prompt_tokens
     }
 
     fn has_tool_use(&self) -> bool {
@@ -1245,41 +1247,74 @@ fn anthropic_stop_reason(acc: &OpenAiAccumulator) -> &'static str {
     }
 }
 
+/// Bill a completed Anthropic request exactly like the chat paths
+/// (`chat::billable_usage`): gateway-observed output, supplier prompt
+/// counts capped at the gateway estimate.
 fn settle_success(
     state: &AppState,
-    catalog_model: &CatalogModel,
-    consumer: Option<&ledger::ConsumerPrincipal>,
+    prepared: &PreparedChatRequest,
     provider: Option<&str>,
     acc: &OpenAiAccumulator,
 ) {
-    let (Some(consumer), Some(provider), Some(pool)) = (consumer, provider, state.db.as_ref())
-    else {
+    let (Some(consumer), Some(provider)) = (prepared.consumer.as_ref(), provider) else {
         return;
     };
-    let cost = ledger::cost_credits(
-        acc.prompt_tokens(0),
-        acc.output_tokens(),
-        catalog_model.prompt_price_usd(),
-        catalog_model.completion_price_usd(),
-    );
-    let online: Vec<String> = state
-        .registry
-        .snapshot_devices()
-        .into_iter()
-        .map(|d| d.node_id)
-        .collect();
-    let request_id = Uuid::new_v4().to_string();
-    if let Err(e) = ledger::settle_request(
-        pool,
-        consumer,
-        Some(provider),
-        &online,
-        cost,
-        &request_id,
-        &catalog_model.id,
-    ) {
-        warn!("settle_request failed: {}", e);
-    }
+    let billed = acc.billed(prepared.prompt_tokens_estimate);
+    settle_completed(state, consumer, provider, &prepared.catalog_model, billed);
+}
+
+/// A dispatched Anthropic attempt: the open session, its cleanup guard and
+/// the per-attempt deadlines computed before the dispatch.
+struct AnthropicAttempt {
+    rx: mpsc::Receiver<SessionEvent>,
+    target_node: String,
+    request_heavy: bool,
+    cleanup: SessionCleanup,
+    cold_start_grace: bool,
+    ttft_deadline: Duration,
+}
+
+async fn open_attempt(
+    state: &AppState,
+    prepared: &PreparedChatRequest,
+    excluded: &[String],
+) -> Result<AnthropicAttempt, GatewayError> {
+    let model = &prepared.catalog_model;
+    let cold_start_grace = single_supplier_large_cold_start_grace(state, model);
+    let ttft_deadline = pre_first_token_deadline(state, model);
+    let (rx, target_node, session_id, request_heavy) =
+        dispatch_prepared(state, prepared, excluded).await?;
+    let cleanup = SessionCleanup::new(state, &target_node, &session_id, request_heavy, &model.id);
+    Ok(AnthropicAttempt {
+        rx,
+        target_node,
+        request_heavy,
+        cleanup,
+        cold_start_grace,
+        ttft_deadline,
+    })
+}
+
+/// One dispatch for a prepared request, heavy-hold classified by the
+/// client's own max_tokens.
+async fn dispatch_prepared(
+    state: &AppState,
+    prepared: &PreparedChatRequest,
+    excluded: &[String],
+) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
+    pick_and_dispatch_classified(
+        state,
+        &prepared.catalog_model,
+        &prepared.req_body,
+        excluded,
+        Some(prepared.required_ctx),
+        &prepared.preferred_node_ids,
+        prepared.apmhelp_lane,
+        prepared.prompt_tokens,
+        prepared.requested_max_tokens,
+        prepared.consumer.as_ref().map(|c| c.ledger_actor_id()),
+    )
+    .await
 }
 
 fn record_success_metrics(

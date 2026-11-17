@@ -1,20 +1,119 @@
 name: relay-deploy
 
+# Deploys the relay to Fly only after the `relay` workflow (bun install,
+# type-check, bun test) has passed for the same commit on main.
+#
+#   - workflow_run: fires when `relay` completes; deploys that exact commit
+#     if it succeeded on a push to main AND the commit range since the last
+#     successful relay deploy touches relay/ or this workflow.
+#   - workflow_dispatch: manual deploy of main (still gated by the
+#     `production` environment's protection rules).
+#
+# The `production` GitHub environment's protection rules (required
+# reviewers, branch restriction) are configured in repo settings by an admin.
+
 on:
-  push:
+  workflow_run:
+    workflows: [relay]
+    types: [completed]
     branches: [main]
-    paths:
-      - "relay/**"
-      - ".github/workflows/relay-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: relay-deploy
+  cancel-in-progress: false
+
+env:
+  DEPLOY_PATHS: relay .github/workflows/relay-deploy.yml
 
 jobs:
-  fly-deploy:
+  changes:
+    name: changes
     runs-on: ubuntu-latest
-    # Only auto-deploy from main. Manual dispatch for testing branches.
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+      sha: ${{ steps.decide.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Decide whether to deploy
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual dispatch: deploying $HEAD_SHA"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Newest commit that a previous run of this workflow actually
+          # deployed (its fly-deploy job succeeded, not just skipped).
+          last=""
+          while read -r run_id run_sha; do
+            [ -n "$run_id" ] || continue
+            conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" \
+              --jq '.jobs[] | select(.name == "fly-deploy") | .conclusion')
+            if [ "$conclusion" = "success" ]; then
+              last="$run_sha"
+              break
+            fi
+          done < <(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/relay-deploy.yml/runs?branch=main&status=success&per_page=50" \
+            --jq '.workflow_runs[] | "\(.id) \(.head_sha)"')
+
+          if [ -z "$last" ] || ! git cat-file -e "${last}^{commit}" 2>/dev/null; then
+            echo "No previous relay deploy found; deploying $HEAD_SHA"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$last" = "$HEAD_SHA" ] || git merge-base --is-ancestor "$HEAD_SHA" "$last"; then
+            echo "$HEAD_SHA is already deployed (last deploy: $last); skipping"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # shellcheck disable=SC2086 # DEPLOY_PATHS is a space-separated list
+          changed=$(git diff --name-only "$last" "$HEAD_SHA" -- $DEPLOY_PATHS)
+          if [ -n "$changed" ]; then
+            echo "Relay inputs changed since $last:"
+            echo "$changed"
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relay inputs changed since $last; skipping"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  fly-deploy:
+    name: fly-deploy
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.changes.outputs.sha }}
+      # Pinned to a commit (master as of 2026-10-30, node24 runtime); the
+      # newest tag (1.5, 2024) still runs on node20. Dependabot bumps this.
+      - uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
       - name: deploy
         # relay/Dockerfile COPYs package.json/server.ts relative to the build
         # context, so run from the relay directory (context = relay/).

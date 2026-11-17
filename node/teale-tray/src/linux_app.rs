@@ -78,6 +78,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("Teale")
+        .with_window_icon(crate::app_icon::large())
         .with_visible(open_on_start)
         .with_inner_size(LogicalSize::new(920.0, 700.0))
         .with_min_inner_size(LogicalSize::new(760.0, 580.0))

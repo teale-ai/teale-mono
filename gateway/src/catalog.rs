@@ -52,6 +52,27 @@ pub struct CatalogModel {
     /// Conservative end-to-end output units/sec shown until actual samples exist.
     #[serde(default)]
     pub estimated_tps: Option<f32>,
+    /// `reasoning_effort` forced onto the outbound request when the client
+    /// does not send one. Lets a model whose server thinks by default
+    /// (ds4-server for DeepSeek V4 Flash) answer agent turns without a
+    /// hidden reasoning preamble, declared here instead of hardcoded by id.
+    #[serde(default)]
+    pub default_reasoning_effort: Option<String>,
+}
+
+/// Models withheld from every consumer-facing surface (`/v1/models`, the
+/// OpenRouter document, network stats, live-model resolution and
+/// `teale/auto` routing) even while a supplier advertises them. One list,
+/// one matching rule: see [`is_hidden_model_id`].
+pub const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
+
+/// Whether `model_id` is hidden. Alias-aware (the same normalization the
+/// registry uses to match supply), so short ids and quantization-suffixed
+/// variants of a hidden model are hidden too, not just the exact catalog id.
+pub fn is_hidden_model_id(model_id: &str) -> bool {
+    HIDDEN_MODEL_IDS
+        .iter()
+        .any(|hidden| crate::registry::model_matches_any(model_id, &[hidden.to_string()]))
 }
 
 impl CatalogModel {
@@ -211,12 +232,19 @@ pub fn synthesize_live_model(model_id: &str, effective_context: Option<u32>) -> 
         routing_tags: vec![],
         estimated_ttft_ms: None,
         estimated_tps: None,
+        default_reasoning_effort: None,
     }
 }
 
-/// Floor-category for per-model availability gating.
+/// Parameter count (billions) at and above which a model is "large": it
+/// uses `per_model_floor.large`, the large TTFT deadline and the
+/// sole-supplier cold-start grace.
+pub const LARGE_MODEL_PARAMS_B: f64 = 50.0;
+
+/// Floor-category for per-model availability gating (see
+/// [`LARGE_MODEL_PARAMS_B`]).
 pub fn is_large(params_b: f64) -> bool {
-    params_b >= 50.0
+    params_b >= LARGE_MODEL_PARAMS_B
 }
 
 /// Rough on-disk / VRAM footprint in GB. Used for "will this fit?" checks
@@ -284,25 +312,16 @@ pub fn resolve_auto<'a>(
         candidates = build_candidates(false);
     }
 
+    // One ordering for every profile: smallest fit wins, larger context
+    // breaks ties. The profiles differ only in WHICH models are candidates
+    // (build_candidates above): agent harnesses first try the curated
+    // `agent-harness` lane and fall back to the generic pool when that lane
+    // has no supply, rather than 503ing a simple turn Hermes can satisfy.
     candidates.sort_by(|a, b| {
-        match profile {
-            // For agent harnesses, stay inside a curated set of models we have
-            // explicitly marked as suitable for coding/tool-heavy workflows when
-            // that supply exists. If the curated lane is unavailable, we
-            // gracefully fall back to the generic pool rather than 503ing a
-            // simple OpenClaw turn that Hermes can satisfy.
-            AutoRouteProfile::AgentHarness => a
-                .params_b
-                .partial_cmp(&b.params_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.context_length.cmp(&a.context_length)),
-            // Generic traffic keeps the old "smallest fit wins" behavior.
-            AutoRouteProfile::Generic => a
-                .params_b
-                .partial_cmp(&b.params_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.context_length.cmp(&a.context_length)),
-        }
+        a.params_b
+            .partial_cmp(&b.params_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.context_length.cmp(&a.context_length))
     });
     candidates.first().copied()
 }
@@ -329,6 +348,7 @@ mod tests {
             routing_tags: tags.iter().map(|s| s.to_string()).collect(),
             estimated_ttft_ms: None,
             estimated_tps: None,
+            default_reasoning_effort: None,
         }
     }
 
@@ -376,6 +396,39 @@ mod tests {
         assert_eq!(metrics.sample_count, 1);
         assert_eq!(metrics.ttft_ms_avg, Some(2_000));
         assert_eq!(metrics.tps_avg, Some(12.0));
+    }
+
+    #[test]
+    fn hidden_model_ids_match_aliases_and_exact_ids() {
+        assert!(is_hidden_model_id("moonshotai/kimi-k2"));
+        assert!(is_hidden_model_id("moonshotai/kimi-k2.6"));
+        assert!(is_hidden_model_id("kimi-k2.6"));
+        assert!(!is_hidden_model_id("qwen/qwen3.6-35b-a3b"));
+        assert!(!is_hidden_model_id("deepseek-ai/deepseek-v4-flash"));
+    }
+
+    #[test]
+    fn shipped_catalog_parses_and_declares_ds4_reasoning_default() {
+        let parsed: Result<CatalogFile, _> = serde_yaml::from_str(include_str!("../models.yaml"));
+        let file = parsed.expect("models.yaml parses");
+        let ds4 = file
+            .models
+            .iter()
+            .find(|m| m.id == "deepseek-ai/deepseek-v4-flash")
+            .expect("ds4 is cataloged");
+        assert_eq!(ds4.default_reasoning_effort.as_deref(), Some("none"));
+        assert!(file
+            .models
+            .iter()
+            .filter(|m| m.id != ds4.id)
+            .all(|m| m.default_reasoning_effort.is_none()));
+    }
+
+    #[test]
+    fn large_threshold_is_fifty_billion() {
+        assert!(!is_large(49.9));
+        assert!(is_large(50.0));
+        assert!(is_large(LARGE_MODEL_PARAMS_B));
     }
 
     #[test]

@@ -45,6 +45,31 @@ public actor MLXProvider: InferenceProvider {
     /// Minimum prefix length worth reusing.
     private static let minReusablePrefix = 32
 
+    // MARK: KV-cache quantization (opt-in)
+
+    /// Environment flag enabling quantized KV cache: `TEALE_MLX_KV_BITS=8`
+    /// (or 4). Off by default. `teale-eval` measures exactly this
+    /// configuration (same bits, same `kvQuantizationStart`) and is the
+    /// gate for turning it on by default.
+    public static let kvBitsEnvironmentKey = "TEALE_MLX_KV_BITS"
+
+    /// Token offset after which the KV cache is quantized. Shared with
+    /// teale-eval so the eval measures the shipped configuration.
+    public static let kvQuantizationStart = 0
+
+    /// KV bits requested via `TEALE_MLX_KV_BITS`, or nil (unquantized).
+    public static func kvBitsFromEnvironment(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int? {
+        guard let raw = environment[kvBitsEnvironmentKey]?.trimmingCharacters(in: .whitespaces),
+              let bits = Int(raw), bits == 4 || bits == 8 else {
+            return nil
+        }
+        return bits
+    }
+
+    private let kvBits: Int? = MLXProvider.kvBitsFromEnvironment()
+
     private func dropReusableCache() {
         reusableCache = nil
         reusableTokens = []
@@ -80,28 +105,13 @@ public actor MLXProvider: InferenceProvider {
             dropReusableCache()
         }
 
-        // Check available memory before loading to avoid Jetsam kill
-        var vmStats = vm_statistics64()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        let result = withUnsafeMutablePointer(to: &vmStats) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
-            }
-        }
-        let pageSize = Double(vm_kernel_page_size)
-        let availableGB: Double
-        if result == KERN_SUCCESS {
-            let freePages = Double(vmStats.free_count) + Double(vmStats.inactive_count) + Double(vmStats.purgeable_count)
-            availableGB = (freePages * pageSize) / (1024 * 1024 * 1024)
-        } else {
-            availableGB = Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024) * 0.5
-        }
-        let requiredGB = descriptor.requiredRAMGB * 0.8 // weights + overhead, some headroom
-        if availableGB < requiredGB {
-            let msg = "Not enough free memory to load \(descriptor.name). Available: \(String(format: "%.1f", availableGB)) GB, needs ~\(String(format: "%.0f", descriptor.requiredRAMGB)) GB. Close other apps and try again."
+        if descriptor.format == .gguf || descriptor.servingBackend == .exo {
+            let msg = "\(descriptor.name) is served by \(descriptor.servingBackend.rawValue), not MLX. Switch the inference backend to load it."
             _status = .error(msg)
             throw InferenceError.generationFailed(msg)
         }
+
+        try ensureMemoryAvailable(for: descriptor)
 
         // Cap MLX's Metal allocation cache at half of physical RAM. Without
         // a limit the cache defaults to the memory limit and grows for the
@@ -155,6 +165,44 @@ public actor MLXProvider: InferenceProvider {
         }
     }
 
+    /// Memory guard shared by catalog and local loads.
+    /// 1. The single fit rule (`ModelFit`): never try a model whose footprint
+    ///    exceeds this Mac's model budget.
+    /// 2. Memory free right now, to avoid a Jetsam kill.
+    /// The footprint never collapses to 0 for scanned models: it comes from
+    /// `requiredRAMGB`, or 1.25 x the weight size.
+    private func ensureMemoryAvailable(for descriptor: ModelDescriptor) throws {
+        let physicalGB = Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
+        let footprintGB = ModelFit.footprintGB(for: descriptor)
+        guard ModelFit.fits(descriptor, totalRAMGB: physicalGB) else {
+            let msg = "\(descriptor.name) needs ~\(String(format: "%.0f", footprintGB)) GB, more than this Mac's \(String(format: "%.0f", ModelFit.budgetGB(totalRAMGB: physicalGB))) GB model budget."
+            _status = .error(msg)
+            throw InferenceError.generationFailed(msg)
+        }
+
+        var vmStats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &vmStats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        let pageSize = Double(vm_kernel_page_size)
+        let availableGB: Double
+        if result == KERN_SUCCESS {
+            let freePages = Double(vmStats.free_count) + Double(vmStats.inactive_count) + Double(vmStats.purgeable_count)
+            availableGB = (freePages * pageSize) / (1024 * 1024 * 1024)
+        } else {
+            availableGB = Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024) * 0.5
+        }
+        let requiredGB = footprintGB * 0.8 // weights + overhead, some headroom
+        if availableGB < requiredGB {
+            let msg = "Not enough free memory to load \(descriptor.name). Available: \(String(format: "%.1f", availableGB)) GB, needs ~\(String(format: "%.0f", footprintGB)) GB. Close other apps and try again."
+            _status = .error(msg)
+            throw InferenceError.generationFailed(msg)
+        }
+    }
+
     // MARK: - Load Model from Local Directory
 
     /// Load a model directly from a local directory (no download).
@@ -165,6 +213,7 @@ public actor MLXProvider: InferenceProvider {
         }
 
         let resolvedDirectory = directory.resolvingSymlinksInPath()
+        try ensureMemoryAvailable(for: descriptor)
 
         _status = .loadingModel(descriptor)
         onProgress?(LoadProgress(phase: .loadingWeights, fractionCompleted: 0))
@@ -232,8 +281,7 @@ public actor MLXProvider: InferenceProvider {
         }
 
         let chatId = "chatcmpl-\(UUID().uuidString.prefix(12))"
-        var tokenCount = 0
-        let maxTokens = request.maxTokens ?? 8192
+        let maxTokens = max(1, request.maxTokens ?? 8192)
         let temperature = Float(request.temperature ?? 0.7)
         let modelName = descriptor.huggingFaceRepo
 
@@ -259,7 +307,7 @@ public actor MLXProvider: InferenceProvider {
             var cache: [KVCache]? = nil
             var inputToEval = lmInput
             var reusedPrefix = 0
-            if let existing = reusableCache, !reusableTokens.isEmpty {
+            if kvBits == nil, let existing = reusableCache, !reusableTokens.isEmpty {
                 let limit = min(promptTokens.count, reusableTokens.count)
                 var prefix = 0
                 while prefix < limit && promptTokens[prefix] == reusableTokens[prefix] {
@@ -276,10 +324,19 @@ public actor MLXProvider: InferenceProvider {
                 }
             }
 
-            let parameters = GenerateParameters(
+            // maxTokens goes INTO the generator so it stops on its own and
+            // reports an exact generationTokenCount in `.info`; counting
+            // `.chunk` strings (not tokens) here used to mis-trim the
+            // retained KV cache.
+            var parameters = GenerateParameters(
                 temperature: temperature,
                 prefillStepSize: Self.prefillStepSize
             )
+            parameters.maxTokens = maxTokens
+            if let kvBits {
+                parameters.kvBits = kvBits
+                parameters.quantizedKVStart = Self.kvQuantizationStart
+            }
             let cacheBox = UncheckedSendableBox(cache)
             let inputBox = UncheckedSendableBox(inputToEval)
             let (stream, usedCache) = try await container.perform { context in
@@ -295,9 +352,8 @@ public actor MLXProvider: InferenceProvider {
 
             var completionInfo: GenerateCompletionInfo? = nil
             var toolCallIndex = 0
-            var hitMaxTokens = false
 
-            generationLoop: for await generation in stream {
+            for await generation in stream {
                 if Task.isCancelled { break }
                 switch generation {
                 case .chunk(let text):
@@ -305,9 +361,7 @@ public actor MLXProvider: InferenceProvider {
                     // tool_calls response shape - swallow it so clients see
                     // a clean finish.
                     if sawToolCall { continue }
-                    tokenCount += 1
                     continuation.yield(makeChunk(id: chatId, model: modelName, role: nil, content: text, finishReason: nil))
-                    if tokenCount >= maxTokens { hitMaxTokens = true; break generationLoop }
                 case .info(let info):
                     completionInfo = info
                 case .toolCall(let toolCall):
@@ -325,16 +379,16 @@ public actor MLXProvider: InferenceProvider {
             }
 
             // Retain the cache for the next request, trimmed back to exactly
-            // the prompt (generation appended its tokens on top). On
-            // cancellation or unknown generation length, drop it - an
-            // untracked cache is never safe to reuse. A maxTokens-capped
-            // generation DOES have a known length (we counted the chunks,
-            // and no EOS was evaluated before the break), so it keeps its
-            // cache instead of forcing a full re-prefill next turn - the
-            // common case for clients that always pass max_tokens.
+            // the prompt (generation appended its tokens on top). The only
+            // trustworthy generated-token count is `.info`'s
+            // generationTokenCount (maxTokens is enforced by the generator,
+            // so capped runs report it too). Without it - cancellation, an
+            // early stream end - the cache length is unknown and the cache
+            // is dropped. With KV quantization on, the generator swaps cache
+            // entries for quantized copies internally, so the array we hold
+            // no longer reflects the generated tokens: never retain it then.
             let generatedCount: Int? = completionInfo?.generationTokenCount
-                ?? (hitMaxTokens ? tokenCount : nil)
-            if !Task.isCancelled, let generatedCount {
+            if !Task.isCancelled, kvBits == nil, let generatedCount {
                 trimPromptCache(usedCache.value, numTokens: generatedCount)
                 if promptTokens.count <= Self.maxReusableTokens {
                     reusableCache = usedCache.value
