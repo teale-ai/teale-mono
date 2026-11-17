@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn leaf_mask_is_embedded_at_expected_size() {
         const ALPHA: &[u8; 32 * 32] = include_bytes!("../assets/teale-leaf-alpha-32.bin");
-        assert!(ALPHA.iter().any(|alpha| *alpha == 0));
+        assert!(ALPHA.contains(&0));
         assert!(ALPHA.iter().any(|alpha| *alpha > 200));
     }
 

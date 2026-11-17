@@ -219,21 +219,29 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
             }
-            Event::UserEvent(UserEvent::Tray(event)) => match event {
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
+            Event::UserEvent(UserEvent::Tray(event)) => {
+                if opens_window(&event) {
+                    show_window(&window);
                 }
-                | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                } => show_window(&window),
-                _ => {}
-            },
+            }
             _ => {}
         }
     });
+}
+
+/// Left click (release) or double click on the tray icon opens the window.
+fn opens_window(event: &TrayIconEvent) -> bool {
+    matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        }
+    )
 }
 
 /// Install root (`C:\Teale` by default): the tray lives in `<root>\bin`.
