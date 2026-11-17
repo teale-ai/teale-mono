@@ -68,6 +68,8 @@ EXTRA_ARGS="${*:-}"
 echo "Building teale-node for aarch64-linux-android (release)..."
 CC_aarch64_linux_android="$CLANG" \
 AR_aarch64_linux_android="$AR" \
+CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG" \
+CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$AR" \
     cargo build --release --target aarch64-linux-android $EXTRA_ARGS
 
 # Strip debug symbols

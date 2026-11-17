@@ -1,6 +1,9 @@
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
 
-[target.aarch64-linux-android]
-linker = "/opt/homebrew/share/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android35-clang"
-ar = "/opt/homebrew/share/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar"
+# Android (aarch64-linux-android): no machine-specific NDK paths here.
+# scripts/build-android.sh locates the NDK (ANDROID_NDK_HOME, Homebrew or the
+# Android SDK ndk/ dir) and passes the linker and ar via
+# CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER / _AR. For a plain `cargo build
+# --target aarch64-linux-android`, export those two variables yourself or put
+# a [target.aarch64-linux-android] section in your own ~/.cargo/config.toml.

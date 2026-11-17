@@ -29,11 +29,18 @@ port = 11436
 extra_args = ["--threads", "6"]
 
 [control]
+# The tray reads this port from C:\Teale\config\teale-node.toml.
 port = 11437
 registry_path = "C:/Teale/config/model-registry.json"
-supabase_url = ""
-supabase_anon_key = ""
-supabase_redirect_url = "teale://auth/callback"
+# Sign-in uses the gateway's email code; the old supabase_* keys are ignored.
+
+# Private Inference Network preseed for IT mass deployment (the installer
+# writes this when run with /PINCODE=...).
+# [pin]
+# join_code = "XXXX-XXXX-XX"
+# port = 41642
+# gateway_pubkey = ""   # pinned gateway Ed25519 key (hex); TOFU if unset
+# offer_exit = false
 
 # Employee-machine protection (#167). The node throttles supply to 0 (the
 # gateway stops routing work to it) while average CPU use over the window
@@ -51,3 +58,7 @@ display_name = "WIN-HOSTNAME"
 # Leave gpu_backend unset so teale-node can auto-detect and protect older
 # Intel laptops by falling back to CPU mode when Vulkan is not a good fit.
 # gpu_vram_gb omitted — max_model_size_gb = 0.75 * total_ram_gb ≈ 12 GB.
+# DIN requests allowed to queue for a serving slot (fail fast beyond this) and
+# the longest one may wait, in seconds.
+# din_queue_depth = 2
+# din_queue_timeout_secs = 600

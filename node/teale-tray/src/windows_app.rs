@@ -219,11 +219,7 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
             }
-            Event::UserEvent(UserEvent::Tray(event)) => {
-                if opens_window(&event) {
-                    show_window(&window);
-                }
-            }
+            Event::UserEvent(UserEvent::Tray(e)) if opens_window(&e) => show_window(&window),
             _ => {}
         }
     });
