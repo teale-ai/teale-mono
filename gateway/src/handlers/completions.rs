@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use crate::auth::AuthPrincipal;
 use crate::error::GatewayError;
-use crate::handlers::chat::chat_completions;
+use crate::handlers::chat::{chat_completions, MAX_TRANSLATED_RESPONSE_BYTES};
 use crate::state::AppState;
 
 pub async fn completions(
@@ -103,7 +103,7 @@ pub async fn completions(
         return Ok(Response::from_parts(parts, body).into_response());
     }
 
-    let bytes = axum::body::to_bytes(body, 1024 * 1024)
+    let bytes = axum::body::to_bytes(body, MAX_TRANSLATED_RESPONSE_BYTES)
         .await
         .map_err(|e| GatewayError::Upstream(format!("read response body: {}", e)))?;
     let mut json: Value = serde_json::from_slice(&bytes)

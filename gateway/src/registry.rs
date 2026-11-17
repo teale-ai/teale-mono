@@ -850,8 +850,10 @@ impl Registry {
                 if st.heartbeat_is_stale(self.reliability.heartbeat_stale_seconds) {
                     return None;
                 }
-                match st.is_eligible_for(model_id, self.reliability.quarantine_seconds as u32 * 100)
-                {
+                // No queue-depth cap here: the registry does not own
+                // scheduler.max_queue_depth, and the scheduler applies it
+                // (pick/saturated) with the in-flight counters it needs.
+                match st.is_eligible_for(model_id, u32::MAX) {
                     Eligibility::Loaded | Eligibility::Swappable => Some(st.clone()),
                     _ => None,
                 }
