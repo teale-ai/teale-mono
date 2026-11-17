@@ -2,6 +2,11 @@
 #
 # Secret bearer tokens are loaded from the GATEWAY_TOKENS env var at startup
 # (format: "tok_abc:openrouter,tok_dev:internal"). Rotate via `fly secrets set`.
+# Scopes: only `admin` and `internal` may call operator endpoints
+# (/v1/admin/*, provider payouts, ledger anchors prepare/finalize/abandon);
+# any other scope (e.g. `openrouter`, or `default` for a token without a
+# scope) is inference-only and gets 403 there. /v1/admin/reset-genesis also
+# needs TEALE_ALLOW_RESET_GENESIS=1 and the body {"confirm":"reset-genesis"}.
 
 bind = "0.0.0.0:8080"
 display_name = "teale-gateway"

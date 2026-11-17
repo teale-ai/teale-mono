@@ -1,5 +1,7 @@
 //! Ledger verifiability endpoints.
 //!
+//! Admin routes below require a static bearer scoped `admin` or `internal`.
+//!
 //! - `POST /v1/admin/ledger/anchors/prepare`  (static bearer) — build a
 //!   pending anchor over every unanchored ledger row and return the memo
 //!   the operator must publish on Solana.
@@ -31,13 +33,10 @@ use crate::error::GatewayError;
 use crate::solana;
 use crate::state::AppState;
 
+/// Anchor prepare/finalize/abandon are operator actions: admin- or
+/// internal-scoped static bearers only.
 fn require_static(principal: &AuthPrincipal) -> Result<(), GatewayError> {
-    match &principal.kind {
-        PrincipalKind::Static { .. } => Ok(()),
-        _ => Err(GatewayError::Forbidden(
-            "anchor admin endpoints require a static bearer".into(),
-        )),
-    }
+    crate::auth::require_admin_scope(principal)
 }
 
 fn require_pool(state: &AppState) -> Result<&DbPool, GatewayError> {

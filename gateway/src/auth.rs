@@ -37,6 +37,7 @@ use axum::{
 };
 
 use crate::api_keys::{self, ApiKeyRole};
+use crate::error::GatewayError;
 use crate::ledger;
 use crate::state::AppState;
 
@@ -134,6 +135,53 @@ impl AuthPrincipal {
     }
 }
 
+/// Static-token scopes allowed to call operator endpoints (`/v1/admin/*`,
+/// provider payouts, ledger anchoring). Partner scopes such as `openrouter`
+/// are inference-only.
+pub const ADMIN_SCOPES: &[&str] = &["admin", "internal"];
+
+pub fn is_admin_scope(scope: &str) -> bool {
+    ADMIN_SCOPES.iter().any(|s| scope.eq_ignore_ascii_case(s))
+}
+
+/// Gate for operator endpoints: a static bearer whose scope is `admin` or
+/// `internal`. Any other principal or scope gets 403.
+pub fn require_admin_scope(principal: &AuthPrincipal) -> Result<(), GatewayError> {
+    match &principal.kind {
+        PrincipalKind::Static { scope } if is_admin_scope(scope) => Ok(()),
+        PrincipalKind::Static { scope } => Err(GatewayError::Forbidden(format!(
+            "static bearer scope '{scope}' cannot call admin endpoints (requires admin or internal)"
+        ))),
+        _ => Err(GatewayError::Forbidden(
+            "admin endpoints require a static bearer".into(),
+        )),
+    }
+}
+
+/// Path prefixes whose next segment is a bearer-equivalent secret (magic-link
+/// tokens, share-key tokens, share-key funding ids).
+const SECRET_PATH_PREFIXES: &[&str] = &[
+    "/v1/auth/link/",
+    "/v1/auth/keys/share/preview/",
+    "/v1/auth/keys/share/funding/",
+    "/try/",
+];
+
+/// Request target for logs and trace spans with secrets removed: the
+/// token-bearing path segment is replaced and any query string is elided.
+pub fn redacted_request_target(uri: &axum::http::Uri) -> String {
+    let path = uri.path();
+    let mut target = SECRET_PATH_PREFIXES
+        .iter()
+        .find(|prefix| path.len() > prefix.len() && path.starts_with(*prefix))
+        .map(|prefix| format!("{prefix}[redacted]"))
+        .unwrap_or_else(|| path.to_string());
+    if uri.query().is_some() {
+        target.push_str("?[redacted]");
+    }
+    target
+}
+
 impl TokenTable {
     pub fn from_env(var: &str) -> Self {
         let raw = std::env::var(var).unwrap_or_default();
@@ -189,9 +237,14 @@ pub async fn require_bearer(
         return Ok(next.run(req).await);
     }
 
-    // 2) Device-token match (via DB)
+    // 2) Device-token match (via DB). A database failure is a 500, never a
+    //    misleading 401.
     if let Some(pool) = state.db.as_ref() {
-        if let Some(device_id) = ledger::resolve_token(pool, &token) {
+        let device_id = ledger::try_resolve_token(pool, &token).map_err(|err| {
+            tracing::error!("device token lookup failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        if let Some(device_id) = device_id {
             req.extensions_mut().insert(AuthPrincipal {
                 kind: PrincipalKind::Device { device_id },
             });
@@ -203,11 +256,20 @@ pub async fn require_bearer(
     //     credit-limit exhaustion is enforced at settle time, not auth time
     //     (so /v1/keys, /v1/credits, /v1/key still work for inspection).
     if let Some(pool) = state.db.as_ref() {
-        if let Some(resolved) = api_keys::resolve_api_key(pool, &token) {
+        let resolved = api_keys::try_resolve_api_key(pool, &token).map_err(|err| {
+            tracing::error!("api key lookup failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        if let Some(resolved) = resolved {
             if resolved.disabled {
                 return Err(StatusCode::UNAUTHORIZED);
             }
-            api_keys::touch_last_used(pool, &resolved.key_id);
+            let now = crate::db::unix_now();
+            if resolved.needs_touch(now) {
+                if let Err(err) = api_keys::touch_last_used(pool, &resolved.key_id, now) {
+                    tracing::warn!(key_id = %resolved.key_id, "could not update last_used_at: {err}");
+                }
+            }
             req.extensions_mut().insert(AuthPrincipal {
                 kind: PrincipalKind::ApiKey {
                     key_id: resolved.key_id,
@@ -225,7 +287,11 @@ pub async fn require_bearer(
     //     Sliding renewal happens inside resolve_account_session.
     if token.starts_with("tsess_") {
         if let Some(pool) = state.db.as_ref() {
-            if let Some(session) = ledger::resolve_account_session(pool, &token) {
+            let session = ledger::try_resolve_account_session(pool, &token).map_err(|err| {
+                tracing::error!("account session lookup failed: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            if let Some(session) = session {
                 req.extensions_mut().insert(AuthPrincipal {
                     kind: PrincipalKind::AccountSession {
                         account_user_id: session.account_user_id,
@@ -314,5 +380,44 @@ mod tests {
             HeaderValue::from_static("Bearer bearer-key"),
         );
         assert_eq!(token_from_headers(&headers), "bearer-key");
+    }
+
+    fn static_principal(scope: &str) -> AuthPrincipal {
+        AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: scope.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn admin_scope_gate() {
+        assert!(require_admin_scope(&static_principal("admin")).is_ok());
+        assert!(require_admin_scope(&static_principal("internal")).is_ok());
+        for scope in ["openrouter", "default", "dev-open"] {
+            let err = require_admin_scope(&static_principal(scope)).unwrap_err();
+            assert!(matches!(err, GatewayError::Forbidden(_)), "{scope}");
+        }
+        let device = AuthPrincipal {
+            kind: PrincipalKind::Device {
+                device_id: "dev".into(),
+            },
+        };
+        assert!(require_admin_scope(&device).is_err());
+    }
+
+    #[test]
+    fn request_targets_are_redacted() {
+        let cases = [
+            ("/v1/auth/link/abc123", "/v1/auth/link/[redacted]"),
+            ("/try/tok_share_x", "/try/[redacted]"),
+            ("/v1/auth/keys/share/preview/tok", "/v1/auth/keys/share/preview/[redacted]"),
+            ("/v1/models?limit=5", "/v1/models?[redacted]"),
+            ("/v1/chat/completions", "/v1/chat/completions"),
+        ];
+        for (raw, expected) in cases {
+            let uri: axum::http::Uri = raw.parse().unwrap();
+            assert_eq!(redacted_request_target(&uri), expected);
+        }
     }
 }

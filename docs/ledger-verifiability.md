@@ -84,7 +84,8 @@ under $0.02/month at any SOL price seen to date.
 ## Operational flow
 
 1. **Prepare** (operator, cadence TBD — hourly to daily):
-   `POST /v1/admin/ledger/anchors/prepare` (static bearer). The gateway
+   `POST /v1/admin/ledger/anchors/prepare` (static bearer scoped `admin` or
+   `internal`; the same applies to finalize and abandon). The gateway
    backfills `ledger_entry_hashes`, checks the new range is contiguous
    (gaps mean a deleted row — it refuses to anchor), builds the tree, and
    returns the pending anchor with the exact `memo` and a suggested
@@ -101,6 +102,23 @@ under $0.02/month at any SOL price seen to date.
    flip to `confirmed`.
 4. **Abandon** a pending anchor (typo'd memo, wrong wallet):
    `POST /v1/admin/ledger/anchors/abandon`. Confirmed anchors are immutable.
+
+## Mint pool policy
+
+Every credit that is not a transfer comes out of the fixed `mint_pool`
+(seeded with 1,000,000,000 credits). All mint paths share one rule: the pool
+is debited with `remaining >= amount`, and when it cannot cover the amount
+the mint is **refused** — the pool never goes negative and credits are never
+issued beyond it. Per path:
+
+- Availability drip: the tick is skipped (unchanged behaviour).
+- Admin mint (`/v1/admin/mint`) and referral bonuses: the request fails with
+  a "mint pool exhausted" error and nothing is written.
+- Welcome bonuses (device exchange, verified-email first login): the bonus
+  is not granted; the exchange / login itself still succeeds.
+
+Because nothing is issued past the pool, `/v1/pool` and the liabilities in
+`/v1/solvency` reflect every credit actually minted.
 
 ## Verification flow (supply node / auditor)
 
