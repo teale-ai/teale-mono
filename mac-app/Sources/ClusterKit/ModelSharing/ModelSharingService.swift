@@ -3,28 +3,73 @@ import SharedTypes
 
 // MARK: - Model Sharing Service
 
-/// Handles model availability queries and file transfers between peers
+/// Handles model availability queries and file transfers between peers.
+///
+/// Everything a peer sends is untrusted:
+/// - `modelID` must be a single safe path component AND a model this Mac
+///   knows (`ModelDirectoryRegistry`, filled from the catalog). It is
+///   mapped to the real model cache directory (`ModelStorageLayout`), never
+///   joined onto a path directly.
+/// - `fileName` must be a single safe path component.
+/// - Every resolved path is checked to stay inside Teale's storage before
+///   any read, write, move or delete.
+/// - Incoming chunks are accepted only for transfers this Mac requested,
+///   from the peer it asked, at the exact offset expected, up to a size cap.
+/// Only flat MLX snapshot directories are shared; GGUF models are not.
 public actor ModelSharingService {
-    private let modelCacheDirectory: URL
-    private var activeTransfers: [UUID: TransferState] = [:]
+    private let storageRoot: URL
+    private let transfersRoot: URL
+    private let resolveModelDirectory: @Sendable (String) -> URL?
+    private var incoming: [UUID: IncomingTransfer] = [:]
 
-    public init(modelCacheDirectory: URL? = nil) {
-        self.modelCacheDirectory = modelCacheDirectory ?? {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return appSupport.appendingPathComponent("Teale/Models", isDirectory: true)
-        }()
+    /// Bytes per outgoing chunk; files are streamed, never read whole.
+    static let chunkSize = 1_048_576
+    /// Upper bound for one received model (guards disk exhaustion).
+    static let maxTransferBytes: UInt64 = 1 << 40  // 1 TiB
+
+    public init(
+        storageRoot: URL = ModelStorageLayout.tealeApplicationSupportDirectory(),
+        transfersRoot: URL = ModelStorageLayout.transfersDirectory(),
+        resolveModelDirectory: @escaping @Sendable (String) -> URL? = ModelSharingService.defaultModelDirectory
+    ) {
+        self.storageRoot = storageRoot
+        self.transfersRoot = transfersRoot
+        self.resolveModelDirectory = resolveModelDirectory
+    }
+
+    /// Catalog model id → its real cache directory (the HubApi MLX layout).
+    /// Unknown ids, unsafe ids and GGUF/exo models resolve to nil.
+    public static let defaultModelDirectory: @Sendable (String) -> URL? = { modelID in
+        guard let descriptor = ModelDirectoryRegistry.shared.descriptor(forModelID: modelID),
+              descriptor.format == .mlx,
+              descriptor.servingBackend != .exo else {
+            return nil
+        }
+        return ModelStorageLayout.mlxModelDirectory(repo: descriptor.huggingFaceRepo)
+    }
+
+    /// Safe, contained directory for a peer-supplied model id, or nil.
+    func modelDirectory(for modelID: String) -> URL? {
+        guard SafePathComponent.isValid(modelID),
+              let dir = resolveModelDirectory(modelID),
+              SafePathComponent.isContained(dir, in: storageRoot),
+              !SafePathComponent.isSymlink(dir) else {
+            return nil
+        }
+        return dir
     }
 
     // MARK: - Query Handling
 
     /// Check if we have a model locally and respond
     public func handleModelQuery(_ query: ModelQueryPayload, connection: PeerConnection) async throws {
-        let modelDir = modelCacheDirectory.appendingPathComponent(query.modelID)
-        let exists = FileManager.default.fileExists(atPath: modelDir.path)
+        var exists = false
         var totalSize: UInt64? = nil
-
-        if exists {
-            totalSize = directorySize(modelDir)
+        if let modelDir = modelDirectory(for: query.modelID),
+           FileManager.default.fileExists(atPath: modelDir.path) {
+            let files = shareableFiles(in: modelDir)
+            exists = !files.isEmpty
+            totalSize = exists ? files.reduce(0) { $0 + $1.size } : nil
         }
 
         let response = ModelQueryResponsePayload(
@@ -37,39 +82,37 @@ public actor ModelSharingService {
 
     // MARK: - Transfer Sending
 
-    /// Send a model to a requesting peer in chunks
+    /// Stream a model to a requesting peer in 1 MiB chunks.
     public func handleTransferRequest(_ request: ModelTransferRequestPayload, connection: PeerConnection) async throws {
-        let modelDir = modelCacheDirectory.appendingPathComponent(request.modelID)
-        guard FileManager.default.fileExists(atPath: modelDir.path) else {
+        guard let modelDir = modelDirectory(for: request.modelID),
+              FileManager.default.fileExists(atPath: modelDir.path) else {
             throw ModelSharingError.modelNotFound
         }
 
-        let files = try FileManager.default.contentsOfDirectory(
-            at: modelDir,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: .skipsHiddenFiles
-        )
+        let files = shareableFiles(in: modelDir)
+        guard !files.isEmpty else { throw ModelSharingError.modelNotFound }
 
-        for file in files {
-            let fileData = try Data(contentsOf: file)
-            let chunkSize = 1_048_576  // 1MB chunks
+        for (fileIndex, file) in files.enumerated() {
+            let isLastFile = fileIndex == files.count - 1
+            let handle = try FileHandle(forReadingFrom: file.url)
+            defer { try? handle.close() }
 
             var offset: UInt64 = 0
-            while Int(offset) < fileData.count {
-                let end = min(Int(offset) + chunkSize, fileData.count)
-                let chunk = fileData[Int(offset)..<end]
-                let isLast = end == fileData.count
-
+            repeat {
+                let data = try handle.read(upToCount: Self.chunkSize) ?? Data()
+                let nextOffset = offset + UInt64(data.count)
+                let isLast = nextOffset >= file.size || data.isEmpty
                 let payload = ModelTransferChunkPayload(
                     transferID: request.transferID,
-                    fileName: file.lastPathComponent,
+                    fileName: file.url.lastPathComponent,
                     offset: offset,
-                    data: Data(chunk),
-                    isLastChunk: isLast && file == files.last
+                    data: data,
+                    isLastChunk: isLast && isLastFile
                 )
                 try await connection.send(.modelTransferChunk(payload))
-                offset = UInt64(end)
-            }
+                offset = nextOffset
+                if isLast { break }
+            } while true
         }
 
         let complete = ModelTransferCompletePayload(
@@ -81,62 +124,124 @@ public actor ModelSharingService {
 
     // MARK: - Transfer Receiving
 
-    /// Handle an incoming chunk during a transfer
-    public func handleTransferChunk(_ chunk: ModelTransferChunkPayload) throws {
-        let transferDir = modelCacheDirectory.appendingPathComponent("_transfers/\(chunk.transferID.uuidString)")
-        try FileManager.default.createDirectory(at: transferDir, withIntermediateDirectories: true)
+    /// Record that this Mac asked `peerID` for `modelID` under `transferID`.
+    /// Chunks for any other transfer are rejected.
+    public func expectTransfer(transferID: UUID, modelID: String, from peerID: UUID) throws {
+        guard modelDirectory(for: modelID) != nil else {
+            throw ModelSharingError.transferFailed("unknown or unsafe model id")
+        }
+        incoming[transferID] = IncomingTransfer(modelID: modelID, peerID: peerID)
+    }
 
-        let filePath = transferDir.appendingPathComponent(chunk.fileName)
-
-        if chunk.offset == 0 {
-            // Create new file
-            FileManager.default.createFile(atPath: filePath.path, contents: chunk.data)
-        } else {
-            // Append to existing file
-            let handle = try FileHandle(forWritingTo: filePath)
-            handle.seekToEndOfFile()
-            handle.write(chunk.data)
-            handle.closeFile()
+    public func cancelExpectedTransfer(_ transferID: UUID) {
+        incoming.removeValue(forKey: transferID)
+        if let dir = transferDirectory(for: transferID) {
+            try? FileManager.default.removeItem(at: dir)
         }
     }
 
-    /// Finalize a completed transfer
-    public func handleTransferComplete(_ complete: ModelTransferCompletePayload) throws {
-        let transferDir = modelCacheDirectory.appendingPathComponent("_transfers/\(complete.transferID.uuidString)")
-        let destDir = modelCacheDirectory.appendingPathComponent(complete.modelID)
-
-        // Move from transfer dir to model cache
-        if FileManager.default.fileExists(atPath: destDir.path) {
-            try FileManager.default.removeItem(at: destDir)
+    /// Handle an incoming chunk during a transfer
+    public func handleTransferChunk(_ chunk: ModelTransferChunkPayload, from peerID: UUID) throws {
+        guard var transfer = incoming[chunk.transferID], transfer.peerID == peerID else {
+            throw ModelSharingError.transferFailed("unexpected transfer")
         }
-        try FileManager.default.moveItem(at: transferDir, to: destDir)
+        guard let transferDir = transferDirectory(for: chunk.transferID),
+              let filePath = SafePathComponent.resolve(chunk.fileName, in: transferDir) else {
+            cancelExpectedTransfer(chunk.transferID)
+            throw ModelSharingError.transferFailed("unsafe file name")
+        }
+        let received = transfer.receivedBytes + UInt64(chunk.data.count)
+        guard received <= Self.maxTransferBytes else {
+            cancelExpectedTransfer(chunk.transferID)
+            throw ModelSharingError.transferFailed("transfer exceeds size limit")
+        }
+
+        let fm = FileManager.default
+        try fm.createDirectory(at: transferDir, withIntermediateDirectories: true)
+        guard !SafePathComponent.isSymlink(filePath) else {
+            cancelExpectedTransfer(chunk.transferID)
+            throw ModelSharingError.transferFailed("refusing to write through a symlink")
+        }
+
+        let currentSize = transfer.fileSizes[chunk.fileName] ?? 0
+        guard chunk.offset == currentSize else {
+            cancelExpectedTransfer(chunk.transferID)
+            throw ModelSharingError.transferFailed("out-of-order chunk")
+        }
+
+        if chunk.offset == 0 {
+            guard fm.createFile(atPath: filePath.path, contents: chunk.data) else {
+                throw ModelSharingError.transferFailed("cannot create \(chunk.fileName)")
+            }
+        } else {
+            let handle = try FileHandle(forWritingTo: filePath)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: chunk.data)
+        }
+
+        transfer.fileSizes[chunk.fileName] = currentSize + UInt64(chunk.data.count)
+        transfer.receivedBytes = received
+        incoming[chunk.transferID] = transfer
+    }
+
+    /// Finalize a completed transfer into the model's real cache directory.
+    public func handleTransferComplete(_ complete: ModelTransferCompletePayload, from peerID: UUID) throws {
+        guard let transfer = incoming[complete.transferID], transfer.peerID == peerID else {
+            throw ModelSharingError.transferFailed("unexpected transfer")
+        }
+        incoming.removeValue(forKey: complete.transferID)
+        guard complete.modelID == transfer.modelID,
+              let destDir = modelDirectory(for: transfer.modelID),
+              let transferDir = transferDirectory(for: complete.transferID) else {
+            cancelExpectedTransfer(complete.transferID)
+            throw ModelSharingError.transferFailed("model id mismatch")
+        }
+
+        let fm = FileManager.default
+        try fm.createDirectory(at: destDir.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: destDir.path) {
+            try fm.removeItem(at: destDir)
+        }
+        try fm.moveItem(at: transferDir, to: destDir)
     }
 
     // MARK: - Helpers
 
-    private func directorySize(_ url: URL) -> UInt64 {
-        guard let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: .skipsHiddenFiles
-        ) else { return 0 }
+    private func transferDirectory(for transferID: UUID) -> URL? {
+        SafePathComponent.resolve(transferID.uuidString, in: transfersRoot)
+    }
 
-        var total: UInt64 = 0
-        for case let fileURL as URL in enumerator {
-            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                total += UInt64(size)
+    /// Regular, non-hidden, top-level files of a model directory (symlinks
+    /// are followed only when they stay inside Teale's storage, as HubApi
+    /// snapshots may link into a blob store).
+    private func shareableFiles(in dir: URL) -> [(url: URL, size: UInt64)] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+        var files: [(url: URL, size: UInt64)] = []
+        for name in names.sorted() where SafePathComponent.isValid(name) && !name.hasPrefix(".") {
+            let url = dir.appendingPathComponent(name)
+            let resolved = url.resolvingSymlinksInPath()
+            guard SafePathComponent.isContained(resolved, in: storageRoot)
+                    || resolved.standardizedFileURL.path == url.standardizedFileURL.path,
+                  let attributes = try? fm.attributesOfItem(atPath: resolved.path),
+                  (attributes[.type] as? FileAttributeType) == .typeRegular,
+                  let size = (attributes[.size] as? NSNumber)?.uint64Value else {
+                continue
             }
+            files.append((url: resolved, size: size))
         }
-        return total
+        return files
     }
 }
 
 // MARK: - Transfer State
 
-private struct TransferState {
+private struct IncomingTransfer {
     var modelID: String
-    var receivedBytes: UInt64
-    var totalBytes: UInt64?
+    var peerID: UUID
+    var receivedBytes: UInt64 = 0
+    var fileSizes: [String: UInt64] = [:]
 }
 
 // MARK: - Errors

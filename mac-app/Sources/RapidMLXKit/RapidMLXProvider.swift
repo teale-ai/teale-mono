@@ -47,8 +47,27 @@ public actor RapidMLXProvider: InferenceProvider {
         let descriptorAlias = aliasFor(descriptor: descriptor)
 
         if manageSubprocess {
-            stopServer()
+            await stopServer()
             _status = .loadingModel(descriptor)
+            // Our own server is stopped, so anything still answering on the
+            // port is a stale process (e.g. orphaned when Teale was
+            // SIGKILLed). Health checks alone would mistake it for ours.
+            if let stale = try? await fetchServingModelIDs() {
+                if stale.contains(where: { idsMatch($0, descriptorAlias) }) {
+                    // Same model already up: adopt it instead of failing
+                    // to bind a second server.
+                    if modelAlias?.isEmpty ?? true { modelAlias = descriptorAlias }
+                    currentDescriptor = descriptor
+                    _status = .ready(descriptor)
+                    return
+                }
+                let mismatch = RapidMLXError.modelMismatch(
+                    requested: descriptorAlias,
+                    serving: stale.joined(separator: ", ")
+                )
+                _status = .error(mismatch.localizedDescription)
+                throw mismatch
+            }
             try await startServer(modelAlias: descriptorAlias)
             if modelAlias == nil || modelAlias?.isEmpty == true {
                 modelAlias = descriptorAlias
@@ -75,7 +94,7 @@ public actor RapidMLXProvider: InferenceProvider {
 
     public func unloadModel() async {
         if manageSubprocess {
-            stopServer()
+            await stopServer()
         }
         currentDescriptor = nil
         modelAlias = nil
@@ -161,13 +180,18 @@ public actor RapidMLXProvider: InferenceProvider {
         }
         process.environment = env
 
-        let logPath = URL(fileURLWithPath: "/tmp/rapid-mlx.log")
-        FileManager.default.createFile(atPath: logPath.path, contents: nil)
-        let outputHandle = (try? FileHandle(forWritingTo: logPath)) ?? FileHandle.nullDevice
+        // Private log under ~/Library/Logs/Teale (may contain prompts).
+        let outputHandle = ManagedSubprocess.openLogFile(named: "rapid-mlx.log")
         process.standardOutput = outputHandle
         process.standardError = outputHandle
+        process.standardInput = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] exited in
+            let status = exited.terminationStatus
+            Task { await self?.handleServerExit(exited, status: status) }
+        }
 
         try process.run()
+        ManagedSubprocess.register(process)
         serverProcess = process
 
         // Big-model first-load can take 10+ minutes when weights are
@@ -175,14 +199,19 @@ public actor RapidMLXProvider: InferenceProvider {
         try await waitForHealth(timeoutSeconds: 900)
     }
 
-    private func stopServer() {
-        guard let process = serverProcess, process.isRunning else {
-            serverProcess = nil
-            return
-        }
-        process.terminate()
-        process.waitUntilExit()
+    /// SIGTERM, bounded wait, then SIGKILL — without blocking the actor.
+    private func stopServer() async {
+        guard let process = serverProcess else { return }
         serverProcess = nil
+        await ManagedSubprocess.terminate(process, grace: 10)
+        ManagedSubprocess.unregister(process)
+    }
+
+    private func handleServerExit(_ process: Process, status: Int32) {
+        ManagedSubprocess.unregister(process)
+        guard serverProcess === process else { return }
+        serverProcess = nil
+        _status = .error("rapid-mlx exited unexpectedly (status \(status))")
     }
 
     private func waitForHealth(timeoutSeconds: Int) async throws {
@@ -210,7 +239,7 @@ public actor RapidMLXProvider: InferenceProvider {
             try await Task.sleep(nanoseconds: 500_000_000)
         }
 
-        if manageSubprocess { stopServer() }
+        if manageSubprocess { await stopServer() }
         throw RapidMLXError.serverStartTimeout
     }
 
@@ -287,7 +316,12 @@ public actor RapidMLXProvider: InferenceProvider {
             _status = .ready(descriptor)
             continuation.finish()
         } catch {
-            _status = .error(error.localizedDescription)
+            // A client that hangs up is not a backend failure.
+            if HTTPProviderCancellation.isCancellation(error) {
+                _status = .ready(descriptor)
+            } else {
+                _status = .error(error.localizedDescription)
+            }
             throw error
         }
     }
@@ -392,61 +426,17 @@ public actor RapidMLXProvider: InferenceProvider {
             requiredRAMGB: 0,
             family: family,
             description: "Served by Rapid-MLX",
-            openrouterId: Self.openrouterSlug(forServerOrAlias: id)
+            openrouterId: Self.openrouterSlug(forServerOrAlias: id),
+            servingBackend: .rapidMLX
         )
     }
 
-    /// Map known rapid-mlx model IDs / aliases to canonical OpenRouter slugs
-    /// so the WAN heartbeat advertises supply that the gateway can route to.
-    /// Returns `nil` for genuinely unknown models — caller's heartbeat code
-    /// will skip advertising those (matches the existing behavior for
-    /// non-catalog GGUF supply).
+    /// Canonical OpenRouter slug for a rapid-mlx model id / alias, via the
+    /// shared `OpenRouterIdResolver` (the one slug table, checked against
+    /// gateway/models.yaml). `nil` for models the gateway does not list —
+    /// those are served locally but never advertised.
     public static func openrouterSlug(forServerOrAlias id: String) -> String? {
-        let lower = id.lowercased()
-        // Order: most-specific match first.
-        let mapping: [(needle: String, slug: String)] = [
-            ("kimi-k2.6", "moonshotai/kimi-k2.6"),
-            ("kimi-k2.5", "moonshotai/kimi-k2.5"),
-            ("deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
-            ("deepseek-v3.2", "deepseek/deepseek-v3.2"),
-            ("deepseek-r1", "deepseek/deepseek-r1"),
-            ("qwen3.6-35b", "qwen/qwen3.6-35b-a3b"),
-            ("qwen3.6-27b", "qwen/qwen3.6-27b"),
-            ("qwen3.5-122b", "qwen/qwen3.5-122b-a10b"),
-            ("qwen3.5-35b", "qwen/qwen3.5-35b-a3b"),
-            ("qwen3.5-27b", "qwen/qwen3.5-27b"),
-            ("qwen3.5-9b", "qwen/qwen3.5-9b"),
-            ("qwen3.5-4b", "qwen/qwen3.5-4b"),
-            ("qwen3-coder-30b", "qwen/qwen3-coder-30b"),
-            ("qwen3-vl-30b", "qwen/qwen3-vl-30b-a3b"),
-            ("qwen3-vl-8b", "qwen/qwen3-vl-8b"),
-            ("qwen3-vl-4b", "qwen/qwen3-vl-4b"),
-            ("nemotron-nano", "nvidia/nemotron-3-nano-30b-a3b"),
-            ("nemotron-30b", "nvidia/nemotron-3-nano-30b-a3b"),
-            ("hermes4-70b", "nousresearch/hermes-4-70b"),
-            ("hermes3-8b", "nousresearch/hermes-3-llama-3.1-8b"),
-            ("gemma-4-31b", "google/gemma-4-31b"),
-            ("gemma-4-26b", "google/gemma-4-26b"),
-            ("gemma3-27b", "google/gemma-3-27b"),
-            ("gemma3-12b", "google/gemma-3-12b"),
-            ("gemma3-1b", "google/gemma-3-1b"),
-            ("mistral-24b", "mistralai/mistral-small-3.1-24b"),
-            ("ministral-3b", "mistralai/ministral-3-3b"),
-            ("phi4-14b", "microsoft/phi-4-mini"),
-            ("glm4.5-air", "thudm/glm-4.5-air"),
-            ("glm4.7-9b", "thudm/glm-4.7-9b"),
-            ("gpt-oss-20b", "openai/gpt-oss-20b"),
-            ("devstral-v2-24b", "mistralai/devstral-small-2"),
-            ("devstral-24b", "mistralai/devstral-small"),
-            ("llama3-3b", "meta-llama/llama-3.2-3b"),
-            ("minimax-m2.5", "minimax/minimax-m2.5"),
-            ("qwopus-27b", "qwopus/qwopus-27b"),
-            ("qwopus-9b", "qwopus/qwopus-9b"),
-        ]
-        for (needle, slug) in mapping where lower.contains(needle) {
-            return slug
-        }
-        return nil
+        OpenRouterIdResolver.resolve(identifier: id)
     }
 
     private static func inferParamCount(from id: String) -> String {

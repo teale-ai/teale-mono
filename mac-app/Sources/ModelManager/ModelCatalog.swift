@@ -6,13 +6,19 @@ import SharedTypes
 public struct ModelCatalog: Sendable {
     public init() {}
 
-    /// Curated list of recommended models with popularity rankings.
+    /// Curated list of recommended models with unique popularity rankings.
     /// Rankings reflect network demand — lower rank = more requested by users.
     ///
-    /// Each entry's `openrouterId` is the canonical slug advertised to the
-    /// gateway. Keep these in sync with `gateway/models.yaml` in the
-    /// monorepo root — the gateway's per-model fleet floor only matches
-    /// against these canonical ids.
+    /// `openrouterId` is the canonical slug advertised to the gateway and is
+    /// set only for models the gateway catalog (`gateway/models.yaml`) knows;
+    /// it must equal `OpenRouterIdResolver.resolve(identifier: huggingFaceRepo)`
+    /// (both enforced by `ModelManagerTests`). Entries with `openrouterId: nil`
+    /// are local-only: they can be downloaded and used on this Mac but are
+    /// never advertised to the network.
+    ///
+    /// `format` / `servingBackend` say which pipeline downloads the weights
+    /// and which provider serves them. GGUF entries list the exact files to
+    /// fetch in `ggufFiles`.
     public static let allModels: [ModelDescriptor] = [
         // Small models — run on any Apple Silicon Mac
         ModelDescriptor(
@@ -25,8 +31,8 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 4.0,
             family: "Llama",
             description: "Fast, lightweight model for basic tasks",
-            popularityRank: 5,
-            openrouterId: "meta-llama/llama-3.2-1b-instruct"
+            popularityRank: 7,
+            openrouterId: nil  // not in the gateway catalog: local-only
         ),
         ModelDescriptor(
             id: "llama-3.2-3b-instruct-4bit",
@@ -38,8 +44,8 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 6.0,
             family: "Llama",
             description: "Good balance of speed and quality for small tasks",
-            popularityRank: 4,
-            openrouterId: "meta-llama/llama-3.2-3b-instruct"
+            popularityRank: 5,
+            openrouterId: nil  // not in the gateway catalog: local-only
         ),
         ModelDescriptor(
             id: "gemma-3-4b-it-qat-4bit",
@@ -52,7 +58,7 @@ public struct ModelCatalog: Sendable {
             family: "Gemma",
             description: "Google's efficient small model, great quality for its size",
             popularityRank: 3,
-            openrouterId: "google/gemma-3-4b-it"
+            openrouterId: nil  // not in the gateway catalog: local-only
         ),
         // NOTE: Gemma 4 models require model_type "gemma4" which mlx-swift-lm
         // does not support yet. Re-add when upstream adds Gemma4Model.
@@ -71,6 +77,9 @@ public struct ModelCatalog: Sendable {
             popularityRank: 1,
             openrouterId: "qwen/qwen3.5-9b"
         ),
+        // The gateway lists this slug with quantization Q5_K_M (GGUF supply);
+        // Mac supply serves the same model as 4-bit MLX. Both advertise the
+        // one canonical slug.
         ModelDescriptor(
             id: "hermes-3-llama-3.1-8b-4bit",
             name: "Hermes 3 8B",
@@ -94,7 +103,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 10.0,
             family: "Llama",
             description: "Strong general-purpose model",
-            popularityRank: 3,
+            popularityRank: 4,
             openrouterId: "meta-llama/llama-3.1-8b-instruct"
         ),
         ModelDescriptor(
@@ -107,7 +116,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 10.0,
             family: "Qwen",
             description: "Predecessor to Qwen3.5; kept for hosts already running it",
-            popularityRank: 4,
+            popularityRank: 6,
             openrouterId: "qwen/qwen3-8b"
         ),
         ModelDescriptor(
@@ -120,8 +129,10 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 20.0,
             family: "Mistral",
             description: "Mistral's efficient mid-size model",
-            popularityRank: 8,
-            openrouterId: "mistralai/mistral-small-24b-instruct-2501"
+            popularityRank: 10,
+            // The gateway lists mistral-small-3.2 only; 2501 weights are a
+            // different release, so this stays local-only.
+            openrouterId: nil
         ),
         ModelDescriptor(
             id: "phi-4-4bit",
@@ -133,8 +144,8 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 14.0,
             family: "Phi",
             description: "Microsoft's strong reasoning model",
-            popularityRank: 7,
-            openrouterId: "microsoft/phi-4"
+            popularityRank: 9,
+            openrouterId: nil  // not in the gateway catalog: local-only
         ),
 
         // Large models — 32GB+ RAM
@@ -148,7 +159,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 24.0,
             family: "Gemma",
             description: "Google's flagship Gemma 3 model, strong reasoning and coding",
-            popularityRank: 9,
+            popularityRank: 11,
             openrouterId: "google/gemma-3-27b-it"
         ),
         ModelDescriptor(
@@ -161,7 +172,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 28.0,
             family: "Qwen",
             description: "High-quality model for complex tasks",
-            popularityRank: 10,
+            popularityRank: 12,
             openrouterId: "qwen/qwen3-32b"
         ),
 
@@ -176,8 +187,8 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 72.0,
             family: "Llama",
             description: "Meta's MoE model — 17B active params, frontier quality",
-            popularityRank: 11,
-            openrouterId: "meta-llama/llama-4-scout"
+            popularityRank: 13,
+            openrouterId: nil  // not in the gateway catalog: local-only
         ),
         ModelDescriptor(
             id: "qwen3.6-27b-8bit",
@@ -189,7 +200,7 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 42.0,
             family: "Qwen",
             description: "Qwen 3.6 27B dense — flagship-level coding & agentic perf, 256K ctx. 8-bit MLX.",
-            popularityRank: 6,
+            popularityRank: 8,
             openrouterId: "qwen/qwen3.6-27b"
         ),
         ModelDescriptor(
@@ -201,8 +212,8 @@ public struct ModelCatalog: Sendable {
             estimatedSizeGB: 70.0,
             requiredRAMGB: 90.0,
             family: "Qwen",
-            description: "Qwen 3.6 35B/3B-active MoE with vision, bf16. 96GB+ unified RAM.",
-            popularityRank: 12,
+            description: "Qwen 3.6 35B/3B-active MoE with vision, bf16. 128GB+ unified RAM.",
+            popularityRank: 14,
             openrouterId: "qwen/qwen3.6-35b-a3b"
         ),
 
@@ -217,9 +228,13 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 768.0,
             family: "DeepSeek",
             description: "DeepSeek V3.2 MoE (671B total, ~37B active) at 8-bit. Requires multi-Ultra exo cluster.",
-            popularityRank: 13,
-            openrouterId: "deepseek/deepseek-v3.2"
+            popularityRank: 15,
+            openrouterId: "deepseek/deepseek-v3.2",
+            format: .mlx,
+            servingBackend: .exo
         ),
+        // GLM-5.1 — Unsloth Dynamic Q4_K_XL, split into 11 GGUF shards;
+        // llama-server is started with the first shard.
         ModelDescriptor(
             id: "glm-5.1-ud-q4-k-xl",
             name: "GLM-5.1 (MoE)",
@@ -229,13 +244,17 @@ public struct ModelCatalog: Sendable {
             estimatedSizeGB: 434.0,
             requiredRAMGB: 480.0,
             family: "GLM",
-            description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL. Fits a single 512 GB Mac Studio.",
-            popularityRank: 14,
-            openrouterId: "zai/glm-5.1"
+            description: "Z.ai GLM-5.1 — 754B MoE at Unsloth Dynamic Q4_K_XL (GGUF, llama.cpp). Single-Mac only on a 512 GB Studio with a raised GPU wired limit.",
+            popularityRank: 16,
+            openrouterId: "zai/glm-5.1",
+            format: .gguf,
+            servingBackend: .llamaCpp,
+            ggufFiles: ["UD-Q4_K_XL/GLM-5.1-UD-Q4_K_XL-*.gguf"]
         ),
-        // Kimi K2.6 — 1T MoE, natively int4, 256K context. MLX variant is
-        // 554 GB — needs multi-Ultra exo cluster (single 512 GB Mac can't
-        // load it alone). Served via exo-sharded MLX, not llama.cpp.
+        // Kimi K2.6 — 1T MoE, natively int4 safetensors (unsloth/Kimi-K2.6
+        // is the original compressed-tensors upload, not a GGUF). 554 GB, so
+        // it is served by exo sharding across 2× 512 GB Ultras; Teale never
+        // downloads or loads it itself.
         ModelDescriptor(
             id: "kimi-k2.6",
             name: "Kimi K2.6 (1T MoE)",
@@ -246,8 +265,10 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 640.0,
             family: "Kimi",
             description: "Moonshot Kimi K2.6 — 1T MoE (32B active), native int4, multimodal (MoonViT), 256K context. Requires 2× 512 GB Ultra exo cluster over TB5.",
-            popularityRank: 16,
-            openrouterId: "moonshotai/kimi-k2.6"
+            popularityRank: 19,
+            openrouterId: "moonshotai/kimi-k2.6",
+            format: .mlx,
+            servingBackend: .exo
         ),
         // DeepSeek V4 Flash — 284B-A13B MoE, served via ds4-server GGUF on
         // a single 512 GB Mac Studio Ultra. Frontier-class with 1M context.
@@ -261,12 +282,16 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 256.0,
             family: "DeepSeek",
             description: "DeepSeek V4 Flash — DS4 Q4 GGUF, 13B active, 1M context. Candidate for one 512 GB Mac Studio Ultra.",
-            popularityRank: 14,
-            openrouterId: "deepseek-ai/deepseek-v4-flash"
+            popularityRank: 17,
+            openrouterId: "deepseek-ai/deepseek-v4-flash",
+            format: .gguf,
+            servingBackend: .ds4,
+            ggufFiles: ["DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"]
         ),
         // DeepSeek V4 Pro — quality-max DS4 candidate for the second 512 GB
-        // machine. Start with the DS4 Pro Q2 imatrix GGUF and promote only if
-        // benchmark quality justifies the slower decode.
+        // machine. Same HF repo as Flash, different file; the GGUF cache is
+        // keyed by model id so the two never share a directory. Not in the
+        // gateway catalog yet, so local-only.
         ModelDescriptor(
             id: "deepseek-v4-pro",
             name: "DeepSeek V4 Pro (DS4 Q2)",
@@ -277,15 +302,18 @@ public struct ModelCatalog: Sendable {
             requiredRAMGB: 500.0,
             family: "DeepSeek",
             description: "DeepSeek V4 Pro — DS4 Q2 imatrix GGUF, 1M context. Candidate for one 512 GB Mac Studio Ultra quality lane.",
-            popularityRank: 15,
-            openrouterId: "deepseek-ai/deepseek-v4-pro"
+            popularityRank: 18,
+            openrouterId: nil,
+            format: .gguf,
+            servingBackend: .ds4,
+            ggufFiles: ["DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"]
         ),
     ]
 
-    /// Filter models that can run on the given hardware
+    /// Models that fit this hardware under the single `ModelFit` rule.
     public func availableModels(for hardware: HardwareCapability) -> [ModelDescriptor] {
         ModelCatalog.allModels.filter { model in
-            hardware.availableRAMForModelsGB >= model.requiredRAMGB
+            ModelFit.fits(model, totalRAMGB: hardware.totalRAMGB)
         }
     }
 
@@ -294,58 +322,10 @@ public struct ModelCatalog: Sendable {
         Array(availableModels(for: hardware).sorted { $0.popularityRank < $1.popularityRank }.prefix(limit))
     }
 
-    /// Resolve an OpenRouter-canonical id from a local filename. Used by
-    /// `LocalModelScanner` when it finds a GGUF on disk and needs to know
-    /// which OR slug to advertise. Matches are fuzzy — case-insensitive
-    /// substring check against known canonical slugs.
+    /// Resolve an OpenRouter-canonical id from a local filename or repo id.
+    /// Thin wrapper over `OpenRouterIdResolver`, the one slug table; kept
+    /// for existing callers.
     public static func openrouterIdForFilename(_ filename: String) -> String? {
-        // Strip extension, normalize separators.
-        let norm = filename
-            .lowercased()
-            .replacingOccurrences(of: ".gguf", with: "")
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: ".", with: "-")
-
-        // Look up against catalog — match by each entry's tail (post-slash).
-        // Normalize the tail the same way as `norm` so e.g. "qwen3-32b"
-        // matches the normalized "qwen3-32b-q8-0" form of a GGUF.
-        for model in allModels {
-            guard let or = model.openrouterId else { continue }
-            let tail = or.split(separator: "/").last.map(String.init) ?? or
-            let normTail = normalizeForMatch(tail)
-            if norm.contains(normTail) {
-                return or
-            }
-        }
-
-        // Extended heuristics for popular non-catalog variants we still
-        // want to route to catalog models. Keep narrow — adding entries
-        // here lies to the gateway about what we can serve.
-        // Keys are normalized the same way as the filename.
-        let heuristics: [(String, String)] = [
-            ("hermes-3-llama-3.1-8b", "nousresearch/hermes-3-llama-3.1-8b"),
-            ("hermes-3-llama-3.1-70b", "nousresearch/hermes-3-llama-3.1-70b"),
-            ("llama-3.3-70b-instruct", "meta-llama/llama-3.3-70b-instruct"),
-            ("llama-3.1-70b-instruct", "meta-llama/llama-3.1-70b-instruct"),
-            ("minimax-m2-7", "minimax/minimax-m2.7"),
-            ("qwen3-coder-30b-a3b", "qwen/qwen3-coder-30b-a3b-instruct"),
-            ("qwen3-30b-a3b", "qwen/qwen3-30b-a3b-instruct-2507"),
-            ("gpt-oss-120b", "openai/gpt-oss-120b"),
-            ("gpt-oss-20b", "openai/gpt-oss-20b"),
-        ]
-        for (needle, or) in heuristics {
-            if norm.contains(normalizeForMatch(needle)) {
-                return or
-            }
-        }
-        return nil
-    }
-
-    /// Shared normalization for both GGUF filename input and catalog/heuristic
-    /// keys so substring matching isn't derailed by `.` vs `-` separators.
-    private static func normalizeForMatch(_ s: String) -> String {
-        s.lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: ".", with: "-")
+        OpenRouterIdResolver.resolve(filename: filename)
     }
 }

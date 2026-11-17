@@ -24,6 +24,14 @@ public struct HFDownloader: MLXLMCommon.Downloader, Sendable {
         self.hubApi = hubApi
     }
 
+    /// Downloader rooted at `downloadBase` instead of the shared MLX cache.
+    /// Used for GGUF models, whose cache is keyed by model id
+    /// (`Teale/gguf/<model-id>`) rather than by repo.
+    public init(downloadBase: URL) {
+        try? FileManager.default.createDirectory(at: downloadBase, withIntermediateDirectories: true)
+        self.hubApi = HubApi(downloadBase: downloadBase)
+    }
+
     public func download(
         id: String,
         revision: String?,

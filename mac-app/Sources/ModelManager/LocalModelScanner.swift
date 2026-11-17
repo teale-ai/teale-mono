@@ -28,7 +28,10 @@ public struct LocalModelInfo: Identifiable, Sendable {
         // so the gateway can match this local model against its catalog.
         // Falls back to nil (no advertisement under an OR id) for models
         // we don't recognize.
-        let orId = ModelCatalog.openrouterIdForFilename(path.lastPathComponent)
+        // HF-cache snapshots live in a directory named after the commit
+        // hash, so match on the derived "org/name" first, then the folder.
+        let orId = OpenRouterIdResolver.resolve(identifier: name)
+            ?? OpenRouterIdResolver.resolve(filename: path.lastPathComponent)
 
         return ModelDescriptor(
             id: "local-\(path.lastPathComponent)",
@@ -37,7 +40,7 @@ public struct LocalModelInfo: Identifiable, Sendable {
             parameterCount: paramCount,
             quantization: quant,
             estimatedSizeGB: sizeGB,
-            requiredRAMGB: sizeGB * 1.5,  // Rough estimate: model needs ~1.5x disk size in RAM
+            requiredRAMGB: sizeGB * ModelFit.footprintPerWeightGB,  // weights + KV + runtime (ModelFit estimate)
             family: configJSON?.modelType ?? "Unknown",
             description: "Local model from \(source.rawValue)",
             openrouterId: orId
@@ -231,10 +234,14 @@ public struct LocalModelScanner: Sendable {
         let configURL = dir.appendingPathComponent("config.json")
         let config = ModelConfigJSON.parse(from: configURL)
 
-        // Hugging Face snapshots can be hundreds of GB. Snapshot scans run on
-        // the control path, so avoid recursively walking weights just to render
-        // model metadata.
-        let sizeGB = source == .huggingFaceCache ? 0 : directorySizeGB(dir)
+        // Never report 0: a zero size disables the fit filter and the MLX
+        // free-memory guard. HF snapshots are symlinks into blobs/, so a
+        // plain directory walk would count link sizes; use the safetensors
+        // index metadata, else the resolved sizes of the top-level weight
+        // files (a handful of stat calls, no recursive walk).
+        let sizeGB = source == .huggingFaceCache
+            ? Self.snapshotWeightsSizeGB(dir)
+            : directorySizeGB(dir)
 
         // Derive name from path
         let name = deriveName(from: dir, source: source)
@@ -263,6 +270,33 @@ public struct LocalModelScanner: Sendable {
         default:
             return dir.lastPathComponent
         }
+    }
+
+    /// Weight size of a model snapshot directory in GB.
+    /// 1. `model.safetensors.index.json` → `metadata.total_size` (bytes).
+    /// 2. Otherwise the sum of top-level `*.safetensors` files, following
+    ///    symlinks (HF cache snapshots link into `blobs/`).
+    static func snapshotWeightsSizeGB(_ dir: URL) -> Double {
+        let gb = 1024.0 * 1024.0 * 1024.0
+        let indexURL = dir.appendingPathComponent("model.safetensors.index.json")
+        if let data = try? Data(contentsOf: indexURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let metadata = json["metadata"] as? [String: Any] {
+            let total = (metadata["total_size"] as? NSNumber)?.doubleValue ?? 0
+            if total > 0 { return total / gb }
+        }
+
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
+        var total: UInt64 = 0
+        for name in names where name.hasSuffix(".safetensors") {
+            let resolved = dir.appendingPathComponent(name).resolvingSymlinksInPath()
+            if let attributes = try? fm.attributesOfItem(atPath: resolved.path),
+               let size = (attributes[.size] as? NSNumber)?.uint64Value {
+                total += size
+            }
+        }
+        return Double(total) / gb
     }
 
     private func directorySizeGB(_ url: URL) -> Double {
