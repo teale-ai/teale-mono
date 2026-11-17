@@ -6109,7 +6109,9 @@ fn hash_account_session_token(token: &str) -> String {
 pub enum LoginAccountError {
     #[error("more than one account is bound to this email; contact support")]
     AmbiguousEmail,
-    #[error("the account derived from this email is bound to a different address; contact support")]
+    #[error(
+        "the account derived from this email is bound to a different address; contact support"
+    )]
     EmailMismatch,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -6799,7 +6801,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(stored, hash_bearer_token("tok_dev_secret"));
-        assert_eq!(resolve_token(&pool, "tok_dev_secret").as_deref(), Some("dev"));
+        assert_eq!(
+            resolve_token(&pool, "tok_dev_secret").as_deref(),
+            Some("dev")
+        );
         assert!(resolve_token(&pool, &stored).is_none());
     }
 
@@ -7363,7 +7368,14 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at, funded)
                  VALUES (?, ?, ?, NULL, ?, ?, 0, ?, NULL, 0)",
-                params![key_id, hash_bearer_token(token), issuer, now + 3600, 10_000i64, now],
+                params![
+                    key_id,
+                    hash_bearer_token(token),
+                    issuer,
+                    now + 3600,
+                    10_000i64,
+                    now
+                ],
             )
             .unwrap();
         }
@@ -7519,7 +7531,14 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at)
                  VALUES (?, ?, ?, NULL, ?, ?, 0, ?, NULL)",
-                params![key_id, hash_bearer_token(token), issuer, now - 1, 100i64, now - 10],
+                params![
+                    key_id,
+                    hash_bearer_token(token),
+                    issuer,
+                    now - 1,
+                    100i64,
+                    now - 10
+                ],
             )
             .unwrap();
         }

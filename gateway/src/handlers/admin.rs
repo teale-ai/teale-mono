@@ -399,7 +399,9 @@ mod tests {
         let confirm = Json(ResetGenesisReq {
             confirm: RESET_GENESIS_CONFIRM.into(),
         });
-        let err = reset_genesis(State(state), partner(), Some(confirm)).await.unwrap_err();
+        let err = reset_genesis(State(state), partner(), Some(confirm))
+            .await
+            .unwrap_err();
         assert!(matches!(err, GatewayError::Forbidden(_)));
     }
 

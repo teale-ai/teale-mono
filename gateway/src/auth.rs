@@ -411,7 +411,10 @@ mod tests {
         let cases = [
             ("/v1/auth/link/abc123", "/v1/auth/link/[redacted]"),
             ("/try/tok_share_x", "/try/[redacted]"),
-            ("/v1/auth/keys/share/preview/tok", "/v1/auth/keys/share/preview/[redacted]"),
+            (
+                "/v1/auth/keys/share/preview/tok",
+                "/v1/auth/keys/share/preview/[redacted]",
+            ),
             ("/v1/models?limit=5", "/v1/models?[redacted]"),
             ("/v1/chat/completions", "/v1/chat/completions"),
         ];

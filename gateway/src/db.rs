@@ -870,18 +870,22 @@ mod tests {
         };
         assert_eq!(tokens, vec![ledger::hash_bearer_token("tok_dev_live")]);
         let share: String = conn
-            .query_row("SELECT token FROM share_keys WHERE key_id = 'k1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT token FROM share_keys WHERE key_id = 'k1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(share, ledger::hash_bearer_token("tok_share_raw"));
 
         // Re-running the code step leaves hashed rows untouched.
         hash_plaintext_bearer_tokens(&conn).unwrap();
         let share_again: String = conn
-            .query_row("SELECT token FROM share_keys WHERE key_id = 'k1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT token FROM share_keys WHERE key_id = 'k1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(share_again, share);
     }

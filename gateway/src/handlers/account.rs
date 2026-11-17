@@ -190,8 +190,8 @@ pub async fn link_account(
 
     let proof = match account_session_header(&headers) {
         Some(token) => {
-            let session = ledger::try_resolve_account_session(pool, token)
-                .map_err(GatewayError::Other)?;
+            let session =
+                ledger::try_resolve_account_session(pool, token).map_err(GatewayError::Other)?;
             let Some(session) = session else {
                 return Err(LinkAccountError::SessionRequired(
                     "account session is invalid or expired; sign in again".into(),
@@ -683,7 +683,10 @@ mod tests {
 
     fn session_headers(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(ACCOUNT_SESSION_HEADER, HeaderValue::from_str(token).unwrap());
+        headers.insert(
+            ACCOUNT_SESSION_HEADER,
+            HeaderValue::from_str(token).unwrap(),
+        );
         headers
     }
 
@@ -697,7 +700,10 @@ mod tests {
     }
 
     fn assert_session_required(err: LinkAccountError) {
-        assert!(matches!(err, LinkAccountError::SessionRequired(_)), "{err:?}");
+        assert!(
+            matches!(err, LinkAccountError::SessionRequired(_)),
+            "{err:?}"
+        );
         assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
     }
 
