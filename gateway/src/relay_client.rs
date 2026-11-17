@@ -1083,7 +1083,10 @@ mod tests {
             panic!("expected a relayClose toward the node")
         };
         assert!(close.contains("relayClose") && close.contains("s1"));
-        assert!(matches!(chunks_rx.recv().await, Some(SessionEvent::Chunk(_))));
+        assert!(matches!(
+            chunks_rx.recv().await,
+            Some(SessionEvent::Chunk(_))
+        ));
         match chunks_rx.recv().await {
             Some(SessionEvent::Error { code, .. }) => {
                 assert_eq!(code.as_deref(), Some(SESSION_OVERFLOW_CODE));
@@ -1126,7 +1129,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(chunks_rx.recv().await, Some(SessionEvent::Chunk(_))));
+        assert!(matches!(
+            chunks_rx.recv().await,
+            Some(SessionEvent::Chunk(_))
+        ));
         match chunks_rx.recv().await {
             Some(SessionEvent::Complete { tokens_out }) => assert_eq!(tokens_out, Some(7)),
             other => panic!("expected Complete, got {:?}", other),
