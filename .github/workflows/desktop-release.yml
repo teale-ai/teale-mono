@@ -1,0 +1,52 @@
+name: Desktop release
+
+# Entry point for `teale-*` tags (e.g. teale-2026.11.13.1946).
+#
+# Creates the GitHub release exactly once, then runs the Windows and Linux
+# builds as reusable workflows that only upload assets to it. Before this,
+# both workflows triggered on the tag directly and raced to
+# `gh release create` the same release.
+
+on:
+  push:
+    tags:
+      - 'teale-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; builds will upload into it."
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "Teale $TAG" \
+              --notes "Desktop release assets for Teale (Windows Teale.exe, Linux Teale-linux-x86_64.tar.gz) with SHA-256 checksum files."
+          fi
+
+  windows:
+    name: Windows
+    needs: create-release
+    uses: ./.github/workflows/windows-installer.yml
+    secrets: inherit
+
+  linux:
+    name: Linux
+    needs: create-release
+    uses: ./.github/workflows/linux-desktop.yml
+    secrets: inherit
