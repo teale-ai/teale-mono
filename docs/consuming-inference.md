@@ -73,10 +73,18 @@ curl -s $GW/v1/chat/completions \
 ```
 
 `teale/auto` routes to the smallest healthy model that fits your context.
-Pin a model directly (`zai-org/glm-5.3-flash`, `qwen/qwen3.6-35b-a3b`,
-`nousresearch/hermes-3-llama-3.1-8b`) when you care which one answers.
-`max_tokens` is clamped to what your balance can afford; an empty wallet
+Pin a model directly (`zai/glm-5.1`, `qwen/qwen3.6-35b-a3b`,
+`nousresearch/hermes-3-llama-3.1-8b`) when you care which one answers;
+`GET $GW/v1/models` lists what currently has live supply.
+`max_tokens` is capped at the model's `max_output_tokens` and at what your
+balance can afford (if you omit it, the gateway only adds one when your
+balance cannot cover the model's full output ceiling); an empty wallet
 returns `402` with `balance` and `required` in the error.
+
+Errors come back as HTTP status codes for streaming (`"stream": true`)
+requests too: no healthy supply is `503`, and a saturated fleet may answer
+`429 at_capacity` with `Retry-After`. Once a stream has started (`200`),
+later failures arrive as an SSE `error` event.
 
 ## 5. Check the wallet, top up
 
@@ -99,3 +107,7 @@ curl -s $GW/v1/account/wallet/deposit-treasury -H "Authorization: Bearer tok_dev
 - Prompts are processed in plaintext on supplier machines, as with any
   inference API. Do not send what you would not send to a third party.
 - Supply side (earning by serving your hardware) is fleet-allowlisted today.
+- The `usage` block in every response (the final chunk for streams) is what
+  you are billed: completion tokens as observed by the gateway, prompt
+  tokens as reported by the supplier but never above the gateway's own
+  estimate (the estimate is used when the supplier reports none).

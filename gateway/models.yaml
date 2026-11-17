@@ -1,10 +1,21 @@
-# Gateway model catalog — the 5–8 open-weight models we advertise to OpenRouter.
-# Sourced from docs/device-model-matrix.md top picks. Pricing is
-# placeholder USD per 1M tokens; update before submitting to OR.
+# Gateway model catalog: every open-weight model the gateway advertises (on
+# /v1/models and the OpenRouter provider document) once live supply meets
+# the per-model floor, plus the virtual `teale/auto` router. Uncataloged
+# models a fleet node serves stay routable by exact id at gateway default
+# pricing (catalog::synthesize_live_model).
+#
+# pricing_prompt / pricing_completion are LIVE billing inputs, in USD per
+# token ("0.00000050" = $0.50 per 1M tokens): they drive the pre-flight
+# budget clamp and every settlement. Changing a price changes what
+# consumers pay and suppliers earn from the next deploy on.
 #
 # max_output_tokens is the hard ceiling we accept for `max_tokens` on each
 # model — OpenRouter's /models schema requires this, separate from
-# context_length (which is prompt+completion combined).
+# context_length (which is prompt+completion combined). It is a ceiling
+# only: the gateway does not inject it into requests that omit max_tokens.
+#
+# default_reasoning_effort (optional) is forced onto requests that do not
+# send their own `reasoning_effort`.
 
 models:
   - id: meta-llama/llama-3.1-8b-instruct
@@ -256,6 +267,9 @@ models:
     estimated_ttft_ms: 325
     estimated_tps: 34.0
     routing_tags: [agent-harness]
+    # ds4-server reasons by default; agent turns want the answer, not a
+    # hidden reasoning preamble.
+    default_reasoning_effort: "none"
     aliases: [deepseek, deepseekv4, deepseekv4-flash, deepseek-v4-flash, ds4, ds4-flash]
 
   - id: moonshotai/kimi-k2
