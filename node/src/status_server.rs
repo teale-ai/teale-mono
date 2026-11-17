@@ -3185,7 +3185,12 @@ mod tests {
             dummy_hw(16.0),
             tmp.to_path_buf(),
             registry_store,
-            PersistedRegistry::default(),
+            // Off: tests must not try to start the Python privacy helper
+            // (slow on Windows runners); tests that need it opt back in.
+            PersistedRegistry {
+                privacy_filter_mode: PrivacyFilterMode::Off,
+                ..Default::default()
+            },
             swap,
             llama,
             AccountSessionStore::in_data_dir(tmp),
@@ -3225,6 +3230,7 @@ mod tests {
             registry_store,
             PersistedRegistry {
                 active_model_id: Some(advertised_model_id),
+                privacy_filter_mode: PrivacyFilterMode::Off,
                 ..Default::default()
             },
             swap,
