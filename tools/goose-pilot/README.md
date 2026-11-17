@@ -9,7 +9,7 @@ The CLI only lists keys; creation needs an account session:
 - App UI: account > API keys > create, name `goose-bot`, **set a credit limit**
   (e.g. 50,000,000 credits = $50) so a runaway agent loop can't drain the account.
 - Or curl with an account session token:
-  `curl -X POST https://teale-gateway.fly.dev/v1/keys -H "Authorization: Bearer <session>" -H 'Content-Type: application/json' -d '{"name":"goose-bot","creditLimit":50000000}'`
+  `curl -X POST https://gateway.teale.com/v1/keys -H "Authorization: Bearer <session>" -H 'Content-Type: application/json' -d '{"name":"goose-bot","creditLimit":50000000}'`
 
 ## 2. goose provider
 

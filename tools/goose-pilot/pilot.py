@@ -6,13 +6,13 @@ Validates what goose needs from Teale's OpenAI-compatible endpoint:
   - TTFT / chunk inter-arrival shape per turn
   - silent tool loss (tools requested, none returned, no error)
 
-Usage: TEALE_API_KEY=... python3 pilot.py [--base-url https://teale-gateway.fly.dev/v1]
+Usage: TEALE_API_KEY=... python3 pilot.py [--base-url https://gateway.teale.com/v1]
                                           [--model qwen/qwen3.6-35b-a3b]
 Stdlib only. Exit 0 = all turns passed (warnings allowed), 1 = failure.
 """
 import json, os, sys, time, urllib.request, urllib.error
 
-BASE = "https://teale-gateway.fly.dev/v1"
+BASE = "https://gateway.teale.com/v1"
 MODEL = "qwen/qwen3.6-35b-a3b"
 KEY = os.environ.get("TEALE_API_KEY", "")
 if not KEY:
