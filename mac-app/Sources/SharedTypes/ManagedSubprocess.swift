@@ -1,5 +1,16 @@
 import Foundation
 
+/// Distinguishes "the client went away" from "the backend failed" in the
+/// HTTP-proxying providers, so a cancelled request does not mark the
+/// engine as errored.
+public enum HTTPProviderCancellation {
+    public static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return Task.isCancelled
+    }
+}
+
 #if os(macOS)
 import Darwin
 
