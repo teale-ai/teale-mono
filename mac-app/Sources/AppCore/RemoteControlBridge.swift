@@ -198,8 +198,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
 
     func remoteUpdateSettings(_ update: RemoteSettingsUpdate) async throws -> RemoteAppSnapshot {
         if let maxStorageGB = update.maxStorageGB {
-            guard (5...200).contains(maxStorageGB) else {
-                throw RemoteControlError.invalidSetting("max_storage_gb must be between 5 and 200")
+            guard (5...4096).contains(maxStorageGB) else {
+                throw RemoteControlError.invalidSetting("max_storage_gb must be between 5 and 4096")
             }
             appState.maxStorageGB = maxStorageGB
         }
