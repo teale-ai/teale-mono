@@ -52,6 +52,8 @@ pub fn control_port_from_config(path: &Path) -> u16 {
 }
 
 fn control_port_from_toml(text: &str) -> Option<u16> {
+    // PowerShell 5.1 writes the installer-generated TOML with a UTF-8 BOM.
+    let text = text.trim_start_matches('\u{feff}');
     let value: toml::Value = toml::from_str(text).ok()?;
     let port = value.get("control")?.get("port")?.as_integer()?;
     u16::try_from(port).ok()
@@ -504,7 +506,7 @@ mod tests {
 
     #[test]
     fn control_port_comes_from_node_config() {
-        let toml = "[relay]\nurl = \"x\"\n\n[control]\nport = 12000\n";
+        let toml = "\u{feff}[relay]\nurl = \"x\"\n\n[control]\nport = 12000\n";
         assert_eq!(control_port_from_toml(toml), Some(12000));
         assert_eq!(control_port_from_toml("[relay]\nurl = \"x\"\n"), None);
         assert_eq!(control_port_from_toml("[control]\nport = 99999\n"), None);
