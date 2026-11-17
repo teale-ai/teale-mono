@@ -658,7 +658,6 @@ async fn run_anthropic_streaming(
         let mut tried = 0u32;
         let mut acc = OpenAiAccumulator::default();
         let mut first_token_at: Option<Instant> = None;
-        let mut served_by: Option<String> = None;
         let mut final_status = "error";
         let message_id = format!("msg_{}", Uuid::new_v4().simple());
 
@@ -816,11 +815,10 @@ async fn run_anthropic_streaming(
             }
 
             if completed {
-                served_by = Some(target_node);
                 // Settle and record before the closing events are yielded:
                 // a client that disconnects on message_stop drops this
                 // generator at that yield.
-                settle_success(&state, &prepared, served_by.as_deref(), &acc);
+                settle_success(&state, &prepared, Some(target_node.as_str()), &acc);
                 record_success_metrics(&state, &model_id, started, first_token_at, &acc);
                 if !sent_message_start {
                     yield Ok(translator.message_start_event());

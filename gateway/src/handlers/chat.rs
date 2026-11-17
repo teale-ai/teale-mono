@@ -1647,7 +1647,7 @@ impl BillableUsage {
 
     /// The `usage` object reported to the client: exactly what is billed.
     /// Extra upstream fields (e.g. `prompt_tokens_details`) are kept.
-    pub(crate) fn to_usage_json(&self, upstream: Option<&Value>) -> Value {
+    pub(crate) fn to_usage_json(self, upstream: Option<&Value>) -> Value {
         let mut usage = upstream
             .and_then(Value::as_object)
             .cloned()
