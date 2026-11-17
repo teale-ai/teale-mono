@@ -1,5 +1,8 @@
 package com.teale.android.ui.chat
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -64,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -73,6 +77,10 @@ import com.teale.android.R
 import com.teale.android.data.chat.ChatMessageEntity
 import com.teale.android.data.chat.ChatThreadEntity
 import com.teale.android.data.inference.NetworkModel
+import com.teale.android.service.SupplyService
+import com.teale.android.service.SupplyState
+import com.teale.android.service.supplyStateText
+import com.teale.android.skills.CalendarSkill
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -93,10 +101,23 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     val error by viewModel.error.collectAsState()
     val info by viewModel.info.collectAsState()
     val interruptedDrafts by viewModel.interruptedDrafts.collectAsState()
+    val supplyState by SupplyService.state.collectAsState()
 
     val interruptedDraft = selectedThread?.id?.let(interruptedDrafts::get)
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+
+    // Calendar access is requested the first time a message needs it; the
+    // message is sent once the user answers, with or without the permission.
+    var pendingCalendarMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var calendarPermissionAsked by rememberSaveable { mutableStateOf(false) }
+    val calendarPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        pendingCalendarMessage?.let(viewModel::send)
+        pendingCalendarMessage = null
+    }
 
     LaunchedEffect(messages.size, thinking, interruptedDraft?.text) {
         val totalRows = messages.size + if (interruptedDraft != null) 1 else 0
@@ -115,6 +136,10 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             networkModels = networkStats?.totalModels,
             walletCredits = walletBalance?.balance_credits,
             supplyEnabled = settings.supplyEnabled,
+            supplyState = supplyState,
+            onPauseSupply = { SupplyService.setPaused(context, paused = true) },
+            onResumeSupply = { SupplyService.setPaused(context, paused = false) },
+            onRetrySupply = { SupplyService.refresh(context) },
         )
         ThreadStrip(
             threads = threads,
@@ -178,8 +203,18 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             onChange = { input = it },
             onSend = {
                 if (input.isNotBlank()) {
-                    viewModel.send(input)
+                    val text = input
                     input = ""
+                    if (!calendarPermissionAsked &&
+                        ChatViewModel.wantsCalendar(text) &&
+                        !CalendarSkill.hasPermission(context)
+                    ) {
+                        calendarPermissionAsked = true
+                        pendingCalendarMessage = text
+                        calendarPermission.launch(Manifest.permission.READ_CALENDAR)
+                    } else {
+                        viewModel.send(text)
+                    }
                 }
             },
         )
@@ -192,7 +227,12 @@ private fun HomeOverview(
     networkModels: Int?,
     walletCredits: Long?,
     supplyEnabled: Boolean,
+    supplyState: SupplyState,
+    onPauseSupply: () -> Unit,
+    onResumeSupply: () -> Unit,
+    onRetrySupply: () -> Unit,
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -225,18 +265,66 @@ private fun HomeOverview(
                 )
             }
             item {
+                val value = stringResource(
+                    when (supplyState) {
+                        SupplyState.Off -> R.string.home_supply_off
+                        SupplyState.Starting,
+                        is SupplyState.Restarting -> R.string.home_supply_starting
+                        SupplyState.WaitingForCharge,
+                        is SupplyState.ThermalPaused -> R.string.home_supply_waiting
+                        is SupplyState.MissingArtifacts,
+                        is SupplyState.Error -> R.string.home_supply_error
+                        is SupplyState.Running -> when {
+                            supplyState.userPaused -> R.string.home_supply_paused
+                            supplyState.node?.isSupplying == false -> R.string.home_supply_waiting
+                            else -> R.string.home_supply_serving
+                        }
+                    }
+                )
+                val note = when {
+                    supplyState == SupplyState.Off && !supplyEnabled ->
+                        stringResource(R.string.home_card_supply_note)
+                    supplyState is SupplyState.Running && supplyState.node != null &&
+                        !supplyState.userPaused && supplyState.node.isSupplying ->
+                        stringResource(
+                            R.string.home_supply_requests_today,
+                            supplyState.node.requestsToday,
+                            supplyState.node.creditsToday,
+                        )
+                    else -> supplyStateText(context, supplyState)
+                }
                 OverviewCard(
                     label = stringResource(R.string.home_card_supply),
-                    value = if (supplyEnabled) stringResource(R.string.home_supply_on) else stringResource(R.string.home_supply_off),
-                    note = stringResource(R.string.home_card_supply_note),
-                )
+                    value = value,
+                    note = note,
+                ) {
+                    when {
+                        supplyState is SupplyState.Running && supplyState.userPaused ->
+                            TextButton(onClick = onResumeSupply, contentPadding = PaddingValues(0.dp)) {
+                                Text(stringResource(R.string.action_resume))
+                            }
+                        supplyState is SupplyState.Running ->
+                            TextButton(onClick = onPauseSupply, contentPadding = PaddingValues(0.dp)) {
+                                Text(stringResource(R.string.action_pause))
+                            }
+                        supplyEnabled && supplyState is SupplyState.Error ->
+                            TextButton(onClick = onRetrySupply, contentPadding = PaddingValues(0.dp)) {
+                                Text(stringResource(R.string.action_retry))
+                            }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun OverviewCard(label: String, value: String, note: String) {
+private fun OverviewCard(
+    label: String,
+    value: String,
+    note: String,
+    action: @Composable () -> Unit = {},
+) {
     ElevatedCard(modifier = Modifier.width(176.dp)) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -249,6 +337,7 @@ private fun OverviewCard(label: String, value: String, note: String) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            action()
         }
     }
 }
