@@ -144,9 +144,15 @@ mod tests {
     fn crash_loop_doubles_backoff_up_to_the_cap() {
         let quick = Duration::from_secs(2);
         let (delay, next) = restart_delay(INITIAL_BACKOFF, quick);
-        assert_eq!((delay, next), (Duration::from_secs(1), Duration::from_secs(2)));
+        assert_eq!(
+            (delay, next),
+            (Duration::from_secs(1), Duration::from_secs(2))
+        );
         let (delay, next) = restart_delay(next, quick);
-        assert_eq!((delay, next), (Duration::from_secs(2), Duration::from_secs(4)));
+        assert_eq!(
+            (delay, next),
+            (Duration::from_secs(2), Duration::from_secs(4))
+        );
         let (delay, next) = restart_delay(Duration::from_secs(40), quick);
         assert_eq!((delay, next), (Duration::from_secs(40), MAX_BACKOFF));
         assert_eq!(restart_delay(MAX_BACKOFF, quick).0, MAX_BACKOFF);
