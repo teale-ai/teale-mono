@@ -53,7 +53,7 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: steps.secrets.outputs.ready == 'true'
         with:
           fetch-depth: 0
