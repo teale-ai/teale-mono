@@ -9,10 +9,10 @@ browser to the dashboard, and polls gateway.teale.com every 5 s for:
   - total supply capacity (RAM + EWMA tokens/s)
 
 The gateway bearer token stays server-side; the browser only talks to the
-local proxy. Set TEALE_TOKEN to override the hard-coded dev token.
+local proxy. TEALE_TOKEN (gateway bearer token) is required.
 
 Usage:
-  python3 scripts/teale-network-viz.py
+  TEALE_TOKEN=... python3 scripts/teale-network-viz.py
 
 Stop with Ctrl-C.
 """
@@ -27,7 +27,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 GATEWAY = os.environ.get("TEALE_GATEWAY", "https://gateway.teale.com")
-TOKEN = os.environ.get("TEALE_TOKEN", "tok_dev_1aae940b6028bb79da1c04a598b2a14d")
+TOKEN = os.environ.get("TEALE_TOKEN", "")
 PORT = int(os.environ.get("TEALE_VIZ_PORT", "8777"))
 
 HTML = r"""<!DOCTYPE html>
@@ -438,6 +438,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
+    if not TOKEN:
+        print("error: TEALE_TOKEN is not set. Export a gateway bearer token first:", file=sys.stderr)
+        print("  TEALE_TOKEN=... python3 scripts/teale-network-viz.py", file=sys.stderr)
+        sys.exit(2)
     socketserver.TCPServer.allow_reuse_address = True
     try:
         server = socketserver.TCPServer(("127.0.0.1", PORT), Handler)
