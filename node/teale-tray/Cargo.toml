@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 webbrowser = "1"
 ureq = { version = "2", default-features = false, features = ["json"] }
 tao = "0.30"
-wry = { version = "0.45", features = ["protocol"] }
+wry = { version = "0.55", features = ["protocol"] }
 # Tray icon + menu. On Linux this uses libayatana-appindicator (loaded at
 # runtime) and needs libxdo at build time.
 tray-icon = "0.19"
