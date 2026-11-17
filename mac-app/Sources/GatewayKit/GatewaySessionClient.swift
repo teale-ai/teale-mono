@@ -16,6 +16,21 @@ public enum GatewaySessionError: Error, CustomStringConvertible, LocalizedError 
     public var errorDescription: String? { description }
 }
 
+/// Proof of account ownership for `POST /v1/account/link`: clients send their
+/// gateway account session token (`tsess_…`) in this header whenever they
+/// hold one, so the gateway can check the link target matches the session.
+public enum GatewayAccountSessionHeader {
+    public static let name = "X-Teale-Account-Session"
+
+    /// Header dictionary for an optional session token (empty when nil).
+    public static func fields(for sessionToken: String?) -> [String: String] {
+        guard let token = sessionToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            return [:]
+        }
+        return [name: token]
+    }
+}
+
 /// Passwordless email auth against the gateway (`tsess_…` account sessions).
 /// No passwords, no Supabase: request a code + magic link over email, verify,
 /// hold an opaque session token. See docs/passwordless-auth-migration.md.
