@@ -76,16 +76,9 @@ struct TealeApp: App {
     /// which reads as a HANG when someone runs `teale wallet balance` etc.
     /// over SSH (fleet evidence: #199 - AppKit event loop, zero network
     /// activity, looked like a network stall). Fail loudly instead and point
-    /// at the real CLI. Only bare-word subcommand matches count - launch
-    /// services / Xcode pass dash-prefixed args we must keep tolerating.
+    /// at the real CLI.
     private static func rejectCLIArguments() {
-        let cliWords: Set<String> = [
-            "up", "down", "login", "serve", "status", "models", "chat",
-            "config", "pin", "apikeys", "api-keys", "wallet", "peers",
-            "agent", "gateway-token", "account",
-        ]
-        let args = CommandLine.arguments.dropFirst()
-        guard let hit = args.first(where: { cliWords.contains($0.lowercased()) }) else { return }
+        guard let hit = cliSubcommand(in: Array(CommandLine.arguments.dropFirst())) else { return }
         FileHandle.standardError.write(Data("""
         teale: '\(hit)' is a command for the teale-cli binary, not the Teale app.
         Use `teale-cli \(hit) ...` (the app binary always launches the GUI).
@@ -94,14 +87,37 @@ struct TealeApp: App {
         exit(2)
     }
 
+    /// The app takes no positional arguments, so any bare first word
+    /// (`supply`, `settings`, `mcp`, `assess`, ... - whatever the Rust
+    /// teale-cli grows) is a misdirected CLI invocation. LaunchServices,
+    /// Xcode and the fleet LaunchAgent only pass dash-prefixed arguments
+    /// (`-psn_...`, `-NSDocumentRevisionsDebugMode YES`, `--fleet-supply`),
+    /// so a first argument starting with "-" is tolerated.
+    static func cliSubcommand(in arguments: [String]) -> String? {
+        guard let first = arguments.first?.trimmingCharacters(in: .whitespaces),
+              !first.isEmpty,
+              !first.hasPrefix("-") else { return nil }
+        return first
+    }
+
+    /// `teale://` deep links. The gateway magic link
+    /// (`teale://auth/session?token=...`) is adopted natively by AuthManager
+    /// - the token is never handed to the web view - and the page is then
+    /// told to re-poll so it shows the signed-in state. Nothing else is
+    /// routed on macOS (no invite handler exists in this app).
     private func handleIncomingURL(_ url: URL) {
-        let handledByWebCompanion = DesktopCompanionBridge.shared.handleIncomingURL(url)
-        if !handledByWebCompanion,
-           url.host == "auth",
-           url.path == "/callback",
-           let authManager = appState.authManager {
-            Task { await authManager.handleOAuthCallback(url: url) }
+        guard url.scheme?.lowercased() == "teale" else { return }
+        if AuthManager.isSessionDeepLink(url) {
+            guard let authManager = appState.authManager else { return }
+            Task { @MainActor in
+                if await authManager.handleOAuthCallback(url: url) {
+                    DesktopCompanionBridge.shared.refreshSnapshotInPage()
+                }
+            }
+            return
         }
+        FileHandle.standardError.write(Data(
+            "[DeepLink] ignoring unsupported teale:// link (host=\(url.host ?? "-"))\n".utf8))
     }
 
     /// Redirect stderr to a persistent log file. All diagnostics ([WAN],
@@ -203,6 +219,24 @@ final class MenuBarViewModel: ObservableObject {
     // When the gateway wallet total was last synced; the earnings display
     // interpolates from this anchor so it never rubber-bands between polls.
     @Published var syncedAt: Date?
+    @Published var stateReason: String?
+    @Published var serviceState: String?
+
+    /// Earnings caption: the accrual rate while serving; why not while
+    /// supply is on but not serving yet; the "turn on" hint only when
+    /// supply is actually off.
+    var earningsCaption: String {
+        if serving {
+            return "accruing ~\(ratePerMinute.formatted()) credits/min from availability"
+        }
+        guard supplyEnabled else {
+            return "turn on supply inference to start earning"
+        }
+        if let stateReason, !stateReason.isEmpty {
+            return "not earning yet: \(stateReason)"
+        }
+        return "not earning yet (\(serviceState ?? "starting"))"
+    }
 
     private var pollTask: Task<Void, Never>?
     private let port: Int
@@ -242,6 +276,8 @@ final class MenuBarViewModel: ObservableObject {
                 ? ((wallet["availability_rate_credits_per_minute"] as? NSNumber)?.int64Value ?? 0)
                 : 0
             supplyEnabled = (snapshot["supply_enabled"] as? Bool) ?? supplyEnabled
+            stateReason = snapshot["state_reason"] as? String
+            serviceState = snapshot["service_state"] as? String
             supplyDetail = supplyEnabled
                 ? ((snapshot["state_reason"] as? String) ?? (snapshot["service_state"] as? String) ?? "")
                 : "Off. This machine is not serving inference."
@@ -333,9 +369,7 @@ struct CompanionMenuBarView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 120)
                         }
-                        Text(model.serving
-                            ? "accruing ~\(formattedRate) credits/min from availability"
-                            : "turn on supply inference to start earning")
+                        Text(model.earningsCaption)
                             .font(TealeDesign.monoTiny)
                             .foregroundStyle(TealeDesign.muted)
                     }
@@ -413,10 +447,6 @@ struct CompanionMenuBarView: View {
         return "\(earned.formatted()) credits"
     }
 
-    private var formattedRate: String {
-        model.ratePerMinute.formatted()
-    }
-
     private func openMainWindow() {
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
@@ -427,62 +457,5 @@ struct CompanionMenuBarView: View {
                     window.makeKeyAndOrderFront(nil)
                 }
         }
-    }
-}
-
-// MARK: - Login Window (standalone NSWindow for text field support)
-
-@MainActor
-final class LoginWindowController {
-    static let shared = LoginWindowController()
-
-    private var window: NSWindow?
-    private var observationTask: Task<Void, Never>?
-
-    func show(authManager: AuthManager, appState: AppState) {
-        if let existing = window, existing.isVisible { return }
-
-        let loginView = LoginView(authManager: authManager)
-            .environment(appState)
-            .frame(width: 400, height: 500)
-
-        let hostingController = NSHostingController(rootView: loginView)
-        let win = NSWindow(contentViewController: hostingController)
-        win.title = "Sign In — Teale"
-        win.styleMask = [.titled, .closable]
-        win.setContentSize(NSSize(width: 400, height: 500))
-        win.center()
-        win.isReleasedWhenClosed = false
-        win.level = .floating
-
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
-        self.window = win
-
-        observationTask?.cancel()
-        observationTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                let isAuthenticated = authManager.authState.isAuthenticated
-                if isAuthenticated {
-                    self?.close()
-                    break
-                }
-                await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = authManager.authState
-                    } onChange: {
-                        continuation.resume()
-                    }
-                }
-            }
-        }
-    }
-
-    func close() {
-        observationTask?.cancel()
-        observationTask = nil
-        window?.close()
-        window = nil
     }
 }
