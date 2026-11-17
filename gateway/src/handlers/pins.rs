@@ -51,6 +51,17 @@ fn account_of(pool: &DbPool, principal: &AuthPrincipal) -> Option<String> {
     None
 }
 
+/// `account_of`, plus the signed-in human's own account session. Used only
+/// for creating and listing networks; staff actions on an existing network
+/// keep resolving standing through `resolve_actor`.
+fn account_for_create_or_list(pool: &DbPool, principal: &AuthPrincipal) -> Option<String> {
+    if let Some(account) = account_of(pool, principal) {
+        return Some(account);
+    }
+    let (account_user_id, _) = principal.account_session()?;
+    Some(account_user_id.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum PinActor {
     Staff { account: String, role: String },
@@ -128,9 +139,10 @@ pub async fn create_pin(
     Json(req): Json<CreatePinReq>,
 ) -> Result<Json<pins::Pin>, GatewayError> {
     let pool = require_pool(&state)?;
-    let account = account_of(pool, &principal).ok_or_else(|| {
+    let account = account_for_create_or_list(pool, &principal).ok_or_else(|| {
         GatewayError::Forbidden(
-            "creating a network requires a device linked to a Teale account".into(),
+            "creating a network requires a Teale account (linked device, API key or session)"
+                .into(),
         )
     })?;
     let pin = pins::create_pin(pool, &req.name, &account).map_err(GatewayError::Other)?;
@@ -149,7 +161,7 @@ pub async fn list_pins(
     Extension(principal): Extension<AuthPrincipal>,
 ) -> Result<Json<MyPinsResponse>, GatewayError> {
     let pool = require_pool(&state)?;
-    let staff = match account_of(pool, &principal) {
+    let staff = match account_for_create_or_list(pool, &principal) {
         Some(account) => pins::pins_for_account(pool, &account).map_err(GatewayError::Other)?,
         None => Vec::new(),
     };
@@ -889,7 +901,6 @@ mod tests {
                 platform: None,
                 display_name: None,
                 phone: None,
-                email: None,
                 github_username: None,
             },
         )
@@ -1285,7 +1296,7 @@ mod tests {
         let report = UsageReportReq {
             batch_id: "batch-1".into(),
             entries: vec![crate::pins::UsageEntry {
-                day: "2026-07-04".into(),
+                day: crate::pins::utc_day(unix_now()),
                 consumer_device_id: "consumer-dev".into(),
                 model_id: "qwen3-4b".into(),
                 requests: 3,
@@ -1311,7 +1322,7 @@ mod tests {
             Json(UsageReportReq {
                 batch_id: "batch-1".into(),
                 entries: vec![crate::pins::UsageEntry {
-                    day: "2026-07-04".into(),
+                    day: crate::pins::utc_day(unix_now()),
                     consumer_device_id: "consumer-dev".into(),
                     model_id: "qwen3-4b".into(),
                     requests: 3,
