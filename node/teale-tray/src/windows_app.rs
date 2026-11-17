@@ -1,22 +1,17 @@
-use std::borrow::Cow;
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::windows::WindowBuilderExtWindows;
 use tao::window::WindowBuilder;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tray_icon::menu::MenuEvent;
+use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 use windows::Win32::System::Threading::CreateMutexW;
@@ -24,33 +19,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
     MB_TOPMOST, MB_YESNO,
 };
-use wry::{
-    http::{header::CONTENT_TYPE, Request, Response},
-    WebViewBuilder,
+use wry::WebViewBuilder;
+
+use crate::shared::{
+    append_log, build_tray_menu, control_port_from_config, dispatch_auth_callback, fetch_snapshot,
+    forward_ipc_message, handle_native_message, icon_for_state, initial_desktop_url,
+    initialization_script, node_url, post, protocol_handler, set_pending_oauth_callback,
+    show_window, start_ipc_listener, tooltip_for, AppSnapshot, IconState, IpcMessage, TrayMenu,
 };
 
-const INDEX_HTML: &str = include_str!(
-    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/index.html"
-);
-const APP_CSS: &[u8] = include_bytes!(
-    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/app.css"
-);
-const APP_JS: &[u8] = include_bytes!(
-    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/app.js"
-);
-const SUPABASE_JS: &[u8] = include_bytes!(
-    "../../../mac-app/Sources/InferencePoolApp/Resources/DesktopCompanionWeb/supabase-js-2.105.4.min.js"
-);
-const IPC_PORT: u16 = 11438;
-const REMOTE_DESKTOP_URL: &str = "https://teale.com/docs/desktop-companion/index.html";
-/// Local node control API (the tray's status source; also used to confirm the
-/// service is really down after a Quit).
-const NODE_STATUS_URL: &str = "http://127.0.0.1:11437/v1/app";
 /// NSSM service name registered by `node/installer/post-install.ps1`.
 const NODE_SERVICE_NAME: &str = "TealeNode";
-/// How long Quit waits for the service to stop answering. The node drains
-/// in-flight requests for up to `shutdown_timeout_seconds` (default 30 s)
-/// before NSSM/SCM report it stopped, so leave headroom beyond that.
+/// How long Quit waits for the service to stop answering. NSSM gives the
+/// node 35 s after its console Ctrl+C (`AppStopMethodConsole`, set by the
+/// installer) to drain in-flight requests (`shutdown_timeout_seconds`,
+/// default 30 s); the rest covers NSSM's later stop methods and the
+/// llama-server teardown.
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// `CREATE_NO_WINDOW`: the tray is a GUI-subsystem process, so a helper
 /// console process would otherwise flash a window.
@@ -59,7 +43,6 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// (UAC declined, PowerShell could not launch it). Distinguishes that from
 /// the stop command's own exit code.
 const ELEVATION_FAILED_EXIT_CODE: i32 = 255;
-static PENDING_OAUTH_CALLBACK: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 enum UserEvent {
@@ -75,40 +58,6 @@ enum UserEvent {
     QuitAborted,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-struct AppSnapshot {
-    #[serde(default)]
-    service_state: String,
-    #[serde(default)]
-    state_reason: Option<String>,
-    #[serde(default)]
-    loaded_model_id: Option<String>,
-    #[serde(default)]
-    active_transfer: Option<TransferSnapshot>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct TransferSnapshot {
-    model_id: String,
-    #[serde(default)]
-    bytes_downloaded: u64,
-    #[serde(default)]
-    bytes_total: Option<u64>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum IconState {
-    Serving,
-    Inactive,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct IpcMessage {
-    kind: String,
-    #[serde(default)]
-    url: Option<String>,
-}
-
 pub fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let instance = SingleInstance::acquire()?;
@@ -117,24 +66,16 @@ pub fn run() -> anyhow::Result<()> {
         // Retry through that bounded startup window so simultaneous login-item
         // and direct/deep-link launches reliably hand off instead of opening a
         // second tray (#344 parity for Windows).
-        let message = args
-            .iter()
-            .find(|arg| arg.starts_with("teale://"))
-            .cloned()
-            .map(|url| IpcMessage {
-                kind: "authCallback".into(),
-                url: Some(url),
-            })
-            .unwrap_or(IpcMessage {
-                kind: "openWindow".into(),
-                url: None,
-            });
-        forward_to_primary_with_retry(message, Duration::from_secs(10))?;
+        forward_to_primary_with_retry(&IpcMessage::from_args(&args), Duration::from_secs(10))?;
         return Ok(());
     }
 
+    let install_dir = install_dir();
+    let config_path = install_dir.join("config").join("teale-node.toml");
+    let control_port = control_port_from_config(&config_path);
+    let log_path = tray_log_path(&install_dir);
+
     let initial_auth_callback = args.iter().find(|arg| arg.starts_with("teale://")).cloned();
-    let launch_without_args = args.len() <= 1;
     let open_on_start =
         args.iter().any(|arg| arg == "--open-window") || initial_auth_callback.is_some();
 
@@ -152,7 +93,18 @@ pub fn run() -> anyhow::Result<()> {
         let _ = menu_proxy.send_event(UserEvent::Menu(event));
     }));
 
-    start_auth_callback_listener(proxy.clone());
+    let ipc_proxy = proxy.clone();
+    start_ipc_listener(move |message| {
+        let event = match message.kind.as_str() {
+            "authCallback" => message
+                .url
+                .filter(|url| !url.trim().is_empty())
+                .map(UserEvent::AuthCallback),
+            "openWindow" => Some(UserEvent::OpenWindow),
+            _ => None,
+        };
+        event.is_none_or(|event| ipc_proxy.send_event(event).is_ok())
+    });
 
     let window = WindowBuilder::new()
         .with_title("Teale")
@@ -164,44 +116,29 @@ pub fn run() -> anyhow::Result<()> {
         .build(&event_loop)
         .context("build Teale companion window")?;
 
-    let initial_url = initial_desktop_url();
+    let ipc_log_path = log_path.clone();
+    let init_script = initialization_script("windows", "Windows device", true, control_port);
     let webview = WebViewBuilder::new(&window)
         .with_custom_protocol("teale".into(), protocol_handler)
-        .with_initialization_script(&initialization_script())
-        .with_ipc_handler(|payload| {
-            if let Ok(message) = serde_json::from_str::<NativeMessage>(payload.body()) {
-                if message.kind == "openExternal" {
-                    if let Some(url) = message.url {
-                        let _ = webbrowser::open(&url);
-                    }
-                } else if message.kind == "authLog" {
-                    if let Some(text) = message.message {
-                        append_auth_log(&text);
-                    }
-                }
-            }
+        .with_initialization_script(&init_script)
+        .with_ipc_handler(move |request| {
+            handle_native_message(request, control_port, &ipc_log_path)
         })
-        .with_url(&initial_url)
+        .with_url(initial_desktop_url())
         .build()
         .context("build Teale companion webview")?;
 
-    let item_pause = MenuItem::new("Pause supply", true, None);
-    let item_resume = MenuItem::new("Resume supply", true, None);
-    let item_open = MenuItem::new("Open Teale", true, None);
-    let item_close_tray = MenuItem::new("Close tray icon (Teale keeps supplying)", true, None);
-    let item_quit = MenuItem::new("Quit Teale (stop supplying)", true, None);
-
-    let tray_menu = Menu::new();
-    tray_menu.append(&item_pause)?;
-    tray_menu.append(&item_resume)?;
-    tray_menu.append(&PredefinedMenuItem::separator())?;
-    tray_menu.append(&item_open)?;
-    tray_menu.append(&PredefinedMenuItem::separator())?;
-    tray_menu.append(&item_close_tray)?;
-    tray_menu.append(&item_quit)?;
+    let TrayMenu {
+        menu,
+        pause: item_pause,
+        resume: item_resume,
+        open: item_open,
+        close_tray: item_close_tray,
+        quit: item_quit,
+    } = build_tray_menu()?;
 
     let tray = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
+        .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .with_tooltip("Teale — starting…")
         .with_icon(icon_for_state(IconState::Inactive))
@@ -210,7 +147,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let poll_proxy = proxy.clone();
     std::thread::spawn(move || loop {
-        let snapshot = fetch_snapshot();
+        let snapshot = fetch_snapshot(control_port);
         if poll_proxy.send_event(UserEvent::Status(snapshot)).is_err() {
             break;
         }
@@ -231,7 +168,7 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                let _ = window.set_visible(false);
+                window.set_visible(false);
             }
             Event::UserEvent(UserEvent::Status(snapshot)) => {
                 if quit_in_progress {
@@ -246,10 +183,8 @@ pub fn run() -> anyhow::Result<()> {
                 let _ = tray.set_tooltip(Some(tooltip));
             }
             Event::UserEvent(UserEvent::AuthCallback(callback_url)) => {
-                append_auth_log(&format!(
-                    "received callback {}",
-                    summarize_callback_url(&callback_url)
-                ));
+                let summary = summarize_callback_url(&callback_url);
+                append_log(&log_path, &format!("received callback {summary}"));
                 set_pending_oauth_callback(&callback_url);
                 show_window(&window);
                 dispatch_auth_callback(&webview, &callback_url);
@@ -263,9 +198,9 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(UserEvent::Menu(event)) => {
                 if event.id == item_pause.id() {
-                    post("http://127.0.0.1:11437/v1/app/service/pause");
+                    post(&node_url(control_port, "/v1/app/service/pause"));
                 } else if event.id == item_resume.id() {
-                    post("http://127.0.0.1:11437/v1/app/service/resume");
+                    post(&node_url(control_port, "/v1/app/service/resume"));
                 } else if event.id == item_open.id() {
                     show_window(&window);
                 } else if event.id == item_close_tray.id() {
@@ -277,8 +212,9 @@ pub fn run() -> anyhow::Result<()> {
                     // seconds; keep the event loop (and the tray icon)
                     // responsive by doing it off-thread.
                     let quit_proxy = proxy.clone();
+                    let quit_log_path = log_path.clone();
                     std::thread::spawn(move || {
-                        let event = match run_quit_flow() {
+                        let event = match run_quit_flow(control_port, &quit_log_path) {
                             Ok(()) => UserEvent::Quit,
                             Err(()) => UserEvent::QuitAborted,
                         };
@@ -286,71 +222,55 @@ pub fn run() -> anyhow::Result<()> {
                     });
                 }
             }
-            Event::UserEvent(UserEvent::Tray(event)) => match event {
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-                | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                } => show_window(&window),
-                _ => {}
-            },
+            Event::UserEvent(UserEvent::Tray(e)) if opens_window(&e) => show_window(&window),
             _ => {}
         }
     });
 }
 
-#[derive(Debug, Deserialize)]
-struct NativeMessage {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
+/// Left click (release) or double click on the tray icon opens the window.
+fn opens_window(event: &TrayIconEvent) -> bool {
+    matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        }
+    )
 }
 
-fn protocol_handler(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let host = request.uri().host().unwrap_or_default();
-    let raw_path = request.uri().path();
-    let path = if matches!(raw_path, "/" | "") || (host == "auth" && raw_path == "/callback") {
-        "index.html"
-    } else if raw_path == "/auth/callback" {
-        "index.html"
-    } else {
-        raw_path.trim_start_matches('/')
-    };
+/// Install root (`C:\Teale` by default): the tray lives in `<root>\bin`.
+fn install_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("C:\\Teale"))
+}
 
-    let (body, mime, status) = match path {
-        "index.html" => (INDEX_HTML.as_bytes().to_vec(), "text/html", 200),
-        "app.css" => (APP_CSS.to_vec(), "text/css", 200),
-        "app.js" => (APP_JS.to_vec(), "text/javascript", 200),
-        "supabase-js-2.105.4.min.js" => (SUPABASE_JS.to_vec(), "text/javascript", 200),
-        "auth/pending" => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "url": take_pending_oauth_callback()
-            }))
-            .unwrap_or_else(|_| b"{\"url\":null}".to_vec());
-            (body, "application/json", 200)
-        }
-        _ => (b"Not Found".to_vec(), "text/plain", 404),
-    };
+/// `<install>\logs\tray.log` when this user may write there (admin or dev
+/// installs); otherwise the per-user `%LOCALAPPDATA%\Teale\logs\tray.log`,
+/// since the hardened install tree is read-only for standard users.
+fn tray_log_path(install_dir: &Path) -> PathBuf {
+    let preferred = install_dir.join("logs").join("tray.log");
+    if can_append(&preferred) {
+        return preferred;
+    }
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Teale")
+        .join("logs")
+        .join("tray.log")
+}
 
-    Response::builder()
-        .header(CONTENT_TYPE, mime)
-        .header("Access-Control-Allow-Origin", "*")
-        .header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Accept, Authorization",
-        )
-        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        .header("Access-Control-Allow-Private-Network", "true")
-        .status(status)
-        .body(Cow::Owned(body))
-        .expect("custom protocol response")
+fn can_append(path: &Path) -> bool {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    options.open(path).is_ok()
 }
 
 struct SingleInstance {
@@ -384,24 +304,17 @@ impl Drop for SingleInstance {
     }
 }
 
-fn forward_to_primary_with_retry(message: IpcMessage, timeout: Duration) -> anyhow::Result<()> {
+fn forward_to_primary_with_retry(message: &IpcMessage, timeout: Duration) -> anyhow::Result<()> {
     let started = Instant::now();
     loop {
-        match forward_ipc_message(message.clone()) {
+        match forward_ipc_message(message) {
             Ok(()) => return Ok(()),
-            Err(error) if started.elapsed() < timeout => {
+            Err(_) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(100));
-                let _ = error;
             }
             Err(error) => return Err(error).context("primary Teale tray did not accept IPC"),
         }
     }
-}
-
-fn show_window(window: &tao::window::Window) {
-    window.set_visible(true);
-    window.set_minimized(false);
-    let _ = window.set_focus();
 }
 
 /// "Quit Teale" from the tray menu: confirm, stop the machine-level
@@ -412,7 +325,7 @@ fn show_window(window: &tao::window::Window) {
 /// Service Control Manager, so the stop goes through a UAC-elevated helper.
 /// `Err(())` means nothing was stopped and the tray must keep running — the
 /// user already saw why (they declined, or a dialog explained the failure).
-fn run_quit_flow() -> Result<(), ()> {
+fn run_quit_flow(control_port: u16, log_path: &Path) -> Result<(), ()> {
     let confirmed = unsafe {
         MessageBoxW(
             None,
@@ -430,10 +343,10 @@ fn run_quit_flow() -> Result<(), ()> {
         return Err(());
     }
 
-    match stop_node_service() {
+    match stop_node_service(control_port) {
         Ok(()) => Ok(()),
         Err(reason) => {
-            append_auth_log(&format!("quit: service stop failed: {reason}"));
+            append_log(log_path, &format!("quit: service stop failed: {reason}"));
             let text = to_wide(&format!(
                 "Teale is still running.\n\n\
                  The Teale Node service could not be stopped:\n{reason}\n\n\
@@ -455,8 +368,8 @@ fn run_quit_flow() -> Result<(), ()> {
 
 /// Stop the node service with elevation and wait until its local control API
 /// stops answering. Returns a user-facing reason on failure.
-fn stop_node_service() -> Result<(), String> {
-    if !node_service_responding(Duration::from_secs(1)) {
+fn stop_node_service(control_port: u16) -> Result<(), String> {
+    if !node_service_responding(control_port, Duration::from_secs(1)) {
         // Nothing to stop (service already down); still fine to quit.
         return Ok(());
     }
@@ -494,7 +407,7 @@ fn stop_node_service() -> Result<(), String> {
     // Any other exit code (including a non-zero one from nssm/sc, e.g. when
     // the service is mid-transition) is judged by the outcome below.
 
-    wait_until_service_stopped(SERVICE_STOP_TIMEOUT).map_err(|()| {
+    wait_until_service_stopped(control_port, SERVICE_STOP_TIMEOUT).map_err(|()| {
         format!(
             "the service was still answering after {} seconds.",
             SERVICE_STOP_TIMEOUT.as_secs()
@@ -560,17 +473,18 @@ fn powershell_path() -> PathBuf {
 
 /// Any HTTP answer (even an error status) means the node process is up; only
 /// a transport failure (connection refused, timeout) counts as stopped.
-fn node_service_responding(timeout: Duration) -> bool {
+fn node_service_responding(control_port: u16, timeout: Duration) -> bool {
+    let url = node_url(control_port, "/v1/app");
     !matches!(
-        ureq::get(NODE_STATUS_URL).timeout(timeout).call(),
+        ureq::get(&url).timeout(timeout).call(),
         Err(ureq::Error::Transport(_))
     )
 }
 
-fn wait_until_service_stopped(timeout: Duration) -> Result<(), ()> {
+fn wait_until_service_stopped(control_port: u16, timeout: Duration) -> Result<(), ()> {
     let deadline = Instant::now() + timeout;
     loop {
-        if !node_service_responding(Duration::from_secs(1)) {
+        if !node_service_responding(control_port, Duration::from_secs(1)) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -583,71 +497,6 @@ fn wait_until_service_stopped(timeout: Duration) -> Result<(), ()> {
 /// NUL-terminated UTF-16 for Win32 string parameters built at runtime.
 fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-fn start_auth_callback_listener(proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
-    std::thread::spawn(move || {
-        let listener = match TcpListener::bind(("127.0.0.1", IPC_PORT)) {
-            Ok(listener) => listener,
-            Err(_) => return,
-        };
-
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else {
-                continue;
-            };
-
-            let mut payload = String::new();
-            if stream.read_to_string(&mut payload).is_err() {
-                continue;
-            }
-            let Ok(message) = serde_json::from_str::<IpcMessage>(payload.trim()) else {
-                continue;
-            };
-
-            let result = match message.kind.as_str() {
-                "authCallback" => message
-                    .url
-                    .filter(|url| !url.trim().is_empty())
-                    .map(UserEvent::AuthCallback)
-                    .map(|event| proxy.send_event(event)),
-                "openWindow" => Some(proxy.send_event(UserEvent::OpenWindow)),
-                _ => None,
-            };
-
-            if matches!(result, Some(Err(_))) {
-                break;
-            }
-        }
-    });
-}
-
-fn forward_ipc_message(message: IpcMessage) -> anyhow::Result<()> {
-    let mut stream =
-        TcpStream::connect(("127.0.0.1", IPC_PORT)).context("connect to running Teale tray")?;
-    let payload = serde_json::to_string(&message).context("serialize tray IPC message")?;
-    stream
-        .write_all(payload.as_bytes())
-        .context("forward IPC message to tray")?;
-    Ok(())
-}
-
-fn dispatch_auth_callback(webview: &wry::WebView, callback_url: &str) {
-    let Ok(payload) = serde_json::to_string(callback_url) else {
-        return;
-    };
-    let script = format!(
-        r#"
-        window.__tealePendingOAuthCallbackUrl = {payload};
-        try {{
-          window.localStorage.setItem("__teale_pending_oauth_callback", {payload});
-        }} catch (_error) {{}}
-        if (typeof window.__tealeHandleOAuthCallback === "function") {{
-          window.__tealeHandleOAuthCallback({payload});
-        }}
-        "#
-    );
-    let _ = webview.evaluate_script(&script);
 }
 
 fn summarize_callback_url(callback_url: &str) -> String {
@@ -679,177 +528,9 @@ fn summarize_callback_url(callback_url: &str) -> String {
     format!("{base} keys=[{}]", keys.join(","))
 }
 
-fn append_auth_log(line: &str) {
-    let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("C:\\Teale\\logs\\tray-oauth.log")
-    else {
-        return;
-    };
-    let _ = writeln!(file, "{line}");
-}
-
-fn pending_oauth_callback() -> &'static Mutex<Option<String>> {
-    PENDING_OAUTH_CALLBACK.get_or_init(|| Mutex::new(None))
-}
-
-fn set_pending_oauth_callback(callback_url: &str) {
-    if let Ok(mut pending) = pending_oauth_callback().lock() {
-        *pending = Some(callback_url.to_string());
-    }
-}
-
-fn take_pending_oauth_callback() -> Option<String> {
-    pending_oauth_callback()
-        .lock()
-        .ok()
-        .and_then(|mut pending| pending.take())
-}
-
-fn fetch_snapshot() -> Option<AppSnapshot> {
-    ureq::get("http://127.0.0.1:11437/v1/app")
-        .timeout(Duration::from_secs(3))
-        .call()
-        .ok()
-        .and_then(|r| r.into_json::<AppSnapshot>().ok())
-}
-
-fn post(url: &str) {
-    let _ = ureq::post(url).timeout(Duration::from_secs(3)).call();
-}
-
-fn initialization_script() -> String {
-    let payload = serde_json::json!({
-        "apiBase": "http://127.0.0.1:11437",
-        "platform": "windows",
-        "shellMode": true,
-        "deviceLabel": "Windows device",
-        "chatTransport": "app-proxy",
-        "routes": {
-            "authPending": "teale://localhost/auth/pending",
-            "bundledApp": "teale://localhost/"
-        }
-    });
-    format!("window.__TEALE_DESKTOP_CONFIG__ = {payload};")
-}
-
-fn initial_desktop_url() -> String {
-    let remote_url = std::env::var("TEALE_DESKTOP_WEB_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| REMOTE_DESKTOP_URL.to_string());
-    if remote_desktop_available(&remote_url) {
-        remote_url
-    } else {
-        "teale://localhost".to_string()
-    }
-}
-
-fn remote_desktop_available(url: &str) -> bool {
-    ureq::get(url)
-        .timeout(Duration::from_secs(2))
-        .call()
-        .map(|response| response.status() >= 200 && response.status() < 300)
-        .unwrap_or(false)
-}
-
-fn tooltip_for(snapshot: Option<&AppSnapshot>) -> (IconState, String) {
-    let Some(snapshot) = snapshot else {
-        return (
-            IconState::Inactive,
-            "Teale — Disconnected\nThe service may still be starting.".to_string(),
-        );
-    };
-
-    let icon = if snapshot.service_state == "serving" {
-        IconState::Serving
-    } else {
-        IconState::Inactive
-    };
-
-    let headline = match snapshot.service_state.as_str() {
-        "serving" => "Teale — Serving",
-        "offline" => "Teale — Offline",
-        "downloading" => "Teale — Downloading",
-        "loading" => "Teale — Loading",
-        "paused_user" => "Teale — Paused",
-        "paused_battery" => "Teale — Waiting for AC",
-        "needs_model" => "Teale — Choose a model",
-        "starting" => "Teale — Starting",
-        _ => "Teale — Not Ready",
-    };
-
-    let detail = if let Some(transfer) = &snapshot.active_transfer {
-        match transfer.bytes_total {
-            Some(total) if total > 0 => format!(
-                "{} {:.0}%",
-                transfer.model_id,
-                (transfer.bytes_downloaded as f64 / total as f64) * 100.0
-            ),
-            _ => transfer.model_id.clone(),
-        }
-    } else if snapshot.service_state == "offline" {
-        snapshot
-            .state_reason
-            .clone()
-            .or_else(|| snapshot.loaded_model_id.clone())
-            .unwrap_or_else(|| "Open Teale to manage supply.".to_string())
-    } else if let Some(model_id) = &snapshot.loaded_model_id {
-        model_id.clone()
-    } else {
-        snapshot
-            .state_reason
-            .clone()
-            .unwrap_or_else(|| "Open Teale to manage supply.".to_string())
-    };
-
-    (icon, format!("{headline}\n{detail}"))
-}
-
-fn icon_for_state(state: IconState) -> Icon {
-    match state {
-        IconState::Serving => leaf_icon(0x2d, 0xb7, 0x67),
-        IconState::Inactive => leaf_icon(0x8a, 0x94, 0x9e),
-    }
-}
-
-/// Final Teale leaf mark, status-tinted for the Windows tray. Keeping the
-/// alpha mask in-tree avoids an image-decoder/runtime asset dependency.
-fn leaf_icon(r: u8, g: u8, b: u8) -> Icon {
-    const SIZE: u32 = 32;
-    const ALPHA: &[u8; (SIZE * SIZE) as usize] =
-        include_bytes!("../assets/teale-leaf-alpha-32.bin");
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for alpha in ALPHA {
-        rgba.extend_from_slice(&[r, g, b, *alpha]);
-    }
-    Icon::from_rgba(rgba, SIZE, SIZE).expect("build Teale leaf icon")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn leaf_mask_is_embedded_at_expected_size() {
-        const ALPHA: &[u8; 32 * 32] = include_bytes!("../assets/teale-leaf-alpha-32.bin");
-        assert!(ALPHA.iter().any(|alpha| *alpha == 0));
-        assert!(ALPHA.iter().any(|alpha| *alpha > 200));
-    }
-
-    #[test]
-    fn tooltip_marks_serving_green() {
-        let snapshot = AppSnapshot {
-            service_state: "serving".into(),
-            state_reason: None,
-            loaded_model_id: Some("canary".into()),
-            active_transfer: None,
-        };
-        let (state, text) = tooltip_for(Some(&snapshot));
-        assert!(matches!(state, IconState::Serving));
-        assert!(text.contains("Serving"));
-    }
 
     #[test]
     fn service_stop_prefers_bundled_nssm() {
@@ -898,5 +579,11 @@ mod tests {
         let wide = to_wide("Teale");
         assert_eq!(wide.last(), Some(&0));
         assert_eq!(wide.len(), "Teale".encode_utf16().count() + 1);
+    }
+
+    #[test]
+    fn callback_summary_lists_keys_not_values() {
+        let summary = summarize_callback_url("teale://auth/callback?code=secret#state=x");
+        assert_eq!(summary, "teale://auth/callback keys=[code,state]");
     }
 }

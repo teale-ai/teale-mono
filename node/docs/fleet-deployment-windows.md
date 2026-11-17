@@ -3,7 +3,7 @@
 Deploy teale-node as TealeNet supply nodes across a partner fleet of Windows
 laptops. **Pilot spec:** Windows 10 (build 17763+) or 11, **16 GB RAM or
 more**, Intel or AMD iGPU (Vulkan accelerates decode 2–3× over CPU). No
-NVIDIA GPU required, but if present is auto-offloaded via Vulkan/CUDA.
+NVIDIA GPU required.
 
 ## Two deployment paths
 
@@ -11,50 +11,67 @@ NVIDIA GPU required, but if present is auto-offloaded via Vulkan/CUDA.
 
 Each contributor:
 
-1. Downloads `Teale.exe` from the Drive / download link you send.
+1. Downloads `Teale.exe` from the link you send (a GitHub release asset or
+   your Drive copy of it).
 2. Windows SmartScreen shows **"Windows protected your PC — unknown publisher."**
    One-time click: **More info → Run anyway**. (This warning disappears once
    the code-signing cert is active; until then, include that instruction in
    your onboarding email.)
 3. UAC prompt → Yes.
 4. Installer wizard: **Welcome** (what Teale does) → **Behavior** (one
-   checkbox, pre-checked: "Keep supplying when lid is closed on AC") →
-   **Install**.
+   checkbox, pre-checked: "Keep supplying when the lid is closed (AC only)")
+   → **Install**.
 5. Under-16-GB machines see a friendly "coming soon for smaller devices"
    message and exit without installing.
-6. ≥16-GB machines see a visible progress bar downloading the 5.7 GB
-   Hermes-3-Llama-3.1-8B Q5 model, then the NSSM-wrapped service starts
-   and the tray icon appears.
+6. On ≥16-GB machines the installer copies the binaries, registers the
+   NSSM-wrapped `TealeNode` service and starts it, then opens the Teale
+   window. **No model is downloaded during setup**: the window recommends
+   the best model for the machine and the contributor starts the download
+   there (Hermes-3-Llama-3.1-8B Q5_K_M, 5.7 GB, on a 16 GB laptop). The
+   node checks the file's SHA-256 before it is used.
 
 ### B) Admin-driven (SCCM / GPO / PowerShell Remoting)
 
-Use `scripts/deploy-windows.ps1` for silent / scripted installs.
+Use `scripts/deploy-windows.ps1` for silent / scripted installs. Unlike the
+installer it can stage a model up front.
 
 ```powershell
-# Basic — picks Vulkan llama-server, Hermes-3-8B Q5, enables lid-closed supply:
+# Basic — picks Vulkan or CPU llama-server, downloads Hermes-3-8B Q5 (hash-checked),
+# enables lid-closed supply:
 .\deploy-windows.ps1 -AllowSupplyLidClosed
 
-# Network file share for the model (fleet rollouts, avoids 195× HF downloads):
+# Network file share for the model (fleet rollouts, avoids 195x HF downloads).
+# Pass the file's SHA-256 so the copy is verified:
 .\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf" `
+    -ModelSha256 b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3 `
     -AllowSupplyLidClosed
 
 # CPU-only fallback (for machines that fail Vulkan init — rare):
 .\deploy-windows.ps1 -LlamaBuild cpu -AllowSupplyLidClosed
 ```
 
+The llama.cpp release defaults to the repo pin in `.github/llama-cpp-version`
+(`b8840` when the script is copied without the repo) and its zip is checked
+against the published SHA-256. NSSM (nssm.cc) publishes no checksums; on
+locked-down fleets stage `nssm.exe` yourself.
+
 ## Prerequisites
 
 - Windows 10 (17763+) / Windows 11, x64
-- **16 GB RAM minimum** (script refuses to install on less; `-SkipRamGate` overrides for dev)
+- **16 GB RAM minimum** (both paths refuse to install on less; `deploy-windows.ps1 -SkipRamGate` overrides for dev)
 - ~10 GB free disk (6 GB model + binaries + logs)
-- Outbound network access to `wss://relay.teale.com` (port 443)
+- Outbound network access to `wss://relay.teale.com` and `https://gateway.teale.com` (port 443)
 - Administrator access on target machines
-- `teale-node.exe` (Rust release build, x86_64-pc-windows-msvc)
+- `teale-node.exe` (Rust release build, x86_64-pc-windows-msvc) for path B
 
 ## Installer build (`Teale.exe`)
 
-CI-based: push `teale-<version>` tag → `.github/workflows/windows-installer.yml`
-builds, runs ISCC, and publishes `Teale.exe` on that release. Use the release asset's direct URL for staff; do not use GitHub `/releases/latest`, which can point at a macOS-only `mac-v*` release.
+CI-based: push a tag `teale-YYYY.MM.DD.HHMM` (for example
+`teale-2026.11.13.1946`). `.github/workflows/windows-installer.yml` builds the
+binaries, runs ISCC with `/DAppVer=<the tag without "teale-">`, and publishes
+`Teale.exe` plus `checksums.txt` on that release. Hand staff the release
+asset's direct URL; do not use GitHub `/releases/latest`, which can point at a
+macOS-only release.
 
 Manual build: see `node/installer/BUILD-INSTALLER.txt`.
 
@@ -62,31 +79,44 @@ Once the code-signing cert arrives, uncomment the signtool step in the
 workflow and add `CERT_PFX_BASE64` + `CERT_PASSWORD` to repo secrets. Next
 release becomes SmartScreen-clean.
 
+## What the install changes on the machine
+
+- `C:\Teale` (fixed path): `bin\`, `config\`, `models\`, `logs\`, `data\`.
+  Permissions are reset so only SYSTEM and Administrators can write anywhere
+  under it; standard users get read/execute. `C:\Teale\data` (node identity
+  key, gateway account session) is readable only by SYSTEM and
+  Administrators.
+- Service `TealeNode` (NSSM, LocalSystem, auto start, below-normal priority).
+  Stopping it sends Ctrl+C and waits up to 35 s so in-flight requests drain.
+- Lid-closed checkbox ticked: AC standby and hibernate timeouts set to never
+  and lid-close on AC set to "do nothing". The previous values are recorded in
+  `C:\Teale\config\powercfg-backup.txt` and restored on uninstall. While a
+  request is running the node additionally blocks idle sleep.
+- Scheduled task `TealeUpdateCheck`: runs `check-update.ps1` unelevated at
+  every user's logon (see Updating).
+- `teale://` URL protocol and a per-user startup shortcut for the tray.
+
 ## Model distribution strategies
 
-**Option A — Google Drive link** (pilot default). Contributors download
-both `Teale.exe` and the GGUF pulls from HuggingFace at install time.
-Works for ~200 contributors; HuggingFace is fine unless you're rolling to
-a China-heavy fleet.
+**Option A — In-app download** (contributor path, default). The Teale window
+downloads the recommended GGUF from Hugging Face and verifies its SHA-256.
 
-**Option B — Network file share** (LAN):
+**Option B — Network file share** (LAN, admin path):
 ```powershell
 # Stage on the server:
 mkdir \\fileserver\teale\models
 Copy-Item hermes-3-llama-3.1-8b-Q5_K_M.gguf \\fileserver\teale\models\
 
 # Deploy pointing at the share:
-.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf" -AllowSupplyLidClosed
+.\deploy-windows.ps1 -ModelSharePath "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf" `
+    -ModelSha256 b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3 -AllowSupplyLidClosed
 ```
 
-**Option C — BranchCache + BITS** (WAN / multi-site): host the GGUF on
-internal HTTPS and enable BranchCache via GPO. `Start-BitsTransfer`
-leverages it automatically — first machine per subnet pulls from the
-server, subsequent machines peer-pull.
-
-**Option D — Override URL via env var** (for custom mirror):
-Set `TEALE_MODEL_URL` before running the installer / deploy script. The
-post-install PS1 falls back to the HuggingFace URL if the primary fails.
+**Option C — Internal mirror + BranchCache** (WAN / multi-site): host the GGUF
+on internal HTTPS, enable BranchCache via GPO, and run
+`deploy-windows.ps1 -ModelUrl https://mirror.example/hermes.gguf -ModelSha256 <hash>`.
+The script uses `Start-BitsTransfer`, which leverages BranchCache: the first
+machine per subnet pulls from the server, the rest peer-pull.
 
 ## Fleet deployment methods
 
@@ -98,6 +128,7 @@ $machines = Get-Content .\machine-list.txt
 Invoke-Command -ComputerName $machines -ThrottleLimit 20 `
     -FilePath \\share\teale\deploy-windows.ps1 `
     -ArgumentList @("-ModelSharePath", "\\fileserver\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf",
+                    "-ModelSha256", "b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3",
                     "-AllowSupplyLidClosed")
 ```
 
@@ -109,6 +140,7 @@ Invoke-Command -ComputerName $machines -ThrottleLimit 20 `
    ```
    -TealeNodePath "\\share\teale\teale-node.exe"
    -ModelSharePath "\\share\teale\models\hermes-3-llama-3.1-8b-Q5_K_M.gguf"
+   -ModelSha256 b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3
    -AllowSupplyLidClosed
    ```
 4. Link the GPO to the OU containing target machines. Runs on next reboot.
@@ -119,31 +151,41 @@ Invoke-Command -ComputerName $machines -ThrottleLimit 20 `
 2. Task sequence runs the deploy script with fleet-standard args.
 3. Deploy to a device collection targeting the ≥16 GB machines.
 
+Private Inference Network preseed: `Teale.exe /VERYSILENT /PINCODE=XXXX-XXXX-XX`
+makes the node submit a join request on first start; the network admin
+approves it from the app or `teale-node pin`.
+
 ## Pilot behavior (what contributors see)
 
-1. **Tray icon appears** post-install (green = supplying, yellow = on
-   battery / paused, gray = user-paused, red = disconnected).
-2. Hover tooltip: *"Teale — Supplying · 12 requests · 4,800 credits today"*.
+1. **Tray icon appears** after install. Two states: **green leaf** while
+   serving, **gray leaf** for everything else (starting, downloading,
+   paused, waiting for AC, offline, disconnected).
+2. Hover tooltip: a headline (for example *"Teale — Serving"*,
+   *"Teale — Waiting for AC"*, *"Teale — Paused"*) and one detail line (the
+   loaded model, download progress, or the reason it is not serving).
 3. Right-click menu:
-   - **Pause supply** — toggles user-pause. Tray goes gray. Service keeps
-     running (model stays loaded), just stops accepting new inference.
+   - **Pause supply** — sets the user-pause flag. Service keeps running
+     (model stays loaded), it just stops taking new inference.
    - **Resume supply** — clears the user-pause flag.
-   - **Open Teale** — opens the companion window.
+   - **Open Teale** — opens the companion window (the UI bundled into the
+     tray; it never loads remote pages).
    - **Close tray icon (Teale keeps supplying)** — exits only the tray
      process; the service continues in the background.
    - **Quit Teale (stop supplying)** — after a confirmation and a UAC prompt,
-     stops the `TealeNode` service (which also ends `llama-server.exe` and
-     frees the model's memory), then exits the tray. Nothing restarts it
-     until the next Windows boot (service is `SERVICE_AUTO_START`) or an
-     admin runs `Start-Service TealeNode`. If the UAC prompt is declined the
-     tray stays up and says so.
-4. Lid-closed on AC → still supplying, screen dark, Wi-Fi up, fans may
-   spin up slightly. Machine awake until lid opened again.
-5. Unplug AC → tray flips yellow within ~5 seconds, node deregisters from
-   gateway routing; supply resumes within ~30 seconds of reconnecting AC.
-6. Scheduled task on every user logon pings GitHub Releases; if a newer
-   `Teale.exe` is published, shows a Windows toast and opens the download
-   link. User installs over top (identity key preserved).
+     stops the `TealeNode` service (in-flight requests drain first; this also
+     ends `llama-server.exe` and frees the model's memory), then exits the
+     tray. Nothing restarts it until the next Windows boot (service is
+     `SERVICE_AUTO_START`) or an admin runs `Start-Service TealeNode`. If the
+     UAC prompt is declined the tray stays up and says so.
+4. Lid closed on AC (checkbox ticked) → still supplying, screen dark, Wi-Fi
+   up, fans may spin up slightly. Group Policy can override the lid setting;
+   see Troubleshooting.
+5. Unplug AC → within a few seconds the node stops advertising itself to the
+   gateway and the tray shows *"Waiting for AC"* at its next 5 s refresh;
+   supply resumes after AC returns.
+6. Sign-in: the Teale window signs in with an emailed 6-digit code (gateway
+   account). The node keeps the session in `C:\Teale\data` and uses it to
+   link this device to the account.
 
 ## Monitoring
 
@@ -158,7 +200,9 @@ Invoke-Command -ComputerName $machines -ScriptBlock {
 
 ### Local status endpoint (tray's data source)
 
-On any contributor machine, inspect the live state the tray is showing:
+On any contributor machine, inspect the live state the tray is showing (the
+control API answers only on 127.0.0.1 and rejects browser pages from other
+origins):
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:11437/status | ConvertTo-Json
@@ -167,7 +211,8 @@ Invoke-RestMethod http://127.0.0.1:11437/status | ConvertTo-Json
 #   "requests_today": 12,
 #   "credits_today": 4800,
 #   "on_ac": true,
-#   "paused_reason": null }
+#   "paused_reason": null,
+#   "throttle_level": 100 }
 ```
 
 ### Logs
@@ -179,6 +224,9 @@ Get-Content "\\MACHINE\C$\Teale\logs\teale-node-stdout.log" -Tail 20
 # Stderr for Vulkan init failures / relay connection errors:
 Get-Content "\\MACHINE\C$\Teale\logs\teale-node-stderr.log" -Tail 50
 ```
+
+The tray writes `tray.log` (rotated at 1 MiB) to `C:\Teale\logs` when it can,
+otherwise to `%LOCALAPPDATA%\Teale\logs` of the signed-in user.
 
 ### Verify in gateway
 
@@ -198,12 +246,17 @@ Invoke-Command -ComputerName $machines -ScriptBlock { Restart-Service TealeNode 
 
 ## Updating
 
-### Via Inno Setup installer (recommended)
+### Via the installer (recommended)
 
-Publish a new `Teale.exe` (bumped `#define AppVer`) to GitHub Releases
-with a tag like `teale-v0.3.0`. Every contributor's on-logon scheduled
-task will catch it, toast them, and open the download. Contributor
-double-clicks the new installer; Inno Setup upgrades in place.
+Publish a new release tagged `teale-YYYY.MM.DD.HHMM` (CI stamps the same
+version into the installer). At each user's logon the `TealeUpdateCheck`
+task compares the highest such release that has `Teale.exe` with
+`C:\Teale\version.txt`. Only a **strictly newer** version prompts the user;
+on "Yes" it downloads `Teale.exe`, verifies its SHA-256 against the
+release's `checksums.txt`, and only then starts the installer, which
+upgrades in place (identity key and models preserved). A failed check opens
+the release page instead. Builds stamped `0.0.0.0` (local builds without
+`/DAppVer`) are never prompted.
 
 ### Via file share (GPO-managed fleet)
 
@@ -217,10 +270,15 @@ Invoke-Command -ComputerName $machines -ScriptBlock {
 
 ## Uninstall
 
-Via Add/Remove Programs → Teale → Uninstall. Removes service, tray, model,
-config. **Identity key under `C:\Teale\data` is preserved** across
-reinstalls so credit-earning history carries over. To fully reset, manually
-delete `C:\Teale\data` before reinstalling.
+Via Add/Remove Programs → Teale → Uninstall. Removes the service, the tray,
+the update task, binaries, config and logs, and restores the recorded power
+settings. **`C:\Teale\data` (identity key) and `C:\Teale\models` (downloaded
+GGUFs) are kept** so credit-earning history and downloads survive a
+reinstall. To fully reset, delete `C:\Teale\data` (and `C:\Teale\models` to
+reclaim disk) after uninstalling.
+
+`deploy-windows.ps1 -Uninstall` removes the service and restores the power
+settings; add `-RemoveFiles` to delete `C:\Teale` entirely.
 
 ## Troubleshooting
 
@@ -239,7 +297,7 @@ dev testing only.
 
 ### Vulkan init fails on startup
 
-Tray shows red, `teale-node-stderr.log` has `ggml_vulkan: failed to init`.
+Tray stays gray, `teale-node-stderr.log` has `ggml_vulkan: failed to init`.
 Causes and fixes:
 - **Old drivers** — run Windows Update + the vendor's GPU driver update.
 - **No supported GPU** — the machine has Intel HD 3000 / pre-2014 silicon;
@@ -250,8 +308,9 @@ Causes and fixes:
 ### Service won't start
 
 `Get-Content C:\Teale\logs\teale-node-stderr.log -Tail 50` usually points
-at: missing GGUF file (download didn't finish), llama-server binary
-corrupted (re-run installer), or relay connection blocked (firewall /
+at: a missing or corrupt GGUF (re-download it from the Teale window; a
+checksum mismatch is reported there), a corrupted llama-server binary
+(re-run the installer), or the relay connection being blocked (firewall /
 corporate proxy — check outbound 443 to `relay.teale.com`).
 
 ### Machine sleeps despite lid-closed checkbox
@@ -262,7 +321,8 @@ powercfg /query SCHEME_CURRENT SUB_BUTTONS 5ca83367-6e45-459f-a27b-476b1d01c936
 ```
 Lid close action on AC should be 0 ("Do nothing"). Corporate policies
 sometimes override user powercfg changes — contact IT if overrides are
-reverting the setting.
+reverting the setting. The node's own wake request only prevents *idle*
+sleep while a request is running; it cannot override lid or policy sleep.
 
 ### Tray icon doesn't appear
 
@@ -272,8 +332,9 @@ reconnects to the service when the service is restored.
 
 ## Pilot escalation path
 
-- Gateway issues → `reference_gateway_relay.md` has deploy and bearer
-  token. `fly deploy -c gateway/fly.toml` for emergency rollbacks.
+- Gateway issues → escalate to the Teale gateway on-call; emergency gateway
+  rollbacks are done from `gateway/fly.toml` by the gateway owners.
 - Scheduler-skipping of battery-paused nodes can be verified via
   `gateway/tests/registry_and_scheduler.rs::scheduler_skips_battery_paused_laptop`.
-- All Hermes-3 8B routes: `gateway/models.yaml` catalog entry at line 101.
+- Hermes-3 8B routing: the `nousresearch/hermes-3-llama-3.1-8b` entry in
+  `gateway/models.yaml`.

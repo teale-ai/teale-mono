@@ -4006,6 +4006,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tao",
+ "toml",
  "tray-icon",
  "ureq",
  "webbrowser",
