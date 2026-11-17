@@ -4,37 +4,65 @@
 # For each fleet Mac we measure:
 #   - local: curl its own 127.0.0.1:11435 using the model it has locally loaded
 #   - gateway-auto: curl the production gateway with model=teale-auto
-#   - gateway-kimi: only on tailor512g* — curl gateway with moonshotai/kimi-k2
+#   - gateway-kimi: only on hosts listed in BENCH_KIMI_HOSTS — curl gateway
+#     with moonshotai/kimi-k2.6
 #
 # Output: runs/bench-mac-<timestamp>/<host>.jsonl + summary.json + summary.txt
 # Each JSON record carries TTFT (ms), total latency (ms), TPS, and token counts.
+#
+# Required environment:
+#   GATEWAY_TOKEN   gateway bearer token (never committed)
+# Hosts (SSH aliases), first match wins:
+#   BENCH_HOSTS="host-a host-b"          space-separated list
+#   BENCH_HOSTS_FILE=path                one host per line, '#' comments
+#                                        (default: scripts/bench-hosts.txt,
+#                                        git-ignored; see
+#                                        scripts/bench-hosts.example.txt)
+# Optional:
+#   BENCH_KIMI_HOSTS="host-a"            hosts that also run the kimi case
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 GATEWAY_URL="${GATEWAY_URL:-https://gateway.teale.com}"
-GATEWAY_TOKEN="${GATEWAY_TOKEN:-tok_dev_1aae940b6028bb79da1c04a598b2a14d}"
+GATEWAY_TOKEN="${GATEWAY_TOKEN:-}"
 PROMPT="${PROMPT:-Write one concise sentence explaining what Teale does.}"
 REQUESTS_PER_CASE="${REQUESTS_PER_CASE:-3}"
 MAX_TOKENS="${MAX_TOKENS:-96}"
 REQ_TIMEOUT="${REQ_TIMEOUT:-90}"
+BENCH_HOSTS_FILE="${BENCH_HOSTS_FILE:-scripts/bench-hosts.txt}"
+BENCH_KIMI_HOSTS="${BENCH_KIMI_HOSTS:-}"
 
-DEFAULT_TARGETS=(
-  tailor16s-mac-mini
-  tailor64
-  tailor96s-mac-studio
-  tailor512g1
-  tailor512g8
-  tailor8s-macbook-air
-  christinatep8s-macbook-air
-)
-# Override with: BENCH_HOSTS="tailor64 tailor96s-mac-studio ..." ./scripts/bench-mac-fleet.sh
+if [ -z "$GATEWAY_TOKEN" ]; then
+  echo "error: GATEWAY_TOKEN is not set. Export a gateway bearer token first:" >&2
+  echo "  GATEWAY_TOKEN=... ./scripts/bench-mac-fleet.sh" >&2
+  exit 2
+fi
+
+TARGETS=()
 if [ -n "${BENCH_HOSTS:-}" ]; then
   read -r -a TARGETS <<< "$BENCH_HOSTS"
-else
-  TARGETS=("${DEFAULT_TARGETS[@]}")
+elif [ -f "$BENCH_HOSTS_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(echo "$line" | tr -d '[:space:]')"
+    if [ -n "$line" ]; then TARGETS+=("$line"); fi
+  done < "$BENCH_HOSTS_FILE"
 fi
+if [ "${#TARGETS[@]}" -eq 0 ]; then
+  echo "error: no hosts. Set BENCH_HOSTS=\"host-a host-b\" or list SSH aliases in" >&2
+  echo "  $BENCH_HOSTS_FILE (copy scripts/bench-hosts.example.txt)." >&2
+  exit 2
+fi
+
+is_kimi_host() {
+  local h
+  for h in $BENCH_KIMI_HOSTS; do
+    [ "$h" = "$1" ] && return 0
+  done
+  return 1
+}
 
 TS=$(date '+%Y%m%dT%H%M%S')
 OUT="runs/bench-mac-${TS}"
@@ -219,9 +247,9 @@ for host in "${TARGETS[@]}"; do
     cases+=("rapid-mlx-local|http://127.0.0.1:8000|${rapid_model}|")
   fi
   cases+=("gateway-auto|${GATEWAY_URL}|teale-auto|${GATEWAY_TOKEN}")
-  case "$host" in
-    tailor512g*) cases+=("gateway-kimi|${GATEWAY_URL}|moonshotai/kimi-k2.6|${GATEWAY_TOKEN}") ;;
-  esac
+  if is_kimi_host "$host"; then
+    cases+=("gateway-kimi|${GATEWAY_URL}|moonshotai/kimi-k2.6|${GATEWAY_TOKEN}")
+  fi
 
   for c in "${cases[@]}"; do
     IFS="|" read -r name base_url model bearer <<< "$c"

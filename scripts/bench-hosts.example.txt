@@ -1,0 +1,4 @@
+# Copy to scripts/bench-hosts.txt (git-ignored) and list one SSH alias per
+# line for scripts/bench-mac-fleet.sh. Aliases come from ~/.ssh/config.
+mac-mini-1
+mac-studio-1
