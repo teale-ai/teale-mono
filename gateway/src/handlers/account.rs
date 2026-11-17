@@ -776,7 +776,7 @@ mod tests {
     #[tokio::test]
     async fn repointing_a_linked_device_without_session_is_forbidden() {
         let state = test_state();
-        link_account(
+        let Json(_) = link_account(
             State(state.clone()),
             device("dev-1"),
             HeaderMap::new(),
@@ -804,7 +804,7 @@ mod tests {
     async fn session_can_sweep_and_remove_its_own_devices() {
         let state = test_state();
         let (account, token) = sign_in(&state, "owner@example.com");
-        link_account(
+        let Json(_) = link_account(
             State(state.clone()),
             device("dev-1"),
             session_headers(&token),
