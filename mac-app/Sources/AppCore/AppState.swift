@@ -40,7 +40,6 @@ public final class AppState {
 
     private enum Preferences {
         static let maxStorageGB = "teale.maxStorageGB"
-        static let wanRelayURL = "teale.wanRelayURL"
         static let installNodeID = "teale.installNodeID"
         static let lastLoadedModelID = "teale.lastLoadedModelID"
         static let supplyEnabled = "teale.supplyEnabled"
@@ -361,8 +360,8 @@ public final class AppState {
             Task { await modelManager.cache.setMaxStorage(maxStorageGB) }
         }
     }
-    public var wanRelayURL: String = UserDefaults.standard.string(forKey: "teale.wan_relay_url") ?? "wss://relay.teale.com/ws" {
-        didSet { UserDefaults.standard.set(wanRelayURL, forKey: "teale.wan_relay_url") }
+    public var wanRelayURL: String = UserDefaults.standard.string(forKey: AppState.wanRelayURLKey) ?? "wss://relay.teale.com/ws" {
+        didSet { UserDefaults.standard.set(wanRelayURL, forKey: AppState.wanRelayURLKey) }
     }
     public var autoManageModels: Bool = false {
         didSet {
@@ -427,10 +426,6 @@ public final class AppState {
         rawValue: UserDefaults.standard.string(forKey: "teale.appearance") ?? "system"
     ) ?? .system {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "teale.appearance") }
-    }
-
-    public func loc(_ key: String) -> String {
-        L.string(key, language: language)
     }
 
     public var inferenceEngineName: String {
