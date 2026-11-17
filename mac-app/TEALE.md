@@ -1,6 +1,15 @@
 # Teale — Project Overview
 
-Decentralized AI inference on Apple Silicon. Native macOS MenuBarExtra app that turns any Mac into a node in a peer-to-peer inference network.
+Decentralized AI inference on Apple Silicon. Native macOS app that turns any Mac into a node in a peer-to-peer inference network.
+
+The macOS UI is the shared desktop companion web bundle
+(`Sources/InferencePoolApp/Resources/DesktopCompanionWeb/`: `index.html`,
+`app.js`, `app.css`) rendered in a WKWebView, plus a SwiftUI MenuBarExtra
+with quick supply controls. The same bundle is embedded by the Windows/Linux
+tray (`node/teale-tray`), so UI changes there ship on all desktop platforms.
+The bundle talks to the local API on `127.0.0.1:11435` (contract shared with
+the Rust node; only the bundled `teale://localhost` origin may call it from a
+browser context).
 
 ## Project Status
 
@@ -60,32 +69,53 @@ Decentralized AI inference on Apple Silicon. Native macOS MenuBarExtra app that 
 
 ### Phase 8 — Authentication & Device Management (Complete)
 - AuthKit module: gateway-native passwordless email auth (code + magic link, tsess_ sessions)
-- Anonymous mode: app works without account, local wallet only
-- Auth gate on both macOS and iOS apps (login screen on first launch)
-- Account section in Settings with sign-in/sign-out
+- macOS: sign in from the companion's account view (email code, proxied by
+  the local API) or by opening the emailed `teale://auth/session?token=…`
+  magic link, which AuthManager adopts natively
+- The session token is stored in the Keychain in release builds (a 0600 file
+  under Application Support in debug builds); account links send it as
+  `X-Teale-Account-Session` to prove account ownership
+- Anonymous mode: the app works without an account (device wallet only)
 - Supabase (Apple / phone / OAuth sign-in, device registry, transfer RPC) was
-  removed in 2026.09 after the Supabase project was decommissioned; the
-  device registry returns with gateway account endpoints.
+  removed in 2026.09 after the Supabase project was decommissioned, including
+  the Supabase client in the web bundle; the device registry returns with
+  gateway account endpoints.
 
 ## Architecture
 
-13 Swift modules in a single Package.swift:
+25 targets in a single `Package.swift` (22 libraries, 3 executables) plus
+15 test targets under `Tests/`:
 
-| Module | Purpose |
-|--------|---------|
-| SharedTypes | Protocols, API types, hardware types (no deps) |
-| HardwareProfile | Chip/RAM/GPU detection, thermal/power/activity monitors |
-| MLXInference | MLX wrapper, HF downloader, tokenizer adapter |
-| ModelManager | Model catalog, cache, download service |
-| InferenceEngine | Provider-agnostic engine manager + adaptive throttler |
-| ClusterKit | LAN discovery, transport, cluster orchestration, routing |
-| WANKit | WAN P2P via QUIC, STUN/NAT traversal, relay signaling |
-| CreditKit | Credit economy, ledger, pricing, wallet, analytics |
-| AgentKit | Agent-to-agent protocol, negotiation, directory, conversations |
-| AuthKit | Supabase auth, device management, Sign in with Apple + Phone OTP |
-| LocalAPI | Hummingbird HTTP server, OpenAI-compatible endpoints |
-| InferencePoolApp | SwiftUI MenuBarExtra app (executable, macOS) |
-| TealeCompanion | iOS companion app (executable, iOS) |
+| Target | Kind | Purpose |
+|--------|------|---------|
+| SharedTypes | library | Protocols, API types, hardware/model types (no deps) |
+| HardwareProfile | library | Chip/RAM/GPU detection, thermal/power/activity monitors |
+| MLXInference | library | MLX wrapper, HF downloader, tokenizer adapter |
+| ModelManager | library | Model catalog, cache, download service |
+| LlamaCppKit | library | llama.cpp subprocess + HTTP provider |
+| RapidMLXKit | library | rapid-mlx subprocess + HTTP provider |
+| InferenceEngine | library | Provider-agnostic engine manager + adaptive throttler |
+| ClusterKit | library | LAN discovery, transport, cluster orchestration, routing |
+| WANKit | library | WAN P2P (relay signaling, Noise sessions, NAT traversal) |
+| CompilerKit | library | Mixture-of-models request compilation and fan-out |
+| CreditKit | library | Local credit ledger, pricing, analytics |
+| WalletKit | library | Solana USDC integration |
+| AgentKit | library | Agent-to-agent protocol, negotiation, directory |
+| ChatKit | library | P2P encrypted group chat |
+| GatewayKit | library | Gateway device identity, device auth, account sessions |
+| AuthKit | library | Gateway-native passwordless auth (AuthManager), iOS LoginView |
+| PrivacyFilterKit | library | Desktop-local privacy filter orchestration |
+| PINKit | library | Private Inference Networks client |
+| LocalAPI | library | Hummingbird server on :11435: OpenAI-compatible + desktop companion routes |
+| AppCore | library | Shared headless orchestration (AppState, RemoteControlBridge, updater) |
+| TealeSDK | library | Third-party resource contribution SDK |
+| TealeSDKUI | library | Pre-built SwiftUI views for TealeSDK |
+| Teale | executable | macOS app (sources in `Sources/InferencePoolApp/`) |
+| TealeCompanion | executable | iOS companion app |
+| TealeEval | executable | KV-quantization eval harness (`teale-eval`) |
+
+The `teale` command-line tool bundled into `Teale.app` as `teale-cli` is
+the Rust CLI from the repo root (`cli/`), not a Swift target.
 
 ## Key Patterns
 
@@ -99,12 +129,15 @@ Decentralized AI inference on Apple Silicon. Native macOS MenuBarExtra app that 
 - mlx-swift (0.21.x) — Apple's ML framework for Apple Silicon
 - mlx-swift-lm (main) — LLM/VLM model loading and generation
 - swift-transformers (0.1.x) — Tokenizer + HuggingFace Hub
-- hummingbird (2.x) — HTTP server
-- supabase-swift (2.x) — Auth, database, realtime (Supabase BaaS)
+- hummingbird (2.x) + swift-http-types — local HTTP server
+- solana-swift (5.x) — WalletKit USDC integration
 
 ## Build Notes
 
-- Targets macOS 14+ (Sonoma) for SwiftData compatibility
+- Targets macOS 14+ (Sonoma) and iOS 17+
+- `Info.plist` version keys are placeholders; `bundle.sh` stamps
+  CFBundleShortVersionString / CFBundleVersion (YYYYMMDDHHMM) at bundle time,
+  and the updater compares that build number with `mac-vYYYY.MM.DD.HHMM` tags
 - SwiftPM can't compile Metal shaders — use Xcode for full builds
 - Tests require Xcode SDK (XCTest not available with Command Line Tools only)
 - Conversation persistence uses in-memory store (SwiftData version needs Xcode)
