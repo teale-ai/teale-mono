@@ -3918,7 +3918,7 @@ dependencies = [
  "sha2",
  "socket2 0.5.10",
  "teale-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "tokio",
  "tokio-tungstenite",
@@ -3953,7 +3953,7 @@ dependencies = [
  "sha2",
  "sysinfo",
  "teale-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -3975,7 +3975,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "uuid",
 ]
 
