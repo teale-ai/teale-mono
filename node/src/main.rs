@@ -7,6 +7,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::collapsible_match)]
 
+mod account_session;
 mod backend;
 mod cluster;
 mod config;
@@ -21,6 +22,7 @@ mod pin;
 mod power_win;
 mod privacy_filter;
 mod relay;
+mod secure_file;
 mod status_server;
 mod supervisor;
 mod swap;
@@ -38,6 +40,7 @@ use tracing::{error, info, warn};
 
 use teale_protocol::IncomingRelayMessage;
 
+use crate::account_session::AccountSessionStore;
 use crate::backend::Backend;
 use crate::cluster::NodeRuntimeState;
 use crate::config::Config;
@@ -49,6 +52,43 @@ use crate::relay::RelayClient;
 use crate::supervisor::Supervisor;
 use crate::swap::{ModelSlot, SwapManager};
 use crate::windows_model_catalog::{context_for_model, model_by_id};
+
+/// Relay reconnect backoff: exponential with jitter so a fleet that lost the
+/// relay at the same moment does not reconnect in lock-step, and never
+/// shorter than a server-provided `Retry-After`.
+#[derive(Debug)]
+struct ReconnectBackoff {
+    failures: u32,
+}
+
+impl ReconnectBackoff {
+    const BASE: Duration = Duration::from_secs(2);
+    const MAX: Duration = Duration::from_secs(120);
+    /// A session that stayed up this long was healthy; start over from BASE.
+    const HEALTHY_SESSION: Duration = Duration::from_secs(60);
+
+    fn new() -> Self {
+        Self { failures: 0 }
+    }
+
+    fn reset(&mut self) {
+        self.failures = 0;
+    }
+
+    /// Delay before the next attempt; `jitter` is uniform in [0, 1). The
+    /// result lies in [cap/2, cap) where cap = min(BASE * 2^failures, MAX).
+    fn next_delay(&mut self, retry_after: Option<Duration>, jitter: f64) -> Duration {
+        let cap = Self::BASE
+            .saturating_mul(1u32 << self.failures.min(6))
+            .min(Self::MAX);
+        self.failures = self.failures.saturating_add(1);
+        let delay = cap.mul_f64(0.5 + 0.5 * jitter.clamp(0.0, 1.0));
+        match retry_after {
+            Some(server_wait) => delay.max(server_wait),
+            None => delay,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct RelayBackoffState {
@@ -275,7 +315,6 @@ async fn main() -> anyhow::Result<()> {
     };
     #[cfg(not(windows))]
     let ac_state: Option<Arc<std::sync::atomic::AtomicBool>> = None;
-    let _ = &ac_state; // Reserved for supervisor wiring in a follow-up.
 
     // Employee-machine throttling (#167): CPU-pressure and (optionally)
     // user-idle gating. Windows only; on other platforms the throttle stays
@@ -321,7 +360,7 @@ async fn main() -> anyhow::Result<()> {
         registry,
         swap_manager.clone(),
         config.llama.clone(),
-        config.control.clone(),
+        AccountSessionStore::in_data_dir(&crate::identity::data_dir()),
         config.relay.url.clone(),
         state.clone(),
     ));
@@ -393,11 +432,13 @@ async fn main() -> anyhow::Result<()> {
     install_signal_handlers(state.clone(), shutdown_signal.clone());
 
     // Reconnect loop
+    let mut reconnect = ReconnectBackoff::new();
     loop {
         if state.shutting_down.load(Ordering::Relaxed) {
             break;
         }
 
+        let session_started = Instant::now();
         let session_result = run_relay_session(
             &config,
             identity.as_ref(),
@@ -422,9 +463,20 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
             Err(e) => {
-                error!("Relay session error: {}. Reconnecting in 5s...", e);
+                if session_started.elapsed() >= ReconnectBackoff::HEALTHY_SESSION {
+                    reconnect.reset();
+                }
+                let retry_after = e
+                    .downcast_ref::<relay::RelayConnectError>()
+                    .and_then(|err| err.retry_after);
+                let delay = reconnect.next_delay(retry_after, rand::random::<f64>());
+                error!(
+                    "Relay session error: {}. Reconnecting in {:.1}s...",
+                    e,
+                    delay.as_secs_f64()
+                );
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = tokio::time::sleep(delay) => {}
                     _ = shutdown_signal.notified() => {
                         info!("Shutdown requested during backoff");
                         break;
@@ -953,14 +1005,31 @@ fn install_signal_handlers(state: Arc<NodeRuntimeState>, notify: Arc<Notify>) {
 
     #[cfg(windows)]
     {
+        // NSSM stops the service by sending a console control event (Ctrl+C
+        // with AppStopMethodConsole); handle every console event so the
+        // drain below runs. Backend children are spawned in their own process
+        // group (inference.rs) so the same Ctrl+C does not kill them first.
+        use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
         let state_win = state.clone();
         let notify_win = notify.clone();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                warn!("Ctrl-C received — initiating graceful shutdown");
-                state_win.shutting_down.store(true, Ordering::SeqCst);
-                notify_win.notify_waiters();
-            }
+            let handlers = (ctrl_c(), ctrl_break(), ctrl_close(), ctrl_shutdown());
+            let (mut c, mut brk, mut close, mut shutdown) = match handlers {
+                (Ok(c), Ok(brk), Ok(close), Ok(shutdown)) => (c, brk, close, shutdown),
+                _ => {
+                    error!("Failed to install console control handlers");
+                    return;
+                }
+            };
+            let event = tokio::select! {
+                _ = c.recv() => "Ctrl-C",
+                _ = brk.recv() => "Ctrl-Break",
+                _ = close.recv() => "console close",
+                _ = shutdown.recv() => "system shutdown",
+            };
+            warn!("{event} received — initiating graceful shutdown");
+            state_win.shutting_down.store(true, Ordering::SeqCst);
+            notify_win.notify_waiters();
         });
     }
 }
@@ -984,5 +1053,36 @@ async fn drain_in_flight(state: &Arc<NodeRuntimeState>, timeout_seconds: u64) {
         }
         info!("Draining: {} request(s) in flight", queue);
         poll.tick().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReconnectBackoff;
+    use std::time::Duration;
+
+    #[test]
+    fn reconnect_backoff_grows_caps_and_resets() {
+        let mut backoff = ReconnectBackoff::new();
+        // jitter 0 => lower edge (cap / 2); jitter ~1 => just under cap.
+        assert_eq!(backoff.next_delay(None, 0.0), Duration::from_secs(1));
+        assert_eq!(backoff.next_delay(None, 0.0), Duration::from_secs(2));
+        assert_eq!(backoff.next_delay(None, 0.0), Duration::from_secs(4));
+        for _ in 0..10 {
+            backoff.next_delay(None, 0.0);
+        }
+        assert_eq!(backoff.next_delay(None, 0.0), Duration::from_secs(60));
+        assert!(backoff.next_delay(None, 0.999) <= Duration::from_secs(120));
+        backoff.reset();
+        assert_eq!(backoff.next_delay(None, 0.0), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn reconnect_backoff_honours_retry_after() {
+        let mut backoff = ReconnectBackoff::new();
+        let wait = Duration::from_secs(300);
+        assert_eq!(backoff.next_delay(Some(wait), 0.5), wait);
+        let short = Duration::from_millis(10);
+        assert!(backoff.next_delay(Some(short), 0.0) >= Duration::from_secs(2));
     }
 }

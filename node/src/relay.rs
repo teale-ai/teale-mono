@@ -3,6 +3,8 @@
 //! Protocol types live in `teale_protocol::relay`. This file is the node's
 //! WS transport, register/discover helpers, and ping/keepalive logic.
 
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -14,6 +16,44 @@ use teale_protocol::{IncomingRelayMessage, NodeCapabilities};
 pub use teale_protocol::RelayDataPayload;
 
 use crate::identity::NodeIdentity;
+
+/// The relay WebSocket handshake failed. Carries the server's `Retry-After`
+/// (HTTP 429/503 during the upgrade) so the reconnect loop can honour it.
+#[derive(Debug)]
+pub struct RelayConnectError {
+    pub message: String,
+    pub retry_after: Option<Duration>,
+}
+
+impl std::fmt::Display for RelayConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RelayConnectError {}
+
+/// `Retry-After` in delta-seconds form, capped at 10 minutes. HTTP-date
+/// values are ignored (the relay only ever sends seconds).
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let seconds = value.trim().parse::<u64>().ok()?;
+    Some(Duration::from_secs(seconds.min(600)))
+}
+
+fn connect_error(error: WsError) -> RelayConnectError {
+    let header = match &error {
+        WsError::Http(response) => response.headers().get("retry-after").cloned(),
+        _ => None,
+    };
+    let retry_after = header
+        .as_ref()
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after);
+    RelayConnectError {
+        message: format!("WebSocket connect failed: {error}"),
+        retry_after,
+    }
+}
 
 #[derive(Clone)]
 pub struct RelayClient {
@@ -33,9 +73,8 @@ impl RelayClient {
         let url_with_node = format!("{}?node={}", relay_url, node_id);
 
         info!("Connecting to relay: {}", relay_url);
-        let (ws_stream, _) = connect_async(&url_with_node)
-            .await
-            .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
+        let connected = connect_async(&url_with_node).await;
+        let (ws_stream, _) = connected.map_err(connect_error)?;
         info!("Connected to relay");
 
         let (write, read) = ws_stream.split();
@@ -216,20 +255,6 @@ impl RelayClient {
         self.send_json(&payload)
     }
 
-    // Unused since relayReady moved into the read task (see connect()); kept
-    // as part of the client's control-message API.
-    #[allow(dead_code)]
-    pub fn send_relay_ready(&self, to_node_id: &str, session_id: &str) -> anyhow::Result<()> {
-        let payload = serde_json::json!({
-            "relayReady": {
-                "fromNodeID": self.node_id,
-                "toNodeID": to_node_id,
-                "sessionID": session_id
-            }
-        });
-        self.send_json(&payload)
-    }
-
     pub fn send_relay_data(
         &self,
         to_node_id: &str,
@@ -268,5 +293,18 @@ impl RelayClient {
     ) -> anyhow::Result<()> {
         let json_bytes = serde_json::to_vec(message)?;
         self.send_relay_data(to_node_id, session_id, &json_bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_retry_after;
+    use std::time::Duration;
+
+    #[test]
+    fn retry_after_parses_seconds_and_caps() {
+        assert_eq!(parse_retry_after(" 30 "), Some(Duration::from_secs(30)));
+        assert_eq!(parse_retry_after("86400"), Some(Duration::from_secs(600)));
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
     }
 }
