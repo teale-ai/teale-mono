@@ -1,19 +1,21 @@
 //! GET /v1/network — debug/telemetry view of every device the gateway
 //! currently tracks. Powers the network dashboard at scripts/teale-network-viz.py.
 //!
-//! This is read-only and auth-gated (same as /v1/models). The payload is
-//! verbose on purpose — clients can pick the fields they care about.
+//! This is read-only and requires a valid bearer (it is mounted on the
+//! protected router; unlike the public `/v1/models` catalog and the
+//! totals-only `/v1/network/stats`). The payload is verbose on purpose -
+//! clients can pick the fields they care about.
 
-use axum::{extract::State, Json};
+use axum::{extract::State, Extension, Json};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use crate::catalog::is_large;
+use crate::auth::{AuthPrincipal, PrincipalKind};
+use crate::catalog::{is_hidden_model_id, is_large};
+use crate::error::GatewayError;
 use crate::ledger;
 use crate::state::AppState;
-
-const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
 
 #[derive(Serialize)]
 struct DeviceView {
@@ -172,19 +174,30 @@ pub async fn network(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+/// GET /v1/debug/heavy-holds - the heavy-hold forensic ring: every
+/// acquire/share/refuse/expire/release with owner tags, newest last. This
+/// is the durable probe surface (fly's log buffer holds ~2 minutes and its
+/// tail can stall). It exposes fleet node ids and per-consumer owner
+/// hashes, which no public endpoint does (`/v1/network/stats` returns
+/// totals only), so it sits behind bearer auth and is limited to operator
+/// (static) bearers, like the admin routes.
+pub async fn heavy_hold_events(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<Value>, GatewayError> {
+    if !matches!(principal.kind, PrincipalKind::Static { .. }) {
+        return Err(GatewayError::Forbidden(
+            "heavy-hold events require an operator (static) bearer".into(),
+        ));
+    }
+    let events: Vec<_> = state.registry.heavy_events_snapshot();
+    Ok(Json(json!({ "heavyEvents": events })))
+}
+
 /// GET /v1/pool - public mint-pool status. The pool funds availability
 /// rewards (the drip); when it runs low, supply stops earning unless
 /// recycling or a real USDC contribution refills it. `lowPool` is a coarse
 /// flag: under 10% of total minted remaining.
-/// The heavy-hold forensic ring: every acquire/share/refuse/expire/release
-/// with owner tags, newest last. Public like /v1/pool - tags are hashes,
-/// device ids are already public in network stats. This is the durable
-/// probe surface: fly's log buffer holds ~2 minutes and its tail can stall.
-pub async fn heavy_hold_events(State(state): State<AppState>) -> Json<Value> {
-    let events: Vec<_> = state.registry.heavy_events_snapshot();
-    Json(json!({ "heavyEvents": events }))
-}
-
 pub async fn pool_status(State(state): State<AppState>) -> Json<Value> {
     let snapshot = state
         .db
@@ -230,7 +243,7 @@ pub async fn network_stats(State(state): State<AppState>) -> Json<Value> {
     let mut tps_samples = 0u64;
 
     for model in state.catalog.iter() {
-        if HIDDEN_MODEL_IDS.contains(&model.id.as_str()) || model.is_virtual {
+        if is_hidden_model_id(&model.id) || model.is_virtual {
             continue;
         }
         let min = if is_large(model.params_b) {

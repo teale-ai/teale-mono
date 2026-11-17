@@ -65,6 +65,34 @@ heavy_hold_max_tokens = 4096
 # not failure - the deadline is extended and quarantine is skipped for
 # that attempt.
 heavy_co_resident_ttft_bonus_seconds = 180
+# The knobs below are set to their compiled defaults (config.rs) so every
+# reliability setting the gateway reads is visible here.
+# Grace before an unaccounted backend-slot excess (#309) counts as a real
+# external resident: must exceed the slowest node heartbeat + discover poll.
+busy_excess_grace_seconds = 180
+# How long a departed (peerLeft) device's models stay listed (#220).
+departed_grace_seconds = 180
+# Post-restart window in which an unresolved model is a retriable 503
+# (supplier not re-announced yet) instead of a 404.
+registry_warmup_seconds = 60
+# Conversation supplier stickiness TTL (slot KV reuse); 0 disables.
+convo_stickiness_ttl_seconds = 1800
+# A heavy hold older than this is treated as leaked and expired; must stay
+# above the node stream budget (1800s, teale_protocol::STREAM_BUDGET_SECONDS).
+heavy_hold_ttl_seconds = 1900
+# true: a fleet where every eligible device is at max_queue_depth answers
+# 429 at_capacity + Retry-After instead of 503 model_unavailable.
+saturation_429 = false
+
+[stranger_supply]
+# Probation tier for unknown peers (compiled defaults shown). Disabled: the
+# [fleet] allowlist below is the whole admission story.
+enabled = false
+benchmark_interval_seconds = 300
+tps_floor_ratio = 0.3
+shadow_max_tokens_cap = 256
+shadow_similarity_floor = 0.6
+shadow_quarantine_streak = 3
 
 [synthetic_probes]
 # Keep /v1/models TTFT/TPS from going stale when real traffic is quiet.
