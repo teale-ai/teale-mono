@@ -270,6 +270,21 @@ mod tests {
     }
 
     #[test]
+    fn catalog_hashes_and_sizes_are_well_formed() {
+        for model in WINDOWS_MODEL_CATALOG {
+            let hex_ok = model
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+            assert!(model.sha256.is_empty() || (model.sha256.len() == 64 && hex_ok));
+            if model.size_bytes > 0 {
+                let gb = model.size_bytes as f64 / 1e9;
+                assert!((gb - model.size_gb).abs() < 0.2, "{}", model.id);
+            }
+        }
+    }
+
+    #[test]
     fn cpu_backend_keeps_default_context() {
         let hermes = &WINDOWS_MODEL_CATALOG[0];
         assert_eq!(context_for_model(hermes, 32.0, Some("cpu")), 8192);

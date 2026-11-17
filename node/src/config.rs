@@ -159,11 +159,17 @@ pub struct ControlConfig {
     pub port: u16,
     #[serde(default = "default_registry_path")]
     pub registry_path: String,
+    // Legacy Supabase sign-in settings. Supabase was decommissioned; the
+    // companion signs in with the gateway email code. Still parsed so older
+    // teale-node.toml files load, but ignored.
     #[serde(default)]
+    #[allow(dead_code)]
     pub supabase_url: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub supabase_anon_key: String,
     #[serde(default = "default_supabase_redirect_url")]
+    #[allow(dead_code)]
     pub supabase_redirect_url: String,
 }
 
@@ -275,7 +281,9 @@ fn default_llama_port() -> u16 {
     11436
 }
 fn default_mnn_port() -> u16 {
-    11437
+    // Not 11437 (control API) or 11438 (ds4), 11439 (privacy-filter helper)
+    // or 11441 (desktop tray IPC).
+    11440
 }
 fn default_ds4_port() -> u16 {
     11438
@@ -382,6 +390,51 @@ impl Default for PowerConfig {
             cpu_busy_window_secs: default_cpu_busy_window_secs(),
             idle_only: false,
             idle_after_secs: default_idle_after_secs(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_supabase_control_fields_still_parse() {
+        let toml = r#"
+            [relay]
+            url = "wss://relay.teale.com/ws"
+
+            [llama]
+            binary = "llama-server"
+            model = ""
+
+            [control]
+            port = 11437
+            supabase_url = "https://example.supabase.co"
+            supabase_anon_key = "anon"
+            supabase_redirect_url = "teale://auth/callback"
+
+            [node]
+            display_name = "test"
+        "#;
+        let config: Config = toml::from_str(toml).expect("legacy config parses");
+        assert_eq!(config.control.port, 11437);
+    }
+
+    #[test]
+    fn default_ports_do_not_collide() {
+        let ports = [
+            default_llama_port(),
+            default_control_port(),
+            default_ds4_port(),
+            default_mnn_port(),
+            11439, // privacy-filter helper
+            11441, // desktop tray IPC
+        ];
+        for (i, a) in ports.iter().enumerate() {
+            for b in &ports[i + 1..] {
+                assert_ne!(a, b);
+            }
         }
     }
 }

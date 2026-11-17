@@ -1,66 +1,109 @@
 //! Windows-specific power management for end-user-laptop supply nodes.
 //!
 //! Two behaviors end-user-laptop contributors need:
-//!   1. Keep supplying with the lid closed on AC. Windows' default is
-//!      "lid close → sleep", which suspends teale-node along with the rest
-//!      of the system. The NSSM service alone isn't enough: the OS can
-//!      still enter sleep, and `powercfg` changes are separately done by
-//!      the installer. Here we hold a system wake-lock while a request is
-//!      in-flight so an unexpected sleep never interrupts it.
+//!   1. Don't let idle sleep interrupt a request. While at least one
+//!      inference request is in flight the node holds a system wake request
+//!      (`WakeLock`, refcounted, owned by one dedicated thread because
+//!      `SetThreadExecutionState` is per-thread). This only blocks *idle*
+//!      sleep: closing the lid or pressing the power button still follows the
+//!      power plan, which is why the installer separately sets "lid close on
+//!      AC = do nothing" (and records/restores the previous values).
 //!   2. Pause on battery. Running inference on DC power is a trust
 //!      violation — the user's battery should belong to the user. We poll
-//!      `GetSystemPowerStatus` and the supervisor uses `is_on_ac()` to
-//!      gate whether the node advertises itself as healthy.
+//!      `GetSystemPowerStatus`; `main.rs` copies the result into
+//!      `NodeRuntimeState::on_ac_power`, which gates whether the node
+//!      advertises itself as available.
 
 #![cfg(windows)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use tracing::{info, warn};
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::System::Power::{
-    GetSystemPowerStatus, SetThreadExecutionState, ES_AWAYMODE_REQUIRED, ES_CONTINUOUS,
-    ES_SYSTEM_REQUIRED, EXECUTION_STATE, SYSTEM_POWER_STATUS,
+    GetSystemPowerStatus, SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+    SYSTEM_POWER_STATUS,
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::GetSystemTimes;
 
-/// RAII handle — while this value is alive, Windows will not enter sleep
-/// because of user inactivity. Drop it to release the wake-lock (the OS
-/// resumes normal idle/sleep timeouts).
+/// Number of live `WakeLock`s plus the condvar the owner thread waits on.
+struct WakeRequests {
+    count: Mutex<usize>,
+    changed: Condvar,
+}
+
+fn wake_requests() -> &'static WakeRequests {
+    static REQUESTS: OnceLock<WakeRequests> = OnceLock::new();
+    static OWNER: OnceLock<()> = OnceLock::new();
+    let requests = REQUESTS.get_or_init(|| WakeRequests {
+        count: Mutex::new(0),
+        changed: Condvar::new(),
+    });
+    OWNER.get_or_init(|| {
+        let spawned = std::thread::Builder::new()
+            .name("teale-wake-lock".into())
+            .spawn(move || wake_owner_thread(requests));
+        if let Err(err) = spawned {
+            warn!("could not start the wake-lock thread: {err}");
+        }
+    });
+    requests
+}
+
+/// Holds `ES_SYSTEM_REQUIRED` exactly while the count is non-zero. The
+/// execution state belongs to this thread, so acquire/release from any
+/// tokio worker thread is safe.
+fn wake_owner_thread(requests: &'static WakeRequests) {
+    let mut held = false;
+    let mut count = requests.count.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        while (*count > 0) == held {
+            count = requests
+                .changed
+                .wait(count)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        held = *count > 0;
+        // Safety: SetThreadExecutionState only toggles this thread's
+        // execution-state flags; no memory is passed.
+        let flags = if held {
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        } else {
+            ES_CONTINUOUS
+        };
+        let previous = unsafe { SetThreadExecutionState(flags) };
+        if previous.0 == 0 {
+            warn!("SetThreadExecutionState failed (held={held})");
+        }
+    }
+}
+
+/// RAII wake request: while any `WakeLock` is alive Windows will not enter
+/// idle sleep. No `ES_DISPLAY_REQUIRED` — the screen may still turn off.
 pub struct WakeLock {
     _private: (),
 }
 
 impl WakeLock {
-    /// Acquire a system-level wake-lock. Call when a request starts serving.
-    /// Safe to call repeatedly — Windows tracks the execution state on the
-    /// calling thread; the last flag set wins. We always set `ES_CONTINUOUS`
-    /// so the state persists across calls.
-    ///
-    /// No `ES_DISPLAY_REQUIRED` — the screen can go dark, which is what
-    /// contributors actually want ("lid closed, screen off, keeps working").
+    /// Register one in-flight request. Cheap; refcounted across threads.
     pub fn acquire() -> Self {
-        // Safety: SetThreadExecutionState is a read-only OS state toggle; no
-        // buffers are written, no aliasing concerns.
-        unsafe {
-            let _ =
-                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
-        }
+        let requests = wake_requests();
+        let mut count = requests.count.lock().unwrap_or_else(|e| e.into_inner());
+        *count += 1;
+        requests.changed.notify_all();
         Self { _private: () }
     }
 }
 
 impl Drop for WakeLock {
     fn drop(&mut self) {
-        // Release the lock — reset to ES_CONTINUOUS alone, which clears the
-        // system-required / away-mode flags. Per Microsoft docs this is the
-        // idiomatic way to stop holding the machine awake.
-        unsafe {
-            let _ = SetThreadExecutionState(ES_CONTINUOUS);
-        }
+        let requests = wake_requests();
+        let mut count = requests.count.lock().unwrap_or_else(|e| e.into_inner());
+        *count = count.saturating_sub(1);
+        requests.changed.notify_all();
     }
 }
 
@@ -83,12 +126,10 @@ pub fn is_on_ac() -> Option<bool> {
 }
 
 /// Spawn a background task that polls AC status every 3 s and updates the
-/// shared flag. Supervisor code reads the flag to gate supply.
+/// shared flag; `main.rs` mirrors it into `NodeRuntimeState::on_ac_power`.
 ///
-/// The 3-second cadence is a deliberate balance: fast enough that a user
-/// unplugging their laptop sees the tray icon flip within ~5 s (one poll
-/// interval plus the relay heartbeat round-trip), slow enough that we
-/// don't burn wakeups on an idle machine.
+/// The 3-second cadence keeps the supply gate responsive (the tray polls
+/// the node every 5 s) without burning wakeups on an idle machine.
 pub fn spawn_ac_poller(shared: Arc<AtomicBool>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
@@ -116,14 +157,6 @@ pub fn initial_ac_state() -> bool {
     // `None` means unknown — default to `true` (on AC) so desktops without
     // a battery driver never accidentally self-quarantine.
     is_on_ac().unwrap_or(true)
-}
-
-/// Type-level hint used at hazardous-unsafe boundaries — forces us to call
-/// a free function instead of accidentally re-implementing the Drop logic.
-#[allow(dead_code)]
-#[inline(always)]
-fn _exec_state_bits() -> EXECUTION_STATE {
-    ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
 }
 
 // ---------------------------------------------------------------------------
