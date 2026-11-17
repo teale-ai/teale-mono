@@ -152,20 +152,22 @@ public enum ModelStorageLayout {
     /// Regular files under `directory`, as paths relative to it (hidden
     /// entries skipped).
     public static func relativeFiles(in directory: URL) -> [String] {
-        let root = directory.standardizedFileURL.path
-        guard let enumerator = FileManager.default.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+        // The path-based enumerator yields paths relative to `directory`,
+        // so /var vs /private/var spellings of the root cannot matter.
+        guard let enumerator = FileManager.default.enumerator(atPath: directory.path) else { return [] }
         var results: [String] = []
-        for case let url as URL in enumerator {
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+        while let relative = enumerator.nextObject() as? String {
+            let components = relative.split(separator: "/")
+            if components.contains(where: { $0.hasPrefix(".") }) {
+                if (enumerator.fileAttributes?[.type] as? FileAttributeType) == .typeDirectory {
+                    enumerator.skipDescendants()
+                }
                 continue
             }
-            let path = url.standardizedFileURL.path
-            guard path.hasPrefix(root + "/") else { continue }
-            results.append(String(path.dropFirst(root.count + 1)))
+            let type = enumerator.fileAttributes?[.type] as? FileAttributeType
+            if type == .typeRegular || type == .typeSymbolicLink {
+                results.append(relative)
+            }
         }
         return results
     }

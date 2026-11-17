@@ -1050,6 +1050,14 @@ public final class AppState {
             return
         }
 
+        // GGUF catalog entries are served by llama.cpp / ds4, never MLX.
+        if descriptor.format == .gguf, inferenceBackend == .localMLX {
+            let target: InferenceBackend = descriptor.servingBackend == .ds4 ? .ds4 : .llamaCpp
+            UserDefaults.standard.set(target.rawValue, forKey: Self.inferenceBackendKey)
+            inferenceBackend = target
+            await applyInferenceBackendSelection()
+        }
+
         do {
             // Unload any currently loaded model first
             if case .ready = engineStatus {
@@ -1572,6 +1580,7 @@ public final class AppState {
 
     private func enableCluster() {
         modelManager.peerModelSource = clusterManager
+        clusterManager.throttleLevelProvider = { [throttler = self.throttler] in throttler.throttleLevel.rawValue }
         clusterManager.updateAuthenticatedUserID(authManager?.currentUser?.id)
         clusterManager.enable()
         syncLANPeersToWAN()
@@ -1745,6 +1754,12 @@ public final class AppState {
         if let advertised = descriptor.advertisedId?.trimmingCharacters(in: .whitespacesAndNewlines),
            !advertised.isEmpty {
             return advertised
+        }
+
+        // Catalog entries carry their slug explicitly; nil means local-only.
+        // Never recover one by fuzzy matching (two entries can share a repo).
+        if ModelCatalog.allModels.contains(where: { $0.id == descriptor.id }) {
+            return nil
         }
 
         let candidates = [

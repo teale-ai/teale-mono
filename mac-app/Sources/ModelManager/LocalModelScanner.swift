@@ -40,7 +40,7 @@ public struct LocalModelInfo: Identifiable, Sendable {
             parameterCount: paramCount,
             quantization: quant,
             estimatedSizeGB: sizeGB,
-            requiredRAMGB: sizeGB * 1.5,  // weights + KV + runtime; 0 only if the size is truly unknown
+            requiredRAMGB: sizeGB * ModelFit.footprintPerWeightGB,  // weights + KV + runtime (ModelFit estimate)
             family: configJSON?.modelType ?? "Unknown",
             description: "Local model from \(source.rawValue)",
             openrouterId: orId

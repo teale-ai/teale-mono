@@ -200,7 +200,7 @@ public struct GGUFModelInfo: Identifiable, Sendable {
             parameterCount: paramCount,
             quantization: quant,
             estimatedSizeGB: sizeGB,
-            requiredRAMGB: sizeGB * 1.3,  // GGUF models need ~1.3x file size in RAM
+            requiredRAMGB: sizeGB * ModelFit.footprintPerWeightGB,  // weights + KV + runtime (ModelFit estimate)
             family: inferFamily(),
             description: "GGUF model from \(source.rawValue)",
             openrouterId: OpenRouterIdResolver.resolve(filename: path.lastPathComponent),

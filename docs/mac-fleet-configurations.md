@@ -109,7 +109,7 @@ Evidence that Mac Studio Ultra is where the local-LLM community lives: the [r/Lo
 
 Ranked by expected share of the **supply-side fleet** (not general Mac population). Shares are estimates, not measurements.
 
-Max model size uses the heuristic **usable RAM ≈ 0.6 × unified RAM** for a dedicated-inference node (OS + leaving VRAM headroom). At Q4_K_M, a model of N billion params takes roughly **N × 0.55 GB**, so max model size ≈ `(0.6 × RAM) / 0.55` billion parameters.
+Max model size uses the same fit rule as the Mac app (`ModelFit` in `mac-app/Sources/SharedTypes/ModelStorage.swift`, also described in `device-model-matrix.md`): a model fits when its full footprint (weights + KV cache + runtime) is ≤ **min(0.75 × RAM, RAM − 4 GB)**. Estimating the footprint as 1.25 × weights, that is **weights ≤ 0.6 × unified RAM** on machines with ≥ 16 GB. At Q4_K_M, a model of N billion params takes roughly **N × 0.55 GB**, so max model size ≈ `(0.6 × RAM) / 0.55` billion parameters.
 
 Tokens/sec for 7B Q4 is estimated from bandwidth: a 7B Q4 model is ~4 GB, and token generation is bandwidth-bound at roughly **BW / model_size** t/s. Real-world llama.cpp/MLX numbers roughly match this for decode. Prompt processing is compute-bound and scales with GPU cores; numbers here are **decode** t/s, which is what matters for streaming completions.
 
