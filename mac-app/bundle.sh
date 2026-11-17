@@ -103,6 +103,16 @@ if [ -f "Sources/InferencePoolApp/AppIcon.icns" ]; then
     echo "  Included app icon"
 fi
 
+# Privacy filter helper: the app only looks for it in Contents/Resources
+# (or an absolute TEALE_OPF_HELPER_SCRIPT), so shipped builds must carry it.
+PRIVACY_HELPER="../scripts/privacy_filter_helper.py"
+if [ ! -f "${PRIVACY_HELPER}" ]; then
+    echo "ERROR: ${PRIVACY_HELPER} not found (run bundle.sh from mac-app/ in the monorepo)"
+    exit 1
+fi
+cp "${PRIVACY_HELPER}" "${RESOURCES_DIR}/privacy_filter_helper.py"
+echo "  Included privacy filter helper"
+
 # Embed the Developer ID provisioning profile if present. Required by AMFI to
 # authorize restricted entitlements (e.g. com.apple.developer.networking.multicast)
 # under Hardened Runtime.

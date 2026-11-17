@@ -3,22 +3,23 @@ import WebKit
 import AppKit
 import AppCore
 import AuthKit
+import LocalAPI
 
 private enum DesktopCompanionConfig {
     // Remote desktop UI is a dev-only override. The bundled assets under
     // Resources/DesktopCompanionWeb/ are the source of truth for shipped
-    // builds — no public web fallback is deployed today, so an unset env
-    // var means "use the bundled page only" (matches the Windows/Linux
-    // tray behavior, which embeds the same assets at compile time).
-    static let remoteDesktopURL: URL? = ProcessInfo.processInfo.environment["TEALE_DESKTOP_WEB_URL"]
-        .flatMap { URL(string: $0) }
+    // builds - an unset env var means "use the bundled page only". Only an
+    // https override is honored (LocalOriginPolicy), and that page gets the
+    // config/IPC bridge but never the local API key.
+    static let remoteDesktopURL: URL? = LocalOriginPolicy.desktopWebOverrideURL()
+
+    static let bundledURL = URL(string: "teale://localhost/")!
 
     static let routes: [String: String] = [
         "snapshot": "/v1/desktop/app",
         "privacyFilterMode": "/v1/desktop/app/privacy-filter/mode",
         "supplySet": "/v1/desktop/app/supply",
         "chatCompletions": "/v1/chat/completions",
-        "authSession": "/v1/desktop/app/auth/session",
         "networkModels": "/v1/desktop/app/network/models",
         "networkStats": "/v1/desktop/app/network/stats",
         "accountSummary": "/v1/desktop/app/account",
@@ -33,10 +34,37 @@ private enum DesktopCompanionConfig {
         "depositInfo": "/v1/desktop/app/account/deposit-info",
         "walletRefresh": "/v1/desktop/app/wallet/refresh",
         "walletSend": "/v1/desktop/app/wallet/send",
-        "authPending": "teale://localhost/auth/pending",
         "bundledApp": "teale://localhost/",
         "localApiKey": "teale://localhost/auth/local-api-key",
     ]
+
+    /// The bundled companion page (`teale://localhost/...`).
+    static func isBundled(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return url.scheme?.lowercased() == "teale" && url.host?.lowercased() == "localhost"
+    }
+
+    /// The bundled page or the https dev override (same origin).
+    static func isTrustedPage(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        if isBundled(url) { return true }
+        guard let remoteDesktopURL,
+              let remoteOrigin = LocalOriginPolicy.origin(of: remoteDesktopURL) else { return false }
+        return LocalOriginPolicy.origin(of: url) == remoteOrigin
+    }
+
+    /// Same check for a WKSecurityOrigin's parts (port 0 = scheme default).
+    static func isTrustedOrigin(scheme: String, host: String, port: Int) -> Bool {
+        let scheme = scheme.lowercased()
+        let host = host.lowercased()
+        if scheme == "teale" && host == "localhost" { return true }
+        guard let remoteDesktopURL,
+              remoteDesktopURL.scheme?.lowercased() == scheme,
+              remoteDesktopURL.host?.lowercased() == host else { return false }
+        let expectedPort = remoteDesktopURL.port ?? 443
+        let actualPort = port == 0 ? 443 : port
+        return expectedPort == actualPort
+    }
 }
 
 @MainActor
@@ -45,7 +73,6 @@ final class DesktopCompanionBridge {
 
     private weak var webView: WKWebView?
     private weak var authManager: AuthManager?
-    private var pendingOAuthCallbackURL: String?
     private var localAPIKey: String?
     private var localAPIKeyTask: Task<Void, Never>?
 
@@ -53,35 +80,36 @@ final class DesktopCompanionBridge {
         self.webView = webView
         self.authManager = authManager
         prewarmLocalAPIKey(using: appState)
-        dispatchPendingOAuthCallbackIfPossible()
         syncNativeStateIntoPage()
     }
 
-    @discardableResult
-    func handleIncomingURL(_ url: URL) -> Bool {
-        pendingOAuthCallbackURL = url.absoluteString
-        dispatchPendingOAuthCallbackIfPossible()
-        return webView != nil
-    }
-
-    func takePendingOAuthCallbackURL() -> String? {
-        defer { pendingOAuthCallbackURL = nil }
-        return pendingOAuthCallbackURL
-    }
-
-    func currentLocalAPIKey() -> String? {
-        localAPIKey
+    /// The local API key, only ever handed to the bundled page.
+    func localAPIKey(for pageURL: URL?) -> String? {
+        DesktopCompanionConfig.isBundled(pageURL) ? localAPIKey : nil
     }
 
     func pageDidFinishLoading() {
-        dispatchPendingOAuthCallbackIfPossible()
         syncNativeStateIntoPage()
+    }
+
+    /// Ask the page to re-poll the local snapshot now - used after the
+    /// native shell adopts a session out of band (magic-link deep link) so
+    /// the web UI flips to signed-in without waiting for the next poll.
+    func refreshSnapshotInPage() {
+        guard let webView, DesktopCompanionConfig.isTrustedPage(webView.url) else { return }
+        webView.evaluateJavaScript(
+            "if (typeof window.__tealeRefreshSnapshot === \"function\") { window.__tealeRefreshSnapshot(); }",
+            completionHandler: nil
+        )
     }
 
     fileprivate func handleNativeMessage(_ message: DesktopNativeMessage) {
         switch message.kind {
         case "openExternal":
-            guard let rawURL = message.url, let url = URL(string: rawURL) else { return }
+            guard let rawURL = message.url,
+                  let url = URL(string: rawURL),
+                  let scheme = url.scheme?.lowercased(),
+                  ["https", "http", "mailto"].contains(scheme) else { return }
             NSWorkspace.shared.open(url)
         case "authLog":
             if let text = message.message {
@@ -106,49 +134,47 @@ final class DesktopCompanionBridge {
         ]
         let data = try? JSONSerialization.data(withJSONObject: payload, options: [])
         let json = data.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        var trustedOrigins = ["teale://localhost"]
+        if let remote = DesktopCompanionConfig.remoteDesktopURL,
+           let origin = LocalOriginPolicy.origin(of: remote) {
+            trustedOrigins.append(origin)
+        }
+        let originsJSON = (try? JSONSerialization.data(withJSONObject: trustedOrigins, options: []))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        // Defense in depth: the navigation delegate already keeps the web
+        // view on trusted pages, but never define the bridge for anything
+        // else.
         return """
-        window.__TEALE_DESKTOP_CONFIG__ = \(json);
-        window.ipc = {
-          postMessage: function(message) {
-            window.webkit.messageHandlers.ipc.postMessage(message);
-          }
-        };
+        (function () {
+          var trusted = \(originsJSON);
+          var origin = window.location.protocol === "teale:"
+            ? "teale://" + window.location.host
+            : window.location.origin;
+          if (trusted.indexOf(origin) === -1) { return; }
+          window.__TEALE_DESKTOP_CONFIG__ = \(json);
+          window.ipc = {
+            postMessage: function(message) {
+              window.webkit.messageHandlers.ipc.postMessage(message);
+            }
+          };
+        })();
         """
-    }
-
-    private func dispatchPendingOAuthCallbackIfPossible() {
-        guard let callbackURL = pendingOAuthCallbackURL, let webView else { return }
-        let payloadData = try? JSONEncoder().encode(callbackURL)
-        guard let payloadData, let payload = String(data: payloadData, encoding: .utf8) else {
-            return
-        }
-        let script = """
-        window.__tealePendingOAuthCallbackUrl = \(payload);
-        try {
-          window.localStorage.setItem("__teale_pending_oauth_callback", \(payload));
-        } catch (_error) {}
-        if (typeof window.__tealeHandleOAuthCallback === "function") {
-          window.__tealeHandleOAuthCallback(\(payload));
-        }
-        """
-        webView.evaluateJavaScript(script, completionHandler: nil)
-        pendingOAuthCallbackURL = nil
     }
 
     private func syncNativeStateIntoPage() {
-        if let key = localAPIKey {
-            let payloadData = try? JSONEncoder().encode(key)
-            if let payloadData, let payload = String(data: payloadData, encoding: .utf8) {
-                let script = """
-                window.__TEALE_DESKTOP_CONFIG__ = window.__TEALE_DESKTOP_CONFIG__ || {};
-                window.__TEALE_DESKTOP_CONFIG__.localApiKey = \(payload);
-                if (typeof window.__tealeSetLocalApiKey === "function") {
-                  window.__tealeSetLocalApiKey(\(payload));
-                }
-                """
-                webView?.evaluateJavaScript(script, completionHandler: nil)
-            }
+        guard let webView, let key = localAPIKey(for: webView.url) else { return }
+        let payloadData = try? JSONEncoder().encode(key)
+        guard let payloadData, let payload = String(data: payloadData, encoding: .utf8) else { return }
+        let script = """
+        if (window.location.protocol === "teale:") {
+          window.__TEALE_DESKTOP_CONFIG__ = window.__TEALE_DESKTOP_CONFIG__ || {};
+          window.__TEALE_DESKTOP_CONFIG__.localApiKey = \(payload);
+          if (typeof window.__tealeSetLocalApiKey === "function") {
+            window.__tealeSetLocalApiKey(\(payload));
+          }
         }
+        """
+        webView.evaluateJavaScript(script, completionHandler: nil)
     }
 
     private func prewarmLocalAPIKey(using appState: AppState) {
@@ -172,22 +198,25 @@ private struct DesktopNativeMessage: Decodable {
     let kind: String
     let url: String?
     let message: String?
-    let accessToken: String?
-    let refreshToken: String?
 
     private enum CodingKeys: String, CodingKey {
         case kind = "type"
         case url
         case message
-        case accessToken
-        case refreshToken
     }
 }
 
 private final class DesktopCompanionIPCHandler: NSObject, WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        let frame = message.frameInfo
         guard
             message.name == "ipc",
+            frame.isMainFrame,
+            DesktopCompanionConfig.isTrustedOrigin(
+                scheme: frame.securityOrigin.protocol,
+                host: frame.securityOrigin.host,
+                port: frame.securityOrigin.port
+            ),
             let body = message.body as? String,
             let data = body.data(using: .utf8),
             let payload = try? JSONDecoder().decode(DesktopNativeMessage.self, from: data)
@@ -205,35 +234,33 @@ private final class DesktopCompanionSchemeHandler: NSObject, WKURLSchemeHandler 
             return
         }
 
-        let host = url.host ?? ""
         let rawPath = url.path.isEmpty ? "/" : url.path
-        let path: String
-        if rawPath == "/" || (host == "auth" && rawPath == "/callback") || rawPath == "/auth/callback" {
-            path = "index.html"
-        } else {
-            path = rawPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        }
+        let path = rawPath == "/" ? "index.html" : rawPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 
         let responseData: (Data, String, Int)?
-        switch path {
-        case "index.html":
-            responseData = resource(named: "index.html", mimeType: "text/html")
-        case "app.css":
-            responseData = resource(named: "app.css", mimeType: "text/css")
-        case "app.js":
-            responseData = resource(named: "app.js", mimeType: "text/javascript")
-        case "auth/pending":
-            let payload = ["url": DesktopCompanionBridge.shared.takePendingOAuthCallbackURL()]
-            let data = (try? JSONSerialization.data(withJSONObject: payload, options: [])) ?? Data("{\"url\":null}".utf8)
-            responseData = (data, "application/json", 200)
-        case "auth/local-api-key":
-            let payload = ["key": DesktopCompanionBridge.shared.currentLocalAPIKey()]
-            let data = (try? JSONSerialization.data(withJSONObject: payload, options: [])) ?? Data("{\"key\":null}".utf8)
-            responseData = (data, "application/json", 200)
-        default:
+        if !DesktopCompanionConfig.isBundled(url) {
             responseData = (Data("Not Found".utf8), "text/plain", 404)
+        } else {
+            switch path {
+            case "index.html":
+                responseData = resource(named: "index.html", mimeType: "text/html")
+            case "app.css":
+                responseData = resource(named: "app.css", mimeType: "text/css")
+            case "app.js":
+                responseData = resource(named: "app.js", mimeType: "text/javascript")
+            case "auth/local-api-key":
+                // Only the bundled page itself may read the key.
+                let key = DesktopCompanionBridge.shared.localAPIKey(for: webView.url)
+                let payload: [String: Any] = ["key": key ?? NSNull()]
+                let data = (try? JSONSerialization.data(withJSONObject: payload, options: [])) ?? Data("{\"key\":null}".utf8)
+                responseData = (data, "application/json", key == nil ? 403 : 200)
+            default:
+                responseData = (Data("Not Found".utf8), "text/plain", 404)
+            }
         }
 
+        // Same-origin only: no Access-Control-* headers, so no other origin
+        // can read these responses.
         guard let (data, mimeType, statusCode) = responseData,
               let response = HTTPURLResponse(
                 url: url,
@@ -242,10 +269,6 @@ private final class DesktopCompanionSchemeHandler: NSObject, WKURLSchemeHandler 
                 headerFields: [
                     "Content-Type": mimeType,
                     "Cache-Control": "no-store",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization",
-                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                    "Access-Control-Allow-Private-Network": "true",
                 ]
               ) else {
             urlSchemeTask.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotDecodeContentData))
@@ -261,7 +284,7 @@ private final class DesktopCompanionSchemeHandler: NSObject, WKURLSchemeHandler 
 
     private func resource(named name: String, mimeType: String) -> (Data, String, Int)? {
         // Package.swift uses .process("Resources"), which flattens
-        // DesktopCompanionWeb/* into the bundle root — so look up by
+        // DesktopCompanionWeb/* into the bundle root - so look up by
         // bare filename, not by subdirectory.
         guard let url = Bundle.module.url(forResource: name, withExtension: nil),
               let data = try? Data(contentsOf: url) else {
@@ -272,6 +295,28 @@ private final class DesktopCompanionSchemeHandler: NSObject, WKURLSchemeHandler 
 }
 
 private final class DesktopCompanionNavigationDelegate: NSObject, WKNavigationDelegate {
+    /// Keep the web view on the bundled page (or the https dev override).
+    /// Any other http(s) navigation - a link in chat output, a docs link -
+    /// opens in the default browser instead of inheriting the bridge.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction
+    ) async -> WKNavigationActionPolicy {
+        guard let url = navigationAction.request.url else { return .cancel }
+        if DesktopCompanionConfig.isTrustedPage(url) {
+            return .allow
+        }
+        if url.scheme?.lowercased() == "about", navigationAction.targetFrame?.isMainFrame == false {
+            return .allow
+        }
+        if let scheme = url.scheme?.lowercased(),
+           ["https", "http", "mailto"].contains(scheme),
+           navigationAction.navigationType == .linkActivated || navigationAction.targetFrame?.isMainFrame != false {
+            NSWorkspace.shared.open(url)
+        }
+        return .cancel
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         DesktopCompanionBridge.shared.pageDidFinishLoading()
     }
@@ -357,7 +402,7 @@ private struct DesktopCompanionWebContainer: NSViewRepresentable {
             webView.isInspectable = true
         }
         DesktopCompanionBridge.shared.attach(webView: webView, authManager: appState.authManager, appState: appState)
-        webView.load(URLRequest(url: URL(string: "teale://localhost/")!))
+        webView.load(URLRequest(url: DesktopCompanionConfig.bundledURL))
         context.coordinator.maybeLoadRemoteDesktop(into: webView)
         return webView
     }
