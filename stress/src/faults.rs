@@ -92,6 +92,17 @@ async fn ssh(target: &str, cmd: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn log_status(output: &std::process::Output) {
+    if !output.status.success() {
+        warn!(
+            stdout = %String::from_utf8_lossy(&output.stdout),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "ssh exit: {}",
+            output.status
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,16 +117,5 @@ mod tests {
         let rule = "-p tcp --dport 443 -m comment --comment teale-stress -j REJECT";
         assert!(BLOCK_WS_CMD.contains(rule));
         assert!(UNBLOCK_WS_CMD.contains(rule));
-    }
-}
-
-fn log_status(output: &std::process::Output) {
-    if !output.status.success() {
-        warn!(
-            stdout = %String::from_utf8_lossy(&output.stdout),
-            stderr = %String::from_utf8_lossy(&output.stderr),
-            "ssh exit: {}",
-            output.status
-        );
     }
 }
