@@ -178,10 +178,11 @@ impl Default for SchedulerConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct PerModelFloor {
-    /// Minimum devices for models ≥70B params.
+    /// Minimum devices for "large" models (params_b >= 50, see
+    /// `catalog::LARGE_MODEL_PARAMS_B`).
     #[serde(default = "default_floor_large")]
     pub large: u32,
-    /// Minimum devices for models <70B params.
+    /// Minimum devices for models below the large threshold (< 50B params).
     #[serde(default = "default_floor_small")]
     pub small: u32,
 }
@@ -423,9 +424,9 @@ fn default_heavy_hold() -> bool {
 }
 
 fn default_heavy_hold_ttl() -> u64 {
-    // above the 1800s stream cap: a live heavy always finishes (or dies at
+    // above the node stream cap: a live heavy always finishes (or dies at
     // the cap) before its hold can look stale
-    1900
+    teale_protocol::STREAM_BUDGET_SECONDS + 100
 }
 
 /// 30k prompt tokens: CCC heavy steps run 36-100k; ordinary chat and
@@ -441,13 +442,13 @@ fn default_heavy_hold_max_tokens() -> u32 {
     4096
 }
 
-/// 180s on top of the normal TTFT deadline: Citadel's contention samples
-/// show co-resident first tokens of 123-216s on 512g8 behind a heavy's
-/// cold prefill, over the 120s base deadline.
 fn default_convo_stickiness_ttl() -> u64 {
     1800
 }
 
+/// 180s on top of the normal TTFT deadline: Citadel's contention samples
+/// show co-resident first tokens of 123-216s on 512g8 behind a heavy's
+/// cold prefill, over the 120s base deadline.
 fn default_heavy_co_resident_ttft_bonus() -> u64 {
     180
 }

@@ -65,22 +65,24 @@ public actor Ds4Provider: InferenceProvider {
     }
 
     public func loadModel(_ descriptor: ModelDescriptor) async throws {
-        stopServer()
+        await stopServer()
         _status = .loadingModel(descriptor)
 
-        let modelPath = descriptor.huggingFaceRepo
-        guard FileManager.default.fileExists(atPath: modelPath) else {
-            _status = .error("DS4 GGUF file not found: \(modelPath)")
-            throw Ds4ProviderError.modelNotFound(modelPath)
+        // Scanned GGUFs carry their file path in huggingFaceRepo; catalog
+        // DS4 entries resolve to the downloaded file under Teale/gguf/<id>.
+        guard let modelURL = ModelStorageLayout.localGGUFFile(for: descriptor) else {
+            let missing = descriptor.huggingFaceRepo
+            _status = .error("DS4 GGUF file not found for \(descriptor.name): \(missing)")
+            throw Ds4ProviderError.modelNotFound(missing)
         }
 
-        try await startServer(modelPath: modelPath)
+        try await startServer(modelPath: modelURL.path, expectedModelID: backendModelID(for: descriptor))
         currentDescriptor = descriptor
         _status = .ready(descriptor)
     }
 
     public func unloadModel() async {
-        stopServer()
+        await stopServer()
         currentDescriptor = nil
         _status = .idle
     }
@@ -98,7 +100,7 @@ public actor Ds4Provider: InferenceProvider {
         }
     }
 
-    private func startServer(modelPath: String) async throws {
+    private func startServer(modelPath: String, expectedModelID: String) async throws {
         let resolvedBinary = resolvedBinaryPath()
         guard FileManager.default.isExecutableFile(atPath: resolvedBinary) else {
             _status = .error("ds4-server not found at: \(resolvedBinary)")
@@ -127,52 +129,88 @@ public actor Ds4Provider: InferenceProvider {
         process.executableURL = URL(fileURLWithPath: resolvedBinary)
         process.arguments = args
 
-        let logPath = URL(fileURLWithPath: "/tmp/ds4-server.log")
-        FileManager.default.createFile(atPath: logPath.path, contents: nil)
-        let outputHandle = (try? FileHandle(forWritingTo: logPath)) ?? FileHandle.nullDevice
+        // Private log under ~/Library/Logs/Teale (may contain prompts).
+        let outputHandle = ManagedSubprocess.openLogFile(named: "ds4-server.log")
         process.standardOutput = outputHandle
         process.standardError = outputHandle
+        process.standardInput = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] exited in
+            let status = exited.terminationStatus
+            Task { await self?.handleServerExit(exited, status: status) }
+        }
 
         try process.run()
+        ManagedSubprocess.register(process)
         serverProcess = process
-        try await waitForModels(timeoutSeconds: 900)
+        try await waitForModels(timeoutSeconds: 900, expectedModelID: expectedModelID)
     }
 
-    private func stopServer() {
-        guard let process = serverProcess, process.isRunning else {
-            serverProcess = nil
-            return
-        }
-        process.terminate()
-        process.waitUntilExit()
+    /// SIGTERM, bounded wait, then SIGKILL — without blocking the actor.
+    private func stopServer() async {
+        guard let process = serverProcess else { return }
         serverProcess = nil
+        await ManagedSubprocess.terminate(process, grace: 10)
+        ManagedSubprocess.unregister(process)
     }
 
-    private func waitForModels(timeoutSeconds: Int) async throws {
+    private func handleServerExit(_ process: Process, status: Int32) {
+        ManagedSubprocess.unregister(process)
+        guard serverProcess === process else { return }
+        serverProcess = nil
+        _status = .error("ds4-server exited unexpectedly (status \(status))")
+    }
+
+    private func waitForModels(timeoutSeconds: Int, expectedModelID: String) async throws {
         let url = serverBaseURL.appendingPathComponent("v1/models")
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 5
         let healthSession = URLSession(configuration: config)
+        defer { healthSession.finishTasksAndInvalidate() }
 
         while Date() < deadline {
-            if let process = serverProcess, !process.isRunning {
+            guard let process = serverProcess, process.isRunning else {
                 serverProcess = nil
                 throw Ds4ProviderError.serverStartTimeout
             }
             do {
-                let (_, response) = try await healthSession.data(from: url)
+                let (data, response) = try await healthSession.data(from: url)
                 if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                    return
+                    // Confirm the answer comes from a ds4-server serving the
+                    // expected model, not a stale process on the port.
+                    // ds4-server's id format is not pinned, so only reject
+                    // when it clearly names the OTHER DeepSeek V4 variant.
+                    let served = Self.modelIDs(from: data)
+                    let lowered = served.map { $0.lowercased() }
+                    let namesExpected = lowered.contains { $0.contains(expectedModelID) }
+                    let namesOtherVariant = lowered.contains { $0.contains("v4-flash") || $0.contains("v4-pro") }
+                    if namesExpected || !namesOtherVariant {
+                        return
+                    }
+                    await stopServer()
+                    throw Ds4ProviderError.modelMismatch(
+                        expected: expectedModelID,
+                        serving: served.joined(separator: ", ")
+                    )
                 }
+            } catch let error as Ds4ProviderError {
+                throw error
             } catch {
                 // Server not ready yet.
             }
             try await Task.sleep(nanoseconds: 500_000_000)
         }
 
-        stopServer()
+        await stopServer()
         throw Ds4ProviderError.serverStartTimeout
+    }
+
+    private static func modelIDs(from data: Data) -> [String] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = object["data"] as? [[String: Any]] else {
+            return []
+        }
+        return entries.compactMap { $0["id"] as? String }
     }
 
     private func _generate(
@@ -222,7 +260,12 @@ public actor Ds4Provider: InferenceProvider {
             _status = .ready(descriptor)
             continuation.finish()
         } catch {
-            _status = .error(error.localizedDescription)
+            // A client that hangs up is not a backend failure.
+            if HTTPProviderCancellation.isCancellation(error) {
+                _status = .ready(descriptor)
+            } else {
+                _status = .error(error.localizedDescription)
+            }
             throw error
         }
     }
@@ -286,9 +329,12 @@ public enum Ds4ProviderError: LocalizedError {
     case noModelLoaded
     case invalidResponse
     case serverError(String)
+    case modelMismatch(expected: String, serving: String)
 
     public var errorDescription: String? {
         switch self {
+        case .modelMismatch(let expected, let serving):
+            return "The server on the ds4 port is serving '\(serving)', not '\(expected)' (a stale ds4-server may still hold the port)."
         case .binaryNotFound(let path):
             return "ds4-server binary not found at: \(path). Install ds4 or set the binary path."
         case .modelNotFound(let path):

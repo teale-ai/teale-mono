@@ -71,11 +71,20 @@ and Gemma all handle these five (and many more) natively.
 
 ## Signature fingerprint (for verification)
 
+Pre-release APKs are signed with the certificate below. Verify a downloaded APK
+before installing it with `apksigner verify --print-certs <apk>` (Android SDK
+build-tools) and compare the SHA-256 digest:
+
 ```
-Keystore: teale-release.keystore
+Subject : CN=Teale Pre-release, OU=Teale, O=Teale Labs, L=Austin, ST=TX, C=US
 Alias   : teale
-Validity: 10 years from 2026-04-19
+Validity: 2026-04-19 to 2036-04-16
+SHA-256 : CF:2A:7B:A0:F2:C1:67:B4:30:73:67:0D:95:45:E2:7E:05:85:7C:54:0B:28:05:66:49:7A:A7:88:8E:20:C1:CC
+SHA-1   : 94:C1:23:9E:27:6C:23:B9:75:B1:15:56:E3:5F:67:E7:95:74:85:4D
 ```
+
+If the signing key is rotated, this section will list the new certificate and
+testers must uninstall the old build before installing the new one.
 
 ## Uninstall
 
@@ -85,8 +94,9 @@ balance. A future release will add a recovery flow.
 
 ## Known limitations (pre-release)
 
-- No contacts / location / photo skills yet (permissions declared, flows not
-  wired). Calendar is the only skill in this build.
+- Calendar is the only skill in this build. The app asks for calendar access
+  the first time a message needs it, and for notification access when supply
+  is first turned on (Android 13+), so supply status and errors stay visible.
 - Group chat uses a 2-second poll; SSE backlog replay is TBD.
 - Supply mode caches the model in `/data/local/tmp/gemma.gguf` which Android
   may clear on reboot; reapply via `adb push` when it disappears.

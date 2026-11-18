@@ -1,0 +1,3 @@
+# Default owner for everything in the repo. Add narrower rules below this
+# line as component ownership is split out (later rules take precedence).
+* @taylorhou

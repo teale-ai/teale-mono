@@ -32,21 +32,28 @@ use teale_protocol::{openai::ChatCompletionRequest, ClusterMessage, InferenceReq
 
 use crate::auth::{AuthPrincipal, PrincipalKind};
 use crate::catalog::{
-    is_large, resolve_auto, synthesize_live_model, AutoRouteProfile, CatalogModel,
+    is_hidden_model_id, is_large, resolve_auto, synthesize_live_model, AutoRouteProfile,
+    CatalogModel, HIDDEN_MODEL_IDS,
 };
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::metrics;
-use crate::relay_client::{PendingSession, SessionEvent};
+use crate::relay_client::{PendingSession, SessionEvent, SESSION_CHANNEL_CAPACITY};
 use crate::state::AppState;
 
-const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
+/// Completion budget assumed when the client omits `max_tokens`, for the
+/// context estimate (`required_ctx`, teale/auto resolution) and the auto
+/// route profile. Only an estimate: the gateway never forwards it.
+pub(crate) const DEFAULT_COMPLETION_BUDGET: u32 = 4096;
 
-fn is_hidden_model_id(model_id: &str) -> bool {
-    HIDDEN_MODEL_IDS
-        .iter()
-        .any(|hidden| crate::registry::model_matches_any(model_id, &[hidden.to_string()]))
-}
+/// Body cap for re-reading a buffered chat response when an endpoint
+/// translates it into another shape (`/v1/completions`, `/v1/responses`).
+pub(crate) const MAX_TRANSLATED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Metric label for a requested model the gateway could not resolve. The
+/// raw client string must never become a Prometheus label (unbounded
+/// cardinality from any bearer).
+const UNRESOLVED_MODEL_LABEL: &str = "unknown";
 
 fn ttft_deadline_seconds_for_model(
     reliability: &crate::config::ReliabilityConfig,
@@ -82,7 +89,8 @@ fn single_supplier_large_cold_start_grace(state: &AppState, catalog_model: &Cata
 /// Conservative prefill rate floor (tokens/second) used to scale the
 /// pre-first-token deadline with prompt size. Deliberately below observed
 /// rates so the estimate errs toward patience. Measured on glm-5.3-flash
-/// Q8_0 (M3 Ultra, build b176): ~350 tok/s at 4k context but only ~160
+/// (a live fleet model, not in models.yaml; the cataloged GLM is
+/// `zai/glm-5.1`) Q8_0 (M3 Ultra, build b176): ~350 tok/s at 4k context but only ~160
 /// tok/s at 38k, ~55 tok/s at 200k+ with a cold post-reset cache (512g8,
 /// Sep 7) - attention cost grows with context, so a flat floor under-covers
 /// long prompts. Two regimes until the curve is better sampled.
@@ -115,8 +123,15 @@ fn prefill_floor_tps(required_ctx: u32) -> u64 {
 /// prefill time it needs instead of dying at the 300s request cap mid-
 /// prefill (9hg's 86.6k prompt died this way on 512g8 at 10:52Z Sep 7,
 /// cold cache after a box reset). Bounded below the node stream budget
-/// (1800s, node/src/inference.rs) minus a decode reserve.
-const SOLE_SUPPLIER_TTFT_CEILING_SECONDS: u64 = 1500;
+/// (teale_protocol::STREAM_BUDGET_SECONDS) minus a decode reserve.
+const SOLE_SUPPLIER_TTFT_CEILING_SECONDS: u64 =
+    teale_protocol::STREAM_BUDGET_SECONDS - SOLE_SUPPLIER_DECODE_RESERVE_SECONDS;
+/// Decode time kept free inside the node stream budget after a
+/// sole-supplier first token.
+const SOLE_SUPPLIER_DECODE_RESERVE_SECONDS: u64 = 300;
+
+/// Pause before re-trying the same sole large supplier during cold start.
+const DISPATCH_GRACE_BACKOFF: Duration = Duration::from_secs(2);
 
 fn pre_first_token_deadline(
     state: &AppState,
@@ -167,15 +182,15 @@ fn unresolved_model_error(state: &AppState, requested_model: &str) -> GatewayErr
     let warmup = Duration::from_secs(state.config.reliability.registry_warmup_seconds);
     if state.started_at.elapsed() < warmup {
         metrics::REQUESTS_TOTAL
-            .with_label_values(&[requested_model, "registry_warmup"])
+            .with_label_values(&[UNRESOLVED_MODEL_LABEL, "registry_warmup"])
             .inc();
         metrics::ELIGIBILITY_DENIED_TOTAL
-            .with_label_values(&[requested_model, "registry_warmup"])
+            .with_label_values(&[UNRESOLVED_MODEL_LABEL, "registry_warmup"])
             .inc();
         return GatewayError::NoEligibleDevice(requested_model.to_string());
     }
     metrics::REQUESTS_TOTAL
-        .with_label_values(&[requested_model, "model_not_found"])
+        .with_label_values(&[UNRESOLVED_MODEL_LABEL, "model_not_found"])
         .inc();
     GatewayError::ModelNotFound(requested_model.to_string())
 }
@@ -249,32 +264,19 @@ pub async fn chat_completions(
         let tools_lane_fallback = prepared.tools_lane_fallback;
         let attempted_model = prepared.catalog_model.id.clone();
 
+        // Both paths return Err for a first-dispatch failure (no supply,
+        // saturation, every upstream failing to open), so the teale/auto
+        // cascade below and the 429/503 status codes apply to streaming
+        // requests too: an SSE response is only committed once a relay
+        // session is open.
         let result: Result<Response, GatewayError> = if prepared.streaming {
-            run_streaming(
-                state.clone(),
-                prepared.catalog_model,
-                prepared.req_body,
-                prepared.apmhelp_lane,
-                prepared.consumer,
-                prepared.required_ctx,
-                prepared.prompt_tokens,
-                prepared.preferred_node_ids,
-            )
-            .await
-            .map(IntoResponse::into_response)
+            run_streaming(state.clone(), prepared)
+                .await
+                .map(IntoResponse::into_response)
         } else {
-            run_buffered(
-                state.clone(),
-                prepared.catalog_model,
-                prepared.req_body,
-                prepared.apmhelp_lane,
-                prepared.consumer,
-                prepared.required_ctx,
-                prepared.prompt_tokens,
-                prepared.preferred_node_ids,
-            )
-            .await
-            .map(IntoResponse::into_response)
+            run_buffered(state.clone(), prepared)
+                .await
+                .map(IntoResponse::into_response)
         };
 
         match result {
@@ -323,6 +325,15 @@ pub(crate) struct PreparedChatRequest {
     pub consumer: Option<ledger::ConsumerPrincipal>,
     pub required_ctx: u32,
     pub prompt_tokens: u32,
+    /// Conservative prompt-token estimate (`bytes/4 + 16`, the figure the
+    /// budget clamp reserved). Billing falls back to it when the supplier
+    /// reports no prompt usage and caps supplier-reported prompt counts at
+    /// it.
+    pub prompt_tokens_estimate: u64,
+    /// The client's `max_tokens` after the catalog/budget clamp, or None
+    /// when the client omitted it. Drives heavy-hold classification: an
+    /// omitted max_tokens is not a large requested output.
+    pub requested_max_tokens: Option<u32>,
     pub preferred_node_ids: Vec<String>,
     pub streaming: bool,
     /// True when a virtual resolution required parameters (tools/tool_choice)
@@ -379,13 +390,20 @@ pub(crate) fn prepare_chat_request_excluding(
 
     let floor = &state.config.scheduler.per_model_floor;
 
+    // One completion budget for every context estimate: the client's
+    // max_tokens, else DEFAULT_COMPLETION_BUDGET. Computed once here; the
+    // budget clamp below can only lower it.
+    let client_max_tokens = parsed.max_tokens;
+    let mut completion_budget = completion_budget_for(client_max_tokens);
+
     // Virtual model resolution (e.g. `teale/auto`). Estimate required context
-    // from the inbound messages + max_tokens, then ask the catalog for the
-    // smallest concrete model that fits and has healthy supply. Resolution
-    // is strict per project policy — no silent downgrade; on miss we 503.
+    // from the inbound messages + completion budget, then ask the catalog for
+    // the smallest concrete model that fits and has healthy supply.
+    // Resolution is strict per project policy — no silent downgrade; on miss
+    // we 503.
     let mut tools_lane_fallback = false;
     if catalog_model.is_virtual {
-        let required_ctx = estimate_required_context(&parsed);
+        let required_ctx = estimate_required_context(&parsed, completion_budget);
         let auto_profile = infer_auto_route_profile(headers, &parsed);
         let required_supported_parameters = required_auto_supported_parameters(&parsed);
         let registry = state.registry.clone();
@@ -506,7 +524,10 @@ pub(crate) fn prepare_chat_request_excluding(
     // catalog-max reservation, we clamp `max_tokens` down to what the
     // effective budget can afford and forward that clamp to the upstream
     // request. Only reject when the budget can't cover the prompt itself
-    // plus at least one completion token.
+    // plus at least one completion token. The catalog max_output_tokens is
+    // a ceiling, never a default: a request that omitted max_tokens keeps
+    // omitting it unless the budget cannot cover the ceiling.
+    let mut requested_max_tokens = client_max_tokens;
     if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
         // Compute the spending ceiling for this principal:
         //   Device → wallet balance.
@@ -543,15 +564,22 @@ pub(crate) fn prepare_chat_request_excluding(
 
         match compute_clamp(&catalog_model, &parsed, effective_budget) {
             Ok(decision) => {
-                // Rewrite `max_tokens` on the outbound JSON so the supplier
-                // honors the clamp.
-                if let Some(obj) = req.as_object_mut() {
-                    obj.insert(
-                        "max_tokens".into(),
-                        Value::Number(serde_json::Number::from(decision.effective_max)),
-                    );
+                let effective_max = u32::try_from(decision.effective_max).unwrap_or(u32::MAX);
+                if should_forward_clamped_max_tokens(client_max_tokens, &decision) {
+                    // Rewrite `max_tokens` on the outbound JSON so the
+                    // supplier honors the clamp.
+                    if let Some(obj) = req.as_object_mut() {
+                        obj.insert(
+                            "max_tokens".into(),
+                            Value::Number(serde_json::Number::from(effective_max)),
+                        );
+                    }
+                    parsed.max_tokens = Some(effective_max);
                 }
-                parsed.max_tokens = Some(decision.effective_max as u32);
+                if client_max_tokens.is_some() {
+                    requested_max_tokens = Some(effective_max);
+                }
+                completion_budget = completion_budget.min(effective_max);
                 if decision.clamped {
                     debug!(
                         model = %catalog_model.id,
@@ -571,10 +599,12 @@ pub(crate) fn prepare_chat_request_excluding(
         }
     }
 
-    // Compute context budget once; scheduler uses it to filter out nodes
-    // whose effective_context can't cover the request.
-    let required_ctx = estimate_required_context(&parsed);
+    // Context budget for the scheduler's effective_context filter: the same
+    // completion budget teale/auto resolved with (only ever lowered by the
+    // budget clamp), never the catalog ceiling.
+    let required_ctx = estimate_required_context(&parsed, completion_budget);
     let prompt_tokens = estimate_prompt_tokens(&parsed);
+    let billing_prompt_estimate = prompt_tokens_estimate(&parsed);
     let preferred_node_ids = preferred_linked_node_ids(state, headers, principal);
 
     let apmhelp_lane = apmhelp_lane_request(state, principal);
@@ -585,6 +615,8 @@ pub(crate) fn prepare_chat_request_excluding(
         consumer,
         required_ctx,
         prompt_tokens,
+        prompt_tokens_estimate: billing_prompt_estimate,
+        requested_max_tokens,
         preferred_node_ids,
         streaming,
         was_virtual_resolution,
@@ -603,6 +635,23 @@ pub(crate) struct ClampDecision {
     pub client_max: u64,
     /// True iff `effective_max < client_max` — i.e. budget bit us.
     pub clamped: bool,
+}
+
+/// Whether the clamped `max_tokens` goes onto the outbound request. A
+/// client-supplied value is always rewritten (it may have been lowered to
+/// the catalog ceiling or the budget). An omitted one stays omitted unless
+/// the budget cannot cover the catalog ceiling: then the cap is what keeps
+/// the reservation honest.
+pub(crate) fn should_forward_clamped_max_tokens(
+    client_max_tokens: Option<u32>,
+    decision: &ClampDecision,
+) -> bool {
+    client_max_tokens.is_some() || decision.clamped
+}
+
+/// Completion budget used for every context estimate of one request.
+pub(crate) fn completion_budget_for(client_max_tokens: Option<u32>) -> u32 {
+    client_max_tokens.unwrap_or(DEFAULT_COMPLETION_BUDGET)
 }
 
 /// Compute the clamp. Returns `Err(min_required_credits)` when the budget
@@ -727,10 +776,13 @@ pub(crate) fn is_backend_client_error(message: &str) -> bool {
     message.contains("exceed_context_size") || message.contains("backend returned 4")
 }
 
-pub(crate) fn estimate_required_context(req: &ChatCompletionRequest) -> u32 {
-    let prompt_est = estimate_prompt_tokens(req);
-    let completion_budget = req.max_tokens.unwrap_or(4096);
-    prompt_est.saturating_add(completion_budget)
+/// Prompt estimate plus the request's completion budget (see
+/// [`completion_budget_for`]).
+pub(crate) fn estimate_required_context(
+    req: &ChatCompletionRequest,
+    completion_budget: u32,
+) -> u32 {
+    estimate_prompt_tokens(req).saturating_add(completion_budget)
 }
 
 fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) -> AutoRouteProfile {
@@ -780,7 +832,7 @@ fn infer_auto_route_profile(headers: &HeaderMap, req: &ChatCompletionRequest) ->
     if has_agent_bootstrap_marker
         || req.tools.is_some()
         || req.tool_choice.is_some()
-        || (prompt_chars >= 12_000 && req.max_tokens.unwrap_or(4096) >= 4096)
+        || (prompt_chars >= 12_000 && completion_budget_for(req.max_tokens) >= 4096)
         || (has_agent_user_agent && prompt_chars >= 4_000)
     {
         AutoRouteProfile::AgentHarness
@@ -927,9 +979,12 @@ pub(crate) fn consumer_principal(principal: &AuthPrincipal) -> Option<ledger::Co
         .map(|d| ledger::ConsumerPrincipal::Device(d.to_string()))
 }
 
-/// Times the pick+admit+session-open phase and records it as
-/// `gateway_dispatch_seconds` on success, so Auto-vs-local latency work can
-/// decompose TTFT into gateway overhead vs upstream connect+prefill.
+/// Test helper: dispatch with heavy-hold classification read from the
+/// request body's own `max_tokens` (absent = not a large requested output).
+/// Request handlers use [`pick_and_dispatch_classified`] with the prepared
+/// client value instead, so a budget-injected cap never makes a request
+/// heavy.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn pick_and_dispatch(
     state: &AppState,
@@ -942,6 +997,41 @@ pub(crate) async fn pick_and_dispatch(
     prompt_tokens: u32,
     consumer_id: Option<&str>,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
+    let requested_max_tokens = req_body
+        .get("max_tokens")
+        .and_then(Value::as_u64)
+        .map(|v| u32::try_from(v).unwrap_or(u32::MAX));
+    pick_and_dispatch_classified(
+        state,
+        catalog_model,
+        req_body,
+        exclude,
+        min_context,
+        preferred_node_ids,
+        apmhelp_lane,
+        prompt_tokens,
+        requested_max_tokens,
+        consumer_id,
+    )
+    .await
+}
+
+/// Times the pick+admit+session-open phase and records it as
+/// `gateway_dispatch_seconds` on success, so Auto-vs-local latency work can
+/// decompose TTFT into gateway overhead vs upstream connect+prefill.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn pick_and_dispatch_classified(
+    state: &AppState,
+    catalog_model: &CatalogModel,
+    req_body: &Value,
+    exclude: &[String],
+    min_context: Option<u32>,
+    preferred_node_ids: &[String],
+    apmhelp_lane: bool,
+    prompt_tokens: u32,
+    requested_max_tokens: Option<u32>,
+    consumer_id: Option<&str>,
+) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     let dispatch_started = Instant::now();
     let out = pick_and_dispatch_inner(
         state,
@@ -952,6 +1042,7 @@ pub(crate) async fn pick_and_dispatch(
         preferred_node_ids,
         apmhelp_lane,
         prompt_tokens,
+        requested_max_tokens,
         consumer_id,
     )
     .await;
@@ -1011,6 +1102,7 @@ async fn pick_and_dispatch_inner(
     preferred_node_ids: &[String],
     apmhelp_lane: bool,
     prompt_tokens: u32,
+    requested_max_tokens: Option<u32>,
     consumer_id: Option<&str>,
 ) -> Result<(mpsc::Receiver<SessionEvent>, String, String, bool), GatewayError> {
     // Rewrite the `model` field in the outbound payload to the canonical
@@ -1018,11 +1110,11 @@ async fn pick_and_dispatch_inner(
     let mut outbound: ChatCompletionRequest = serde_json::from_value(req_body.clone())
         .map_err(|e| GatewayError::BadRequest(format!("{}", e)))?;
     outbound.model = Some(catalog_model.id.clone());
-    if catalog_model.id == "deepseek-ai/deepseek-v4-flash" {
+    if let Some(effort) = &catalog_model.default_reasoning_effort {
         outbound
             .extra
             .entry("reasoning_effort".to_string())
-            .or_insert_with(|| Value::String("none".to_string()));
+            .or_insert_with(|| Value::String(effort.clone()));
     }
     // OpenRouter explicitly requires the `usage` block on every response,
     // including streamed ones. Force `stream_options.include_usage=true` on
@@ -1033,7 +1125,7 @@ async fn pick_and_dispatch_inner(
 
     let request_heavy = is_heavy_request(
         estimate_prompt_tokens(&outbound),
-        outbound.max_tokens,
+        requested_max_tokens,
         &state.config.reliability,
     );
     let mut excluded: Vec<String> = exclude.to_vec();
@@ -1045,8 +1137,6 @@ async fn pick_and_dispatch_inner(
     let mut last_dispatch_error: Option<String> = None;
     let mut heavy_refused = false;
     let cold_start_grace = single_supplier_large_cold_start_grace(state, catalog_model);
-    let max_dispatch_grace_retries =
-        (state.config.reliability.request_timeout_seconds / 5).max(1) as u32;
     let mut dispatch_grace_failures = 0u32;
     // Relay open should succeed almost immediately for a connected peer.
     // Keep this much tighter than the TTFT budget so a dead/stuck node
@@ -1054,6 +1144,15 @@ async fn pick_and_dispatch_inner(
     let ttft_deadline_seconds =
         ttft_deadline_seconds_for_model(&state.config.reliability, catalog_model);
     let open_timeout = Duration::from_secs(ttft_deadline_seconds.min(4));
+    // The cold-start grace loop is bounded by wall clock, not by a retry
+    // count: another open attempt plus its backoff must still finish inside
+    // request_timeout_seconds.
+    let grace_started = Instant::now();
+    let grace_budget = Duration::from_secs(state.config.reliability.request_timeout_seconds);
+    let grace_allows_retry = || {
+        cold_start_grace
+            && grace_started.elapsed() + open_timeout + DISPATCH_GRACE_BACKOFF <= grace_budget
+    };
 
     loop {
         // Supply pool by lane (#272): the default lane draws fleet supply
@@ -1300,7 +1399,7 @@ async fn pick_and_dispatch_inner(
                     "dispatch failed before session hand-off: {}",
                     message
                 );
-                if cold_start_grace && dispatch_grace_failures < max_dispatch_grace_retries {
+                if grace_allows_retry() {
                     dispatch_grace_failures += 1;
                     last_dispatch_error = Some(message);
                     info!(
@@ -1308,7 +1407,7 @@ async fn pick_and_dispatch_inner(
                         attempt = dispatch_grace_failures,
                         "retrying same device after large-model cold-start dispatch failure"
                     );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(DISPATCH_GRACE_BACKOFF).await;
                     metrics::RETRIES_TOTAL
                         .with_label_values(&["single_supplier_dispatch_grace_retry"])
                         .inc();
@@ -1326,7 +1425,7 @@ async fn pick_and_dispatch_inner(
         };
 
         // Register a PendingSession and start pumping.
-        let (tx, rx) = mpsc::channel::<SessionEvent>(128);
+        let (tx, rx) = mpsc::channel::<SessionEvent>(SESSION_CHANNEL_CAPACITY);
         let request_id = Uuid::new_v4().to_string();
         state.relay.register_session(PendingSession {
             request_id: request_id.clone(),
@@ -1349,7 +1448,7 @@ async fn pick_and_dispatch_inner(
                 message
             );
             state.relay.close_session(&target_node, &session_id);
-            if cold_start_grace && dispatch_grace_failures < max_dispatch_grace_retries {
+            if grace_allows_retry() {
                 dispatch_grace_failures += 1;
                 last_dispatch_error = Some(message);
                 info!(
@@ -1357,7 +1456,7 @@ async fn pick_and_dispatch_inner(
                     attempt = dispatch_grace_failures,
                     "retrying same device after large-model cold-start dispatch failure"
                 );
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(DISPATCH_GRACE_BACKOFF).await;
                 metrics::RETRIES_TOTAL
                     .with_label_values(&["single_supplier_dispatch_grace_retry"])
                     .inc();
@@ -1530,30 +1629,273 @@ mod session_cleanup_tests {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Billing basis for a completed request, shared by every request path so
+/// streaming, buffered and Anthropic requests bill identically.
+///
+/// Completion tokens are the gateway's own count of output-carrying chunks
+/// (`chunk_carries_output`); a supplier-reported count (upstream `usage` or
+/// the node's `tokens_out`) can only lower it, never raise it. Prompt
+/// tokens are the supplier's `usage.prompt_tokens` capped at the gateway's
+/// conservative estimate, or that estimate when the supplier reported none
+/// (never 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BillableUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl BillableUsage {
+    pub(crate) fn total_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_add(self.completion_tokens)
+    }
+
+    /// The `usage` object reported to the client: exactly what is billed.
+    /// Extra upstream fields (e.g. `prompt_tokens_details`) are kept.
+    pub(crate) fn to_usage_json(self, upstream: Option<&Value>) -> Value {
+        let mut usage = upstream
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        usage.insert("prompt_tokens".into(), self.prompt_tokens.into());
+        usage.insert("completion_tokens".into(), self.completion_tokens.into());
+        usage.insert("total_tokens".into(), self.total_tokens().into());
+        Value::Object(usage)
+    }
+}
+
+pub(crate) fn billable_usage(
+    upstream_usage: Option<&Value>,
+    reported_completion_tokens: Option<u32>,
+    observed_completion_tokens: u64,
+    prompt_tokens_estimate: u64,
+) -> BillableUsage {
+    let usage_field = |key: &str| {
+        upstream_usage
+            .and_then(|usage| usage.get(key))
+            .and_then(Value::as_u64)
+    };
+    let mut completion_tokens = observed_completion_tokens;
+    if let Some(reported) = usage_field("completion_tokens") {
+        completion_tokens = completion_tokens.min(reported);
+    }
+    if let Some(reported) = reported_completion_tokens {
+        completion_tokens = completion_tokens.min(u64::from(reported));
+    }
+    let prompt_tokens = match usage_field("prompt_tokens") {
+        Some(reported) => reported.min(prompt_tokens_estimate),
+        None => prompt_tokens_estimate,
+    };
+    BillableUsage {
+        prompt_tokens,
+        completion_tokens: completion_tokens.max(1),
+    }
+}
+
+/// Whether a streamed chunk carries generated output (content, reasoning
+/// or a tool-call delta), as opposed to a role preamble, a bare
+/// finish_reason or a usage-only chunk. This is the gateway's own
+/// completion-token count for billing.
+pub(crate) fn chunk_carries_output(chunk: &Value) -> bool {
+    let delta = chunk.pointer("/choices/0/delta");
+    let non_empty_text = |key: &str| {
+        delta
+            .and_then(|d| d.get(key))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+    };
+    let has_tool_calls = delta
+        .and_then(|d| d.get("tool_calls"))
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    non_empty_text("content")
+        || non_empty_text("reasoning_content")
+        || non_empty_text("reasoning")
+        || has_tool_calls
+}
+
+/// Debit the consumer for a completed request (Teale Credits).
+pub(crate) fn settle_completed(
+    state: &AppState,
+    consumer: &ledger::ConsumerPrincipal,
+    provider: &str,
+    catalog_model: &CatalogModel,
+    billed: BillableUsage,
+) {
+    let Some(pool) = state.db.as_ref() else {
+        return;
+    };
+    let cost = ledger::cost_credits(
+        billed.prompt_tokens,
+        billed.completion_tokens,
+        catalog_model.prompt_price_usd(),
+        catalog_model.completion_price_usd(),
+    );
+    let online: Vec<String> = state
+        .registry
+        .snapshot_devices()
+        .into_iter()
+        .map(|d| d.node_id)
+        .collect();
+    let request_id = Uuid::new_v4().to_string();
+    match ledger::settle_request(
+        pool,
+        consumer,
+        Some(provider),
+        &online,
+        cost,
+        &request_id,
+        &catalog_model.id,
+    ) {
+        Ok(()) => info!(
+            consumer = %consumer.ledger_actor_id(),
+            provider = %provider,
+            tokens_in = billed.prompt_tokens,
+            tokens_out = billed.completion_tokens,
+            cost = cost,
+            "settled chat (Teale Credits)"
+        ),
+        Err(e) => warn!("settle_request failed: {}", e),
+    }
+}
+
+/// Whether a retriable pre-first-token failure quarantines the device
+/// before the retry moves on to the next-best one. One predicate for every
+/// request path: QueueFull is backpressure from a live device (#229, #250);
+/// quarantining a sole supplier turns one slow prefill into a model-wide
+/// outage (#239); a light request beside an in-flight heavy saw contention,
+/// not failure (#270); cold-start grace retries the same device instead.
+pub(crate) fn retry_should_quarantine(
+    queue_full_failure: bool,
+    sole_supplier: bool,
+    beside_heavy: bool,
+    cold_start_grace: bool,
+) -> bool {
+    !queue_full_failure && !sole_supplier && !beside_heavy && !cold_start_grace
+}
+
+/// Records `gateway_requests_total` and the total-latency histogram exactly
+/// once per dispatched request. A response dropped before it finished (the
+/// client disconnected mid-stream, so nothing after the generator's last
+/// yield runs) is recorded on drop as `client_closed`.
+pub(crate) struct RequestOutcome {
+    model_id: String,
+    started: Instant,
+    recorded: bool,
+}
+
+impl RequestOutcome {
+    pub(crate) fn new(model_id: &str, started: Instant) -> Self {
+        Self {
+            model_id: model_id.to_string(),
+            started,
+            recorded: false,
+        }
+    }
+
+    pub(crate) fn record(&mut self, status: &str) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        metrics::REQUESTS_TOTAL
+            .with_label_values(&[&self.model_id, status])
+            .inc();
+        metrics::TOTAL_LATENCY_SECONDS
+            .with_label_values(&[&self.model_id, status])
+            .observe(self.started.elapsed().as_secs_f64());
+    }
+}
+
+impl Drop for RequestOutcome {
+    fn drop(&mut self) {
+        self.record("client_closed");
+    }
+}
+
+/// A dispatched attempt: the open session, its cleanup guard, and the
+/// per-attempt values computed before its dispatch.
+struct DispatchedAttempt {
+    rx: mpsc::Receiver<SessionEvent>,
+    target_node: String,
+    request_heavy: bool,
+    cleanup: SessionCleanup,
+    cold_start_grace: bool,
+    ttft_deadline: Duration,
+}
+
 async fn run_streaming(
     state: AppState,
-    catalog_model: CatalogModel,
-    req_body: Value,
-    apmhelp_lane: bool,
-    consumer: Option<ledger::ConsumerPrincipal>,
-    required_ctx: u32,
-    prompt_tokens: u32,
-    preferred_node_ids: Vec<String>,
+    prepared: PreparedChatRequest,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     let started = Instant::now();
+    let PreparedChatRequest {
+        catalog_model,
+        req_body,
+        consumer,
+        required_ctx,
+        prompt_tokens,
+        prompt_tokens_estimate,
+        requested_max_tokens,
+        preferred_node_ids,
+        apmhelp_lane,
+        ..
+    } = prepared;
     let model_id = catalog_model.id.clone();
+    let mut outcome = RequestOutcome::new(&model_id, started);
 
     let max_retries = state.config.reliability.max_retries;
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
+
+    // First attempt BEFORE the response is committed (Q1): no supply,
+    // saturation (429 + Retry-After), heavy contention, a context-ceiling
+    // refusal or every upstream failing to open return a real HTTP status
+    // and drive the teale/auto cascade, instead of an SSE error after a 200.
+    let first_cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
+    let first_ttft_deadline = pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
+    let first = pick_and_dispatch_classified(
+        &state,
+        &catalog_model,
+        &req_body,
+        &[],
+        Some(required_ctx),
+        &preferred_node_ids,
+        apmhelp_lane,
+        prompt_tokens,
+        requested_max_tokens,
+        consumer.as_ref().map(|c| c.ledger_actor_id()),
+    )
+    .await;
+    let (rx, target_node, session_id, request_heavy) = match first {
+        Ok(dispatched) => dispatched,
+        Err(e) => {
+            outcome.record(error_to_status_label(&e));
+            return Err(e);
+        }
+    };
+    // #276: armed now, so the session is released even if the response is
+    // dropped before its stream is ever polled.
+    let first_cleanup =
+        SessionCleanup::new(&state, &target_node, &session_id, request_heavy, &model_id);
+    let first_attempt = DispatchedAttempt {
+        rx,
+        target_node,
+        request_heavy,
+        cleanup: first_cleanup,
+        cold_start_grace: first_cold_start_grace,
+        ttft_deadline: first_ttft_deadline,
+    };
+
     let stream = async_stream::stream! {
+        let mut pending_attempt = Some(first_attempt);
         let mut excluded: Vec<String> = Vec::new();
         let mut first_token_at: Option<Instant> = None;
         let mut last_failure: Option<String> = None;
+        // Every chunk (TPS samples) vs output-carrying chunks (billing).
         let mut tokens_out: u64 = 0;
+        let mut output_chunks: u64 = 0;
         // If upstream includes a `usage` object in any chunk (stream_options
         // .include_usage=true was set on the outbound request), keep the
-        // most recent one so we can emit it in our own final event.
+        // most recent one so its extra fields reach our final usage event.
         let mut captured_usage: Option<Value> = None;
         let mut request_id: Option<String> = None;
         let mut final_status = "error";
@@ -1563,40 +1905,65 @@ async fn run_streaming(
 
         loop {
             tried += 1;
-            let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
-            let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
-            let dispatch = pick_and_dispatch(
-                &state,
-                &catalog_model,
-                &req_body,
-                &excluded,
-                Some(required_ctx),
-                &preferred_node_ids,
-                apmhelp_lane,
-                prompt_tokens,
-                consumer.as_ref().map(|c| c.ledger_actor_id()),
-            )
-            .await;
-
-            let (mut rx, target_node, session_id, request_heavy) = match dispatch {
-                Ok(v) => v,
-                Err(e) => {
-                    let status = error_to_status_label(&e);
-                    metrics::REQUESTS_TOTAL.with_label_values(&[&model_id, status]).inc();
-                    yield Ok(error_event(&e));
-                    yield Ok(done_event());
-                    return;
+            let attempt = match pending_attempt.take() {
+                Some(attempt) => attempt,
+                None => {
+                    let cold_start_grace =
+                        single_supplier_large_cold_start_grace(&state, &catalog_model);
+                    let ttft_deadline =
+                        pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
+                    let dispatch = pick_and_dispatch_classified(
+                        &state,
+                        &catalog_model,
+                        &req_body,
+                        &excluded,
+                        Some(required_ctx),
+                        &preferred_node_ids,
+                        apmhelp_lane,
+                        prompt_tokens,
+                        requested_max_tokens,
+                        consumer.as_ref().map(|c| c.ledger_actor_id()),
+                    )
+                    .await;
+                    match dispatch {
+                        Ok((rx, target_node, session_id, request_heavy)) => {
+                            // #276: armed for every exit path, including
+                            // stream-drop on client disconnect mid-prefill.
+                            let cleanup = SessionCleanup::new(
+                                &state,
+                                &target_node,
+                                &session_id,
+                                request_heavy,
+                                &model_id,
+                            );
+                            DispatchedAttempt {
+                                rx,
+                                target_node,
+                                request_heavy,
+                                cleanup,
+                                cold_start_grace,
+                                ttft_deadline,
+                            }
+                        }
+                        Err(e) => {
+                            // A retry after the 200 was committed can only
+                            // fail as an SSE error event.
+                            outcome.record(error_to_status_label(&e));
+                            yield Ok(error_event(&e));
+                            yield Ok(done_event());
+                            return;
+                        }
+                    }
                 }
             };
-            // #276: armed for every exit path, including stream-drop on
-            // client disconnect mid-prefill.
-            let cleanup = SessionCleanup::new(
-                &state,
-                &target_node,
-                &session_id,
+            let DispatchedAttempt {
+                mut rx,
+                target_node,
                 request_heavy,
-                &model_id,
-            );
+                cleanup,
+                cold_start_grace,
+                ttft_deadline,
+            } = attempt;
             // Co-resident-beside-heavy: record occupancy at dispatch - a
             // heavy that finishes during our wait must not expose this
             // request to quarantine for the contention it actually saw.
@@ -1663,8 +2030,7 @@ async fn run_streaming(
                         //    filename here),
                         //  - a stable chunk `id` across the whole stream
                         //    (capture the first id upstream assigns and
-                        //    reuse it if we need to synthesize a trailing
-                        //    usage event).
+                        //    reuse it for the trailing usage event).
                         if let Some(obj) = chunk.as_object_mut() {
                             obj.insert("model".into(), Value::String(model_id.clone()));
                             if request_id.is_none() {
@@ -1679,21 +2045,15 @@ async fn run_streaming(
                             }
                         }
                         tokens_out += 1;
+                        if chunk_carries_output(&chunk) {
+                            output_chunks += 1;
+                        }
                         let data = serde_json::to_string(&chunk).unwrap_or_default();
                         yield Ok(Event::default().data(data));
                     }
                     Ok(Some(SessionEvent::Complete { tokens_out: t })) => {
                         completed = true;
                         reported_tokens = t;
-                        if let Some(t) = t {
-                            metrics::TOKENS_OUT_TOTAL
-                                .with_label_values(&[&model_id])
-                                .inc_by(t as f64);
-                        } else {
-                            metrics::TOKENS_OUT_TOTAL
-                                .with_label_values(&[&model_id])
-                                .inc_by(tokens_out as f64);
-                        }
                         final_status = "ok";
                         break;
                     }
@@ -1720,7 +2080,6 @@ async fn run_streaming(
                             let err = GatewayError::Upstream(message);
                             yield Ok(error_event(&err));
                             final_status = "error";
-                            break;
                         }
                         break;
                     }
@@ -1736,7 +2095,6 @@ async fn run_streaming(
                             let err = GatewayError::Upstream(reason);
                             yield Ok(error_event(&err));
                             final_status = "error";
-                            break;
                         }
                         break;
                     }
@@ -1806,7 +2164,7 @@ async fn run_streaming(
                     device = %target_node,
                     "retrying same device after large-model cold-start grace"
                 );
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(DISPATCH_GRACE_BACKOFF).await;
                 metrics::RETRIES_TOTAL
                     .with_label_values(&["single_supplier_cold_start_retry"])
                     .inc();
@@ -1815,9 +2173,9 @@ async fn run_streaming(
 
             info!(
                 device = %target_node,
-                "retrying on next-best device after non-streamed failure"
+                "retrying on next-best device after streaming failure before first token"
             );
-            if !beside_heavy {
+            if retry_should_quarantine(queue_full_failure, sole_supplier, beside_heavy, cold_start_grace) {
                 state.registry.quarantine_for(
                     &target_node,
                     state.config.reliability.quarantine_seconds,
@@ -1827,81 +2185,28 @@ async fn run_streaming(
             excluded.push(target_node);
         }
 
-        // OpenRouter requires `usage` in every response — including streams.
-        // Emit a final chunk carrying the usage block before [DONE]. If
-        // upstream already reported usage in one of the chunks (via
-        // stream_options.include_usage=true) use that; otherwise synthesize
-        // a chunk with our locally-observed completion_tokens.
+        // Settle and record BEFORE the final usage chunk and [DONE] are
+        // yielded (Q6): a client that closes on [DONE] drops this generator
+        // at that yield, and nothing after it would run.
+        let billed = billable_usage(
+            captured_usage.as_ref(),
+            reported_tokens,
+            output_chunks,
+            prompt_tokens_estimate,
+        );
         if final_status == "ok" {
-            let usage = captured_usage.clone().unwrap_or_else(|| serde_json::json!({
-                "prompt_tokens": 0,
-                "completion_tokens": tokens_out,
-                "total_tokens": tokens_out,
-            }));
-            let created = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let id = request_id.clone().unwrap_or_else(|| format!("chatcmpl-{}", Uuid::new_v4()));
-            let final_chunk = serde_json::json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_id,
-                "choices": [],
-                "usage": usage,
-            });
-            yield Ok(Event::default().data(serde_json::to_string(&final_chunk).unwrap_or_default()));
-        }
-
-        yield Ok(done_event());
-
-        // Settle Teale Credit ledger on success.
-        if final_status == "ok" {
-            if let (Some(provider), Some(consumer_p), Some(pool)) = (
-                served_by.as_ref(),
-                consumer.as_ref(),
-                state.db.as_ref(),
-            ) {
-                let final_tokens_out = reported_tokens.map(|t| t as u64).unwrap_or(tokens_out).max(1);
-                let prompt_tokens = captured_usage
-                    .as_ref()
-                    .and_then(|u| u.get("prompt_tokens").and_then(|v| v.as_u64()))
-                    .unwrap_or(0);
-                let cost = ledger::cost_credits(
-                    prompt_tokens,
-                    final_tokens_out,
-                    catalog_model.prompt_price_usd(),
-                    catalog_model.completion_price_usd(),
-                );
-                let online: Vec<String> = state.registry.snapshot_devices()
-                    .into_iter()
-                    .map(|d| d.node_id)
-                    .collect();
-                let request_id = Uuid::new_v4().to_string();
-                match ledger::settle_request(pool, consumer_p, Some(provider.as_str()), &online, cost, &request_id, &model_id) {
-                    Ok(()) => info!(
-                        consumer=%consumer_p.ledger_actor_id(),
-                        provider=%provider,
-                        tokens_in=%prompt_tokens,
-                        tokens_out=%final_tokens_out,
-                        cost=%cost,
-                        "settled chat (Teale Credits)"
-                    ),
-                    Err(e) => warn!("settle_request failed: {}", e),
-                }
+            metrics::TOKENS_OUT_TOTAL
+                .with_label_values(&[&model_id])
+                .inc_by(billed.completion_tokens as f64);
+            if let (Some(provider), Some(consumer_p)) = (served_by.as_ref(), consumer.as_ref()) {
+                settle_completed(&state, consumer_p, provider, &catalog_model, billed);
             }
-        }
-
-        // Stranger-supply shadow (config-gated, no-op unless probation
-        // supply exists): replay this prompt to probation + fresh trusted
-        // devices out of band and diff the outputs. Never on the client
-        // latency path.
-        if final_status == "ok" {
+            // Stranger-supply shadow (config-gated, no-op unless probation
+            // supply exists): replay this prompt to probation + fresh trusted
+            // devices out of band and diff the outputs. Never on the client
+            // latency path.
             crate::shadow::maybe_spawn(&state, &catalog_model, &req_body);
-        }
-
-        if final_status != "ok" {
+        } else {
             info!(
                 "request complete: model={} status={} total_ms={} last_error={}",
                 model_id,
@@ -1910,12 +2215,7 @@ async fn run_streaming(
                 last_failure.as_deref().unwrap_or("-")
             );
         }
-        metrics::REQUESTS_TOTAL
-            .with_label_values(&[&model_id, final_status])
-            .inc();
-        metrics::TOTAL_LATENCY_SECONDS
-            .with_label_values(&[&model_id, final_status])
-            .observe(started.elapsed().as_secs_f64());
+        outcome.record(final_status);
 
         if let Some(ft) = first_token_at {
             let ttft_ms = ft.duration_since(started).as_millis();
@@ -1937,25 +2237,52 @@ async fn run_streaming(
                 );
             }
         }
+
+        // OpenRouter requires `usage` in every response — including streams.
+        // The final chunk carries exactly what was billed.
+        if final_status == "ok" {
+            let created = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let id = request_id.clone().unwrap_or_else(|| format!("chatcmpl-{}", Uuid::new_v4()));
+            let final_chunk = serde_json::json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [],
+                "usage": billed.to_usage_json(captured_usage.as_ref()),
+            });
+            yield Ok(Event::default().data(serde_json::to_string(&final_chunk).unwrap_or_default()));
+        }
+
+        yield Ok(done_event());
     };
 
     Ok(Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_buffered(
     state: AppState,
-    catalog_model: CatalogModel,
-    req_body: Value,
-    apmhelp_lane: bool,
-    consumer: Option<ledger::ConsumerPrincipal>,
-    required_ctx: u32,
-    prompt_tokens: u32,
-    preferred_node_ids: Vec<String>,
+    prepared: PreparedChatRequest,
 ) -> Result<Json<Value>, GatewayError> {
     let started = Instant::now();
+    let PreparedChatRequest {
+        catalog_model,
+        req_body,
+        consumer,
+        required_ctx,
+        prompt_tokens,
+        prompt_tokens_estimate,
+        requested_max_tokens,
+        preferred_node_ids,
+        apmhelp_lane,
+        ..
+    } = prepared;
     let model_id = catalog_model.id.clone();
+    let mut outcome = RequestOutcome::new(&model_id, started);
 
     let max_retries = state.config.reliability.max_retries;
     let request_timeout = Duration::from_secs(state.config.reliability.request_timeout_seconds);
@@ -1966,14 +2293,16 @@ async fn run_buffered(
     let mut tool_calls = BufferedToolCalls::default();
     let mut finish_reason = "stop".to_string();
     let mut captured_usage: Option<Value> = None;
+    let mut reported_tokens: Option<u32> = None;
     let mut tokens_out: u64 = 0;
+    let mut output_chunks: u64 = 0;
     let mut first_token_at: Option<Instant> = None;
 
     loop {
         tried += 1;
         let cold_start_grace = single_supplier_large_cold_start_grace(&state, &catalog_model);
         let ttft_deadline = pre_first_token_deadline(&state, &catalog_model, prompt_tokens);
-        let (mut rx, target_node, session_id, request_heavy) = pick_and_dispatch(
+        let dispatch = pick_and_dispatch_classified(
             &state,
             &catalog_model,
             &req_body,
@@ -1982,9 +2311,17 @@ async fn run_buffered(
             &preferred_node_ids,
             apmhelp_lane,
             prompt_tokens,
+            requested_max_tokens,
             consumer.as_ref().map(|c| c.ledger_actor_id()),
         )
-        .await?;
+        .await;
+        let (mut rx, target_node, session_id, request_heavy) = match dispatch {
+            Ok(dispatched) => dispatched,
+            Err(e) => {
+                outcome.record(error_to_status_label(&e));
+                return Err(e);
+            }
+        };
         // #276: armed for every exit path, including future-drop on client
         // disconnect mid-prefill.
         let cleanup =
@@ -2039,6 +2376,9 @@ async fn run_buffered(
                         );
                     }
                     tokens_out += 1;
+                    if chunk_carries_output(&chunk) {
+                        output_chunks += 1;
+                    }
                     if let Some(text) = extract_delta_content(&chunk) {
                         accumulated_text.push_str(&text);
                     }
@@ -2055,7 +2395,8 @@ async fn run_buffered(
                         last_chunk_obj = Some(obj.clone());
                     }
                 }
-                Ok(Some(SessionEvent::Complete { .. })) => {
+                Ok(Some(SessionEvent::Complete { tokens_out: t })) => {
+                    reported_tokens = t;
                     completed = true;
                     break;
                 }
@@ -2138,15 +2479,16 @@ async fn run_buffered(
         }
 
         if completed {
-            metrics::REQUESTS_TOTAL
-                .with_label_values(&[&model_id, "ok"])
-                .inc();
-            metrics::TOTAL_LATENCY_SECONDS
-                .with_label_values(&[&model_id, "ok"])
-                .observe(started.elapsed().as_secs_f64());
+            let billed = billable_usage(
+                captured_usage.as_ref(),
+                reported_tokens,
+                output_chunks,
+                prompt_tokens_estimate,
+            );
+            outcome.record("ok");
             metrics::TOKENS_OUT_TOTAL
                 .with_label_values(&[&model_id])
-                .inc_by(tokens_out as f64);
+                .inc_by(billed.completion_tokens as f64);
             if let Some(ft) = first_token_at {
                 let ttft_ms = ft.duration_since(started).as_millis() as u32;
                 let total_ms = started.elapsed().as_millis() as u64;
@@ -2155,36 +2497,8 @@ async fn run_buffered(
                     .record(&model_id, ttft_ms, Some(tokens_out.max(1)), total_ms);
             }
 
-            // Settle Teale Credit ledger.
-            if let (Some(consumer_p), Some(pool)) = (consumer.as_ref(), state.db.as_ref()) {
-                let prompt_tokens = captured_usage
-                    .as_ref()
-                    .and_then(|u| u.get("prompt_tokens").and_then(|v| v.as_u64()))
-                    .unwrap_or(0);
-                let cost = ledger::cost_credits(
-                    prompt_tokens,
-                    tokens_out.max(1),
-                    catalog_model.prompt_price_usd(),
-                    catalog_model.completion_price_usd(),
-                );
-                let online: Vec<String> = state
-                    .registry
-                    .snapshot_devices()
-                    .into_iter()
-                    .map(|d| d.node_id)
-                    .collect();
-                let request_id = Uuid::new_v4().to_string();
-                if let Err(e) = ledger::settle_request(
-                    pool,
-                    consumer_p,
-                    Some(target_node.as_str()),
-                    &online,
-                    cost,
-                    &request_id,
-                    &model_id,
-                ) {
-                    warn!("settle_request failed: {}", e);
-                }
+            if let Some(consumer_p) = consumer.as_ref() {
+                settle_completed(&state, consumer_p, &target_node, &catalog_model, billed);
             }
 
             // Stranger-supply shadow (config-gated, no-op unless probation
@@ -2200,7 +2514,7 @@ async fn run_buffered(
                 &last_chunk_obj,
                 tool_calls.materialize(),
                 &finish_reason,
-                tokens_out,
+                billed.to_usage_json(captured_usage.as_ref()),
             );
             return Ok(Json(reply));
         }
@@ -2226,7 +2540,7 @@ async fn run_buffered(
                         "large-model cold-start grace"
                     }
                 );
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(DISPATCH_GRACE_BACKOFF).await;
                 metrics::RETRIES_TOTAL
                     .with_label_values(&[if warmup_retry {
                         "buffered_warmup_retry"
@@ -2237,7 +2551,12 @@ async fn run_buffered(
                 continue;
             }
             info!(device = %target_node, "retrying (buffered) on next-best device");
-            if !queue_full_failure && !beside_heavy {
+            if retry_should_quarantine(
+                queue_full_failure,
+                sole_supplier,
+                beside_heavy,
+                cold_start_grace,
+            ) {
                 state.registry.quarantine_for(
                     &target_node,
                     state.config.reliability.quarantine_seconds,
@@ -2263,9 +2582,7 @@ async fn run_buffered(
             started.elapsed().as_millis(),
             err_message.as_deref().unwrap_or("-")
         );
-        metrics::REQUESTS_TOTAL
-            .with_label_values(&[&model_id, terminal_status])
-            .inc();
+        outcome.record(terminal_status);
         if client_error_failure {
             return Err(GatewayError::BadRequest(
                 err_message.unwrap_or_else(|| "backend client error".into()),
@@ -2368,7 +2685,7 @@ fn build_non_stream_response(
     last_chunk: &Option<serde_json::Map<String, Value>>,
     tool_calls: Vec<Value>,
     finish_reason: &str,
-    tokens_out: u64,
+    usage: Value,
 ) -> Value {
     let id = last_chunk
         .as_ref()
@@ -2404,11 +2721,7 @@ fn build_non_stream_response(
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": tokens_out,
-            "total_tokens": tokens_out,
-        },
+        "usage": usage,
     })
 }
 
@@ -2447,24 +2760,6 @@ pub(crate) fn error_to_status_label(err: &GatewayError) -> &'static str {
         GatewayError::RelayUnavailable(_) => "relay_unavailable",
         GatewayError::Other(_) => "error",
     }
-}
-
-// This is unused right now, but handy when we add request-id echo to logs later.
-#[allow(dead_code)]
-fn request_id_from_headers(headers: &HeaderMap) -> String {
-    headers
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
-        .unwrap_or_else(|| Uuid::new_v4().to_string())
-}
-
-#[allow(dead_code)]
-pub const CONTENT_TYPE: &str = "application/json";
-
-#[allow(dead_code)]
-fn _touch_unused_headers() -> header::HeaderName {
-    header::CONTENT_TYPE
 }
 
 #[cfg(test)]
@@ -2627,10 +2922,13 @@ quantization: null
             &None,
             tool_calls.materialize(),
             extract_finish_reason(&second).as_deref().unwrap_or("stop"),
-            2,
+            billable_usage(None, None, 2, 40).to_usage_json(None),
         );
 
         let choice = &reply["choices"][0];
+        assert_eq!(reply["usage"]["prompt_tokens"], 40);
+        assert_eq!(reply["usage"]["completion_tokens"], 2);
+        assert_eq!(reply["usage"]["total_tokens"], 42);
         assert_eq!(choice["finish_reason"], "tool_calls");
         assert_eq!(
             choice["message"]["tool_calls"][0]["function"]["name"],
@@ -4186,6 +4484,354 @@ pricing_completion: "0.00000020"
             .await
             .expect("ready waiter task should finish");
         assert_eq!(target_node, "node-b");
+    }
+
+    fn static_principal() -> AuthPrincipal {
+        AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: "internal".into(),
+            },
+        }
+    }
+
+    fn device_principal(device_id: &str) -> AuthPrincipal {
+        AuthPrincipal {
+            kind: PrincipalKind::Device {
+                device_id: device_id.to_string(),
+            },
+        }
+    }
+
+    /// Q1: a streaming request against a saturated fleet gets a real 429 +
+    /// Retry-After from the HTTP handler, not a 200 followed by an SSE
+    /// error event.
+    #[tokio::test]
+    async fn streaming_request_on_saturated_fleet_returns_429_not_sse() {
+        let model = free_like();
+        let mut config = dispatch_test_config(18);
+        config.scheduler.max_queue_depth = 1;
+        config.reliability.saturation_429 = true;
+        let state = dispatch_test_state(config, &model);
+        state.registry.upsert_device(
+            "sat-a".into(),
+            "Sat A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        assert!(state.registry.admit("sat-a", false, None));
+        let body = serde_json::json!({
+            "model": model.id,
+            "stream": true,
+            "max_tokens": 16,
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        let result = chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            Extension(static_principal()),
+            Json(body),
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("a saturated fleet must not commit a 200 SSE stream"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, GatewayError::AtCapacity(_)), "{err:?}");
+        let response = err.into_response();
+        let status = response.status();
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_some());
+        // Only the pre-existing admission is in flight: nothing leaked.
+        assert_eq!(state.registry.in_flight("sat-a"), 1);
+    }
+
+    /// Q1: when every relay open fails on the first attempt, a streaming
+    /// request gets the upstream-failure status code (and the in-flight
+    /// counters are released), not a 200 SSE stream.
+    #[tokio::test]
+    async fn streaming_request_with_unreachable_supply_returns_error_status() {
+        let model = free_like();
+        let state = dispatch_test_state(dispatch_test_config(1), &model);
+        state.registry.upsert_device(
+            "dead-a".into(),
+            "Dead A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        let body = serde_json::json!({
+            "model": model.id,
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+
+        let result = chat_completions(
+            State(state.clone()),
+            HeaderMap::new(),
+            Extension(static_principal()),
+            Json(body),
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("an unreachable fleet must not commit a 200 SSE stream"),
+            Err(err) => err,
+        };
+        let all_failed = matches!(err, GatewayError::AllUpstreamsFailed(_));
+        assert!(all_failed, "{err:?}");
+        assert!(err.status().is_server_error());
+        assert_eq!(state.registry.in_flight("dead-a"), 0);
+    }
+
+    fn huge_ceiling_model() -> CatalogModel {
+        serde_yaml::from_str(
+            r#"
+id: test/ds4-like
+display_name: DS4-like
+owned_by: test
+context_length: 1000000
+max_output_tokens: 384000
+params_b: 284
+pricing_prompt: "0.00000025"
+pricing_completion: "0.00000050"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn funded_state(model: &CatalogModel, device_id: &str, credits: i64) -> AppState {
+        let mut state = dispatch_test_state(dispatch_test_config(15), model);
+        let pool = crate::db::open_in_memory().expect("in-memory ledger");
+        ledger::admin_mint(&pool, device_id, credits, "test").expect("mint");
+        state.db = Some(pool);
+        state.registry.upsert_device(
+            "node-a".into(),
+            "Node A".into(),
+            dispatch_caps(&[&model.id], &[]),
+        );
+        state
+    }
+
+    fn prepared_is_heavy(state: &AppState, prepared: &PreparedChatRequest) -> bool {
+        let (prompt, max) = (prepared.prompt_tokens, prepared.requested_max_tokens);
+        is_heavy_request(prompt, max, &state.config.reliability)
+    }
+
+    fn body_for(model: &CatalogModel, max_tokens: Option<u32>) -> Value {
+        let mut req = req_with("hi", max_tokens);
+        req.model = Some(model.id.clone());
+        serde_json::to_value(req).unwrap()
+    }
+
+    /// Q2: a well-funded request that omits max_tokens is NOT rewritten to
+    /// the 384k catalog ceiling: nothing is injected, it is not heavy, and
+    /// its context claim is prompt + the 4096 default, not prompt + 384k.
+    #[tokio::test]
+    async fn omitted_max_tokens_is_not_injected_on_large_ceiling_model() {
+        let model = huge_ceiling_model();
+        let state = funded_state(&model, "dev-rich", 1_000_000_000);
+        let principal = device_principal("dev-rich");
+
+        let prepared = prepare_chat_request(
+            &state,
+            &HeaderMap::new(),
+            &principal,
+            body_for(&model, None),
+        )
+        .expect("prepares");
+
+        assert!(prepared.req_body.get("max_tokens").is_none());
+        assert_eq!(prepared.requested_max_tokens, None);
+        assert_eq!(
+            prepared.required_ctx,
+            prepared.prompt_tokens + DEFAULT_COMPLETION_BUDGET
+        );
+        assert!(!prepared_is_heavy(&state, &prepared));
+    }
+
+    /// Q2: when the budget cannot cover the ceiling, the affordable cap IS
+    /// forwarded (the ledger guard), but it neither makes the request heavy
+    /// nor inflates the context claim past the default budget.
+    #[tokio::test]
+    async fn omitted_max_tokens_budget_cap_is_forwarded_but_not_heavy() {
+        let model = huge_ceiling_model();
+        let state = funded_state(&model, "dev-thin", 10_000);
+        let principal = device_principal("dev-thin");
+
+        let prepared = prepare_chat_request(
+            &state,
+            &HeaderMap::new(),
+            &principal,
+            body_for(&model, None),
+        )
+        .expect("prepares");
+
+        let forwarded = prepared.req_body["max_tokens"]
+            .as_u64()
+            .expect("budget cap forwarded");
+        assert!(forwarded > 4096 && forwarded < 384_000, "{forwarded}");
+        assert_eq!(prepared.requested_max_tokens, None);
+        assert_eq!(
+            prepared.required_ctx,
+            prepared.prompt_tokens + DEFAULT_COMPLETION_BUDGET
+        );
+        assert!(!prepared_is_heavy(&state, &prepared));
+    }
+
+    /// Q2: an explicit client max_tokens is still clamped to the catalog
+    /// ceiling, forwarded, and drives both heavy classification and the
+    /// context claim.
+    #[tokio::test]
+    async fn explicit_max_tokens_is_clamped_forwarded_and_classified() {
+        let model = huge_ceiling_model();
+        let state = funded_state(&model, "dev-rich", 1_000_000_000);
+        let principal = device_principal("dev-rich");
+
+        let prepared = prepare_chat_request(
+            &state,
+            &HeaderMap::new(),
+            &principal,
+            body_for(&model, Some(500_000)),
+        )
+        .expect("prepares");
+
+        assert_eq!(prepared.req_body["max_tokens"], 384_000);
+        assert_eq!(prepared.requested_max_tokens, Some(384_000));
+        assert_eq!(prepared.required_ctx, prepared.prompt_tokens + 384_000);
+        assert!(prepared_is_heavy(&state, &prepared));
+    }
+
+    #[test]
+    fn forward_clamped_max_tokens_only_when_supplied_or_budget_bound() {
+        let unclamped = ClampDecision {
+            effective_max: 384_000,
+            client_max: 384_000,
+            clamped: false,
+        };
+        let budget_bound = ClampDecision {
+            effective_max: 9_000,
+            client_max: 384_000,
+            clamped: true,
+        };
+        assert!(!should_forward_clamped_max_tokens(None, &unclamped));
+        assert!(should_forward_clamped_max_tokens(None, &budget_bound));
+        assert!(should_forward_clamped_max_tokens(Some(100), &unclamped));
+        assert_eq!(completion_budget_for(None), DEFAULT_COMPLETION_BUDGET);
+        assert_eq!(completion_budget_for(Some(77)), 77);
+    }
+
+    /// Q5: supplier-inflated counts never raise the bill above what the
+    /// gateway observed / estimated.
+    #[test]
+    fn billing_caps_supplier_reported_counts() {
+        let usage = serde_json::json!({
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 999_999,
+        });
+        let billed = billable_usage(Some(&usage), Some(999_999), 120, 500);
+        assert_eq!(billed.prompt_tokens, 500);
+        assert_eq!(billed.completion_tokens, 120);
+    }
+
+    /// Q5: missing upstream usage bills the gateway prompt estimate, never 0.
+    #[test]
+    fn billing_falls_back_to_gateway_prompt_estimate() {
+        let billed = billable_usage(None, None, 37, 210);
+        assert_eq!(billed.prompt_tokens, 210);
+        assert_eq!(billed.completion_tokens, 37);
+        assert_eq!(billed.total_tokens(), 247);
+    }
+
+    /// Q5: lower supplier counts are honored (the gateway count includes no
+    /// tokenizer, so it is the ceiling, not the truth).
+    #[test]
+    fn billing_honors_lower_supplier_counts_and_floors_at_one() {
+        let usage = serde_json::json!({ "prompt_tokens": 150, "completion_tokens": 30 });
+        let billed = billable_usage(Some(&usage), Some(35), 40, 210);
+        assert_eq!(billed.prompt_tokens, 150);
+        assert_eq!(billed.completion_tokens, 30);
+        assert_eq!(billable_usage(None, None, 0, 20).completion_tokens, 1);
+    }
+
+    /// Q5/Q8: the usage reported to clients is exactly the billed usage,
+    /// keeping extra upstream fields.
+    #[test]
+    fn reported_usage_matches_billed_usage() {
+        let upstream = serde_json::json!({
+            "prompt_tokens": 9_999,
+            "completion_tokens": 9_999,
+            "total_tokens": 19_998,
+            "prompt_tokens_details": { "cached_tokens": 12 },
+        });
+        let billed = billable_usage(Some(&upstream), None, 5, 100);
+        let usage = billed.to_usage_json(Some(&upstream));
+        assert_eq!(usage["prompt_tokens"], 100);
+        assert_eq!(usage["completion_tokens"], 5);
+        assert_eq!(usage["total_tokens"], 105);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 12);
+    }
+
+    fn delta_chunk(delta: Value) -> Value {
+        serde_json::json!({ "choices": [{ "delta": delta }] })
+    }
+
+    #[test]
+    fn only_output_chunks_count_toward_billing() {
+        let role = delta_chunk(serde_json::json!({ "role": "assistant" }));
+        let empty = delta_chunk(serde_json::json!({ "content": "" }));
+        let text = delta_chunk(serde_json::json!({ "content": "hi" }));
+        let reasoning = delta_chunk(serde_json::json!({ "reasoning_content": "hm" }));
+        let tool = delta_chunk(serde_json::json!({ "tool_calls": [{ "index": 0 }] }));
+        let usage_only = serde_json::json!({ "choices": [], "usage": { "prompt_tokens": 1 } });
+        assert!(!chunk_carries_output(&role));
+        assert!(!chunk_carries_output(&empty));
+        assert!(chunk_carries_output(&text));
+        assert!(chunk_carries_output(&reasoning));
+        assert!(chunk_carries_output(&tool));
+        assert!(!chunk_carries_output(&usage_only));
+    }
+
+    /// Q4: one quarantine predicate for every retry path.
+    #[test]
+    fn retry_quarantine_predicate_skips_protected_cases() {
+        assert!(retry_should_quarantine(false, false, false, false));
+        assert!(!retry_should_quarantine(true, false, false, false));
+        assert!(!retry_should_quarantine(false, true, false, false));
+        assert!(!retry_should_quarantine(false, false, true, false));
+        assert!(!retry_should_quarantine(false, false, false, true));
+    }
+
+    fn requests_total(model: &str, status: &str) -> u64 {
+        metrics::REQUESTS_TOTAL
+            .with_label_values(&[model, status])
+            .get()
+    }
+
+    /// Q6: a request dropped before it finished is still counted.
+    #[test]
+    fn request_outcome_records_client_closed_on_drop() {
+        let model = "test/outcome-drop";
+        let closed_before = requests_total(model, "client_closed");
+        drop(RequestOutcome::new(model, std::time::Instant::now()));
+        assert_eq!(requests_total(model, "client_closed"), closed_before + 1);
+
+        let ok_before = requests_total(model, "ok");
+        let mut outcome = RequestOutcome::new(model, std::time::Instant::now());
+        outcome.record("ok");
+        drop(outcome);
+        assert_eq!(requests_total(model, "ok"), ok_before + 1);
+        // A recorded outcome does not also count as client_closed.
+        assert_eq!(requests_total(model, "client_closed"), closed_before + 1);
+    }
+
+    /// Q7: an unresolvable client model string never becomes a metric label.
+    #[tokio::test]
+    async fn unresolved_model_uses_fixed_metric_label() {
+        let state = dispatch_test_state_with_catalog(dispatch_test_config(15), vec![]);
+        let before = requests_total("unknown", "model_not_found");
+        let err = unresolved_model_error(&state, "attacker/unique-model-string-123");
+        assert!(matches!(err, GatewayError::ModelNotFound(_)));
+        assert_eq!(requests_total("unknown", "model_not_found"), before + 1);
     }
 
     #[test]

@@ -3,11 +3,17 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod app_icon;
+
 #[cfg(target_os = "windows")]
 mod windows_app;
 
 #[cfg(target_os = "linux")]
 mod linux_app;
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod shared;
 
 #[cfg(target_os = "windows")]
 fn main() -> anyhow::Result<()> {

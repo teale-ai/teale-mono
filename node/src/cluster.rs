@@ -438,6 +438,10 @@ async fn handle_inference_request(
         }
     }
     let _guard = QueueGuard(state.clone());
+    // Keep Windows out of idle sleep while this request is generating
+    // (refcounted; released when the request ends on any path).
+    #[cfg(windows)]
+    let _wake = crate::power_win::WakeLock::acquire();
 
     // 2. Model pre-check: fail typed instead of hitting the backend with a wrong model.
     if let Some(requested_model) = req.request.model.as_deref() {

@@ -1,6 +1,13 @@
 package com.teale.android.ui.settings
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -91,6 +98,11 @@ class SettingsViewModel : ViewModel() {
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val snapshot by viewModel.snapshot.collectAsState()
     val ctx = LocalContext.current
+    // Supply runs whether or not notifications are allowed; without them its
+    // status is only visible in the app.
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { viewModel.setSupplyEnabled(true) }
     Column(
         Modifier
             .fillMaxSize()
@@ -168,7 +180,22 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             }
             Switch(
                 checked = snapshot.supplyEnabled,
-                onCheckedChange = viewModel::setSupplyEnabled,
+                onCheckedChange = { enabled ->
+                    if (enabled && needsNotificationPermission(ctx)) {
+                        // The supply notification is where status and errors
+                        // show up outside the app; ask before the first start.
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        viewModel.setSupplyEnabled(enabled)
+                    }
+                },
+            )
+        }
+        if (snapshot.supplyEnabled && needsNotificationPermission(ctx)) {
+            Text(
+                stringResource(R.string.settings_supply_notifications_off),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
@@ -246,6 +273,11 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
         )
     }
 }
+
+private fun needsNotificationPermission(context: Context): Boolean =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+        PackageManager.PERMISSION_GRANTED
 
 // ── Language picker ──────────────────────────────────────────────────────────
 // Languages listed here must also appear in res/xml/locales_config.xml and

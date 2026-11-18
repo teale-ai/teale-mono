@@ -10,7 +10,8 @@ jobs:
   capture:
     runs-on: ubuntu-latest
     steps:
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # Same pin as gateway-deploy.yml (master as of 2026-10-30, node24).
+      - uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
       - name: capture gateway logs
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -18,7 +19,7 @@ jobs:
           timeout "${{ github.event.inputs.seconds }}" flyctl logs -a teale-gateway > gateway-logs.txt 2>&1 || true
           echo "captured $(wc -l < gateway-logs.txt) lines"
           grep -c 'streaming inference dispatched' gateway-logs.txt || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gateway-logs-${{ github.run_id }}
           path: gateway-logs.txt

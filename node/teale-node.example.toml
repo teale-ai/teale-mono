@@ -34,24 +34,41 @@ port = 11436
 # backend = "ds4"
 #
 # [ds4]
-# binary = "/Users/tailor512/.context/ds4-teale/ds4/ds4-server"
-# model = "/Users/tailor512/.context/ds4-teale/ds4/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"
+# binary = "/opt/ds4/ds4-server"
+# model = "/opt/ds4/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"
 # model_id = "deepseek-ai/deepseek-v4-flash"
 # backend_model_id = "deepseek-v4-flash"
 # context_size = 100000
 # port = 11438
-# kv_disk_dir = "/Users/tailor512/.context/ds4-teale/kv"
+# kv_disk_dir = "/opt/ds4/kv"
 # kv_disk_space_mb = 8192
 # # extra_args = ["--warm-weights"]
 
 [control]
-# Local companion / tray control API
+# Local companion / tray control API (127.0.0.1 only). The desktop tray reads
+# this port from the same file. Browser pages may call it only from the
+# bundled companion UI (or TEALE_DESKTOP_WEB_URL's origin).
 port = 11437
 registry_path = "config/model-registry.json"
-# Optional human sign-in for the Windows companion demand view.
-supabase_url = ""
-supabase_anon_key = ""
-supabase_redirect_url = "teale://auth/callback"
+# Sign-in uses the gateway's email code; the old supabase_* keys are ignored.
+
+# ── Employee-machine throttling (Windows only today) ──────────────────
+# Throttle supply to 0 while average CPU use over the window exceeds the
+# threshold; optionally supply only while the user is idle.
+# [power]
+# pause_on_cpu_busy = true
+# cpu_busy_threshold_pct = 70
+# cpu_busy_window_secs = 180
+# idle_only = false
+# idle_after_secs = 300
+
+# ── Private Inference Network (optional) ──────────────────────────────
+# [pin]
+# join_code = "XXXX-XXXX-XX"   # auto-submit a join request on first start
+# gateway_pubkey = ""          # pinned gateway Ed25519 key (hex); TOFU if unset
+# data_dir = ""                # netmap cache / usage queue location override
+# port = 41642                 # UDP data-plane port (0 = ephemeral)
+# offer_exit = false           # let fellow members exit through this device
 
 [node]
 display_name = "Linux GPU Server"
@@ -68,6 +85,11 @@ display_name = "Linux GPU Server"
 #   MBP M4 Max 64 GB     → 4
 #   Mac Studio Ultra ≥128→ 4-6 (depends on active model)
 max_concurrent_requests = 2
+
+# DIN requests allowed to wait for a serving slot before new ones fail fast
+# with queue_full, and how long one may wait (seconds).
+# din_queue_depth = 2
+# din_queue_timeout_secs = 600
 
 # Graceful shutdown budget in seconds. On SIGINT/SIGTERM the node stops
 # accepting new requests and waits up to this long for in-flight ones to
@@ -86,32 +108,31 @@ heartbeat_interval_seconds = 10
 #     "/models/gpt-oss-120b-mxfp4.gguf",
 # ]
 
-# ── Android (Pixel / Tensor G4) Example ───────────────────────────────
-# For Google Pixel 9 Pro Fold (16GB, Tensor G4):
+# ── Android (Teale Android app) ───────────────────────────────────────
+# The Android app (android-app/) ships both binaries inside the APK as
+# "libraries" so Android extracts them executable into nativeLibraryDir:
+#   libllamaserver.so  = llama-server, started by the app on 127.0.0.1:11436
+#   libtealenode.so    = teale-node, started with `--config <file> --no-backend`
+# The app writes the config itself (NodeConfigWriter.kt) and serves
+# google/gemma-3-1b-it (Q4_K_M GGUF) on CPU. Equivalent hand-written config:
+#
+# backend = "llama"
 #
 # [llama]
-# binary = "/data/data/com.termux/files/usr/bin/llama-server"
-# model = "/storage/emulated/0/models/gemma-4-E4B-it-Q4_K_M.gguf"
-# gpu_layers = 999
-# context_size = 4096
+# binary = "unused-with-no-backend"   # --no-backend: the app runs llama-server
+# model = "unused-with-no-backend"
+# model_id = "google/gemma-3-1b-it"
 # port = 11436
-# extra_args = ["--threads", "4"]
+# context_size = 4096
+# gpu_layers = 0
 #
 # [node]
 # display_name = "Pixel 9 Pro Fold"
-# gpu_backend = "vulkan"
+# gpu_backend = "cpu"
+# max_concurrent_requests = 1
 #
-# Recommended models for Pixel / Tensor devices (16GB):
-#   Gemma 4 E4B Q4_K_M (~2.5 GB) — Google-optimized, vision + function calling
-#     https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF
-#   Gemma 4 E2B Q8_0   (~5.0 GB) — smaller variant, still excellent
-#     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF
-#
-# For non-Pixel Android phones:
-#   Qwen3.5 4B GGUF    (~2.5 GB) — best general-purpose
-#     https://huggingface.co/unsloth/Qwen3-4B-GGUF
-#
-# Environment variable overrides (if auto-detection fails):
+# Manual Termux/ADB experiments with other GGUFs: see README.md ("Android").
+# Environment variable overrides (if hardware auto-detection fails):
 #   TEALE_CHIP_FAMILY=tensorG4 TEALE_CHIP_NAME="Google Tensor G4" teale-node ...
 
 # ── MNN-LLM Backend (Huawei / Mali GPU devices) ──────────────────────
@@ -126,7 +147,7 @@ heartbeat_interval_seconds = 10
 # model_id = "qwen3.5-4b"
 # backend_type = "opencl"
 # context_size = 2048
-# port = 11437
+# port = 11440   # default (11437 is the control API)
 # # extra_args = ["--thread_num", "4"]
 #
 # [node]

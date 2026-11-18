@@ -20,21 +20,16 @@ Always verify `swift build` succeeds before finishing work.
 - If the merge has conflicts, resolve them and verify `swift build` still passes after resolution.
 - Delete remote branches after merging (`git push origin --delete <branch>`).
 
-### Session Logging
-- **At the end of every session**, create or update a chat log in `chats/YYYY-MM-DD.md` summarizing what was done, key decisions, and issues encountered.
-- If multiple sessions happen on the same day, append to the existing file.
-- Session notes live in `chats/` as markdown files named by date (e.g. `chats/2026-04-05.md`). Read these for context on decisions made in prior sessions.
-
 ### Before Making Changes
 - Read the file before editing it. Understand existing code before modifying.
-- Check `chats/` for recent session context if picking up ongoing work.
+- Put decisions and context in the PR description or commit messages, not in session transcripts.
 - Run `swift build` to confirm the project compiles before starting.
 
 ### Code Quality
-- This is a Swift Package Manager project with 13 modules. Respect module boundaries — don't add cross-module imports without good reason.
+- This is a Swift Package Manager project with 25 targets (module table in [TEALE.md](TEALE.md)). Respect module boundaries — don't add cross-module imports without good reason.
 - `InferenceProvider` is the core protocol abstraction. New inference backends should conform to it.
 - All inter-node messages are length-prefixed JSON over persistent TCP connections. Follow this pattern for new network protocols.
-- Keep SwiftUI views in the app targets (`InferencePoolApp`, `TealeCompanion`), not in library modules.
+- Keep SwiftUI views in the app targets (`Teale` in `Sources/InferencePoolApp`, `TealeCompanion`), not in library modules. The macOS window UI is the shared web bundle in `Sources/InferencePoolApp/Resources/DesktopCompanionWeb/` (also embedded by the Windows/Linux tray).
 
 ### Testing
 - Tests require Xcode SDK (XCTest not available with Command Line Tools only).

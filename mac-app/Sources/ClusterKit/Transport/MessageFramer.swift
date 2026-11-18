@@ -10,6 +10,14 @@ public class ClusterMessageFramer: NWProtocolFramerImplementation {
 
     public static let definition = NWProtocolFramer.Definition(implementation: ClusterMessageFramer.self)
 
+    /// Largest frame accepted or sent (8 MiB). A 1 MiB model-transfer chunk
+    /// is ~1.4 MiB once base64-encoded in JSON; prompts are far smaller.
+    public static let maxMessageLength: UInt32 = 8 * 1024 * 1024
+
+    static func isAcceptableLength(_ length: UInt32) -> Bool {
+        length <= maxMessageLength
+    }
+
     public required init(framer: NWProtocolFramer.Instance) {}
 
     public func start(framer: NWProtocolFramer.Instance) -> NWProtocolFramer.StartResult {
@@ -46,6 +54,13 @@ public class ClusterMessageFramer: NWProtocolFramerImplementation {
                 ptr.load(as: UInt32.self).bigEndian
             }
 
+            // The length is peer-supplied: never buffer more than the cap
+            // (a forged 4 GiB header would otherwise be held in memory).
+            guard Self.isAcceptableLength(messageLength) else {
+                framer.markFailed(error: .posix(.EMSGSIZE))
+                return 0
+            }
+
             // Read message body
             let message = NWProtocolFramer.Message(definition: Self.definition)
             if !framer.deliverInputNoCopy(length: Int(messageLength), message: message, isComplete: true) {
@@ -57,6 +72,10 @@ public class ClusterMessageFramer: NWProtocolFramerImplementation {
     // MARK: - Output (writing)
 
     public func handleOutput(framer: NWProtocolFramer.Instance, message: NWProtocolFramer.Message, messageLength: Int, isComplete: Bool) {
+        guard messageLength >= 0, messageLength <= Int(Self.maxMessageLength) else {
+            framer.markFailed(error: .posix(.EMSGSIZE))
+            return
+        }
         // Write 4-byte length prefix
         var length = UInt32(messageLength).bigEndian
         let header = Data(bytes: &length, count: 4)
@@ -74,20 +93,25 @@ public class ClusterMessageFramer: NWProtocolFramerImplementation {
 // MARK: - NWParameters Extension
 
 extension NWParameters {
-    /// Create parameters configured with the ClusterMessage framer over plain TCP.
+    /// Create parameters configured with the ClusterMessage framer.
     ///
-    /// TLS is intentionally disabled until the app provisions a real local identity.
-    /// The previous TLS setup failed every peer handshake with NO_CERTIFICATE_SET.
-    public static func clusterParameters(passcode: String? = nil, tlsManager: ClusterTLSManager? = nil) -> NWParameters {
+    /// - With a cluster passcode: TLS 1.2 with a pre-shared key derived from
+    ///   the passcode (HMAC-SHA256, see `ClusterSecurity.preSharedKey`). The
+    ///   handshake only completes when both sides hold the same passcode, and
+    ///   everything after it (Hello, heartbeats, prompts, model chunks) is
+    ///   encrypted. No certificate identity is needed, which is what broke the
+    ///   earlier certificate-based TLS attempt (NO_CERTIFICATE_SET).
+    /// - Without a passcode: plain TCP, as before. An open cluster has no
+    ///   secret to authenticate with; set a passcode to protect traffic.
+    public static func clusterParameters(passcode: String? = nil) -> NWParameters {
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.enableKeepalive = true
         tcpOptions.keepaliveIdle = 10
 
-        // App-layer passcode validation still happens during Hello / HelloAck.
-        _ = passcode
-        _ = tlsManager
-
-        let params = NWParameters(tls: nil, tcp: tcpOptions)
+        let tlsOptions = passcode
+            .flatMap { $0.isEmpty ? nil : $0 }
+            .map { ClusterSecurity.pskTLSOptions(passcode: $0) }
+        let params = NWParameters(tls: tlsOptions, tcp: tcpOptions)
 
         let framerOptions = NWProtocolFramer.Options(definition: ClusterMessageFramer.definition)
         params.defaultProtocolStack.applicationProtocols.insert(framerOptions, at: 0)

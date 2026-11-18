@@ -402,6 +402,7 @@ fn catalog_aliases_match() {
         routing_tags: vec![],
         estimated_ttft_ms: None,
         estimated_tps: None,
+        default_reasoning_effort: None,
     };
     assert!(m.matches("meta-llama/llama-3.1-8b-instruct"));
     assert!(m.matches("llama-3.1-8b-instruct"));

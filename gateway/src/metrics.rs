@@ -81,6 +81,14 @@ pub static HEAVY_HOLD_REFUSED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
     .expect("metric init")
 });
 
+pub static SESSION_OVERFLOW_TOTAL: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    prometheus::register_int_counter!(
+        "gateway_session_overflow_total",
+        "Relay sessions failed because the consumer fell a full channel behind the node"
+    )
+    .expect("metric init")
+});
+
 pub static HEAVY_HOLD_EXPIRED: Lazy<prometheus::IntCounter> = Lazy::new(|| {
     prometheus::register_int_counter!(
         "gateway_heavy_hold_expired_total",
@@ -335,6 +343,7 @@ pub fn init() {
     let _ = &*RETRIES_TOTAL;
     let _ = &*QUARANTINES_TOTAL;
     let _ = &*HEAVY_HOLD_REFUSED;
+    let _ = &*SESSION_OVERFLOW_TOTAL;
     let _ = &*HEAVY_HOLD_EXPIRED;
     let _ = &*HEAVY_HOLD_SHARED;
     let _ = &*HEAVY_HOLDS;

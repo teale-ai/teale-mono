@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
       - name: build teale-eval
@@ -43,7 +43,7 @@ jobs:
         run: |
           echo '## KV-quant eval (kvBits:8 vs baseline, greedy)' >> $GITHUB_STEP_SUMMARY
           jq -r '"| model | identical | mean tps base | mean tps kv8 | speedup |","|---|---|---|---|---|","| \(.model) | \(.identicalCount)/\(.promptCount) | \(.meanBaselineTPS) | \(.meanQuantizedTPS) | \(.speedupPct)% |"' eval-results.json >> $GITHUB_STEP_SUMMARY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: eval-results

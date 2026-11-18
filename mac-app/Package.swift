@@ -10,7 +10,6 @@ let package = Package(
     ],
     products: [
         .executable(name: "Teale", targets: ["Teale"]),
-        .executable(name: "teale", targets: ["TealeCLI"]),
         .executable(name: "teale-eval", targets: ["TealeEval"]),
         .executable(name: "TealeCompanion", targets: ["TealeCompanion"]),
         .library(name: "TealeSDK", targets: ["TealeSDK", "TealeSDKUI"]),
@@ -22,7 +21,6 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.0.0"),
         .package(url: "https://github.com/p2p-org/solana-swift", from: "5.0.0"),
-        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
     ],
     targets: [
         // MARK: - SharedTypes
@@ -218,19 +216,6 @@ let package = Package(
             ]
         ),
 
-        // MARK: - TealeCLI (headless CLI)
-        .executableTarget(
-            name: "TealeCLI",
-            dependencies: [
-                "AppCore",
-                "SharedTypes",
-                "LocalAPI",
-                "AuthKit",
-                "GatewayKit",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
-        ),
-
         // MARK: - Teale (main macOS app executable)
         // Kept under Sources/InferencePoolApp/ for git history; target name drives
         // the output binary filename, which is what macOS shows in the dock.
@@ -381,7 +366,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TealeTests",
-            dependencies: ["Teale", "AppCore", "GatewayKit", "WANKit"]
+            dependencies: ["Teale", "AppCore", "AuthKit", "GatewayKit", "WANKit"]
         ),
     ]
 )

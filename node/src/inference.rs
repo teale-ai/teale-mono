@@ -45,7 +45,10 @@ pub const CHUNK_CHANNEL_CAPACITY: usize = 64;
 /// consumer aborts cancel the backend request (#258/#260), so this
 /// budget is only the backstop for a backend that hangs while the
 /// consumer is still attached.
-pub const STREAM_BUDGET_SECONDS: u64 = 1800;
+///
+/// The value is defined once in `teale_protocol` so the gateway's
+/// first-token ceiling and heavy-hold TTL stay consistent with it.
+pub use teale_protocol::STREAM_BUDGET_SECONDS;
 
 fn http_backend_streaming_enabled() -> bool {
     match std::env::var("TEALE_HTTP_BACKEND_STREAMING") {
@@ -489,6 +492,20 @@ fn model_id_in_openai_models(payload: &Value, expected_model_ids: &[&str]) -> bo
         .any(|model_id| expected_model_ids.contains(&model_id))
 }
 
+/// Give backend children their own process group on Windows. NSSM stops the
+/// service by sending Ctrl+C to its console; a child in the node's group
+/// would die on that same event before the node's graceful drain finished.
+/// A new process group has Ctrl+C disabled, so the child keeps serving until
+/// the node shuts it down after the drain.
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn isolate_from_console_ctrl(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
 /// Build the `Command` for llama-server (does not spawn).
 pub fn build_llama_command(config: &LlamaConfig) -> anyhow::Result<Command> {
     if config.context_size > 4096 && is_mobile_environment() {
@@ -515,6 +532,7 @@ pub fn build_llama_command(config: &LlamaConfig) -> anyhow::Result<Command> {
     }
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    isolate_from_console_ctrl(&mut cmd);
     Ok(cmd)
 }
 
@@ -569,6 +587,7 @@ pub fn build_ds4_command(config: &Ds4Config) -> anyhow::Result<Command> {
     }
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    isolate_from_console_ctrl(&mut cmd);
     Ok(cmd)
 }
 
@@ -597,6 +616,7 @@ pub fn build_mnn_command(config: &MnnConfig) -> anyhow::Result<Command> {
     }
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    isolate_from_console_ctrl(&mut cmd);
     Ok(cmd)
 }
 

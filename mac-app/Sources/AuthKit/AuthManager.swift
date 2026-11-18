@@ -1,38 +1,163 @@
 import CryptoKit
 import Foundation
 import GatewayKit
+import Security
 import SharedTypes
 
-// MARK: - File-based auth token storage (avoids Keychain prompts on unsigned apps)
+// MARK: - Gateway session token storage
 
-private struct FileAuthStorage: @unchecked Sendable {
-    private let directory: URL
+/// Where the gateway account session token (`tsess_…`) lives.
+protocol GatewaySessionTokenStore: Sendable {
+    func read() -> String?
+    func write(_ token: String) throws
+    func delete()
+}
 
-    init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        self.directory = appSupport.appendingPathComponent("com.teale.app/auth", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+/// 0600 file under Application Support. Debug builds only: unsigned dev
+/// builds get a new code signature on every build, which would make the
+/// Keychain prompt for access each time.
+struct FileGatewaySessionTokenStore: GatewaySessionTokenStore {
+    let fileURL: URL
+
+    init(directory: URL? = nil) {
+        let base = directory ?? FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("com.teale.app/auth", isDirectory: true)
+        // Same (percent-encoded) name earlier builds wrote, so migration
+        // finds the existing file.
+        let name = "gateway-session-token"
+            .addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "gateway-session-token"
+        self.fileURL = base.appendingPathComponent(name)
     }
 
-    func store(key: String, value: Data) throws {
-        let url = directory.appendingPathComponent(safeFileName(key))
-        try value.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    func read() -> String? {
+        guard let data = try? Data(contentsOf: fileURL),
+              let token = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else { return nil }
+        return token
     }
 
-    func retrieve(key: String) throws -> Data? {
-        let url = directory.appendingPathComponent(safeFileName(key))
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try Data(contentsOf: url)
+    func write(_ token: String) throws {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(token.utf8).write(to: fileURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 
-    func remove(key: String) throws {
-        let url = directory.appendingPathComponent(safeFileName(key))
-        try? FileManager.default.removeItem(at: url)
+    func delete() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+}
+
+enum GatewaySessionTokenStoreError: Error {
+    case keychain(OSStatus)
+}
+
+/// Generic-password Keychain item. Used by signed (release) builds; the
+/// Developer ID designated requirement is stable across updates, so the
+/// main app and its relaunched/fleet-supply instances read it without
+/// prompting.
+struct KeychainGatewaySessionTokenStore: GatewaySessionTokenStore {
+    let service: String
+    let account: String
+
+    init(service: String = "com.teale.app.gateway-session", account: String = "gateway-session-token") {
+        self.service = service
+        self.account = account
     }
 
-    private func safeFileName(_ key: String) -> String {
-        key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
+    private var baseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+    }
+
+    func read() -> String? {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let token = String(data: data, encoding: .utf8),
+              !token.isEmpty else { return nil }
+        return token
+    }
+
+    func write(_ token: String) throws {
+        let data = Data(token.utf8)
+        let update: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(baseQuery as CFDictionary, update as CFDictionary)
+        if status == errSecSuccess { return }
+        guard status == errSecItemNotFound else {
+            throw GatewaySessionTokenStoreError.keychain(status)
+        }
+        var add = baseQuery
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw GatewaySessionTokenStoreError.keychain(addStatus)
+        }
+    }
+
+    func delete() {
+        SecItemDelete(baseQuery as CFDictionary)
+    }
+}
+
+/// Keychain store that adopts (once) a token a previous build left in the
+/// plaintext file, then deletes the file. If the Keychain write fails the
+/// file is kept so the user stays signed in.
+struct MigratingGatewaySessionTokenStore: GatewaySessionTokenStore {
+    let primary: any GatewaySessionTokenStore
+    let legacy: any GatewaySessionTokenStore
+
+    func migrateIfNeeded() {
+        guard let legacyToken = legacy.read() else { return }
+        if primary.read() == nil {
+            do {
+                try primary.write(legacyToken)
+            } catch {
+                return
+            }
+        }
+        legacy.delete()
+    }
+
+    func read() -> String? {
+        primary.read() ?? legacy.read()
+    }
+
+    func write(_ token: String) throws {
+        try primary.write(token)
+        legacy.delete()
+    }
+
+    func delete() {
+        primary.delete()
+        legacy.delete()
+    }
+}
+
+enum GatewaySessionTokenStores {
+    static func makeDefault() -> any GatewaySessionTokenStore {
+        #if DEBUG
+        return FileGatewaySessionTokenStore()
+        #else
+        let store = MigratingGatewaySessionTokenStore(
+            primary: KeychainGatewaySessionTokenStore(),
+            legacy: FileGatewaySessionTokenStore()
+        )
+        store.migrateIfNeeded()
+        return store
+        #endif
     }
 }
 
@@ -59,8 +184,7 @@ public final class AuthManager {
     public var wanNodeID: String?
 
     private let gatewaySessions: GatewaySessionClient
-    private let gatewayTokenStore = FileAuthStorage()
-    private static let gatewayTokenKey = "gateway-session-token"
+    private let gatewayTokenStore: any GatewaySessionTokenStore
     private static let anonymousKey = "teale_anonymous_mode"
 
     public init(gatewayBaseURL: URL? = nil) {
@@ -69,6 +193,13 @@ public final class AuthManager {
         } else {
             self.gatewaySessions = GatewaySessionClient()
         }
+        self.gatewayTokenStore = GatewaySessionTokenStores.makeDefault()
+    }
+
+    /// The stored gateway account session token (`tsess_…`), if any. Sent
+    /// as `X-Teale-Account-Session` on account-link calls (ownership proof).
+    public func currentGatewaySessionToken() -> String? {
+        gatewayTokenStore.read()
     }
 
     // Cancel tasks when no longer needed
@@ -78,8 +209,7 @@ public final class AuthManager {
 
     /// Check for existing session on app launch.
     public func checkSession() async {
-        if let stored = try? gatewayTokenStore.retrieve(key: Self.gatewayTokenKey),
-           let token = String(data: stored, encoding: .utf8), !token.isEmpty {
+        if let token = gatewayTokenStore.read() {
             let sessions = gatewaySessions
             do {
                 let info = try await withTimeout(seconds: 5) {
@@ -89,7 +219,7 @@ public final class AuthManager {
                 return
             } catch let GatewaySessionError.http(code, _) where code == 401 || code == 403 {
                 // Definitively rejected server-side: drop the token.
-                try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
+                gatewayTokenStore.delete()
             } catch {
                 // Network error, timeout, or 5xx: KEEP the token - a transient
                 // failure must not sign the user out (this previously deleted
@@ -130,21 +260,39 @@ public final class AuthManager {
 
     // MARK: - Deep Link Session Adoption
 
-    /// Handle an auth callback URL (teale://auth/session?token=…), adopting
-    /// a gateway magic-link session minted outside the native flow.
-    public func handleOAuthCallback(url: URL) async {
+    /// The session token carried by a gateway magic link
+    /// (`teale://auth/session?token=…`), or nil for any other URL.
+    public nonisolated static func sessionToken(fromDeepLink url: URL) -> String? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme == "teale",
-              components.host == "auth",
+              components.scheme?.lowercased() == "teale",
+              components.host?.lowercased() == "auth",
               components.path == "/session",
-              let token = components.queryItems?.first(where: { $0.name == "token" })?.value
-        else { return }
+              let token = components.queryItems?.first(where: { $0.name == "token" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty
+        else { return nil }
+        return token
+    }
+
+    /// Whether `url` is a gateway magic link this manager can adopt.
+    public nonisolated static func isSessionDeepLink(_ url: URL) -> Bool {
+        sessionToken(fromDeepLink: url) != nil
+    }
+
+    /// Handle an auth callback URL (teale://auth/session?token=…), adopting
+    /// a gateway magic-link session minted outside the native flow. Returns
+    /// true when the session was validated and this manager is signed in.
+    @discardableResult
+    public func handleOAuthCallback(url: URL) async -> Bool {
+        guard let token = Self.sessionToken(fromDeepLink: url) else { return false }
         do {
             let info = try await gatewaySessions.fetchSession(token: token)
-            try gatewayTokenStore.store(key: Self.gatewayTokenKey, value: Data(token.utf8))
+            try gatewayTokenStore.write(token)
             finishGatewaySignIn(accountUserID: info.accountUserID, email: info.email)
+            return true
         } catch {
             authState = .error(error.localizedDescription)
+            return false
         }
     }
 
@@ -153,7 +301,7 @@ public final class AuthManager {
     /// through the local daemon (RemoteControlBridge). Persists the token
     /// first so a later launch signs in even if the identity fetch fails.
     public func adoptGatewaySession(token: String) async {
-        try? gatewayTokenStore.store(key: Self.gatewayTokenKey, value: Data(token.utf8))
+        try? gatewayTokenStore.write(token)
         do {
             let info = try await gatewaySessions.fetchSession(token: token)
             finishGatewaySignIn(accountUserID: info.accountUserID, email: info.email)
@@ -187,7 +335,7 @@ public final class AuthManager {
                 deviceID: GatewayIdentity.shared.deviceID,
                 deviceName: ProcessInfo.processInfo.hostName
             )
-            try gatewayTokenStore.store(key: Self.gatewayTokenKey, value: Data(res.sessionToken.utf8))
+            try gatewayTokenStore.write(res.sessionToken)
             finishGatewaySignIn(accountUserID: res.accountUserID, email: res.email)
         } catch {
             authState = .error(error.localizedDescription)
@@ -235,10 +383,9 @@ public final class AuthManager {
 
     /// Sign out. Reverts to anonymous mode (app stays usable).
     public func signOut() async {
-        if let stored = try? gatewayTokenStore.retrieve(key: Self.gatewayTokenKey),
-           let token = String(data: stored, encoding: .utf8), !token.isEmpty {
+        if let token = gatewayTokenStore.read() {
             try? await gatewaySessions.logout(token: token)
-            try? gatewayTokenStore.remove(key: Self.gatewayTokenKey)
+            gatewayTokenStore.delete()
         }
         currentUser = nil
         gatewayAccountUserID = nil
