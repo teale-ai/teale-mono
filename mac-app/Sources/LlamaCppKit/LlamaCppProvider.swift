@@ -7,6 +7,8 @@ import SharedTypes
 public actor LlamaCppProvider: InferenceProvider {
     private var serverProcess: Process?
     private var currentDescriptor: ModelDescriptor?
+    /// GGUF file the running llama-server was started with.
+    private var currentModelPath: String?
     private var _status: EngineStatus = .idle
     private var serverPort: Int
     private let session: URLSession
@@ -90,26 +92,30 @@ public actor LlamaCppProvider: InferenceProvider {
 
     public func loadModel(_ descriptor: ModelDescriptor) async throws {
         // Stop any existing server
-        stopServer()
+        await stopServer()
 
         _status = .loadingModel(descriptor)
 
-        // Resolve model path — huggingFaceRepo holds the local file path for GGUF models
-        let modelPath = descriptor.huggingFaceRepo
-        guard FileManager.default.fileExists(atPath: modelPath) else {
-            _status = .error("GGUF file not found: \(modelPath)")
-            throw LlamaCppError.modelNotFound(modelPath)
+        // Scanned GGUFs carry their file path in huggingFaceRepo; catalog
+        // GGUF entries resolve to the downloaded file under Teale/gguf/<id>.
+        guard let modelURL = ModelStorageLayout.localGGUFFile(for: descriptor) else {
+            let missing = descriptor.huggingFaceRepo
+            _status = .error("GGUF file not found for \(descriptor.name): \(missing)")
+            throw LlamaCppError.modelNotFound(missing)
         }
+        let modelPath = modelURL.path
 
         try await startServer(modelPath: modelPath)
 
+        currentModelPath = modelPath
         currentDescriptor = descriptor
         _status = .ready(descriptor)
     }
 
     public func unloadModel() async {
-        stopServer()
+        await stopServer()
         currentDescriptor = nil
+        currentModelPath = nil
         _status = .idle
     }
 
@@ -119,10 +125,13 @@ public actor LlamaCppProvider: InferenceProvider {
     ///
     /// Unlike waitForHealth this NEVER touches the subprocess - a dead
     /// or busy server only throws here, it is never terminated. Any HTTP
-    /// response counts as alive because /health can return non-200 while
-    /// every slot is busy generating; the dead-backend case this exists
-    /// for is a refused connection or an exited child process. A healthy
-    /// probe re-adopts the descriptor loaded via loadModel() so a
+    /// response from /health counts as alive because it can return non-200
+    /// while every slot is busy generating; the dead-backend case this
+    /// exists for is a refused connection or an exited child process.
+    /// Liveness alone is not enough, though: a stale llama-server left on
+    /// the fixed port (e.g. after Teale was SIGKILLed) also answers, so the
+    /// probe then checks /v1/models reports the GGUF we loaded. A healthy,
+    /// verified probe re-adopts the descriptor loaded via loadModel() so a
     /// recovered backend re-advertises without user action; an in-flight
     /// generation state is never clobbered.
     public func refreshFromServer() async throws {
@@ -140,6 +149,13 @@ public actor LlamaCppProvider: InferenceProvider {
         let (_, response) = try await probeSession.data(from: url)
         guard response is HTTPURLResponse else {
             throw LlamaCppError.serverUnreachable
+        }
+        if verifiesServedModelIdentity,
+           let expected = currentModelPath,
+           let served = try? await servedModelIDs(using: probeSession),
+           !served.isEmpty,
+           !Self.servedModelsInclude(path: expected, served: served) {
+            throw LlamaCppError.modelMismatch(expected: expected, serving: served.joined(separator: ", "))
         }
         switch _status {
         case .idle, .error:
@@ -257,32 +273,47 @@ public actor LlamaCppProvider: InferenceProvider {
         env["DYLD_LIBRARY_PATH"] = existingPath.isEmpty ? binaryDir : "\(binaryDir):\(existingPath)"
         process.environment = env
 
-        // Log server output for debugging
-        let logPath = URL(fileURLWithPath: "/tmp/llama-server.log")
-        FileManager.default.createFile(atPath: logPath.path, contents: nil)
-        let outputHandle = (try? FileHandle(forWritingTo: logPath)) ?? FileHandle.nullDevice
+        // Server output goes to a private log under ~/Library/Logs/Teale
+        // (not a fixed world-writable /tmp path: it can contain prompts).
+        let outputHandle = ManagedSubprocess.openLogFile(named: "llama-server.log")
         process.standardOutput = outputHandle
         process.standardError = outputHandle
+        process.standardInput = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] exited in
+            let status = exited.terminationStatus
+            Task { await self?.handleServerExit(exited, status: status) }
+        }
 
         try process.run()
+        ManagedSubprocess.register(process)
         serverProcess = process
 
         // Wait for the server to become healthy
         // Large models (100B+) can take 10+ minutes to load into memory
-        try await waitForHealth(timeoutSeconds: 900)
+        try await waitForHealth(timeoutSeconds: 900, expectedModelPath: modelPath)
     }
 
-    private func stopServer() {
-        guard let process = serverProcess, process.isRunning else {
-            serverProcess = nil
-            return
-        }
-        process.terminate()
-        process.waitUntilExit()
+    /// SIGTERM, bounded wait without blocking the actor's thread, then
+    /// SIGKILL. Clears `serverProcess` first so the termination handler
+    /// knows the exit was intentional.
+    private func stopServer() async {
+        guard let process = serverProcess else { return }
         serverProcess = nil
+        await ManagedSubprocess.terminate(process, grace: 10)
+        ManagedSubprocess.unregister(process)
     }
 
-    private func waitForHealth(timeoutSeconds: Int) async throws {
+    /// Called from the Process termination handler. An exit we did not ask
+    /// for (crash, OOM kill) flips status to `.error` right away instead of
+    /// waiting for the next request or health probe to notice.
+    private func handleServerExit(_ process: Process, status: Int32) {
+        ManagedSubprocess.unregister(process)
+        guard serverProcess === process else { return }
+        serverProcess = nil
+        _status = .error("llama-server exited unexpectedly (status \(status))")
+    }
+
+    private func waitForHealth(timeoutSeconds: Int, expectedModelPath: String) async throws {
         let url = serverBaseURL.appendingPathComponent("health")
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
 
@@ -290,10 +321,11 @@ public actor LlamaCppProvider: InferenceProvider {
         let healthConfig = URLSessionConfiguration.default
         healthConfig.timeoutIntervalForRequest = 5
         healthSession = URLSession(configuration: healthConfig)
+        defer { healthSession.finishTasksAndInvalidate() }
 
         while Date() < deadline {
-            // Check if the process died
-            if let process = serverProcess, !process.isRunning {
+            // Check if the process died (e.g. the port was already taken)
+            guard let process = serverProcess, process.isRunning else {
                 serverProcess = nil
                 throw LlamaCppError.serverStartTimeout
             }
@@ -301,8 +333,22 @@ public actor LlamaCppProvider: InferenceProvider {
             do {
                 let (_, response) = try await healthSession.data(from: url)
                 if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                    return
+                    // Make sure it is OUR server answering, not a stale one
+                    // still bound to the port.
+                    let served = try await servedModelIDs(using: healthSession)
+                    if !verifiesServedModelIdentity
+                        || served.isEmpty
+                        || Self.servedModelsInclude(path: expectedModelPath, served: served) {
+                        return
+                    }
+                    await stopServer()
+                    throw LlamaCppError.modelMismatch(
+                        expected: expectedModelPath,
+                        serving: served.joined(separator: ", ")
+                    )
                 }
+            } catch let error as LlamaCppError {
+                throw error
             } catch {
                 // Server not ready yet — connection refused is expected
             }
@@ -310,8 +356,36 @@ public actor LlamaCppProvider: InferenceProvider {
         }
 
         // Timed out — kill the server
-        stopServer()
+        await stopServer()
         throw LlamaCppError.serverStartTimeout
+    }
+
+    /// Model ids reported by llama-server's `/v1/models` (the `--model`
+    /// path, or its alias).
+    private func servedModelIDs(using session: URLSession) async throws -> [String] {
+        let url = serverBaseURL.appendingPathComponent("v1/models")
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = object["data"] as? [[String: Any]] else {
+            return []
+        }
+        return entries.compactMap { $0["id"] as? String }
+    }
+
+    /// An operator `--alias` replaces the path in `/v1/models`, so the
+    /// identity check only runs when no alias was passed.
+    private var verifiesServedModelIdentity: Bool {
+        !extraArgs.contains("--alias") && !extraArgs.contains("-a")
+    }
+
+    /// llama-server reports the `--model` argument as the id; older and
+    /// newer builds differ on whether it is the full path or the filename.
+    static func servedModelsInclude(path: String, served: [String]) -> Bool {
+        let fileName = URL(fileURLWithPath: path).lastPathComponent
+        return served.contains { id in
+            id == path || id == fileName || id.hasSuffix("/" + fileName)
+        }
     }
 
     // MARK: - Generation
@@ -342,7 +416,7 @@ public actor LlamaCppProvider: InferenceProvider {
             // llama-server is serving exactly one GGUF at a time. Normalize
             // canonical slugs and other aliases back to the loaded file path
             // so explicit remote-model routing works for GGUF suppliers too.
-            proxiedRequest.model = descriptor.huggingFaceRepo
+            proxiedRequest.model = currentModelPath ?? descriptor.huggingFaceRepo
         }
         proxiedRequest.stream = true
         urlRequest.httpBody = try JSONEncoder().encode(proxiedRequest)
@@ -395,7 +469,12 @@ public actor LlamaCppProvider: InferenceProvider {
             _status = .ready(descriptor)
             continuation.finish()
         } catch {
-            _status = .error(error.localizedDescription)
+            // A client that hangs up is not a backend failure.
+            if HTTPProviderCancellation.isCancellation(error) {
+                _status = .ready(descriptor)
+            } else {
+                _status = .error(error.localizedDescription)
+            }
             throw error
         }
     }
@@ -495,9 +574,12 @@ public enum LlamaCppError: LocalizedError {
     case noModelLoaded
     case invalidResponse
     case serverError(String)
+    case modelMismatch(expected: String, serving: String)
 
     public var errorDescription: String? {
         switch self {
+        case .modelMismatch(let expected, let serving):
+            return "The server on the llama.cpp port is serving '\(serving)', not '\(expected)' (a stale llama-server may still hold the port)."
         case .binaryNotFound(let path):
             return "llama-server binary not found at: \(path). Install llama.cpp or set the binary path."
         case .modelNotFound(let path):

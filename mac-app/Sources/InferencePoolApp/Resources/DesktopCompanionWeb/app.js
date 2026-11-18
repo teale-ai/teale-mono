@@ -8,7 +8,6 @@ const ROUTES = {
   modelDownload: "/v1/app/models/download",
   modelUnload: "/v1/app/models/unload",
   supplySet: "/v1/desktop/app/supply",
-  authSession: "/v1/desktop/app/auth/session",
   accountSummary: "/v1/desktop/app/account",
   accountApiKeys: "/v1/desktop/app/account/api-keys",
   accountApiKeysRevoke: "/v1/desktop/app/account/api-keys/revoke",
@@ -25,7 +24,6 @@ const ROUTES = {
   networkStats: "/v1/desktop/app/network/stats",
   walletRefresh: "/v1/desktop/app/wallet/refresh",
   walletSend: "/v1/desktop/app/wallet/send",
-  authPending: "teale://localhost/auth/pending",
   bundledApp: null,
   localApiKey: null,
   ...DESKTOP_CONFIG.routes,
@@ -145,8 +143,6 @@ const els = {
 
   authStatus: document.getElementById("auth-status"),
   authUser: document.getElementById("auth-user"),
-  authGithubButton: document.getElementById("auth-github-button"),
-  authGoogleButton: document.getElementById("auth-google-button"),
   authSignoutButton: document.getElementById("auth-signout-button"),
   authEmailPanel: document.getElementById("auth-email-panel"),
   authEmailInput: document.getElementById("auth-email-input"),
@@ -196,8 +192,10 @@ const els = {
 const LANGUAGE_STORAGE_KEY = "teale.language";
 const DISPLAY_UNIT_STORAGE_KEY = "teale.displayUnit";
 const CHAT_STORAGE_KEY = "teale.chat.v1";
-const OAUTH_CALLBACK_STORAGE_KEY = "__teale_pending_oauth_callback";
-const OAUTH_PROVIDER_STORAGE_KEY = "__teale_pending_oauth_provider";
+// Keys left behind by the removed Supabase/OAuth flow. Older shells wrote
+// raw deep-link URLs (including gateway session tokens) here; purge them
+// on startup so nothing sensitive lingers in WebKit/WebView2 storage.
+const LEGACY_AUTH_STORAGE_KEYS = ["__teale_pending_oauth_callback", "__teale_pending_oauth_provider"];
 const SHARE_STORY_TEXT = "I've joined the global distributed ai inference network at teale.com - earn credits to use on ai when you sleep. spend those credits to use ai for free.";
 const SUPPORTED_LANGUAGES = new Set(["en", "es", "pt-BR", "fil-PH", "zh-Hans"]);
 const translations = {
@@ -311,7 +309,7 @@ const translations = {
     "auth.button.signOut": "Sign out",
     "auth.button.sendEmailCode": "Send email code",
     "auth.button.verifyCode": "Verify code",
-    "auth.alert.emailSent": "Code request accepted. If no email arrives, check the Supabase Auth email template and SMTP delivery settings.",
+    "auth.alert.emailSent": "Code request accepted. If no email arrives within a few minutes, check your spam folder.",
     "auth.error.enterEmail": "Enter an email address first.",
     "auth.error.enterEmailAndCode": "Enter both the email address and the code.",
     "provider.github": "GitHub",
@@ -344,11 +342,37 @@ const translations = {
     "supply.recommended.waitingMeta": "Once Teale responds locally, Teale will recommend the best model for this machine.",
     "supply.models.noneYet": "No model data yet.",
     "supply.models.noneCompatible": "No compatible models are available for this device yet.",
+    "chat.prompt.thread": "thread",
+    "chat.prompt.message": "message",
+    "chat.model.label": "Model",
+    "chat.model.note": "Local is free on this PC. Network models spend Teale credits.",
+    "chat.model.localNote": "Local is free on this PC.",
+    "chat.model.networkNote": "Network models spend Teale credits.",
+    "chat.model.waitingOption": "Waiting for available models...",
+    "chat.input.placeholder": "Ask something...",
+    "chat.input.hint": "Enter sends. Shift+Enter adds a newline.",
+    "chat.action.send": "Send",
+    "chat.action.newThread": "+ New thread",
+    "chat.thread.defaultTitle": "New thread",
+    "chat.thread.close": "Close thread",
+    "chat.tokens.input": "{{count}} input tokens",
+    "chat.tokens.inputApprox": "~{{count}} input tokens",
+    "chat.tokens.output": "{{count}} output tokens",
+    "chat.tokens.outputApprox": "~{{count}} output tokens",
+    "chat.thread.empty": "Start a new thread. Only messages in this thread are sent as context.",
+    "chat.thread.pending": "Teale is thinking...",
+    "chat.thread.partialReply": "Partial reply from an interrupted stream.",
+    "chat.thread.interrupted": "This partial reply stays visible for this session, but it will not be sent as context.",
+    "chat.thread.streamInterrupted": "The chat stream ended before completion. The partial reply stayed on screen but was not saved to the thread.",
+    "chat.thread.noModel": "No chat models are available yet.",
+    "chat.thread.waitingLocal": "Load a local model or wait for live network models.",
+    "chat.thread.waitingNetwork": "Waiting for the network bearer token from the gateway wallet sync.",
+    "chat.thread.fallbackPrefix": "Switched to {{model}} because {{previous}} is not available on this PC.",
   },
   "zh-Hans": {
     "account.email": "邮箱",
     "account.input.email": "you@example.com",
-    "auth.alert.emailSent": "验证码请求已受理。如果没有收到邮件，请检查 Supabase Auth 邮件模板和 SMTP 发送设置。",
+    "auth.alert.emailSent": "验证码请求已受理。如果几分钟内没有收到邮件，请检查垃圾邮件文件夹。",
     "auth.button.sendEmailCode": "发送邮箱验证码",
     "auth.error.enterEmail": "请先输入邮箱地址。",
     "auth.error.enterEmailAndCode": "请输入邮箱地址和验证码。",
@@ -475,7 +499,7 @@ const translations = {
     "auth.user.configure": "登录是可选的。这台电脑上的 Teale 无需账户也能使用。",
     "auth.user.prompt": "登录是可选的。Teale 没有账户也能使用。",
     "auth.note.walletStillWorks": "账户登录只面向想要管理多台设备并获得支持的人。",
-    "auth.note.claimsDevice": "使用 GitHub、Google 或短信登录，以管理多台设备并获得支持。",
+    "auth.note.claimsDevice": "使用邮箱验证码登录，以管理多台设备并获得支持。",
     "auth.button.signInGithub": "使用 GitHub 登录",
     "auth.button.signInGoogle": "使用 Google 登录",
     "auth.button.linkGithub": "关联 GitHub",
@@ -547,7 +571,6 @@ const translations = {
     "demand.action.copyLocalCurl": "Copiar curl local",
     "demand.action.copyBearer": "Copiar bearer token",
     "demand.action.copyNetworkCurl": "Copiar curl da rede",
-    "wallet.prompt.balances": "saldos",
     "wallet.prompt.send": "enviar",
     "wallet.prompt.ledger": "razão",
     "wallet.asset.credits": "Créditos Teale",
@@ -562,9 +585,7 @@ const translations = {
     "account.prompt.wallet": "carteira da conta",
     "account.prompt.details": "detalhes",
     "account.prompt.devices": "dispositivos",
-    "account.phone": "Telefone",
     "account.code": "Código",
-    "account.input.phone": "+55 11 99999-9999",
     "account.input.code": "123456",
     "account.auth.note.default": "Fazer login não é obrigatório. O Teale funciona sem conta. Entre apenas se quiser uma conta humana para gerenciar vários dispositivos e obter suporte.",
     "account.send.note": "Use apenas IDs completos. Envios da wallet da conta usam um ID completo de wallet da conta ou um ID de wallet do dispositivo com 64 caracteres.",
@@ -592,17 +613,14 @@ const translations = {
     "common.waitingLocalService": "Aguardando o serviço local do Teale neste PC.",
     "common.noModelLoaded": "Nenhum modelo carregado",
     "common.syncing": "Sincronizando...",
-    "footer.tagline": "teale.com - 面向全球的分布式 AI 推理",
+    "footer.tagline": "teale.com - inferência de IA distribuída para o mundo",
     "auth.status.notConfigured": "Login não configurado",
     "auth.status.notSignedIn": "Sem login",
     "auth.status.signedIn": "Conectado",
     "auth.user.configure": "Fazer login é opcional. O Teale funciona sem conta neste PC.",
     "auth.user.prompt": "Fazer login é opcional. O Teale funciona sem conta.",
     "auth.note.walletStillWorks": "O login da conta é apenas para pessoas que querem gerenciar vários dispositivos e obter suporte.",
-    "auth.note.claimsDevice": "Entre com GitHub, Google ou SMS para gerenciar vários dispositivos e obter suporte.",
-    "auth.note.phoneCanLink": "GitHub e Google podem ser vinculados a esta conta por telefone.",
-    "auth.note.allLinked": "Esta conta já tem telefone, GitHub e Google vinculados.",
-    "auth.note.phoneLinkNotYet": "Vincular telefone a uma conta existente ainda não está disponível neste companion.",
+    "auth.note.claimsDevice": "Entre com um código por e-mail para gerenciar vários dispositivos e obter suporte.",
     "auth.button.signInGithub": "Entrar com GitHub",
     "auth.button.signInGoogle": "Entrar com Google",
     "auth.button.linkGithub": "Vincular GitHub",
@@ -610,11 +628,7 @@ const translations = {
     "auth.button.githubLinked": "GitHub vinculado",
     "auth.button.googleLinked": "Google vinculado",
     "auth.button.signOut": "Sair",
-    "auth.button.sendSms": "Enviar código por SMS",
     "auth.button.verifyCode": "Verificar código",
-    "auth.alert.smsSent": "Código SMS enviado.",
-    "auth.error.enterPhone": "Digite um número de telefone primeiro.",
-    "auth.error.enterPhoneAndCode": "Digite o telefone e o código SMS.",
     "provider.github": "GitHub",
     "provider.google": "Google",
     "provider.phone": "telefone",
@@ -645,6 +659,55 @@ const translations = {
     "supply.recommended.waitingMeta": "Quando o Teale responder localmente, ele vai recomendar o melhor modelo para esta máquina.",
     "supply.models.noneYet": "Ainda não há dados de modelos.",
     "supply.models.noneCompatible": "Ainda não há modelos compatíveis para este dispositivo.",
+    "view.simple.description": "Teale.com - Ganhe dinheiro de verdade fornecendo inferência com máquinas ociosas",
+    "simple.earnings.prompt": "ganhos",
+    "simple.earnings.serving": "acumulando ~{{rate}} créditos/min por disponibilidade",
+    "simple.earnings.idle": "ative a oferta de inferência para começar a ganhar",
+    "simple.supply.prompt": "oferta de inferência",
+    "simple.supply.off": "Desligado. Esta máquina não está servindo inferência.",
+    "simple.pins.prompt": "rede(s) privada(s) de inferência",
+    "simple.pins.empty": "Nenhuma rede ainda - crie uma ou entre com um código.",
+    "simple.pins.exit": "nó de saída",
+    "simple.pins.namePh": "nome da nova rede",
+    "simple.pins.codePh": "código de convite",
+    "simple.pins.create": "Criar",
+    "simple.pins.join": "Entrar",
+    "simple.settings.prompt": "configurações",
+    "simple.settings.open": "Abrir configurações e abas avançadas",
+    "wallet.prompt.device": "informações do dispositivo",
+    "account.email": "E-mail",
+    "account.input.email": "voce@exemplo.com",
+    "auth.note.emailSignedIn": "Conectado com e-mail. A sincronização do dispositivo e da conta está ativa.",
+    "auth.button.sendEmailCode": "Enviar código por e-mail",
+    "auth.alert.emailSent": "Solicitação de código aceita. Se nenhum e-mail chegar em alguns minutos, verifique a pasta de spam.",
+    "auth.error.enterEmail": "Digite um endereço de e-mail primeiro.",
+    "auth.error.enterEmailAndCode": "Digite o endereço de e-mail e o código.",
+    "chat.prompt.thread": "conversa",
+    "chat.prompt.message": "mensagem",
+    "chat.model.label": "Modelo",
+    "chat.model.note": "O modelo local é grátis neste PC. Modelos da rede gastam créditos Teale.",
+    "chat.model.localNote": "O modelo local é grátis neste PC.",
+    "chat.model.networkNote": "Modelos da rede gastam créditos Teale.",
+    "chat.model.waitingOption": "Aguardando modelos disponíveis...",
+    "chat.input.placeholder": "Pergunte algo...",
+    "chat.input.hint": "Enter envia. Shift+Enter adiciona uma nova linha.",
+    "chat.action.send": "Enviar",
+    "chat.action.newThread": "+ Nova conversa",
+    "chat.thread.defaultTitle": "Nova conversa",
+    "chat.thread.close": "Fechar conversa",
+    "chat.tokens.input": "{{count}} tokens de entrada",
+    "chat.tokens.inputApprox": "~{{count}} tokens de entrada",
+    "chat.tokens.output": "{{count}} tokens de saída",
+    "chat.tokens.outputApprox": "~{{count}} tokens de saída",
+    "chat.thread.empty": "Comece uma nova conversa. Só as mensagens desta conversa são enviadas como contexto.",
+    "chat.thread.pending": "O Teale está pensando...",
+    "chat.thread.partialReply": "Resposta parcial de um stream interrompido.",
+    "chat.thread.interrupted": "Esta resposta parcial fica visível nesta sessão, mas não será enviada como contexto.",
+    "chat.thread.streamInterrupted": "O stream do chat terminou antes de concluir. A resposta parcial ficou na tela, mas não foi salva na conversa.",
+    "chat.thread.noModel": "Ainda não há modelos de chat disponíveis.",
+    "chat.thread.waitingLocal": "Carregue um modelo local ou aguarde modelos ativos da rede.",
+    "chat.thread.waitingNetwork": "Aguardando o token de acesso à rede da sincronização da carteira do gateway.",
+    "chat.thread.fallbackPrefix": "Mudamos para {{model}} porque {{previous}} não está disponível neste PC.",
   },
   es: {
     "nav.home": "teale",
@@ -678,7 +741,6 @@ const translations = {
     "demand.action.copyLocalCurl": "Copiar curl local",
     "demand.action.copyBearer": "Copiar bearer token",
     "demand.action.copyNetworkCurl": "Copiar curl de red",
-    "wallet.prompt.balances": "saldos",
     "wallet.prompt.send": "enviar",
     "wallet.prompt.ledger": "libro",
     "wallet.asset.credits": "Créditos Teale",
@@ -693,9 +755,7 @@ const translations = {
     "account.prompt.wallet": "cartera de la cuenta",
     "account.prompt.details": "detalles",
     "account.prompt.devices": "dispositivos",
-    "account.phone": "Teléfono",
     "account.code": "Código",
-    "account.input.phone": "+34 600 123 456",
     "account.input.code": "123456",
     "account.auth.note.default": "Iniciar sesión no es obligatorio. Teale funciona sin una cuenta. Inicia sesión solo si quieres una cuenta humana para administrar varios dispositivos y obtener soporte.",
     "account.send.note": "Usa solo IDs completos. Los envíos desde la wallet de cuenta usan un ID completo de wallet de cuenta o un ID de wallet de dispositivo de 64 caracteres.",
@@ -723,17 +783,14 @@ const translations = {
     "common.waitingLocalService": "Esperando el servicio local de Teale en esta PC.",
     "common.noModelLoaded": "Ningún modelo cargado",
     "common.syncing": "Sincronizando...",
-    "footer.tagline": "teale.com - 面向全球的分布式 AI 推理",
+    "footer.tagline": "teale.com - inferencia de IA distribuida para el mundo",
     "auth.status.notConfigured": "Inicio de sesión no configurado",
     "auth.status.notSignedIn": "Sin iniciar sesión",
     "auth.status.signedIn": "Sesión iniciada",
     "auth.user.configure": "Iniciar sesión es opcional. Teale funciona sin una cuenta en esta PC.",
     "auth.user.prompt": "Iniciar sesión es opcional. Teale funciona sin una cuenta.",
     "auth.note.walletStillWorks": "El inicio de sesión de la cuenta es solo para personas que quieren administrar varios dispositivos y obtener soporte.",
-    "auth.note.claimsDevice": "Inicia sesión con GitHub, Google o SMS para administrar varios dispositivos y obtener soporte.",
-    "auth.note.phoneCanLink": "GitHub y Google pueden vincularse a esta cuenta de teléfono.",
-    "auth.note.allLinked": "Esta cuenta ya tiene teléfono, GitHub y Google vinculados.",
-    "auth.note.phoneLinkNotYet": "Vincular teléfono a una cuenta existente todavía no está habilitado en este companion.",
+    "auth.note.claimsDevice": "Inicia sesión con un código por correo para administrar varios dispositivos y obtener soporte.",
     "auth.button.signInGithub": "Iniciar con GitHub",
     "auth.button.signInGoogle": "Iniciar con Google",
     "auth.button.linkGithub": "Vincular GitHub",
@@ -741,11 +798,7 @@ const translations = {
     "auth.button.githubLinked": "GitHub vinculado",
     "auth.button.googleLinked": "Google vinculado",
     "auth.button.signOut": "Cerrar sesión",
-    "auth.button.sendSms": "Enviar código SMS",
     "auth.button.verifyCode": "Verificar código",
-    "auth.alert.smsSent": "Código SMS enviado.",
-    "auth.error.enterPhone": "Ingresa primero un número de teléfono.",
-    "auth.error.enterPhoneAndCode": "Ingresa el teléfono y el código SMS.",
     "provider.github": "GitHub",
     "provider.google": "Google",
     "provider.phone": "teléfono",
@@ -776,6 +829,55 @@ const translations = {
     "supply.recommended.waitingMeta": "Cuando Teale responda localmente, recomendará el mejor modelo para esta máquina.",
     "supply.models.noneYet": "Todavía no hay datos de modelos.",
     "supply.models.noneCompatible": "Todavía no hay modelos compatibles para este dispositivo.",
+    "view.simple.description": "Teale.com - Gana dinero real suministrando inferencia con máquinas inactivas",
+    "simple.earnings.prompt": "ganancias",
+    "simple.earnings.serving": "acumulando ~{{rate}} créditos/min por disponibilidad",
+    "simple.earnings.idle": "activa el suministro de inferencia para empezar a ganar",
+    "simple.supply.prompt": "suministro de inferencia",
+    "simple.supply.off": "Apagado. Esta máquina no está sirviendo inferencia.",
+    "simple.pins.prompt": "red(es) privada(s) de inferencia",
+    "simple.pins.empty": "Todavía no hay redes - crea una o únete con un código.",
+    "simple.pins.exit": "nodo de salida",
+    "simple.pins.namePh": "nombre de la nueva red",
+    "simple.pins.codePh": "código de invitación",
+    "simple.pins.create": "Crear",
+    "simple.pins.join": "Unirse",
+    "simple.settings.prompt": "configuración",
+    "simple.settings.open": "Abrir configuración y pestañas avanzadas",
+    "wallet.prompt.device": "información del dispositivo",
+    "account.email": "Correo electrónico",
+    "account.input.email": "tu@ejemplo.com",
+    "auth.note.emailSignedIn": "Sesión iniciada con correo. La sincronización del dispositivo y la cuenta está activa.",
+    "auth.button.sendEmailCode": "Enviar código por correo",
+    "auth.alert.emailSent": "Solicitud de código aceptada. Si no llega ningún correo en unos minutos, revisa la carpeta de spam.",
+    "auth.error.enterEmail": "Ingresa primero una dirección de correo.",
+    "auth.error.enterEmailAndCode": "Ingresa la dirección de correo y el código.",
+    "chat.prompt.thread": "conversación",
+    "chat.prompt.message": "mensaje",
+    "chat.model.label": "Modelo",
+    "chat.model.note": "Lo local es gratis en esta PC. Los modelos de la red gastan créditos Teale.",
+    "chat.model.localNote": "Lo local es gratis en esta PC.",
+    "chat.model.networkNote": "Los modelos de la red gastan créditos Teale.",
+    "chat.model.waitingOption": "Esperando modelos disponibles...",
+    "chat.input.placeholder": "Pregunta algo...",
+    "chat.input.hint": "Enter envía. Shift+Enter agrega una línea nueva.",
+    "chat.action.send": "Enviar",
+    "chat.action.newThread": "+ Nueva conversación",
+    "chat.thread.defaultTitle": "Nueva conversación",
+    "chat.thread.close": "Cerrar conversación",
+    "chat.tokens.input": "{{count}} tokens de entrada",
+    "chat.tokens.inputApprox": "~{{count}} tokens de entrada",
+    "chat.tokens.output": "{{count}} tokens de salida",
+    "chat.tokens.outputApprox": "~{{count}} tokens de salida",
+    "chat.thread.empty": "Empieza una nueva conversación. Solo los mensajes de esta conversación se envían como contexto.",
+    "chat.thread.pending": "Teale está pensando...",
+    "chat.thread.partialReply": "Respuesta parcial de un stream interrumpido.",
+    "chat.thread.interrupted": "Esta respuesta parcial queda visible en esta sesión, pero no se enviará como contexto.",
+    "chat.thread.streamInterrupted": "El stream del chat terminó antes de completarse. La respuesta parcial quedó en pantalla, pero no se guardó en la conversación.",
+    "chat.thread.noModel": "Todavía no hay modelos de chat disponibles.",
+    "chat.thread.waitingLocal": "Carga un modelo local o espera modelos activos de la red.",
+    "chat.thread.waitingNetwork": "Esperando el token de acceso a la red de la sincronización de la billetera del gateway.",
+    "chat.thread.fallbackPrefix": "Se cambió a {{model}} porque {{previous}} no está disponible en esta PC.",
   },
   "fil-PH": {
     "nav.home": "teale",
@@ -809,7 +911,6 @@ const translations = {
     "demand.action.copyLocalCurl": "Kopyahin ang local curl",
     "demand.action.copyBearer": "Kopyahin ang bearer token",
     "demand.action.copyNetworkCurl": "Kopyahin ang network curl",
-    "wallet.prompt.balances": "mga balanse",
     "wallet.prompt.send": "magpadala",
     "wallet.prompt.ledger": "ledger",
     "wallet.asset.credits": "Teale 积分",
@@ -824,9 +925,7 @@ const translations = {
     "account.prompt.wallet": "account wallet",
     "account.prompt.details": "detalye",
     "account.prompt.devices": "mga device",
-    "account.phone": "Phone",
     "account.code": "Code",
-    "account.input.phone": "+63 917 123 4567",
     "account.input.code": "123456",
     "account.auth.note.default": "Hindi kailangan ang pag-sign in. Gumagana ang Teale kahit walang account. Mag-sign in lang kung gusto mo ng human account para mamahala ng maraming device at makakuha ng support.",
     "account.send.note": "Buong wallet IDs lang ang gamitin. Ang send mula sa account wallet ay para sa buong account wallet ID o 64-char device wallet ID.",
@@ -854,17 +953,14 @@ const translations = {
     "common.waitingLocalService": "Naghihintay sa local Teale service sa PC na ito.",
     "common.noModelLoaded": "Walang naka-load na model",
     "common.syncing": "Nagsi-sync...",
-    "footer.tagline": "teale.com - 面向全球的分布式 AI 推理",
+    "footer.tagline": "teale.com - distributed AI inference para sa buong mundo",
     "auth.status.notConfigured": "Hindi naka-configure ang sign-in",
     "auth.status.notSignedIn": "Hindi naka-sign in",
     "auth.status.signedIn": "Naka-sign in",
     "auth.user.configure": "Opsyonal ang pag-sign in. Gumagana ang Teale kahit walang account sa PC na ito.",
     "auth.user.prompt": "Opsyonal ang pag-sign in. Gumagana ang Teale kahit walang account.",
     "auth.note.walletStillWorks": "Ang account sign-in ay para lang sa mga taong gustong mamahala ng maraming device at makakuha ng support.",
-    "auth.note.claimsDevice": "Mag-sign in gamit ang GitHub, Google, o SMS para mamahala ng maraming device at makakuha ng support.",
-    "auth.note.phoneCanLink": "Puwedeng i-link ang GitHub at Google sa phone account na ito.",
-    "auth.note.allLinked": "Naka-link na sa account na ito ang phone, GitHub, at Google.",
-    "auth.note.phoneLinkNotYet": "Hindi pa naka-enable ang phone linking sa existing account sa companion na ito.",
+    "auth.note.claimsDevice": "Mag-sign in gamit ang email code para mamahala ng maraming device at makakuha ng support.",
     "auth.button.signInGithub": "Mag-sign in gamit ang GitHub",
     "auth.button.signInGoogle": "Mag-sign in gamit ang Google",
     "auth.button.linkGithub": "I-link ang GitHub",
@@ -872,11 +968,7 @@ const translations = {
     "auth.button.githubLinked": "Naka-link ang GitHub",
     "auth.button.googleLinked": "Naka-link ang Google",
     "auth.button.signOut": "Mag-sign out",
-    "auth.button.sendSms": "Magpadala ng SMS code",
     "auth.button.verifyCode": "I-verify ang code",
-    "auth.alert.smsSent": "Naipadala ang SMS code.",
-    "auth.error.enterPhone": "Maglagay muna ng phone number.",
-    "auth.error.enterPhoneAndCode": "Ilagay ang phone number at SMS code.",
     "provider.github": "GitHub",
     "provider.google": "Google",
     "provider.phone": "phone",
@@ -907,41 +999,57 @@ const translations = {
     "supply.recommended.waitingMeta": "Kapag sumagot na ang Teale nang lokal, irerekomenda nito ang pinakamainam na model para sa makinang ito.",
     "supply.models.noneYet": "Wala pang model data.",
     "supply.models.noneCompatible": "Wala pang compatible na model para sa device na ito.",
+    "view.simple.description": "Teale.com - Kumita ng totoong pera sa pag-supply ng inference gamit ang mga idle na makina",
+    "simple.earnings.prompt": "kita",
+    "simple.earnings.serving": "kumikita ng ~{{rate}} credits/min mula sa availability",
+    "simple.earnings.idle": "i-on ang supply inference para magsimulang kumita",
+    "simple.supply.prompt": "supply inference",
+    "simple.supply.off": "Naka-off. Hindi nagse-serve ng inference ang makinang ito.",
+    "simple.pins.prompt": "private inference network(s)",
+    "simple.pins.empty": "Wala pang network - gumawa ng isa o sumali gamit ang code.",
+    "simple.pins.exit": "exit node",
+    "simple.pins.namePh": "pangalan ng bagong network",
+    "simple.pins.codePh": "join code",
+    "simple.pins.create": "Gumawa",
+    "simple.pins.join": "Sumali",
+    "simple.settings.prompt": "settings",
+    "simple.settings.open": "Buksan ang settings at advanced tabs",
+    "wallet.prompt.device": "impormasyon ng device",
+    "account.email": "Email",
+    "account.input.email": "ikaw@example.com",
+    "auth.note.emailSignedIn": "Naka-sign in gamit ang email. Aktibo ang sync ng device at account.",
+    "auth.button.sendEmailCode": "Magpadala ng email code",
+    "auth.alert.emailSent": "Natanggap ang request para sa code. Kung walang dumating na email sa loob ng ilang minuto, tingnan ang spam folder.",
+    "auth.error.enterEmail": "Maglagay muna ng email address.",
+    "auth.error.enterEmailAndCode": "Ilagay ang email address at ang code.",
+    "chat.prompt.thread": "thread",
+    "chat.prompt.message": "mensahe",
+    "chat.model.label": "Model",
+    "chat.model.note": "Libre ang local sa PC na ito. Gumagastos ng Teale credits ang mga network model.",
+    "chat.model.localNote": "Libre ang local sa PC na ito.",
+    "chat.model.networkNote": "Gumagastos ng Teale credits ang mga network model.",
+    "chat.model.waitingOption": "Naghihintay ng mga available na model...",
+    "chat.input.placeholder": "Magtanong ng kahit ano...",
+    "chat.input.hint": "Enter para magpadala. Shift+Enter para sa bagong linya.",
+    "chat.action.send": "Ipadala",
+    "chat.action.newThread": "+ Bagong thread",
+    "chat.thread.defaultTitle": "Bagong thread",
+    "chat.thread.close": "Isara ang thread",
+    "chat.tokens.input": "{{count}} input tokens",
+    "chat.tokens.inputApprox": "~{{count}} input tokens",
+    "chat.tokens.output": "{{count}} output tokens",
+    "chat.tokens.outputApprox": "~{{count}} output tokens",
+    "chat.thread.empty": "Magsimula ng bagong thread. Ang mga mensahe lang sa thread na ito ang ipinapadala bilang context.",
+    "chat.thread.pending": "Nag-iisip ang Teale...",
+    "chat.thread.partialReply": "Bahagyang sagot mula sa naputol na stream.",
+    "chat.thread.interrupted": "Makikita ang bahagyang sagot na ito sa session na ito, pero hindi ito ipapadala bilang context.",
+    "chat.thread.streamInterrupted": "Natapos ang chat stream bago makumpleto. Nanatili sa screen ang bahagyang sagot pero hindi ito na-save sa thread.",
+    "chat.thread.noModel": "Wala pang available na chat model.",
+    "chat.thread.waitingLocal": "Mag-load ng local model o hintayin ang mga live na network model.",
+    "chat.thread.waitingNetwork": "Naghihintay ng network access token mula sa gateway wallet sync.",
+    "chat.thread.fallbackPrefix": "Lumipat sa {{model}} dahil hindi available ang {{previous}} sa PC na ito.",
   },
 };
-
-const chatTranslationDefaults = {
-  "chat.prompt.thread": "thread",
-  "chat.prompt.message": "message",
-  "chat.model.label": "Model",
-  "chat.model.note": "Local is free on this PC. Network models spend Teale credits.",
-  "chat.model.localNote": "Local is free on this PC.",
-  "chat.model.networkNote": "Network models spend Teale credits.",
-  "chat.model.waitingOption": "Waiting for available models...",
-  "chat.input.placeholder": "Ask something...",
-  "chat.input.hint": "Enter sends. Shift+Enter adds a newline.",
-  "chat.action.send": "Send",
-  "chat.action.newThread": "+ New thread",
-  "chat.thread.defaultTitle": "New thread",
-  "chat.thread.close": "Close thread",
-  "chat.tokens.input": "{{count}} input tokens",
-  "chat.tokens.inputApprox": "~{{count}} input tokens",
-  "chat.tokens.output": "{{count}} output tokens",
-  "chat.tokens.outputApprox": "~{{count}} output tokens",
-  "chat.thread.empty": "Start a new thread. Only messages in this thread are sent as context.",
-  "chat.thread.pending": "Teale is thinking...",
-  "chat.thread.partialReply": "Partial reply from an interrupted stream.",
-  "chat.thread.interrupted": "This partial reply stays visible for this session, but it will not be sent as context.",
-  "chat.thread.streamInterrupted": "The chat stream ended before completion. The partial reply stayed on screen but was not saved to the thread.",
-  "chat.thread.noModel": "No chat models are available yet.",
-  "chat.thread.waitingLocal": "Load a local model or wait for live network models.",
-  "chat.thread.waitingNetwork": "Waiting for the network bearer token from the gateway wallet sync.",
-  "chat.thread.fallbackPrefix": "Switched to {{model}} because {{previous}} is not available on this PC.",
-};
-
-for (const locale of Object.keys(translations)) {
-  translations[locale] = Object.assign({}, chatTranslationDefaults, translations[locale]);
-}
 
 function normalizeLanguage(candidate) {
   const value = String(candidate || "").toLowerCase();
@@ -1009,28 +1117,22 @@ function viewDescription(view) {
 let activeView = "simple";
 let intervalHandle = null;
 let lastSnapshot = null;
-let supabaseClient = null;
-let supabaseAuthKey = null;
-let authSession = null;
+// Signed-in identity. The only sign-in path is the gateway email code
+// (or the native magic-link deep link); the daemon owns the resulting
+// gateway session and reports it on every snapshot as
+// auth.gateway_account_user_id / auth.gateway_email.
 let authUser = null;
-// True when authUser came from the daemon's gateway email session (not
-// Supabase). The 1s snapshot poll must preserve it.
+// True when authUser came from the daemon's gateway email session. The 1s
+// snapshot poll must preserve it.
 let authUserIsGatewayNative = false;
 let authUserGatewayNativeAt = 0;
-let pendingNativeSession = normalizeNativeSession(DESKTOP_CONFIG.nativeSession || null);
 let authIdentities = [];
 let accountDevices = [];
 let accountSummary = null;
 let accountApiKeys = [];
 let createdAccountApiKeyToken = null;
-let supabaseAccountDevices = [];
-let linkedSupabaseUserId = null;
 let linkedGatewayAccountStateKey = null;
-let pendingOAuthCallbackUrl = null;
-let pendingOAuthProvider = null;
 let authErrorMessage = null;
-let oauthReconcileInFlight = false;
-let oauthCallbackExchangeInFlight = false;
 let networkModels = [];
 let networkModelsFetchedAt = 0;
 let networkModelsError = null;
@@ -1050,7 +1152,6 @@ let accountSendStatus = "";
 let accountApiKeyStatus = "";
 let accountApiKeyStatusIsError = false;
 let chatState = loadChatState();
-let lastNativeSyncedSessionKey = null;
 let chatRuntime = {
   inFlight: null,
   interruptedDrafts: {},
@@ -1061,16 +1162,6 @@ let localApiKey = DESKTOP_CONFIG.localApiKey || null;
 let localApiKeyPromise = null;
 let consecutiveSnapshotFailures = 0;
 let bundledFallbackAttempted = false;
-
-function normalizeNativeSession(session) {
-  if (!session?.accessToken || !session?.refreshToken) {
-    return null;
-  }
-  return {
-    accessToken: session.accessToken,
-    refreshToken: session.refreshToken,
-  };
-}
 
 function apiUrl(path) {
   return `${API_BASE}${path}`;
@@ -1096,38 +1187,6 @@ async function ensureLocalApiKey() {
   return localApiKeyPromise;
 }
 
-async function applyPendingNativeSessionIfNeeded() {
-  if (!supabaseClient || !pendingNativeSession) {
-    return null;
-  }
-
-  try {
-    const current = await supabaseClient.auth.getSession();
-    if (current?.data?.session) {
-      return current.data.session;
-    }
-  } catch (_error) {}
-
-  try {
-    authTrace("hydrating supabase session from native shell");
-    const { data, error } = await supabaseClient.auth.setSession({
-      access_token: pendingNativeSession.accessToken,
-      refresh_token: pendingNativeSession.refreshToken,
-    });
-    if (error) {
-      authTrace(`native session hydrate failed ${error.message}`);
-      return null;
-    }
-    if (data?.session) {
-      authTrace(`native session hydrate success user=${data.session.user?.id || "none"}`);
-      return data.session;
-    }
-  } catch (error) {
-    authTrace(`native session hydrate threw ${friendlyError(error)}`);
-  }
-  return null;
-}
-
 async function apiFetch(path, init = {}) {
   const headers = new Headers(init.headers || {});
   const key = await ensureLocalApiKey();
@@ -1135,39 +1194,6 @@ async function apiFetch(path, init = {}) {
     headers.set("Authorization", `Bearer ${key}`);
   }
   return fetch(apiUrl(path), { ...init, headers });
-}
-
-function postNativeSessionSync(session) {
-  const accessToken = session?.access_token;
-  const refreshToken = session?.refresh_token;
-
-  if (!accessToken || !refreshToken) {
-    // Only emit authSignOut after we've previously synced a real session.
-    // On initial bootstrap the native shell may still be hydrating its tokens
-    // into the page; emitting signOut here would clobber the native session
-    // and leave the user signed-out everywhere even though they're signed in
-    // on the native side.
-    if (
-      lastNativeSyncedSessionKey &&
-      lastNativeSyncedSessionKey !== "__signed_out__"
-    ) {
-      postNativeMessage({ type: "authSignOut" });
-      lastNativeSyncedSessionKey = "__signed_out__";
-    }
-    return;
-  }
-
-  const sessionKey = `${accessToken}:${refreshToken}`;
-  if (lastNativeSyncedSessionKey === sessionKey) {
-    return;
-  }
-
-  postNativeMessage({
-    type: "authSession",
-    accessToken,
-    refreshToken,
-  });
-  lastNativeSyncedSessionKey = sessionKey;
 }
 
 function updateDisplayUnitLabels() {
@@ -1291,146 +1317,14 @@ function providerDisplayName(provider) {
   return t(`provider.${provider}`);
 }
 
-function authConfigHint(provider, message) {
-  const lower = String(message || "").toLowerCase();
-  if (
-    provider === "github" &&
-    (lower.includes("client_id") ||
-      lower.includes("client id") ||
-      lower.includes("oauth app") ||
-      lower.includes("teale app"))
-  ) {
-    return "GitHub sign-in is misconfigured in Supabase. Set the GitHub provider client ID to the real GitHub OAuth Client ID, not the app name, and keep the callback URL at https://<project-ref>.supabase.co/auth/v1/callback.";
-  }
-  if (
-    provider === "google" &&
-    (
-      lower.includes("invalid_client") ||
-      lower.includes("client_id") ||
-      lower.includes("client id") ||
-      lower.includes("oauth client") ||
-      lower === "teale.com" ||
-      (lower.includes(".") && !lower.includes(".apps.googleusercontent.com"))
-    )
-  ) {
-    return "Google sign-in is misconfigured in Supabase. Use a Google Web application OAuth client, put the Supabase callback URL under Authorized redirect URIs, and save the same client ID and secret in the Supabase Google provider.";
-  }
-  return message;
-}
-
-function authConfigHintFromMessage(message) {
-  const lower = String(message || "").toLowerCase();
-  if (lower.includes("github")) {
-    return authConfigHint("github", message);
-  }
-  if (lower.includes("google") || lower.includes("invalid_client")) {
-    return authConfigHint("google", message);
-  }
-  if (
-    lower.includes("pkce") ||
-    lower.includes("code verifier") ||
-    lower.includes("code_verifier")
-  ) {
-    return "Sign-in expired before Teale could finish it. Try signing in again from the Teale app.";
-  }
-  return message;
-}
-
-function setAuthErrorState(message) {
-  authErrorMessage = message;
-  els.authStatus.textContent = "Sign-in failed";
-  els.authUser.textContent = message;
-}
-
 function clearAuthErrorState() {
   authErrorMessage = null;
 }
 
-function currentSupabaseProjectRef() {
-  const supabaseUrl = lastSnapshot?.auth?.supabase_url;
-  if (!supabaseUrl) {
-    return null;
-  }
-  try {
-    return new URL(supabaseUrl).host.split(".")[0] || null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function clearPersistedSupabaseSession() {
-  const projectRef = currentSupabaseProjectRef();
-  if (!projectRef) {
-    return;
-  }
-  const keys = [
-    `sb-${projectRef}-auth-token`,
-    `sb-${projectRef}-auth-token-code-verifier`,
-    `sb-${projectRef}-auth-token-code-verifiers`,
-  ];
-  for (const key of keys) {
-    try {
-      window.localStorage.removeItem(key);
-    } catch (_error) {}
-  }
-}
-
-function loadPersistedSupabaseSession() {
-  const projectRef = currentSupabaseProjectRef();
-  if (!projectRef) {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(`sb-${projectRef}-auth-token`);
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw);
-    if (!parsed?.access_token || !parsed?.refresh_token) {
-      return null;
-    }
-    return parsed;
-  } catch (_error) {
-    return null;
-  }
-}
-
-async function restorePersistedSupabaseSession() {
-  if (!supabaseClient) {
-    return null;
-  }
-  const storedSession = loadPersistedSupabaseSession();
-  if (!storedSession?.access_token || !storedSession?.refresh_token) {
-    return null;
-  }
-
-  try {
-    authTrace("restoring persisted supabase session from local storage");
-    const { data, error } = await withTimeout(
-      supabaseClient.auth.setSession({
-        access_token: storedSession.access_token,
-        refresh_token: storedSession.refresh_token,
-      }),
-      15000,
-      "restore stored session"
-    );
-    if (error) {
-      throw error;
-    }
-    authTrace(`restore stored session success user=${data.session?.user?.id || "none"}`);
-    return data.session || null;
-  } catch (error) {
-    authTrace(`restore stored session failed ${error.message}`);
-    return null;
-  }
-}
-
 function resetAccountAuthState() {
-  authSession = null;
   authUser = null;
   authUserIsGatewayNative = false;
   authIdentities = [];
-  linkedSupabaseUserId = null;
   linkedGatewayAccountStateKey = null;
   accountDevices = [];
   accountSummary = null;
@@ -1438,10 +1332,7 @@ function resetAccountAuthState() {
   createdAccountApiKeyToken = null;
   accountApiKeyStatus = "";
   accountApiKeyStatusIsError = false;
-  supabaseAccountDevices = [];
   clearAuthErrorState();
-  clearPendingOAuthProvider();
-  clearStoredOAuthCallback();
   els.authEmailInput.value = "";
   els.authEmailCodeInput.value = "";
   renderAccountWallet();
@@ -1449,122 +1340,6 @@ function resetAccountAuthState() {
   renderAuthState();
   renderAccountDevices();
   renderHome(lastSnapshot);
-}
-
-function callbackParams(url) {
-  const parsed = new URL(url);
-  const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
-  return {
-    parsed,
-    search: parsed.searchParams,
-    hash: new URLSearchParams(hash),
-  };
-}
-
-function callbackValue(params, key) {
-  return params.search.get(key) || params.hash.get(key);
-}
-
-function summarizeCallbackUrl(url) {
-  try {
-    const params = callbackParams(url);
-    const keys = Array.from(new Set([
-      ...Array.from(params.search.keys()),
-      ...Array.from(params.hash.keys()),
-    ])).sort();
-    const parsed = new URL(url);
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname} keys=[${keys.join(",")}]`;
-  } catch (_error) {
-    return "unparseable";
-  }
-}
-
-function loadStoredOAuthCallback() {
-  if (pendingOAuthCallbackUrl) {
-    return pendingOAuthCallbackUrl;
-  }
-  try {
-    const stored = window.localStorage.getItem(OAUTH_CALLBACK_STORAGE_KEY);
-    if (stored) {
-      pendingOAuthCallbackUrl = stored;
-      return stored;
-    }
-  } catch (_error) {}
-  return pendingOAuthCallbackUrl;
-}
-
-function clearStoredOAuthCallback() {
-  pendingOAuthCallbackUrl = null;
-  try {
-    window.localStorage.removeItem(OAUTH_CALLBACK_STORAGE_KEY);
-  } catch (_error) {}
-}
-
-function setPendingOAuthProvider(provider) {
-  pendingOAuthProvider = provider || null;
-  try {
-    if (pendingOAuthProvider) {
-      window.localStorage.setItem(OAUTH_PROVIDER_STORAGE_KEY, pendingOAuthProvider);
-    } else {
-      window.localStorage.removeItem(OAUTH_PROVIDER_STORAGE_KEY);
-    }
-  } catch (_error) {}
-}
-
-function loadPendingOAuthProvider() {
-  if (pendingOAuthProvider) {
-    return pendingOAuthProvider;
-  }
-  try {
-    const stored = window.localStorage.getItem(OAUTH_PROVIDER_STORAGE_KEY);
-    if (stored) {
-      pendingOAuthProvider = stored;
-      return stored;
-    }
-  } catch (_error) {}
-  return pendingOAuthProvider;
-}
-
-function clearPendingOAuthProvider() {
-  setPendingOAuthProvider(null);
-}
-
-async function syncNativePendingOAuthCallback() {
-  if (!ROUTES.authPending) {
-    return;
-  }
-  try {
-    const response = await fetch(ROUTES.authPending, { cache: "no-store" });
-    if (!response.ok) {
-      return;
-    }
-    const payload = await response.json();
-    if (!payload?.url) {
-      return;
-    }
-    authTrace(`native pending callback ${summarizeCallbackUrl(payload.url)}`);
-    pendingOAuthCallbackUrl = payload.url;
-    try {
-      window.localStorage.setItem(OAUTH_CALLBACK_STORAGE_KEY, payload.url);
-    } catch (_error) {}
-  } catch (_error) {}
-}
-
-function oauthMisconfigFromUrl(provider, rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    const clientId = parsed.searchParams.get("client_id");
-    if (!clientId) {
-      return null;
-    }
-    if (provider === "github" && /\s/.test(clientId)) {
-      return authConfigHint(provider, clientId);
-    }
-    if (provider === "google" && !clientId.includes(".apps.googleusercontent.com")) {
-      return authConfigHint(provider, clientId);
-    }
-  } catch (_error) {}
-  return null;
 }
 
 function userDisplayName(user) {
@@ -3157,24 +2932,6 @@ function authTrace(message) {
   postNativeMessage({ type: "authLog", message });
 }
 
-async function withTimeout(promise, ms, label) {
-  let timer = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = window.setTimeout(() => {
-          reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`));
-        }, ms);
-      }),
-    ]);
-  } finally {
-    if (timer) {
-      window.clearTimeout(timer);
-    }
-  }
-}
-
 async function copyText(text, label) {
   try {
     await navigator.clipboard.writeText(text);
@@ -3290,17 +3047,6 @@ function renderEmptyDevices(message) {
   els.accountDevices.innerHTML = "";
   els.accountDevicesEmpty.textContent = message;
   els.accountDevicesEmpty.hidden = false;
-}
-
-function normalizeSupabaseTimestamp(value) {
-  if (!value) {
-    return null;
-  }
-  const millis = Date.parse(value);
-  if (Number.isNaN(millis)) {
-    return null;
-  }
-  return Math.floor(millis / 1000);
 }
 
 function setDisconnected(error) {
@@ -3803,7 +3549,7 @@ function renderAccountWallet() {
     return;
   }
 
-  if (authUser || authSession?.user?.id) {
+  if (authUser) {
     els.accountWalletBalance.textContent = formatDisplayCredits(0, false);
     els.accountWalletUsdc.textContent = "0.00";
     els.accountWalletNote.textContent = t("account.wallet.note.pending", {
@@ -3984,33 +3730,6 @@ function buildAccountDeviceRows() {
     });
   }
 
-  for (const device of supabaseAccountDevices) {
-    const deviceId = device.wan_node_id || device.id || "-";
-    const key = device.wan_node_id
-      || `${device.platform || "unknown"}:${(device.device_name || "unknown").toLowerCase()}`;
-    const existing = rows.get(deviceId) || rows.get(key);
-    if (existing) {
-      existing.label = existing.label === "Unknown device" && device.device_name
-        ? device.device_name
-        : existing.label;
-      existing.lastSeen = Math.max(existing.lastSeen || 0, normalizeSupabaseTimestamp(device.last_seen) || 0);
-      continue;
-    }
-
-    rows.set(key, {
-      key,
-      label: device.device_name || "Unknown device",
-      deviceId,
-      walletBalance: null,
-      current: currentDeviceId === deviceId,
-      localOnly: false,
-      removable: currentDeviceId !== deviceId,
-      sweepEnabled: false,
-      sourceRowId: device.id,
-      lastSeen: normalizeSupabaseTimestamp(device.last_seen) || 0,
-    });
-  }
-
   if (lastSnapshot?.device?.display_name && currentDeviceId && !rows.has(currentDeviceId)) {
     rows.set(currentDeviceId, {
       key: currentDeviceId,
@@ -4032,50 +3751,6 @@ function buildAccountDeviceRows() {
     }
     return (right.lastSeen || 0) - (left.lastSeen || 0);
   });
-}
-
-function supabaseDeviceMergeKey(device) {
-  return device?.wan_node_id
-    || `${device?.platform || "unknown"}:${(device?.device_name || "unknown").toLowerCase()}`;
-}
-
-function mergeSupabaseDeviceLists(...lists) {
-  const merged = new Map();
-
-  for (const list of lists) {
-    for (const device of list || []) {
-      if (!device) {
-        continue;
-      }
-
-      const key = supabaseDeviceMergeKey(device);
-      const existing = merged.get(key);
-      if (!existing) {
-        merged.set(key, { ...device });
-        continue;
-      }
-
-      merged.set(key, {
-        ...existing,
-        ...device,
-        id: existing.id || device.id,
-        wan_node_id: existing.wan_node_id || device.wan_node_id,
-        device_name: existing.device_name || device.device_name,
-        platform: existing.platform || device.platform,
-        chip_name: existing.chip_name || device.chip_name,
-        ram_gb: existing.ram_gb ?? device.ram_gb,
-        registered_at: existing.registered_at || device.registered_at,
-        last_seen: normalizeSupabaseTimestamp(existing.last_seen) >= normalizeSupabaseTimestamp(device.last_seen)
-          ? existing.last_seen
-          : device.last_seen,
-        is_active: existing.is_active ?? device.is_active,
-      });
-    }
-  }
-
-  return Array.from(merged.values()).sort((left, right) => (
-    normalizeSupabaseTimestamp(right?.last_seen) - normalizeSupabaseTimestamp(left?.last_seen)
-  ));
 }
 
 function renderAccountDevices() {
@@ -4182,7 +3857,6 @@ function renderAccountDevices() {
         }
         try {
           await post(ROUTES.accountDevicesRemove, { deviceID: device.deviceId });
-          await markSupabaseDeviceInactive(device.deviceId);
           await refreshAccountState();
           renderAccountDevices();
         } catch (error) {
@@ -4201,7 +3875,7 @@ function renderAccountDevices() {
 function renderAuthState() {
   const linkedProviders = linkedProviderNames();
   const signedInToAccount = Boolean(
-    authUser?.id || authSession?.user?.id || accountSummary?.account_user_id
+    authUser?.id || accountSummary?.account_user_id
   );
   const emails = linkedEmails();
   const githubUsername = linkedGithubUsername();
@@ -4215,17 +3889,13 @@ function renderAuthState() {
   els.accountIdentities.textContent = authIdentities.length
     ? providerLabel(authIdentities)
     : linkedProviders.map((provider) => providerDisplayName(provider)).join(" | ") || "-";
-  els.authGithubButton.hidden = true;
-  els.authGoogleButton.hidden = true;
   els.authEmailSendButton.textContent = t("auth.button.sendEmailCode");
   els.authEmailVerifyButton.textContent = t("auth.button.verifyCode");
   els.authSignoutButton.textContent = t("auth.button.signOut");
 
-  if (!lastSnapshot?.auth?.configured && !ROUTES.accountEmailCodeRequest) {
+  if (!ROUTES.accountEmailCodeRequest) {
     els.authStatus.textContent = t("auth.status.notConfigured");
     els.authUser.textContent = t("auth.user.configure");
-    els.authGithubButton.disabled = true;
-    els.authGoogleButton.disabled = true;
     els.authEmailSendButton.disabled = true;
     els.authEmailVerifyButton.disabled = true;
     els.authSignoutButton.hidden = true;
@@ -4272,132 +3942,61 @@ function gatewayNativeAuthUser(accountUserID, email) {
   };
 }
 
-async function ensureAuthClient(authConfig) {
-  if (!authConfig?.configured) {
-    supabaseClient = null;
-    supabaseAuthKey = null;
-    authSession = null;
-    // Gateway-native email sign-in: the daemon owns the session (minted by
-    // the verify route, persisted by the native AuthManager) and reports it
-    // on every snapshot. Hydrate from it instead of wiping - the old
-    // unconditional reset ran on every 1s poll and was the "signed in, then
-    // reverted to signed out a second later" bug.
-    const gatewayAccountUserID = authConfig?.gateway_account_user_id || null;
-    if (gatewayAccountUserID) {
-      if (!authUser || authUser.id !== gatewayAccountUserID || !authUserIsGatewayNative) {
-        authUser = gatewayNativeAuthUser(gatewayAccountUserID, authConfig.gateway_email);
-        authIdentities = authUser.identities;
-        authUserIsGatewayNative = true;
-        authUserGatewayNativeAt = Date.now();
-        clearAuthErrorState();
-        renderAccountWallet();
-        renderAuthState();
-        renderAccountApiKeys();
-        renderAccountDevices();
-        refreshAccountState()
-          .then(() => ensureGatewayAccountLink())
-          .then(() => refreshAccountState())
-          .then(() => {
-            renderAccountWallet();
-            renderAccountApiKeys();
-            renderAuthState();
-            renderAccountDevices();
-          })
-          .catch((error) => console.warn("gateway account sync failed", error));
-      }
-      return;
-    }
-    if (authUserIsGatewayNative && authUser && Date.now() - authUserGatewayNativeAt < 15000) {
-      // Verify round-trip just completed JS-side but the daemon's AuthManager
-      // is still adopting the session (identity fetch in flight). Don't wipe
-      // a seconds-old sign-in; the snapshot will carry the gateway identity
-      // once adoption lands.
-      return;
-    }
-    authUser = null;
-    authIdentities = [];
-    authUserIsGatewayNative = false;
-    linkedSupabaseUserId = null;
-    linkedGatewayAccountStateKey = null;
-    accountDevices = [];
-    accountSummary = null;
-    accountApiKeys = [];
-    createdAccountApiKeyToken = null;
-    accountApiKeyStatus = "";
-    accountApiKeyStatusIsError = false;
-    supabaseAccountDevices = [];
-    clearAuthErrorState();
-    renderAccountWallet();
-    renderAuthState();
-    renderAccountApiKeys();
-    renderAccountDevices();
-    return;
-  }
-
-  const configKey = `${authConfig.supabase_url}|${authConfig.supabase_anon_key}|${authConfig.redirect_url}`;
-  if (supabaseClient && supabaseAuthKey === configKey) {
-    return;
-  }
-
-  if (!window.supabase?.createClient) {
-    els.authStatus.textContent = "Supabase client failed to load";
-    els.authUser.textContent = "The bundled Supabase auth script is missing from this build.";
-    return;
-  }
-
-  supabaseAuthKey = configKey;
-  supabaseClient = window.supabase.createClient(authConfig.supabase_url, authConfig.supabase_anon_key, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: false,
-      flowType: "pkce",
-    },
-  });
-
-  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
-    authSession = session;
-    authUser = session?.user || null;
-    postNativeSessionSync(session);
-    if (authUser) {
+async function syncGatewayAuthState(authConfig) {
+  // Gateway-native sign-in only: the daemon owns the session (minted by the
+  // email-code verify route or adopted from a teale://auth/session magic
+  // link by the native shell) and reports it on every snapshot. Hydrate from
+  // it instead of wiping - an unconditional reset on every 1s poll was the
+  // "signed in, then reverted to signed out a second later" bug.
+  const gatewayAccountUserID = authConfig?.gateway_account_user_id || null;
+  if (gatewayAccountUserID) {
+    if (!authUser || authUser.id !== gatewayAccountUserID || !authUserIsGatewayNative) {
+      authUser = gatewayNativeAuthUser(gatewayAccountUserID, authConfig.gateway_email);
+      authIdentities = authUser.identities;
+      authUserIsGatewayNative = true;
+      authUserGatewayNativeAt = Date.now();
       clearAuthErrorState();
+      renderAccountWallet();
+      renderAuthState();
+      renderAccountApiKeys();
+      renderAccountDevices();
+      refreshAccountState()
+        .then(() => ensureGatewayAccountLink())
+        .then(() => refreshAccountState())
+        .then(() => {
+          renderAccountWallet();
+          renderAccountApiKeys();
+          renderAuthState();
+          renderAccountDevices();
+        })
+        .catch((error) => console.warn("gateway account sync failed", error));
     }
-    linkedSupabaseUserId = authUser ? linkedSupabaseUserId : null;
-    linkedGatewayAccountStateKey = authUser ? linkedGatewayAccountStateKey : null;
-    await ensureSupabaseIdentity();
-    await refreshAccountState();
-    await ensureGatewayAccountLink();
-    await refreshAccountState();
-    renderAccountWallet();
-    renderAccountApiKeys();
-    renderAuthState();
-    renderAccountDevices();
-    renderHome(lastSnapshot);
-  });
-
-  const { data } = await supabaseClient.auth.getSession();
-  let session = data.session;
-  if (!session) {
-    session = await restorePersistedSupabaseSession();
+    return;
   }
-  if (!session) {
-    session = await applyPendingNativeSessionIfNeeded();
+  if (authUserIsGatewayNative && authUser && Date.now() - authUserGatewayNativeAt < 15000) {
+    // Verify round-trip just completed JS-side but the daemon's AuthManager
+    // is still adopting the session (identity fetch in flight). Don't wipe
+    // a seconds-old sign-in; the snapshot will carry the gateway identity
+    // once adoption lands.
+    return;
   }
-  authSession = session;
-  authUser = session?.user || null;
-  postNativeSessionSync(authSession);
-  await consumePendingOAuthCallback();
-  if (!authSession) {
-    authSession = await restorePersistedSupabaseSession();
-    authUser = authSession?.user || null;
+  if (!authUser && !accountSummary) {
+    return;
   }
-  await ensureSupabaseIdentity();
-  await refreshAccountState();
-  await ensureGatewayAccountLink();
-  await refreshAccountState();
+  authUser = null;
+  authIdentities = [];
+  authUserIsGatewayNative = false;
+  linkedGatewayAccountStateKey = null;
+  accountDevices = [];
+  accountSummary = null;
+  accountApiKeys = [];
+  createdAccountApiKeyToken = null;
+  accountApiKeyStatus = "";
+  accountApiKeyStatusIsError = false;
+  clearAuthErrorState();
   renderAccountWallet();
-  renderAccountApiKeys();
   renderAuthState();
+  renderAccountApiKeys();
   renderAccountDevices();
 }
 
@@ -4406,56 +4005,29 @@ async function refreshAccountState() {
     console.warn("account summary fetch failed", error);
     return null;
   });
-  const apiKeysPromise = getJsonMaybeMissing(ROUTES.accountApiKeys).catch((error) => {
-    console.warn("account api key fetch failed", error);
-    return null;
-  });
 
-  if (!supabaseClient || !authUser) {
+  if (!authUser) {
     authIdentities = [];
-    supabaseAccountDevices = [];
     accountSummary = await summaryPromise;
     accountDevices = accountSummary?.devices || [];
     accountApiKeys = [];
-    authTrace(`account state refreshed summaryDevices=${accountDevices.length} supabaseDevices=0 auth=none`);
+    authTrace(`account state refreshed summaryDevices=${accountDevices.length} auth=none`);
     loadDepositInfo();
     loadWithdrawals();
     return;
   }
 
-  const [sessionState, summary, apiKeysResponse, directSupabaseDevices] = await Promise.all([
-    refreshAuthoritativeAuthState("refreshAccountState"),
-    summaryPromise,
-    apiKeysPromise,
-    supabaseClient
-      .from("devices")
-      .select("id,user_id,device_name,platform,chip_name,ram_gb,wan_node_id,registered_at,last_seen,is_active")
-      .eq("user_id", authUser.id)
-      .eq("is_active", true)
-      .order("last_seen", { ascending: false })
-      .then(({ data, error }) => {
-        if (error) {
-          throw error;
-        }
-        return data || [];
-      })
-      .catch((error) => {
-        console.warn("supabase account devices fetch failed", error);
-        authTrace(`supabase account devices fetch failed ${friendlyError(error)}`);
-        return [];
-      }),
-  ]);
+  const apiKeysPromise = getJsonMaybeMissing(ROUTES.accountApiKeys).catch((error) => {
+    console.warn("account api key fetch failed", error);
+    return null;
+  });
+  const [summary, apiKeysResponse] = await Promise.all([summaryPromise, apiKeysPromise]);
 
   accountSummary = summary;
   accountDevices = summary?.devices || [];
   accountApiKeys = apiKeysResponse?.keys || [];
-  supabaseAccountDevices = mergeSupabaseDeviceLists(
-    supabaseAccountDevices,
-    sessionState?.devices || [],
-    directSupabaseDevices || []
-  );
   authTrace(
-    `account state refreshed summaryDevices=${accountDevices.length} apiKeys=${accountApiKeys.length} supabaseDevices=${supabaseAccountDevices.length}`
+    `account state refreshed summaryDevices=${accountDevices.length} apiKeys=${accountApiKeys.length}`
   );
   loadDepositInfo();
   loadWithdrawals();
@@ -4511,297 +4083,12 @@ async function revokeAccountApiKey(keyId) {
   }
 }
 
-async function refreshAuthoritativeAuthState(reason, { throwOnError = false } = {}) {
-  if (!authSession?.access_token) {
-    authTrace(`local auth session skipped reason=${reason} missing access token`);
-    return null;
-  }
-
-  try {
-    const sessionState = await post(ROUTES.authSession, {
-      accessToken: authSession.access_token,
-    });
-    const identities = sessionState?.identities || sessionState?.user?.identities || [];
-    if (sessionState?.user) {
-      authUser = {
-        ...(authUser || {}),
-        ...sessionState.user,
-        identities,
-      };
-    }
-    authIdentities = identities;
-    supabaseAccountDevices = mergeSupabaseDeviceLists(supabaseAccountDevices, sessionState?.devices || []);
-    authTrace(
-      `local auth session success reason=${reason} providers=${identities.map((identity) => identity.provider).join(",") || "none"} devices=${supabaseAccountDevices.length}`
-    );
-    return sessionState;
-  } catch (error) {
-    authTrace(`local auth session failed reason=${reason} error=${error.message}`);
-    if (throwOnError) {
-      throw error;
-    }
-    return null;
-  }
-}
-
-async function reconcileAlreadyLinkedIdentity() {
-  const provider = loadPendingOAuthProvider();
-  authTrace(`reconcile already linked provider=${provider || "unknown"}`);
-  if (oauthReconcileInFlight) {
-    authTrace("reconcile skipped because another reconcile is already in flight");
-    return false;
-  }
-  oauthReconcileInFlight = true;
-
-  try {
-    try {
-      await refreshAuthoritativeAuthState("reconcileAlreadyLinkedIdentity", { throwOnError: true });
-    } catch (error) {
-      authTrace(`reconcile authoritative refresh threw ${error.message}`);
-    }
-
-    await refreshAccountState();
-
-    if (provider && authIdentities.some((identity) => identity.provider === provider)) {
-      clearAuthErrorState();
-      linkedGatewayAccountStateKey = null;
-      await ensureGatewayAccountLink();
-      await refreshAccountState();
-      authTrace(`reconcile success provider=${provider}`);
-      clearPendingOAuthProvider();
-      return true;
-    }
-
-    authTrace(
-      `reconcile unresolved provider=${provider || "unknown"} providers=${authIdentities.map((identity) => identity.provider).join(",") || "none"}`
-    );
-    return false;
-  } finally {
-    oauthReconcileInFlight = false;
-  }
-}
-
-async function consumePendingOAuthCallback() {
-  if (oauthCallbackExchangeInFlight) {
-    authTrace("consume callback skipped because an auth exchange is already in flight");
-    return;
-  }
-  const callbackUrl = loadStoredOAuthCallback();
-  if (!callbackUrl || !supabaseClient) {
-    return;
-  }
-  oauthCallbackExchangeInFlight = true;
-  try {
-    authTrace(`consume callback ${summarizeCallbackUrl(callbackUrl)}`);
-    const params = callbackParams(callbackUrl);
-    const oauthError =
-      callbackValue(params, "error_description") ||
-      callbackValue(params, "error") ||
-      callbackValue(params, "error_code");
-    if (oauthError) {
-      const normalizedOauthError = String(oauthError || "").normalize("NFKC").toLowerCase();
-      authTrace(`callback oauth error ${oauthError}`);
-      authTrace(`callback oauth error normalized=${normalizedOauthError}`);
-      if (
-        authUser &&
-        (
-          normalizedOauthError.includes("already linked") ||
-          (normalizedOauthError.includes("identity") && normalizedOauthError.includes("linked"))
-        )
-      ) {
-        authTrace("callback oauth error entering already-linked reconcile path");
-        clearStoredOAuthCallback();
-        const reconciled = await reconcileAlreadyLinkedIdentity();
-        if (!reconciled) {
-          const provider = loadPendingOAuthProvider();
-          setAuthErrorState(
-            provider
-              ? `${providerDisplayName(provider)} is already linked, but Supabase did not return it on this current session.`
-              : "Identity is already linked, but it did not appear on this current session."
-          );
-          clearPendingOAuthProvider();
-        }
-        return;
-      }
-      setAuthErrorState(authConfigHintFromMessage(oauthError));
-      clearStoredOAuthCallback();
-      clearPendingOAuthProvider();
-      return;
-    }
-
-    const accessToken = callbackValue(params, "access_token");
-    const refreshToken = callbackValue(params, "refresh_token");
-    if (accessToken && refreshToken) {
-      try {
-        authTrace("setSession from callback tokens");
-        const { data, error } = await withTimeout(
-          supabaseClient.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          }),
-          15000,
-          "setSession"
-        );
-        if (error) {
-          throw error;
-        }
-        authTrace(`setSession success user=${data.session?.user?.id || "none"}`);
-        authSession = data.session;
-        authUser = data.session?.user || null;
-        clearAuthErrorState();
-        linkedGatewayAccountStateKey = null;
-        clearStoredOAuthCallback();
-        clearPendingOAuthProvider();
-        window.history.replaceState({}, "", "teale://localhost/");
-      } catch (error) {
-        authTrace(`setSession failed ${error.message}`);
-        setAuthErrorState(authConfigHintFromMessage(error.message));
-        clearStoredOAuthCallback();
-        clearPendingOAuthProvider();
-      }
-      return;
-    }
-
-    const code = callbackValue(params, "code");
-    if (!code) {
-      authTrace("callback missing code and tokens");
-      clearStoredOAuthCallback();
-      clearPendingOAuthProvider();
-      return;
-    }
-    try {
-      authTrace("exchangeCodeForSession start");
-      const { data, error } = await withTimeout(
-        supabaseClient.auth.exchangeCodeForSession(code),
-        15000,
-        "exchangeCodeForSession"
-      );
-      if (error) {
-        throw error;
-      }
-      authTrace(`exchangeCodeForSession success user=${data.session?.user?.id || "none"}`);
-      authSession = data.session;
-      authUser = data.session?.user || null;
-      clearAuthErrorState();
-      linkedGatewayAccountStateKey = null;
-      clearStoredOAuthCallback();
-      clearPendingOAuthProvider();
-      window.history.replaceState({}, "", "teale://localhost/");
-    } catch (error) {
-      authTrace(`exchangeCodeForSession failed ${error.message}`);
-      setAuthErrorState(authConfigHintFromMessage(error.message));
-      clearStoredOAuthCallback();
-      clearPendingOAuthProvider();
-    }
-  } finally {
-    oauthCallbackExchangeInFlight = false;
-  }
-}
-
-async function ensureSupabaseIdentity() {
-  if (!supabaseClient || !authUser || !lastSnapshot?.device) {
-    return;
-  }
-  if (linkedSupabaseUserId === authUser.id) {
-    return;
-  }
-
-  const profilePayload = {
-    id: authUser.id,
-    display_name: userDisplayName(authUser),
-    phone: authUser.phone || null,
-    email: authUser.email || null,
-  };
-
-  const { error: profileError } = await supabaseClient.from("profiles").upsert(profilePayload, { onConflict: "id" });
-  if (profileError) {
-    throw profileError;
-  }
-
-  const device = lastSnapshot.device || {};
-  const hardware = device.hardware || {};
-  const deviceName = device.display_name || DESKTOP_DEVICE_LABEL;
-  const ramGb = hardwareRamGB(hardware);
-  const chipName = hardware.chipName || hardware.chip_name || hardware.cpu_name || hardware.chipFamily || null;
-
-  const currentDeviceId = lastSnapshot?.wallet?.current_device_id || null;
-  let existingDevices;
-  let existingError;
-
-  if (currentDeviceId) {
-    const result = await supabaseClient
-      .from("devices")
-      .select("id,wan_node_id")
-      .eq("user_id", authUser.id)
-      .eq("wan_node_id", currentDeviceId)
-      .eq("is_active", true)
-      .order("last_seen", { ascending: false })
-      .limit(1);
-    existingDevices = result.data;
-    existingError = result.error;
-  }
-
-  if (!existingDevices?.length && !existingError) {
-    const fallback = await supabaseClient
-      .from("devices")
-      .select("id,wan_node_id")
-      .eq("user_id", authUser.id)
-      .eq("device_name", deviceName)
-      .eq("platform", DESKTOP_PLATFORM)
-      .eq("is_active", true)
-      .order("last_seen", { ascending: false })
-      .limit(1);
-    existingDevices = fallback.data;
-    existingError = fallback.error;
-  }
-
-  if (existingError) {
-    console.warn("Supabase device lookup failed", existingError);
-    linkedSupabaseUserId = authUser.id;
-    return;
-  }
-
-  const payload = {
-    user_id: authUser.id,
-    device_name: deviceName,
-    platform: DESKTOP_PLATFORM,
-    chip_name: chipName,
-    ram_gb: typeof ramGb === "number" ? Math.round(ramGb) : null,
-    wan_node_id: currentDeviceId,
-    is_active: true,
-    last_seen: new Date().toISOString(),
-  };
-
-  if (existingDevices?.length) {
-    const { error } = await supabaseClient.from("devices").update(payload).eq("id", existingDevices[0].id);
-    if (error) {
-      console.warn("Supabase device update failed", error);
-    }
-  } else {
-    const { error } = await supabaseClient.from("devices").insert(payload);
-    if (error) {
-      console.warn("Supabase device insert failed", error);
-    }
-  }
-
-  linkedSupabaseUserId = authUser.id;
-}
-
 async function ensureGatewayAccountLink() {
   if (!authUser || !lastSnapshot?.wallet?.current_device_id) {
     return;
   }
 
-  let identities = authIdentities;
-  if (!identities.length) {
-    try {
-      const authoritative = await refreshAuthoritativeAuthState("ensureGatewayAccountLink", { throwOnError: true });
-      identities = authoritative?.identities || authUser.identities || [];
-      authIdentities = identities;
-    } catch (error) {
-      console.warn("authoritative identity refresh failed", error);
-    }
-  }
+  const identities = authIdentities.length ? authIdentities : authUser.identities || [];
 
   const primaryEmail = primaryLinkedEmail() || authUser.email || null;
   const githubUsername = linkedGithubUsername();
@@ -4834,80 +4121,6 @@ async function ensureGatewayAccountLink() {
   } catch (error) {
     authTrace(`gateway account link failed ${error.message}`);
     console.warn("gateway account link failed", error);
-  }
-}
-
-async function markSupabaseDeviceInactive(deviceId) {
-  if (!supabaseClient || !authUser || !deviceId) {
-    return;
-  }
-  try {
-    const { error } = await supabaseClient
-      .from("devices")
-      .update({ is_active: false })
-      .eq("user_id", authUser.id)
-      .eq("wan_node_id", deviceId);
-    if (error) {
-      throw error;
-    }
-  } catch (error) {
-    console.warn("supabase device deactivate failed", error);
-  }
-}
-
-async function startOAuth(provider) {
-  if (!supabaseClient || !lastSnapshot?.auth?.configured) {
-    return;
-  }
-  clearAuthErrorState();
-  setPendingOAuthProvider(provider);
-  authTrace(`startOAuth provider=${provider} signedIn=${Boolean(authUser)}`);
-  const redirectUrl = lastSnapshot.auth.redirect_url || "teale://auth/callback";
-  const options = {
-    redirectTo: redirectUrl,
-    skipBrowserRedirect: true,
-  };
-  if (provider === "github") {
-    options.scopes = "user:email";
-  }
-  if (provider === "google") {
-    options.scopes = "email profile";
-    options.queryParams = {
-      access_type: "offline",
-      prompt: "select_account",
-    };
-  }
-  try {
-    let response;
-    if (authUser) {
-      response = await supabaseClient.auth.linkIdentity({
-        provider,
-        options,
-      });
-    } else {
-      response = await supabaseClient.auth.signInWithOAuth({
-        provider,
-        options,
-      });
-    }
-
-    if (response.error) {
-      throw response.error;
-    }
-    if (!response.data?.url) {
-      throw new Error(`${providerDisplayName(provider)} sign-in URL was not returned.`);
-    }
-    const oauthConfigError = oauthMisconfigFromUrl(provider, response.data.url);
-    if (oauthConfigError) {
-      throw new Error(oauthConfigError);
-    }
-    authTrace(`startOAuth url ready provider=${provider}`);
-    if (!postNativeMessage({ type: "openExternal", url: response.data.url })) {
-      window.open(response.data.url, "_blank", "noopener,noreferrer");
-    }
-  } catch (error) {
-    authTrace(`startOAuth failed provider=${provider} error=${error.message}`);
-    alert(authConfigHint(provider, error.message));
   }
 }
 
@@ -5009,10 +4222,19 @@ function renderSimple(snapshot) {
   if (els.simpleEarningsUnit) {
     els.simpleEarningsUnit.checked = displayUnit === "usd";
   }
-  els.simpleEarningsNote.textContent = serving
-    ? t("simple.earnings.serving", { rate: formatCredits(ratePerMin) })
-    : t("simple.earnings.idle");
   const enabled = snapshot?.supply_enabled ?? Boolean(snapshot?.loaded_model_id);
+  // "turn on supply" only makes sense when supply is actually off; when it
+  // is on but not serving yet (downloading, loading, needs a model, on
+  // battery, offline) say why instead.
+  let earningsNote;
+  if (serving) {
+    earningsNote = t("simple.earnings.serving", { rate: formatCredits(ratePerMin) });
+  } else if (enabled) {
+    earningsNote = snapshot?.state_reason || labelForState(snapshot?.service_state);
+  } else {
+    earningsNote = t("simple.earnings.idle");
+  }
+  els.simpleEarningsNote.textContent = earningsNote;
   if (document.activeElement !== els.simpleSupplyToggle) {
     els.simpleSupplyToggle.checked = Boolean(enabled);
   }
@@ -5187,14 +4409,7 @@ async function refresh() {
   consecutiveSnapshotFailures = 0;
   reconcilePendingAction(snapshot);
   lastSnapshot = snapshot;
-  await ensureAuthClient(snapshot.auth);
-  await syncNativePendingOAuthCallback();
-  if (pendingOAuthCallbackUrl) {
-    await consumePendingOAuthCallback();
-    await refreshAccountState();
-    await ensureGatewayAccountLink();
-    await refreshAccountState();
-  }
+  await syncGatewayAuthState(snapshot.auth);
   render(snapshot);
   if (activeView === "home") {
     await refreshNetworkStats();
@@ -5373,8 +4588,6 @@ els.simplePinAddInput?.addEventListener("keydown", (event) => {
   }
 });
 
-els.authGithubButton.addEventListener("click", () => startOAuth("github"));
-els.authGoogleButton.addEventListener("click", () => startOAuth("google"));
 
 els.authEmailSendButton.addEventListener("click", async () => {
   try {
@@ -5408,14 +4621,11 @@ els.authEmailVerifyButton.addEventListener("click", async () => {
     els.authEmailInput.value = email;
     els.authEmailVerifyButton.disabled = true;
     const verified = await post(ROUTES.accountEmailCodeVerify, { email, code: token });
-    authSession = null;
     authUser = gatewayNativeAuthUser(verified.accountUserID, verified.email);
     authUserIsGatewayNative = true;
     authUserGatewayNativeAt = Date.now();
     authIdentities = authUser.identities;
-    postNativeSessionSync(null);
     clearAuthErrorState();
-    clearPendingOAuthProvider();
     // Render the signed-in state BEFORE the account-link chain: the verify
     // already minted + persisted a real gateway session daemon-side, so a
     // failure below must not read as "sign-in failed".
@@ -5442,42 +4652,13 @@ els.authEmailVerifyButton.addEventListener("click", async () => {
   }
 });
 
-els.authSignoutButton.addEventListener("click", async () => {
-  if (!supabaseClient) {
-    if (authUserIsGatewayNative) {
-      // Revoke the daemon-held gateway session too (native shell runs
-      // AuthManager.signOut: server-side revoke + token-file removal).
-      postNativeMessage({ type: "authSignOut" });
-    }
-    resetAccountAuthState();
-    return;
+els.authSignoutButton.addEventListener("click", () => {
+  if (authUserIsGatewayNative) {
+    // Revoke the daemon-held gateway session too (the native shell runs
+    // AuthManager.signOut: server-side revoke + local token removal).
+    postNativeMessage({ type: "authSignOut" });
   }
-  authTrace("signOut start");
-  els.authSignoutButton.disabled = true;
-  clearPersistedSupabaseSession();
   resetAccountAuthState();
-  postNativeSessionSync(null);
-  render(lastSnapshot);
-  const signOutTask = supabaseClient.auth
-    .signOut({ scope: "local" })
-    .then(({ error }) => {
-      if (error) {
-        authTrace(`signOut local failed ${error.message}`);
-      } else {
-        authTrace("signOut local success");
-      }
-    })
-    .catch((error) => {
-      authTrace(`signOut threw ${error.message}`);
-    });
-  try {
-    await Promise.race([
-      signOutTask,
-      new Promise((resolve) => window.setTimeout(resolve, 1500)),
-    ]);
-  } finally {
-    els.authSignoutButton.disabled = false;
-  }
 });
 
 els.followXButton.addEventListener("click", () => {
@@ -5713,49 +4894,40 @@ document.addEventListener("click", (event) => {
     els.settingsMenu.open = false;
   }
 });
-window.__tealeHandleOAuthCallback = async (url) => {
-  pendingOAuthCallbackUrl = url;
-  try {
-    window.localStorage.setItem(OAUTH_CALLBACK_STORAGE_KEY, url);
-  } catch (_error) {}
-  await consumePendingOAuthCallback();
-  await refreshAccountState();
-  await ensureGatewayAccountLink();
-  await refreshAccountState();
-  renderAccountWallet();
-  renderAccountApiKeys();
-  renderAuthState();
-  renderAccountDevices();
-  renderHome(lastSnapshot);
-};
 window.__tealeSetLocalApiKey = (key) => {
   localApiKey = key || null;
 };
-window.__tealeHydrateNativeSession = async (session) => {
-  pendingNativeSession = normalizeNativeSession(session);
-  if (!pendingNativeSession || !supabaseClient) {
-    return;
-  }
-  const hydrated = await applyPendingNativeSessionIfNeeded();
-  if (!hydrated) {
-    return;
-  }
-  authSession = hydrated;
-  authUser = hydrated.user || null;
-  await ensureSupabaseIdentity();
-  await refreshAccountState();
-  await ensureGatewayAccountLink();
-  await refreshAccountState();
-  renderAccountWallet();
-  renderAccountApiKeys();
-  renderAuthState();
-  renderAccountDevices();
-  renderHome(lastSnapshot);
+// Called by the native shell after it adopts a session out of band (e.g. a
+// teale://auth/session magic link) so the UI reflects it without waiting
+// for the next poll.
+window.__tealeRefreshSnapshot = () => {
+  refresh().catch((error) => {
+    consecutiveSnapshotFailures += 1;
+    setDisconnected(error);
+  });
 };
 
+function purgeLegacyAuthStorage() {
+  try {
+    for (const key of LEGACY_AUTH_STORAGE_KEYS) {
+      window.localStorage.removeItem(key);
+    }
+    const staleSupabaseKeys = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key && /^sb-.+-auth-token/.test(key)) {
+        staleSupabaseKeys.push(key);
+      }
+    }
+    for (const key of staleSupabaseKeys) {
+      window.localStorage.removeItem(key);
+    }
+  } catch (_error) {}
+}
+
+purgeLegacyAuthStorage();
 applyTranslations();
 setActiveView("simple");
-loadStoredOAuthCallback();
 refresh().catch((error) => {
   consecutiveSnapshotFailures += 1;
   setDisconnected(error);

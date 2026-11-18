@@ -7,7 +7,14 @@ public enum ChipFamily: String, Codable, Sendable {
     case m1, m1Pro, m1Max, m1Ultra
     case m2, m2Pro, m2Max, m2Ultra
     case m3, m3Pro, m3Max, m3Ultra
-    case m4, m4Pro, m4Max, m4Ultra
+    // There is no M4 Ultra: Apple skipped it (the 2025 Mac Studio ships the
+    // M3 Ultra), so the enum does not model one.
+    case m4, m4Pro, m4Max
+    case m5, m5Pro, m5Max
+    // Apple Silicon Mac whose generation this build does not know yet
+    // (e.g. "Apple M6 Pro", or an M5 Ultra once it ships). Classified by
+    // the Pro/Max/Ultra suffix so a new Mac is never treated as non-Apple.
+    case appleSilicon, appleSiliconPro, appleSiliconMax, appleSiliconUltra
     // Apple Silicon — iPhone/iPad
     case a14, a15, a16, a17Pro, a18, a18Pro, a19Pro
     // Google Tensor
@@ -40,7 +47,11 @@ public enum ChipFamily: String, Codable, Sendable {
         case .m1, .m1Pro, .m1Max, .m1Ultra: return 1
         case .m2, .m2Pro, .m2Max, .m2Ultra: return 2
         case .m3, .m3Pro, .m3Max, .m3Ultra: return 3
-        case .m4, .m4Pro, .m4Max, .m4Ultra: return 4
+        case .m4, .m4Pro, .m4Max: return 4
+        case .m5, .m5Pro, .m5Max: return 5
+        // Newer than every generation this build knows.
+        case .appleSilicon, .appleSiliconPro, .appleSiliconMax, .appleSiliconUltra:
+            return Self.unknownAppleGeneration
         case .a14: return 14
         case .a15: return 15
         case .a16: return 16
@@ -49,6 +60,62 @@ public enum ChipFamily: String, Codable, Sendable {
         case .a19Pro: return 19
         case .tensorG4: return 4
         case .nvidiaGPU, .amdGPU, .intelCPU, .amdCPU, .armGeneric, .unknown: return 0
+        }
+    }
+
+    /// `generation` reported for an Apple Silicon Mac newer than the
+    /// families this build knows.
+    public static let unknownAppleGeneration = 99
+
+    /// Parse a `machdep.cpu.brand_string` such as "Apple M5 Pro".
+    /// Known generations map to their exact family. Any other brand string
+    /// that starts with "Apple M<digits>" maps to the generation-agnostic
+    /// Apple Silicon family picked by its Pro/Max/Ultra suffix. Everything
+    /// else is `.unknown`.
+    public static func parse(brandString: String) -> ChipFamily {
+        let lower = brandString.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard lower.hasPrefix("apple m") else { return .unknown }
+        let afterM = lower.dropFirst("apple m".count)
+        let digits = afterM.prefix { $0.isASCII && $0.isNumber }
+        guard let generation = Int(digits) else { return .unknown }
+        let rest = afterM.dropFirst(digits.count)
+            .split(whereSeparator: { $0 == " " || $0 == "(" || $0 == ")" || $0 == "-" })
+            .map(String.init)
+        enum Variant { case base, pro, max, ultra }
+        let variant: Variant
+        if rest.contains("ultra") {
+            variant = .ultra
+        } else if rest.contains("max") {
+            variant = .max
+        } else if rest.contains("pro") {
+            variant = .pro
+        } else {
+            variant = .base
+        }
+
+        switch (generation, variant) {
+        case (1, .base): return .m1
+        case (1, .pro): return .m1Pro
+        case (1, .max): return .m1Max
+        case (1, .ultra): return .m1Ultra
+        case (2, .base): return .m2
+        case (2, .pro): return .m2Pro
+        case (2, .max): return .m2Max
+        case (2, .ultra): return .m2Ultra
+        case (3, .base): return .m3
+        case (3, .pro): return .m3Pro
+        case (3, .max): return .m3Max
+        case (3, .ultra): return .m3Ultra
+        case (4, .base): return .m4
+        case (4, .pro): return .m4Pro
+        case (4, .max): return .m4Max
+        case (5, .base): return .m5
+        case (5, .pro): return .m5Pro
+        case (5, .max): return .m5Max
+        case (_, .base): return .appleSilicon
+        case (_, .pro): return .appleSiliconPro
+        case (_, .max): return .appleSiliconMax
+        case (_, .ultra): return .appleSiliconUltra
         }
     }
 }
@@ -193,9 +260,11 @@ public struct HardwareCapability: Codable, Sendable {
         gpuVRAMGB = try container.decodeIfPresent(Double.self, forKey: .gpuVRAMGB)
     }
 
-    /// Estimated available RAM for model loading (total minus ~4GB for OS)
+    /// RAM budget for a model's full footprint (weights + KV + runtime).
+    /// Delegates to `ModelFit`, the single fit rule shared by the catalog
+    /// filter, the MLX free-memory guard and the docs.
     public var availableRAMForModelsGB: Double {
-        max(totalRAMGB - 4.0, 1.0)
+        ModelFit.budgetGB(totalRAMGB: totalRAMGB)
     }
 
     /// Estimated system power draw in watts during inference.
@@ -217,7 +286,13 @@ public struct HardwareCapability: Codable, Sendable {
         case .m4:                   return 22
         case .m4Pro:                return 38
         case .m4Max:                return 50
-        case .m4Ultra:              return 75
+        case .m5:                   return 22
+        case .m5Pro:                return 40
+        case .m5Max:                return 55
+        case .appleSilicon:         return 22
+        case .appleSiliconPro:      return 40
+        case .appleSiliconMax:      return 55
+        case .appleSiliconUltra:    return 75
         case .a14, .a15:            return 5
         case .a16, .a17Pro:         return 6
         case .a18, .a18Pro:         return 7

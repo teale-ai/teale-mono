@@ -1,13 +1,18 @@
 app = "teale-gateway"
 primary_region = "sjc"
 kill_signal = "SIGINT"
-kill_timeout = 30
+# Graceful drain (main.rs shutdown_signal): on SIGINT the gateway stops
+# accepting connections and lets in-flight requests and SSE streams finish.
+# 300s is fly's maximum kill_timeout; it covers the 300s request_timeout
+# but not the longest sole-supplier streams (first-token ceiling 1500s, node
+# stream budget 1800s), which a deploy can still cut.
+kill_timeout = 300
 
 [build]
 dockerfile = "Dockerfile"
 
 [env]
-RUST_LOG = "info,teale_gateway=debug"
+RUST_LOG = "info"
 
 [[mounts]]
 source = "gateway_data"

@@ -36,36 +36,4 @@ final class IdentityUnificationTests: XCTestCase {
         XCTAssertEqual(resolution.previousStoredNodeID, legacyIdentity.nodeID)
         XCTAssertTrue(resolution.replacedLegacyIdentity)
     }
-
-    func testServingStatusLineExplainsGatewayRequirements() {
-        let line = CompanionEngineState.serving("Hermes 3 8B").statusLine
-
-        XCTAssertTrue(line.contains("relay"))
-        XCTAssertTrue(line.contains("gateway"))
-        XCTAssertTrue(line.contains("identity"))
-    }
-
-    func testIdentityMismatchPreventsEarningEligibility() {
-        let status = CompanionSupplyIdentityStatus(
-            gatewayDeviceID: String(repeating: "a", count: 64),
-            wanNodeID: String(repeating: "b", count: 64),
-            localServingReady: true,
-            relayConnected: true
-        )
-
-        XCTAssertTrue(status.identityMismatch)
-        XCTAssertFalse(status.earningEligible)
-        XCTAssertEqual(status.eligibilityLabel, "Not yet")
-    }
-
-    func testCompanionGatewayURLIgnoresPrivateDebugFallbacks() {
-        XCTAssertEqual(
-            companionGatewayAPIBaseURL(for: "http://tailor96s-mac-studio:18081").absoluteString,
-            "https://gateway.teale.com/v1"
-        )
-        XCTAssertEqual(
-            companionGatewayAPIBaseURL(for: "wss://relay.teale.com/ws").absoluteString,
-            "https://gateway.teale.com/v1"
-        )
-    }
 }

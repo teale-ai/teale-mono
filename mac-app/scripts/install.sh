@@ -1,9 +1,24 @@
 #!/bin/sh
+#
+# Teale for macOS - one-line installer.
+#
+# Installs the newest GitHub release whose tag starts with `mac-v` and that
+# carries Teale.zip (mac-v* and teale-* desktop tags share one release list,
+# so `releases/latest` is often a Windows/Linux-only release). The zip is
+# verified against that release's checksums.txt before anything is touched.
+#
+# Environment:
+#   TEALE_TAG=mac-vYYYY.MM.DD.HHMM   install exactly this release
+#   TEALE_BUILD_FROM_SOURCE=1        skip releases and build with Xcode
+#
+# The copy of this script attached to each mac-v* release has PINNED_TAG set
+# to that release's tag by the release workflow.
 set -e
 
 REPO="teale-ai/teale-mono"
 APP_NAME="Teale"
 APP_DIR="/Applications/${APP_NAME}.app"
+PINNED_TAG=""
 
 echo ""
 echo "  Installing Teale..."
@@ -126,78 +141,18 @@ install_cli_symlink() {
     echo "  teale CLI linked at $LINK - try: teale status"
 }
 
-# ── Download from GitHub Releases ──
 
-LATEST=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || true)
-
-if [ -n "$LATEST" ]; then
-    URL="https://github.com/$REPO/releases/download/$LATEST/Teale.zip"
-    echo "  Downloading Teale $LATEST..."
-
-    TMPDIR=$(mktemp -d)
-    trap "rm -rf $TMPDIR" EXIT
-
-    if curl -fsSL "$URL" -o "$TMPDIR/Teale.zip" 2>/dev/null; then
-        echo "  Installing to $APP_DIR..."
-
-        # Remove previous install
-        if [ -d "$APP_DIR" ]; then
-            rm -rf "$APP_DIR"
-        fi
-
-        # Unzip preserving macOS metadata
-        ditto -x -k "$TMPDIR/Teale.zip" /Applications
-
-        # Strip quarantine flag (safety net for edge cases)
-        xattr -cr "$APP_DIR" 2>/dev/null || true
-
-        echo ""
-        echo "  Teale $LATEST installed."
-
-        install_cli_symlink
-
-        offer_rapid_mlx_install
-
-        echo ""
-        echo "  Launching..."
-        open "$APP_DIR"
-        echo ""
-        echo "  Look for the brain icon in your menu bar (top-right)."
-        echo ""
-        exit 0
-    fi
-fi
-
-# ── Fallback: build from source ──
-
-echo "  No pre-built release found. Building from source..."
-echo "  This requires Xcode and takes a few minutes."
-echo ""
-
-if ! command -v xcodebuild >/dev/null 2>&1; then
-    echo "Error: Xcode is required to build from source."
-    echo "Install it from the App Store, then retry."
+fail() {
+    echo "" >&2
+    echo "Error: $1" >&2
+    shift
+    for line in "$@"; do
+        echo "  $line" >&2
+    done
     exit 1
-fi
+}
 
-TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
-
-git clone --depth 1 "https://github.com/$REPO.git" "$TMPDIR/teale"
-cd "$TMPDIR/teale/mac-app"
-
-echo "  Building (this takes a few minutes)..."
-./bundle.sh
-
-if [ -d ".build/Teale.app" ]; then
-    rm -rf "$APP_DIR" 2>/dev/null || true
-    cp -R ".build/Teale.app" "$APP_DIR"
-    xattr -cr "$APP_DIR" 2>/dev/null || true
-
-    echo ""
-    echo "  Teale installed."
-
+finish_install() {
     install_cli_symlink
 
     offer_rapid_mlx_install
@@ -208,8 +163,138 @@ if [ -d ".build/Teale.app" ]; then
     echo ""
     echo "  Look for the brain icon in your menu bar (top-right)."
     echo ""
-else
-    echo "Error: Build failed. Please open an issue at:"
-    echo "  https://github.com/$REPO/issues"
-    exit 1
+}
+
+MAC_RELEASES_URL="https://github.com/$REPO/releases?q=mac-v&expanded=true"
+
+# ── Build from source (explicit opt-in only) ──
+
+if [ "${TEALE_BUILD_FROM_SOURCE:-}" = "1" ]; then
+    echo "  TEALE_BUILD_FROM_SOURCE=1: building from source."
+    echo "  This requires Xcode and takes a few minutes."
+    echo ""
+
+    if ! command -v xcodebuild >/dev/null 2>&1; then
+        fail "Xcode is required to build from source." "Install it from the App Store, then retry."
+    fi
+
+    WORKDIR=$(mktemp -d)
+    trap 'rm -rf "$WORKDIR"' EXIT
+
+    git clone --depth 1 "https://github.com/$REPO.git" "$WORKDIR/teale"
+    cd "$WORKDIR/teale/mac-app"
+
+    echo "  Building (this takes a few minutes)..."
+    ./bundle.sh
+
+    if [ ! -d ".build/Teale.app" ]; then
+        fail "build failed. Please open an issue at:" "https://github.com/$REPO/issues"
+    fi
+
+    rm -rf "$APP_DIR" 2>/dev/null || true
+    cp -R ".build/Teale.app" "$APP_DIR"
+    xattr -cr "$APP_DIR" 2>/dev/null || true
+
+    echo ""
+    echo "  Teale installed (built from source)."
+    finish_install
+    exit 0
 fi
+
+# ── Pick the release ──
+#
+# Walk the release list newest-first (paginated) and take the first release
+# whose Teale.zip asset lives under a mac-v* tag. The asset download URL embeds
+# the tag, so no JSON parser is needed.
+find_latest_mac_tag() {
+    page=1
+    while [ "$page" -le 10 ]; do
+        body=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/releases?per_page=100&page=$page") || return 1
+        tag=$(printf '%s\n' "$body" \
+            | grep -o "\"browser_download_url\": *\"https://github.com/$REPO/releases/download/mac-v[^\"/]*/Teale.zip\"" \
+            | head -n 1 \
+            | sed -E 's#.*/releases/download/([^/]+)/Teale\.zip"$#\1#')
+        if [ -n "$tag" ]; then
+            echo "$tag"
+            return 0
+        fi
+        # An empty page means we ran out of releases.
+        if ! printf '%s\n' "$body" | grep -q '"tag_name"'; then
+            return 0
+        fi
+        page=$((page + 1))
+    done
+    return 0
+}
+
+TAG="${TEALE_TAG:-$PINNED_TAG}"
+if [ -z "$TAG" ]; then
+    echo "  Looking up the newest macOS release..."
+    if ! TAG=$(find_latest_mac_tag); then
+        fail "could not query the GitHub releases API (network problem or rate limit)." \
+            "Retry in a few minutes, or download Teale.dmg manually from:" \
+            "$MAC_RELEASES_URL"
+    fi
+    if [ -z "$TAG" ]; then
+        fail "no mac-v* release with a Teale.zip asset was found." \
+            "See $MAC_RELEASES_URL" \
+            "To build from source instead (requires Xcode):" \
+            "curl -fsSL <this script URL> | TEALE_BUILD_FROM_SOURCE=1 sh"
+    fi
+fi
+
+case "$TAG" in
+    mac-v*) ;;
+    *) fail "TEALE_TAG must be a mac-v* release tag (got '$TAG')." "See $MAC_RELEASES_URL" ;;
+esac
+
+# ── Download and verify ──
+
+BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
+
+echo "  Downloading Teale $TAG..."
+if ! curl -fsSL "$BASE_URL/Teale.zip" -o "$WORKDIR/Teale.zip"; then
+    fail "could not download $BASE_URL/Teale.zip" "See $MAC_RELEASES_URL"
+fi
+if ! curl -fsSL "$BASE_URL/checksums.txt" -o "$WORKDIR/checksums.txt"; then
+    fail "release $TAG has no checksums.txt; refusing to install an unverified download." \
+        "Download Teale.dmg manually from https://github.com/$REPO/releases/tag/$TAG"
+fi
+
+EXPECTED=$(awk '$2 == "Teale.zip" || $2 == "*Teale.zip" { print $1; exit }' "$WORKDIR/checksums.txt" \
+    | tr 'A-F' 'a-f')
+if [ -z "$EXPECTED" ]; then
+    fail "checksums.txt in $TAG has no entry for Teale.zip; refusing to install."
+fi
+ACTUAL=$(shasum -a 256 "$WORKDIR/Teale.zip" | awk '{ print $1 }' | tr 'A-F' 'a-f')
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+    fail "SHA-256 mismatch for Teale.zip from $TAG; refusing to install." \
+        "expected: $EXPECTED" \
+        "actual:   $ACTUAL"
+fi
+echo "  SHA-256 verified."
+
+# ── Install ──
+
+mkdir -p "$WORKDIR/unpacked"
+# Unzip preserving macOS metadata
+ditto -x -k "$WORKDIR/Teale.zip" "$WORKDIR/unpacked"
+if [ ! -d "$WORKDIR/unpacked/$APP_NAME.app" ]; then
+    fail "Teale.zip from $TAG does not contain $APP_NAME.app."
+fi
+
+echo "  Installing to $APP_DIR..."
+if [ -d "$APP_DIR" ]; then
+    rm -rf "$APP_DIR"
+fi
+ditto "$WORKDIR/unpacked/$APP_NAME.app" "$APP_DIR"
+
+# Strip quarantine flag (safety net for edge cases)
+xattr -cr "$APP_DIR" 2>/dev/null || true
+
+echo ""
+echo "  Teale $TAG installed."
+finish_install

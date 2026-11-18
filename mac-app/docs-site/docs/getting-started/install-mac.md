@@ -8,15 +8,22 @@ Install the released Teale macOS app and start local or network inference from t
 
 - **macOS 14+** (Sonoma or later)
 - **Apple Silicon** (M1, M2, M3, M4, or later)
-- **8 GB RAM** minimum
-- **16 GB+ RAM** recommended if you plan to keep larger models loaded
+- **RAM, by use:**
+    - **Chat** (Teale Network models, or small local models): 8 GB minimum.
+    - **Supplying** (serving models to the Teale Network and earning): 16 GB minimum; 32 GB+ recommended. 8 GB Macs cannot supply.
 
 ## Install
 
-1. Download the latest macOS build from the [GitHub releases page](https://github.com/teale-ai/teale-mono/releases/latest).
+1. Download the latest macOS build from the [macOS releases list](https://github.com/teale-ai/teale-mono/releases?q=mac-v&expanded=true). Choose the newest `mac-v*` release that contains `Teale.dmg`; `releases/latest` may point at a Windows/Linux-only build.
 2. Open `Teale.dmg` or `Teale.zip`.
 3. Move `Teale.app` into `/Applications`.
 4. Launch `Teale.app`.
+
+Or install from Terminal with the `install.sh` attached to that release (it installs that exact release and verifies `Teale.zip` against the release's `checksums.txt`):
+
+```bash
+curl -fsSL https://github.com/teale-ai/teale-mono/releases/download/<mac-v tag>/install.sh | sh
+```
 
 ## macOS security prompt
 

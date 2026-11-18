@@ -244,7 +244,7 @@ fn response_object(
 
 async fn translate_buffered(response: Response) -> Result<Response, GatewayError> {
     let (parts, body) = response.into_parts();
-    let bytes = axum::body::to_bytes(body, 16 * 1024 * 1024)
+    let bytes = axum::body::to_bytes(body, super::chat::MAX_TRANSLATED_RESPONSE_BYTES)
         .await
         .map_err(|e| GatewayError::Upstream(format!("reading chat response body: {e}")))?;
     // Non-JSON or error bodies pass through untouched (status preserved).

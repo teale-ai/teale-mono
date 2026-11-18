@@ -17,6 +17,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
     private var desktopWalletSyncedAt: UInt64?
     private var desktopWalletSyncError: String?
     private var desktopLastWalletRefreshAt: Date?
+    private var desktopRelayConnectedCache: Bool?
+    private var desktopRelayCheckedAt: Date?
     private var gatewayAuthClient: GatewayAuthClient?
     private var gatewayAuthBaseURL: URL?
 
@@ -196,8 +198,8 @@ final class RemoteControlBridge: @unchecked Sendable, LocalAppControlling {
 
     func remoteUpdateSettings(_ update: RemoteSettingsUpdate) async throws -> RemoteAppSnapshot {
         if let maxStorageGB = update.maxStorageGB {
-            guard (5...200).contains(maxStorageGB) else {
-                throw RemoteControlError.invalidSetting("max_storage_gb must be between 5 and 200")
+            guard (5...4096).contains(maxStorageGB) else {
+                throw RemoteControlError.invalidSetting("max_storage_gb must be between 5 and 4096")
             }
             appState.maxStorageGB = maxStorageGB
         }
@@ -665,7 +667,12 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         let downloading = appState.activeDownloads
         let recommendedID = desktopRecommendedModelID(from: compatibleModels)
         let currentModelID = loadedModel?.openrouterId ?? loadedModel?.id
-        let serviceState = desktopServiceState(currentModelID: currentModelID, downloading: downloading)
+        let relayConnected = await desktopRelayConnected()
+        let serviceState = desktopServiceState(
+            currentModelID: currentModelID,
+            downloading: downloading,
+            relayConnected: relayConnected
+        )
 
         if appState.gatewayAPIKey.isEmpty {
             _ = try? await desktopGatewayBearer(forceRefresh: false)
@@ -733,13 +740,6 @@ extension RemoteControlBridge: DesktopCompanionControlling {
             await appState.resumePreferredSupplyModel()
         }
         return try await desktop_snapshot()
-    }
-
-    func desktop_auth_session(access_token: String) async throws -> DesktopCompanionAuthSessionSnapshot {
-        // Supabase-backed session validation is removed with the Supabase
-        // backend. The desktop companion signs in with gateway email login
-        // (desktop_request_email_code / desktop_verify_email_code) instead.
-        throw GatewayAuthError.network("Supabase auth has been removed; sign in with gateway email login")
     }
 
     func desktop_network_models() async throws -> [DesktopCompanionNetworkModelSnapshot] {
@@ -828,7 +828,18 @@ extension RemoteControlBridge: DesktopCompanionControlling {
     }
 
     func desktop_link_account(_ request: DesktopCompanionAccountLinkRequest) async throws -> DesktopCompanionAccountSnapshot {
-        try await desktopGatewayJSON(method: "POST", path: "/v1/account/link", body: request)
+        // Contract B: prove ownership of the target account with the gateway
+        // session this Mac holds (minted by the email-code verify or a
+        // magic link). Without it the gateway only allows first-time links
+        // to accounts that do not exist yet.
+        let sessionToken = appState.authManager?.currentGatewaySessionToken()
+        return try await desktopGatewayJSON(
+            method: "POST",
+            path: "/v1/account/link",
+            requiresAuth: true,
+            bodyData: try JSONEncoder().encode(request),
+            extraHeaders: GatewayAccountSessionHeader.fields(for: sessionToken)
+        )
     }
 
     func desktop_create_account_api_key(label: String?) async throws -> DesktopCompanionAccountAPIKeyMintedResponse {
@@ -925,9 +936,13 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         return try await desktop_snapshot()
     }
 
+    /// Same vocabulary as the Rust node's ServiceState (status_server.rs):
+    /// starting, needs_model, downloading, loading, offline, serving,
+    /// paused_user, paused_battery, error.
     private func desktopServiceState(
         currentModelID: String?,
-        downloading: [String: Double]
+        downloading: [String: Double],
+        relayConnected: Bool
     ) -> String {
         if case .error = appState.engineStatus {
             return "error"
@@ -938,6 +953,9 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         if !appState.contributeCompute {
             return "paused_user"
         }
+        if desktopPowerPauseReason() != nil {
+            return "paused_battery"
+        }
         if !downloading.isEmpty {
             return "downloading"
         }
@@ -945,9 +963,42 @@ extension RemoteControlBridge: DesktopCompanionControlling {
             return "loading"
         }
         if currentModelID != nil {
-            return "serving"
+            // A loaded model only earns while this device is registered
+            // with the relay; otherwise the network cannot route to it.
+            return relayConnected ? "serving" : "offline"
         }
         return "needs_model"
+    }
+
+    /// Network contribution paused for a power reason (on battery with
+    /// "only when plugged in", low battery, Low Power Mode).
+    private func desktopPowerPauseReason() -> PauseReason? {
+        let throttler = appState.throttler
+        guard !throttler.shouldAllowNetworkContribution,
+              let reason = throttler.networkPauseReason else { return nil }
+        switch reason {
+        case .battery, .lowPowerMode, .notPluggedIn:
+            return reason
+        default:
+            return nil
+        }
+    }
+
+    /// Relay registration, cached for a few seconds because the web UI polls
+    /// the snapshot every second. Prefers the embedded Rust node's view (it
+    /// owns the earning relay loop) and falls back to the Swift WAN client.
+    private func desktopRelayConnected() async -> Bool {
+        if let checkedAt = desktopRelayCheckedAt,
+           let cached = desktopRelayConnectedCache,
+           Date().timeIntervalSince(checkedAt) < 10 {
+            return cached
+        }
+        let nodeRelay = await localNodeRelayConnected()
+        let connected = nodeRelay
+            ?? (appState.wanEnabled && appState.wanManager.state.relayStatus == .connected)
+        desktopRelayConnectedCache = connected
+        desktopRelayCheckedAt = Date()
+        return connected
     }
 
     private func desktopStateReason(for serviceState: String, currentModelID: String?) -> String? {
@@ -956,6 +1007,13 @@ extension RemoteControlBridge: DesktopCompanionControlling {
             return "Starting the local Teale service."
         case "paused_user":
             return "Supply is paused for this Mac."
+        case "paused_battery":
+            if let reason = desktopPowerPauseReason() {
+                return "Waiting for AC power (\(reason.displayText))."
+            }
+            return "Waiting for AC power."
+        case "offline":
+            return "Model loaded, but this Mac is not connected to the Teale relay yet."
         case "downloading":
             return "Downloading the selected model."
         case "loading":
@@ -1087,7 +1145,8 @@ extension RemoteControlBridge: DesktopCompanionControlling {
         method: String,
         path: String,
         requiresAuth: Bool,
-        bodyData: Data?
+        bodyData: Data?,
+        extraHeaders: [String: String] = [:]
     ) async throws -> Response {
         let client = desktopGatewayAuthClient()
 
@@ -1096,6 +1155,9 @@ extension RemoteControlBridge: DesktopCompanionControlling {
             request.httpMethod = method
             if let token {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            for (name, value) in extraHeaders {
+                request.setValue(value, forHTTPHeaderField: name)
             }
             if let bodyData {
                 request.httpBody = bodyData

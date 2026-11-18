@@ -330,16 +330,11 @@ public struct DeviceModelProfileRegistry: Sendable {
             notes: "Base Mac 8GB — minimal context, smallest models only"
         ),
 
-        // M3/M4 base can use flash attention (hardware support)
-        DeviceModelProfile(
-            deviceClass: .baseMac,
-            minRAMGB: 16,
-            params: InferenceProfile(
-                flashAttn: true
-            ),
-            notes: "Override: M3/M4 base chips support flash attention well"
-            // Note: resolver checks chip generation >= 3 before applying this
-        ),
+        // (A former "M3/M4 base: flashAttn on" override lived here. It could
+        // never apply — `bestMatch` returns the first RAM match, so the
+        // 16 GB default above always won — and the generation check its
+        // note described did not exist. Removed so the table reflects what
+        // actually runs: flash attention stays off on base chips.)
 
         // Small models on 16GB base Mac can afford more context
         DeviceModelProfile(

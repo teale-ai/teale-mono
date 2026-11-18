@@ -80,13 +80,16 @@ public actor GatewayAuthClient {
     // MARK: - HTTP helpers
 
     public func postJSON<Req: Encodable, Res: Decodable>(
-        path: String, body: Req, bearerToken: String? = nil
+        path: String, body: Req, bearerToken: String? = nil, headers: [String: String] = [:]
     ) async throws -> Res {
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = bearerToken {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in headers {
+            req.setValue(value, forHTTPHeaderField: name)
         }
         req.httpBody = try JSONEncoder().encode(body)
         return try await roundTrip(req)

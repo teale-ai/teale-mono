@@ -7,3 +7,10 @@ target/
 lib/android_arm64/*.so
 lib/android_arm64/*.a
 lib/android_arm64/litert_lm_main
+
+# Manual Windows installer builds stage binaries next to the .iss
+# (see installer/BUILD-INSTALLER.txt); never commit them or the output.
+installer/*.exe
+installer/*.dll
+installer/output/
+installer/supabase-config.json

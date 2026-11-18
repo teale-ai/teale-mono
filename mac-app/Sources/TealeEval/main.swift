@@ -1,12 +1,19 @@
 // teale-eval - KV-cache quantization eval harness.
 //
 // Greedy-decodes a fixed prompt set with the baseline (unquantized KV
-// cache) and with 8-bit KV quantization, then reports per-prompt output
-// equality, first-divergence position, and speed for both configs. The
-// ship gate for kvBits:8 (Taylor's call, Sep 5 2026): outputs must hold
-// up under this harness; any degradation gets reported, not shipped.
+// cache) and with quantized KV, then reports per-prompt output equality,
+// first-divergence position, and speed for both configs.
+//
+// What it gates: MLXProvider serves with an unquantized KV cache by
+// default. Quantized KV is opt-in via TEALE_MLX_KV_BITS=8 (or 4), using
+// the same bits and MLXProvider.kvQuantizationStart measured here.
+// Turning it on by default requires outputs to hold up under this
+// harness (Taylor's call, Sep 5 2026); degradation gets reported, not
+// shipped. Note that with KV quantization on, MLXProvider does not retain
+// its cross-request prompt cache.
 //
 // Usage: teale-eval [model-id]   (default: mlx-community/Qwen3-0.6B-4bit)
+//        TEALE_MLX_KV_BITS=4 teale-eval ...   to evaluate 4-bit instead of 8
 
 import Foundation
 import MLX
@@ -72,7 +79,7 @@ func runConfig(
     var parameters = GenerateParameters(temperature: 0)
     parameters.maxTokens = maxTokens
     parameters.kvBits = kvBits
-    parameters.quantizedKVStart = 0
+    parameters.quantizedKVStart = MLXProvider.kvQuantizationStart
     let inputBox = UncheckedSendableBox(lmInput)
     return try await container.perform { context in
         let cache = context.model.newCache(parameters: parameters)
@@ -109,7 +116,7 @@ func firstDivergence(_ a: String, _ b: String) -> Int? {
 let args = CommandLine.arguments
 let modelId = args.count > 1 ? args[1] : "mlx-community/Qwen3-0.6B-4bit"
 let maxTokens = 128
-let kvBits = 8
+let kvBits = MLXProvider.kvBitsFromEnvironment() ?? 8
 
 print("[teale-eval] loading \(modelId)")
 let container = try await LLMModelFactory.shared.loadContainer(

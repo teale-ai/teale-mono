@@ -46,10 +46,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer().with_target(false))
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,teale_gateway=debug")),
-        )
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     let args = Args::parse();
@@ -202,6 +199,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/completions", post(handlers::completions::completions))
         .route("/v1/network", get(handlers::network::network))
+        // Leaks fleet node ids + owner hashes: bearer-gated here, and the
+        // handler further requires an operator (static) bearer.
+        .route(
+            "/v1/debug/heavy-holds",
+            get(handlers::network::heavy_hold_events),
+        )
         .route("/v1/account/link", post(handlers::account::link_account))
         .route(
             "/v1/account/email-code/request",
@@ -413,10 +416,6 @@ async fn main() -> anyhow::Result<()> {
         // like network/stats - public so the site panel and monitors can
         // read them unauthenticated.
         .route("/v1/pool", get(handlers::network::pool_status))
-        .route(
-            "/v1/debug/heavy-holds",
-            get(handlers::network::heavy_hold_events),
-        )
         .route("/v1/solvency", get(handlers::solvency::solvency))
         .route(
             "/v1/providers",
@@ -494,6 +493,35 @@ async fn main() -> anyhow::Result<()> {
     // ConnectInfo gives the email auth rate limiter a socket-address fallback
     // when Fly-Client-IP is absent.
     let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
-    axum::serve(listener, make_service).await?;
+    axum::serve(listener, make_service)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    info!("in-flight requests drained; exiting");
     Ok(())
+}
+
+/// Resolves on SIGINT (fly.toml `kill_signal`) or SIGTERM. axum then stops
+/// accepting new connections and waits for in-flight requests, SSE streams
+/// included, to finish; fly's `kill_timeout` bounds how long that drain
+/// may take before the machine is killed.
+async fn shutdown_signal() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
+    }
+    info!("shutdown signal received; refusing new connections, draining in-flight requests");
 }

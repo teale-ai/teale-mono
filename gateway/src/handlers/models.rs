@@ -8,12 +8,11 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use teale_protocol::openai::ModelsResponse;
 
-use crate::catalog::{is_large, synthesize_live_model};
+use crate::catalog::{is_hidden_model_id, is_large, synthesize_live_model};
 use crate::registry::normalize_model_id;
 use crate::state::AppState;
 
 const CATALOG_HTML: &str = include_str!("models.html");
-const HIDDEN_MODEL_IDS: &[&str] = &["moonshotai/kimi-k2", "moonshotai/kimi-k2.6"];
 
 pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Content negotiation: browsers (Accept: text/html) get the styled catalog
@@ -60,13 +59,13 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let catalog_models: Vec<_> = state
         .catalog
         .iter()
-        .filter(|m| !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
+        .filter(|m| !is_hidden_model_id(&m.id))
         .collect();
     let mut entries: Vec<_> = state
         .catalog
         .iter()
         .enumerate()
-        .filter(|(_, m)| !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
+        .filter(|(_, m)| !is_hidden_model_id(&m.id))
         .filter(|(_, m)| {
             // Virtual meta-models (e.g. teale/auto) are always advertised;
             // resolution happens at request time against concrete supply.
@@ -104,7 +103,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .filter(|dev| dev.catalog_visible(state.config.reliability.heartbeat_stale_seconds))
     {
         for model_id in &device.capabilities.loaded_models {
-            if HIDDEN_MODEL_IDS.contains(&model_id.as_str()) {
+            if is_hidden_model_id(model_id) {
                 continue;
             }
             if catalog_models.iter().any(|m| m.matches(model_id)) {
@@ -163,7 +162,7 @@ pub async fn openrouter_models(State(state): State<AppState>) -> Response {
     let models: Vec<_> = state
         .catalog
         .iter()
-        .filter(|m| !m.is_virtual && !HIDDEN_MODEL_IDS.contains(&m.id.as_str()))
+        .filter(|m| !m.is_virtual && !is_hidden_model_id(&m.id))
         .filter(|m| {
             let min = if is_large(m.params_b) {
                 floor.large
@@ -383,6 +382,7 @@ mod tests {
             routing_tags: vec![],
             estimated_ttft_ms: None,
             estimated_tps: None,
+            default_reasoning_effort: None,
         }
     }
 

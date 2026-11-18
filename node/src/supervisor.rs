@@ -4,17 +4,32 @@
 //! Replaces the previous `std::mem::forget(child)` pattern which leaked
 //! the handle and offered no restart-on-crash or drain-on-shutdown.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::process::Child;
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// A child that stayed up at least this long did not crash-loop: its next
+/// restart starts again from `INITIAL_BACKOFF`.
+const HEALTHY_UPTIME: Duration = Duration::from_secs(30);
+
+/// Restart delay after a child exits, and the backoff to carry forward to the
+/// following restart.
+fn restart_delay(current: Duration, uptime: Duration) -> (Duration, Duration) {
+    let delay = if uptime >= HEALTHY_UPTIME {
+        INITIAL_BACKOFF
+    } else {
+        current
+    };
+    (delay, (delay * 2).min(MAX_BACKOFF))
+}
+
 pub struct Supervisor {
     shutdown: Arc<Notify>,
-    healthy: Arc<AtomicBool>,
     join: tokio::task::JoinHandle<()>,
     name: String,
 }
@@ -23,23 +38,20 @@ impl Supervisor {
     /// Spawn a supervised subprocess.
     ///
     /// `spawn_fn` is invoked once at startup and again on each restart.
-    /// On shutdown, the supervisor signals the child via `.kill()` and waits
-    /// up to `graceful_timeout` for it to exit.
+    /// On shutdown, the supervisor kills the child and waits up to 5 s for it
+    /// to exit.
     pub fn spawn<F>(name: impl Into<String>, spawn_fn: F) -> Self
     where
         F: Fn() -> anyhow::Result<Child> + Send + 'static,
     {
         let name = name.into();
         let shutdown = Arc::new(Notify::new());
-        let healthy = Arc::new(AtomicBool::new(false));
 
         let shutdown_sig = shutdown.clone();
-        let healthy_flag = healthy.clone();
         let task_name = name.clone();
 
         let join = tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-            const MAX_BACKOFF: Duration = Duration::from_secs(60);
+            let mut backoff = INITIAL_BACKOFF;
 
             loop {
                 let child_result = spawn_fn();
@@ -51,7 +63,6 @@ impl Supervisor {
                             "[{}] failed to spawn: {}. retrying in {:?}",
                             task_name, e, backoff
                         );
-                        healthy_flag.store(false, Ordering::SeqCst);
                         tokio::select! {
                             _ = tokio::time::sleep(backoff) => {}
                             _ = shutdown_sig.notified() => {
@@ -64,7 +75,7 @@ impl Supervisor {
                     }
                 };
 
-                healthy_flag.store(true, Ordering::SeqCst);
+                let started = Instant::now();
                 info!("[{}] subprocess running (pid={:?})", task_name, child.id());
 
                 // Wait for child to exit OR shutdown signal
@@ -78,48 +89,40 @@ impl Supervisor {
                     }
                 };
 
-                healthy_flag.store(false, Ordering::SeqCst);
+                let (delay, next_backoff) = restart_delay(backoff, started.elapsed());
+                backoff = next_backoff;
 
                 match wait_result {
                     None => return, // clean shutdown
                     Some(Ok(status)) => {
                         warn!(
                             "[{}] subprocess exited: {}. restarting in {:?}",
-                            task_name, status, backoff
+                            task_name, status, delay
                         );
                     }
                     Some(Err(e)) => {
                         error!(
                             "[{}] wait error: {}. restarting in {:?}",
-                            task_name, e, backoff
+                            task_name, e, delay
                         );
                     }
                 }
 
                 tokio::select! {
-                    _ = tokio::time::sleep(backoff) => {}
+                    _ = tokio::time::sleep(delay) => {}
                     _ = shutdown_sig.notified() => {
                         info!("[{}] shutdown requested during restart backoff", task_name);
                         return;
                     }
                 }
-
-                // Reset backoff on what looks like a long-running process
-                // (>30s uptime implies it didn't crash-loop)
-                backoff = (backoff * 2).min(MAX_BACKOFF);
             }
         });
 
         Self {
             shutdown,
-            healthy,
             join,
             name,
         }
-    }
-
-    pub fn is_healthy(&self) -> bool {
-        self.healthy.load(Ordering::SeqCst)
     }
 
     pub fn name(&self) -> &str {
@@ -130,5 +133,35 @@ impl Supervisor {
     pub async fn shutdown(self) {
         self.shutdown.notify_one();
         let _ = self.join.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crash_loop_doubles_backoff_up_to_the_cap() {
+        let quick = Duration::from_secs(2);
+        let (delay, next) = restart_delay(INITIAL_BACKOFF, quick);
+        assert_eq!(
+            (delay, next),
+            (Duration::from_secs(1), Duration::from_secs(2))
+        );
+        let (delay, next) = restart_delay(next, quick);
+        assert_eq!(
+            (delay, next),
+            (Duration::from_secs(2), Duration::from_secs(4))
+        );
+        let (delay, next) = restart_delay(Duration::from_secs(40), quick);
+        assert_eq!((delay, next), (Duration::from_secs(40), MAX_BACKOFF));
+        assert_eq!(restart_delay(MAX_BACKOFF, quick).0, MAX_BACKOFF);
+    }
+
+    #[test]
+    fn healthy_run_resets_backoff() {
+        let (delay, next) = restart_delay(MAX_BACKOFF, Duration::from_secs(3600));
+        assert_eq!(delay, INITIAL_BACKOFF);
+        assert_eq!(next, Duration::from_secs(2));
     }
 }

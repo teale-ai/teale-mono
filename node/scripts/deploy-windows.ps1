@@ -45,8 +45,13 @@ param(
     # Model filename (derived from URL if not set)
     [string]$ModelFilename = "",
 
-    # llama.cpp release tag for downloading llama-server
-    [string]$LlamaRelease = "b8840",
+    # Expected SHA-256 of the GGUF (hex). Defaults to the pinned hash of the
+    # default Hermes-3 URL; pass it for any other -ModelUrl / -ModelSharePath.
+    [string]$ModelSha256 = "",
+
+    # llama.cpp release tag for downloading llama-server. Defaults to the repo
+    # pin in .github/llama-cpp-version (b8840 when that file is not around).
+    [string]$LlamaRelease = "",
 
     # llama-server build variant: "vulkan" or "cpu". If omitted, the script
     # auto-selects CPU for older Intel laptops even when a Vulkan runtime is installed.
@@ -81,6 +86,106 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ServiceName = "TealeNode"
+$DefaultModelUrl = "https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B-GGUF/resolve/main/Hermes-3-Llama-3.1-8B.Q5_K_M.gguf"
+# Hugging Face LFS object id (= SHA-256) of the default model.
+$DefaultModelSha256 = "b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3"
+# SHA-256 of llama.cpp release zips, from the GitHub release asset digests.
+$PinnedLlamaZipSha256 = @{
+    "llama-b8840-bin-win-vulkan-x64.zip" = "2981b327976fd96e7116ea63a69364c4e34b60c9403990a48d8c00e9625c7634"
+    "llama-b8840-bin-win-cpu-x64.zip"    = "29f020e87cef66f978f19d72ab9306edad19237a85f02bcc53555196c4ee5baa"
+}
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+function Get-LlamaReleasePin {
+    $pinFile = Join-Path $PSScriptRoot "..\..\.github\llama-cpp-version"
+    if (Test-Path $pinFile) {
+        $value = (Get-Content -Path $pinFile -Raw).Trim()
+        if ($value -match '^b\d+$') { return $value }
+    }
+    return "b8840"
+}
+
+function Assert-FileSha256 {
+    param([string]$Path, [string]$Expected, [string]$What)
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $Expected.ToLowerInvariant()) {
+        Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+        throw "$What failed SHA-256 verification (expected $Expected, got $actual); file deleted."
+    }
+    Write-Host "  SHA-256 verified for $What"
+}
+
+# Expected SHA-256 of a llama.cpp release asset: pinned for the repo's
+# release, otherwise the digest GitHub publishes for the asset.
+function Get-LlamaZipSha256 {
+    param([string]$Release, [string]$AssetName)
+    if ($PinnedLlamaZipSha256.ContainsKey($AssetName)) { return $PinnedLlamaZipSha256[$AssetName] }
+    try {
+        $info = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/$Release" -UseBasicParsing -TimeoutSec 30
+        $asset = $info.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+        if ($asset -and $asset.digest -match '^sha256:([0-9a-fA-F]{64})$') { return $Matches[1] }
+    } catch {
+        Write-Warning "Could not read the published digest for ${AssetName}: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+# Same hardening as the installer's post-install.ps1: SYSTEM + Administrators
+# full control, Users read/execute, data\ (identity key, account session)
+# SYSTEM + Administrators only.
+function Set-TealeInstallAcl {
+    param([string]$Root, [string]$DataDir)
+    $system = "*S-1-5-18"; $admins = "*S-1-5-32-544"; $users = "*S-1-5-32-545"
+    & icacls.exe $Root /inheritance:r /grant:r "${system}:(OI)(CI)F" "${admins}:(OI)(CI)F" "${users}:(OI)(CI)RX" /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $Root" }
+    & icacls.exe "$Root\*" /reset /T /C /Q | Out-Null
+    & icacls.exe $DataDir /inheritance:r /grant:r "${system}:(OI)(CI)F" "${admins}:(OI)(CI)F" /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $DataDir" }
+    & icacls.exe "$DataDir\*" /reset /T /C /Q | Out-Null
+}
+
+function Get-PowerAcIndex {
+    param([string]$Scheme, [string]$SubGroup, [string]$Setting)
+    $text = (& powercfg.exe /query $Scheme $SubGroup $Setting) -join "`n"
+    $values = [regex]::Matches($text, '0x[0-9a-fA-F]{8}') | ForEach-Object { $_.Value }
+    if ($values.Count -lt 2) { return $null }
+    return [Convert]::ToUInt32($values[$values.Count - 2].Substring(2), 16)
+}
+
+# Record the AC sleep/hibernate/lid values once, before changing them.
+function Save-PowerSettings {
+    param([string]$BackupPath)
+    if (Test-Path $BackupPath) { return }
+    $schemeLine = (& powercfg.exe /getactivescheme) -join " "
+    $match = [regex]::Match($schemeLine, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+    if (-not $match.Success) { throw "could not read the active power scheme" }
+    $scheme = $match.Value
+    $lines = @("scheme=$scheme")
+    foreach ($pair in @(@("SUB_SLEEP", "STANDBYIDLE"), @("SUB_SLEEP", "HIBERNATEIDLE"), @("SUB_BUTTONS", "LIDACTION"))) {
+        $value = Get-PowerAcIndex $scheme $pair[0] $pair[1]
+        if ($null -ne $value) { $lines += "$($pair[0]) $($pair[1])=$value" }
+    }
+    Set-Content -Path $BackupPath -Value $lines -Encoding ASCII
+}
+
+function Restore-PowerSettings {
+    param([string]$BackupPath)
+    if (-not (Test-Path $BackupPath)) { return }
+    $scheme = $null
+    foreach ($line in Get-Content -Path $BackupPath) {
+        $parts = $line.Split("=", 2)
+        if ($parts.Count -ne 2) { continue }
+        if ($parts[0] -eq "scheme") { $scheme = $parts[1].Trim(); continue }
+        if (-not $scheme) { continue }
+        $names = $parts[0].Trim().Split(" ")
+        if ($names.Count -ne 2) { continue }
+        & powercfg.exe /setacvalueindex $scheme $names[0] $names[1] $parts[1].Trim()
+    }
+    $active = (& powercfg.exe /getactivescheme) -join " "
+    if ($scheme -and ($active -match [regex]::Escape($scheme))) { & powercfg.exe /setactive $scheme }
+    Remove-Item -Path $BackupPath -Force -ErrorAction SilentlyContinue
+    Write-Host "Restored the power settings recorded before lid-closed supply was enabled."
+}
 
 function Test-TealePrefersVulkan {
     param(
@@ -131,6 +236,7 @@ $NssmExe       = Join-Path $BinDir "nssm.exe"
 $LlamaExe      = Join-Path $BinDir "llama-server.exe"
 $TealeExe      = Join-Path $BinDir "teale-node.exe"
 $ConfigFile    = Join-Path $ConfigDir "teale-node.toml"
+$PowerBackupPath = Join-Path $ConfigDir "powercfg-backup.txt"
 
 # ============================================================
 # UNINSTALL
@@ -154,6 +260,8 @@ if ($Uninstall) {
         Write-Host "Service not found, nothing to remove."
     }
 
+    Restore-PowerSettings -BackupPath $PowerBackupPath
+
     if ($RemoveFiles -and (Test-Path $InstallDir)) {
         Write-Host "Removing $InstallDir..."
         Remove-Item -Recurse -Force $InstallDir
@@ -167,6 +275,13 @@ if ($Uninstall) {
 # ============================================================
 # INSTALL / UPGRADE
 # ============================================================
+
+if (-not $LlamaRelease) {
+    $LlamaRelease = Get-LlamaReleasePin
+}
+if (-not $ModelSha256 -and $ModelSharePath -eq "" -and $ModelUrl -eq $DefaultModelUrl) {
+    $ModelSha256 = $DefaultModelSha256
+}
 
 # RAM gate — pilot minimum is 16 GB. Bypass with -SkipRamGate for dev.
 $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
@@ -242,10 +357,15 @@ if (-not (Test-Path $NssmExe)) {
     $nssmZip = Join-Path $env:TEMP "nssm-2.24.zip"
     $nssmExtract = Join-Path $env:TEMP "nssm-2.24"
 
+    # nssm.cc publishes no checksums, so this download cannot be hash-pinned;
+    # stage nssm.exe yourself (or from a trusted share) on locked-down fleets.
     Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $nssmZip -UseBasicParsing
     Expand-Archive -Path $nssmZip -DestinationPath $env:TEMP -Force
     $nssmSrc = Join-Path $nssmExtract "win64\nssm.exe"
     Copy-Item -Path $nssmSrc -Destination $NssmExe -Force
+    if ((Get-Item $NssmExe).Length -lt 100000) {
+        throw "downloaded nssm.exe looks truncated"
+    }
 
     Remove-Item -Path $nssmZip -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $nssmExtract -Recurse -Force -ErrorAction SilentlyContinue
@@ -258,9 +378,16 @@ if (-not (Test-Path $NssmExe)) {
 if (-not (Test-Path $LlamaExe)) {
     Write-Host "Downloading llama-server $LlamaBuild release $LlamaRelease..."
     $llamaZip = Join-Path $env:TEMP "llama-server-win-$LlamaBuild.zip"
+    $llamaAsset = "llama-$LlamaRelease-bin-win-$LlamaBuild-x64.zip"
     $llamaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaRelease/llama-$LlamaRelease-bin-win-$LlamaBuild-x64.zip"
 
     Invoke-WebRequest -Uri $llamaUrl -OutFile $llamaZip -UseBasicParsing
+    $llamaSha256 = Get-LlamaZipSha256 -Release $LlamaRelease -AssetName $llamaAsset
+    if ($llamaSha256) {
+        Assert-FileSha256 -Path $llamaZip -Expected $llamaSha256 -What $llamaAsset
+    } else {
+        throw "No SHA-256 is known for $llamaAsset; refusing to install an unverified llama-server."
+    }
     $llamaExtract = Join-Path $env:TEMP "llama-extract"
     Expand-Archive -Path $llamaZip -DestinationPath $llamaExtract -Force
 
@@ -310,6 +437,11 @@ if (-not (Test-Path $ModelPath)) {
             Invoke-WebRequest -Uri $ModelUrl -OutFile $ModelPath -UseBasicParsing
         }
     }
+    if ($ModelSha256) {
+        Assert-FileSha256 -Path $ModelPath -Expected $ModelSha256 -What $ModelFilename
+    } else {
+        Write-Warning "No -ModelSha256 given; $ModelFilename was not integrity-checked."
+    }
     $fileSize = [math]::Round((Get-Item $ModelPath).Length / 1048576, 1)
     Write-Host "Model ready at $ModelPath -- $fileSize megabytes"
 } else {
@@ -327,9 +459,7 @@ Write-Host "CPU: $logicalCores logical cores, using $threads threads for inferen
 $llamaPath  = $LlamaExe.Replace('\', '/')
 $modelToml  = $ModelPath.Replace('\', '/')
 $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)
-$supabaseUrl = if ($env:TEALE_SUPABASE_URL) { $env:TEALE_SUPABASE_URL } else { "" }
-$supabaseAnonKey = if ($env:TEALE_SUPABASE_ANON_KEY) { $env:TEALE_SUPABASE_ANON_KEY } else { "" }
-$supabaseRedirectUrl = if ($env:TEALE_SUPABASE_REDIRECT_URL) { $env:TEALE_SUPABASE_REDIRECT_URL } else { "teale://auth/callback" }
+$registryPath = (Join-Path $ConfigDir "model-registry.json").Replace('\', '/')
 
 $tomlContent = @"
 # teale-node configuration -- auto-generated by deploy-windows.ps1
@@ -348,10 +478,7 @@ extra_args = ["--threads", "$threads"]
 
 [control]
 port = 11437
-registry_path = "C:/Teale/config/model-registry.json"
-supabase_url = "$supabaseUrl"
-supabase_anon_key = "$supabaseAnonKey"
-supabase_redirect_url = "$supabaseRedirectUrl"
+registry_path = "$registryPath"
 
 [node]
 display_name = "$DisplayName"
@@ -402,9 +529,21 @@ $stderrLog = Join-Path $LogDir "teale-node-stderr.log"
 # Run at Below Normal priority — contributor's own apps always win the CPU.
 & $NssmExe set $ServiceName AppPriority BELOW_NORMAL_PRIORITY_CLASS
 
+# Stop = Ctrl+C, then up to 35 s for the node to drain in-flight requests
+# (shutdown_timeout_seconds = 30) before NSSM escalates (default 1.5 s).
+& $NssmExe set $ServiceName AppStopMethodConsole 35000
+& $NssmExe set $ServiceName AppStopMethodWindow 5000
+& $NssmExe set $ServiceName AppStopMethodThreads 5000
+& $NssmExe set $ServiceName AppKillProcessTree 1
+
+# Lock down C:\Teale (no user-writable binaries run as LocalSystem; the
+# identity key is readable by SYSTEM/Administrators only).
+Set-TealeInstallAcl -Root $InstallDir -DataDir $DataDir
+
 # --- Power configuration for lid-closed supply (AC only) ---
 if ($AllowSupplyLidClosed) {
     Write-Host "Configuring Windows power plan for lid-closed supply on AC..."
+    Save-PowerSettings -BackupPath $PowerBackupPath
     powercfg /change standby-timeout-ac 0
     powercfg /change hibernate-timeout-ac 0
     # GUID: 4f971e89 = "Power buttons and lid", 5ca83367 = "Lid close action"

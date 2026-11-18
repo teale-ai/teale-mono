@@ -1,5 +1,14 @@
 # Windows Companion Auth Notes
 
+> **SUPERSEDED — do not build on this.** Supabase was decommissioned (2026-09)
+> and Windows sign-in moves to the gateway's passwordless email-code flow
+> (`/v1/auth/email/request` + `/v1/auth/email/verify`, proxied by teale-node,
+> with the resulting `tsess_` account session used as the account-link proof).
+> See [`passwordless-auth-migration.md`](passwordless-auth-migration.md) for
+> the current design. The Windows installer no longer stages a Supabase
+> config. This page is kept only as a record of the earlier Supabase/GitHub
+> OAuth proposal.
+
 ## Recommendation
 
 Split the problem in two:

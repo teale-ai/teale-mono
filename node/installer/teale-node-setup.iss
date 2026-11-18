@@ -17,9 +17,13 @@
 ;   3. Open this file in Inno Setup Compiler → Build → Compile
 ;   4. Output: output/Teale.exe (ready to upload to Google Drive)
 
-; Timestamp-style version to match mac-app's CFBundleShortVersionString
-; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.06.25.1900"
+; Timestamp-style version (YYYY.MM.DD.HHMM). CI passes it from the release tag:
+;   ISCC /DAppVer=2026.11.13.1946 teale-node-setup.iss   (tag teale-2026.11.13.1946)
+; Local builds without /DAppVer get 0.0.0.0, which check-update.ps1 treats as
+; an unversioned dev build and never nags about.
+#ifndef AppVer
+  #define AppVer "0.0.0.0"
+#endif
 
 [Setup]
 AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
@@ -36,7 +40,9 @@ SolidCompression=yes
 PrivilegesRequired=admin
 DisableProgramGroupPage=yes
 DisableDirPage=yes
-SetupIconFile=compiler:SetupClassicIcon.ico
+; Teale app icon (the teale.com favicon). Regenerate with
+; node\scripts\make-app-icons.ps1.
+SetupIconFile=teale.ico
 ; Min Windows 10 (build 17763 / 1809). Earlier Win10 lacks Modern Standby
 ; and several PowerShell niceties we use in post-install.
 MinVersion=10.0.17763
@@ -44,7 +50,7 @@ MinVersion=10.0.17763
 ; the service is running. Rerunning with -Uninstall in deploy-windows.ps1
 ; works independently.
 UninstallDisplayName=Teale — Distributed AI Inference
-UninstallDisplayIcon={app}\bin\teale-node.exe
+UninstallDisplayIcon={app}\teale.ico
 WizardStyle=modern
 WizardSizePercent=120
 
@@ -63,7 +69,8 @@ Source: "*.dll"; DestDir: "{app}\bin"; Flags: ignoreversion skipifsourcedoesntex
 Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "check-update.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "supabase-config.json"; DestDir: "{app}\config"; Flags: ignoreversion skipifsourcedoesntexist
+; App icon for the Start-menu shortcut, uninstall entry and teale:// links.
+Source: "teale.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}\models"
@@ -75,15 +82,22 @@ Name: "{app}\data"
 ; Per-user auto-start for the tray app so it appears at login. Service
 ; itself (machine-level, via NSSM) starts independently at boot.
 Name: "{userstartup}\Teale Tray"; Filename: "{app}\bin\teale-tray.exe"; \
-    WorkingDir: "{app}"; Tasks: installtray
-; Start-menu shortcut to open the local Teale companion window.
-Name: "{group}\Open Teale"; Filename: "{app}\bin\teale-tray.exe"; Parameters: "--open-window"
+    WorkingDir: "{app}"; IconFilename: "{app}\teale.ico"; Tasks: installtray
+; Start-menu entry: shows up as the "Teale" app in Windows search and opens
+; the local Teale companion window.
+Name: "{group}\Teale"; Filename: "{app}\bin\teale-tray.exe"; Parameters: "--open-window"; \
+    WorkingDir: "{app}"; IconFilename: "{app}\teale.ico"; Comment: "Open Teale"
+
+[InstallDelete]
+; Installers before 2026-11 named the Start-menu entry "Open Teale" with no
+; icon; remove it so upgrades leave a single "Teale" app entry.
+Type: files; Name: "{group}\Open Teale.lnk"
 
 [Registry]
 ; Register the Teale deep-link protocol for browser-based OAuth callbacks.
 Root: HKCR; Subkey: "teale"; ValueType: string; ValueName: ""; ValueData: "URL:Teale Protocol"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "teale"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue
-Root: HKCR; Subkey: "teale\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\bin\teale-tray.exe,0"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "teale\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\teale.ico"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "teale\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\teale-tray.exe"" ""%1"""; Flags: uninsdeletekey
 
 [Tasks]
@@ -106,10 +120,9 @@ Filename: "powershell.exe"; \
     Parameters: "-ExecutionPolicy Bypass -Command ""Set-Content -Path '{app}\version.txt' -Value 'v{#AppVer}' -Encoding UTF8"""; \
     Flags: runhidden waituntilterminated
 
-; Register on-logon update-check scheduled task.
-Filename: "schtasks.exe"; \
-    Parameters: "/Create /TN ""TealeUpdateCheck"" /TR ""powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File '{app}\check-update.ps1'"" /SC ONLOGON /RL HIGHEST /F"; \
-    Flags: runhidden waituntilterminated
+; The on-logon update-check task (any user, unelevated) is registered by
+; post-install.ps1 with Register-ScheduledTask; schtasks.exe cannot express
+; an "any member of Users" principal.
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""TealeUpdateCheck"" /F"; Flags: runhidden waituntilterminated

@@ -1,0 +1,49 @@
+# Dependabot version updates. Minor/patch bumps are grouped per ecosystem to
+# keep PR volume down; major bumps arrive as individual PRs.
+version: 2
+updates:
+  # Workflow actions, including SHA-pinned ones (e.g. superfly/flyctl-actions).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Rust workspace: node, node/teale-tray, protocol, gateway, stress, cli.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  # Android client.
+  - package-ecosystem: gradle
+    directory: /android-app
+    schedule:
+      interval: weekly
+    groups:
+      gradle-minor-patch:
+        update-types: [minor, patch]
+
+  # Relay (Bun). Dependabot's bun support reads relay/package.json + bun.lock.
+  - package-ecosystem: bun
+    directory: /relay
+    schedule:
+      interval: weekly
+    groups:
+      relay-minor-patch:
+        update-types: [minor, patch]
+
+  # Docusaurus user docs.
+  - package-ecosystem: npm
+    directory: /mac-app/docs-site
+    schedule:
+      interval: monthly
+    groups:
+      docs-site-minor-patch:
+        update-types: [minor, patch]
