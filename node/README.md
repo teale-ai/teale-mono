@@ -29,19 +29,27 @@ cargo build --release
 ./target/release/teale-node --config teale-node.toml
 ```
 
-## Docker (Linux with NVIDIA GPU)
+## Docker (Linux)
+
+teale-node is a member of the repo's Cargo workspace, so build the images from
+the **repository root**. Configuration comes from a mounted `teale-node.toml`
+(there are no environment-variable overrides).
 
 ```bash
-docker build -t teale/node .
-docker run -v /path/to/models:/models --gpus all \
-  -e DISPLAY_NAME="My GPU Server" \
+# NVIDIA runtime base (mount a CUDA-enabled llama-server for GPU offload):
+docker build -f node/Dockerfile -t teale/node .
+docker run --gpus all \
+  -v /path/to/models:/models \
+  -v /path/to/teale-node.toml:/app/teale-node.toml \
   teale/node
 ```
 
 CPU-only variant:
 ```bash
-docker build -f Dockerfile.cpu -t teale/node-cpu .
-docker run -v /path/to/models:/models teale/node-cpu
+docker build -f node/Dockerfile.cpu -t teale/node-cpu .
+docker run -v /path/to/models:/models \
+  -v /path/to/teale-node.toml:/app/teale-node.toml \
+  teale/node-cpu
 ```
 
 ## Android (Termux)
@@ -66,9 +74,9 @@ cp build/bin/llama-server $PREFIX/bin/
 
 ```bash
 pkg install rust
-git clone <repo-url>
-cd copenhagen
-cargo build --release
+git clone https://github.com/teale-ai/teale-mono
+cd teale-mono
+cargo build --release -p teale-node
 cp target/release/teale-node $PREFIX/bin/
 ```
 
@@ -164,7 +172,7 @@ model_dir = "/storage/emulated/0/models/qwen3.5-4b-mnn"
 model_id = "qwen3.5-4b"
 backend_type = "opencl"
 context_size = 2048
-port = 11437
+port = 11440  # default; 11437 is the node control API
 
 [node]
 display_name = "Huawei Mate 60 Pro"
@@ -188,13 +196,13 @@ for the GGUFs from `antirez/deepseek-v4-gguf`.
 backend = "ds4"
 
 [ds4]
-binary = "/Users/tailor512/.context/ds4-teale/ds4/ds4-server"
-model = "/Users/tailor512/.context/ds4-teale/ds4/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"
+binary = "/opt/ds4/ds4-server"
+model = "/opt/ds4/gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf"
 model_id = "deepseek-ai/deepseek-v4-flash"
 backend_model_id = "deepseek-v4-flash"
 context_size = 100000
 port = 11438
-kv_disk_dir = "/Users/tailor512/.context/ds4-teale/kv"
+kv_disk_dir = "/opt/ds4/kv"
 kv_disk_space_mb = 8192
 ```
 

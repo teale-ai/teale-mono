@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 rm -rf "$OUTPUT_DIR"
-mkdir -p "$OUTPUT_DIR/bin" "$OUTPUT_DIR/config" "$OUTPUT_DIR/share"
+mkdir -p "$OUTPUT_DIR/bin" "$OUTPUT_DIR/share"
 
 install -m 0755 "$NODE_BIN" "$OUTPUT_DIR/bin/teale-node"
 install -m 0755 "$TRAY_BIN" "$OUTPUT_DIR/bin/teale-tray"
@@ -24,22 +24,11 @@ install -m 0755 "$SCRIPT_DIR/install.sh" "$OUTPUT_DIR/install.sh"
 install -m 0755 "$SCRIPT_DIR/uninstall.sh" "$OUTPUT_DIR/uninstall.sh"
 install -m 0644 "$REPO_ROOT/mac-app/scripts/icon_1024.png" "$OUTPUT_DIR/share/teale.png"
 
-python3 - "$OUTPUT_DIR/config/supabase-config.json" <<'PY'
-import json
-import os
-import sys
-
-with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    json.dump(
-        {
-            "supabase_url": os.environ.get("TEALE_SUPABASE_URL", ""),
-            "supabase_anon_key": os.environ.get("TEALE_SUPABASE_ANON_KEY", ""),
-            "supabase_redirect_url": os.environ.get(
-                "TEALE_SUPABASE_REDIRECT_URL", "teale://auth/callback"
-            ),
-        },
-        handle,
-        indent=2,
-    )
-    handle.write("\n")
-PY
+# Integrity manifest for install.sh: every shipped file except the manifest
+# itself. The release also publishes Teale-linux-x86_64-checksums.txt for the
+# tarball; verify that before extracting:
+#   sha256sum -c Teale-linux-x86_64-checksums.txt
+(
+  cd "$OUTPUT_DIR"
+  find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+)

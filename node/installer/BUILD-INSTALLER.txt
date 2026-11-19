@@ -10,7 +10,9 @@ CI-based build (the default path):
     2. downloads the Vulkan build of llama-server from llama.cpp releases
     3. downloads NSSM
     4. installs Inno Setup + Inno Download Plugin on the runner
-    5. runs ISCC to compile Teale.exe
+    5. runs ISCC /DAppVer=<tag without "teale-"> to compile Teale.exe, so
+       the installer version (version.txt, Add/Remove Programs) always
+       matches the release tag
     6. uploads it as a workflow artifact (also available on the Actions run page)
 
   Pilot distribution: download the artifact, upload to the partner's shared
@@ -36,7 +38,10 @@ Manual build (fallback, on a Windows dev box):
        - llama-server.exe + DLLs    (from llama-bXXXX-bin-win-vulkan-x64.zip —
                                       the Vulkan build, NOT the -cpu build)
        - nssm.exe                   (from nssm-2.24\win64\nssm.exe)
-  5. Double-click teale-node-setup.iss → Build → Compile (or Ctrl+F9).
+  5. Compile with an explicit version (without it the build is stamped
+     0.0.0.0, which the update checker treats as an unversioned dev build):
+       "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVer=2026.04.21.1722 teale-node-setup.iss
+     Staged binaries and output\ are git-ignored (node/.gitignore).
   6. Output: node\installer\output\Teale.exe. Upload to the partner's Drive.
 
 WHAT STAFF/CONTRIBUTORS DO:
@@ -55,32 +60,42 @@ PER-USER BEHAVIOR:
   - NSSM-wrapped service (TealeNode, LocalSystem account) auto-starts at boot.
   - Tray app (teale-tray.exe, per-user) auto-starts at login.
   - Service runs at Below Normal priority (contributor's apps always win).
-  - On AC power: supplies normally, holds a wake-lock so lid-close stays up.
+  - C:\Teale is writable only by SYSTEM and Administrators (standard users
+    get read/execute); C:\Teale\data is readable only by SYSTEM and
+    Administrators. Stopping the service is graceful: NSSM sends Ctrl+C and
+    waits up to 35 s for in-flight requests to drain.
+  - On AC power: supplies normally. While a request is in flight the node
+    holds a Windows idle-sleep block; lid-close behaviour comes from the
+    power plan, which the installer sets to "do nothing" on AC when the
+    Behavior checkbox is ticked (previous values are recorded in
+    config\powercfg-backup.txt and restored on uninstall).
   - On battery: pauses automatically. Resumes on reconnect.
   - Tray icon opens the local Teale window; right-click tray → Pause / Resume / Open Teale / Close tray icon.
 
 AUTO-UPDATE:
-  - On every login, the TealeUpdateCheck scheduled task pings
-    https://api.github.com/repos/teale-ai/teale-mono/releases?per_page=20
-    and selects the newest published release that contains Teale.exe.
-  - If installed version < latest version, shows a Windows toast with a
-    "Download and install update" action that opens the newest Teale.exe
-    installer. Running that installer upgrades Teale in place.
+  - At every user's logon the TealeUpdateCheck scheduled task (runs
+    unelevated for any member of Users) queries
+    https://api.github.com/repos/teale-ai/teale-mono/releases?per_page=30
+    and picks the highest teale-YYYY.MM.DD.HHMM tag that has Teale.exe.
+  - Only if that version is strictly newer than version.txt does it ask the
+    user; on "Yes" it downloads Teale.exe, checks its SHA-256 against the
+    release's checksums.txt, and only then starts the installer. A mismatch
+    or missing checksum opens the release page instead.
 
 TO PUBLISH AN UPDATE:
   1. Regenerate the timestamp (macOS/Linux: `date '+%Y.%m.%d.%H%M'`).
-  2. Update #define AppVer in teale-node-setup.iss to the new stamp.
-  3. Tag the commit with the same stamp prefixed `teale-`:
+  2. Tag the commit with that stamp prefixed `teale-`:
        git tag teale-2026.04.21.1722 && git push --tags
-  4. CI runs; Teale.exe artifact appears in the Actions run.
-  5. Download + attach to the GitHub Release with the matching tag name.
-  6. Existing installs notify their users on next logon (via the
-     TealeUpdateCheck scheduled task).
+     (No .iss edit: CI passes the stamp to ISCC as /DAppVer.)
+  3. CI builds Teale.exe and publishes it plus checksums.txt on the release.
+  4. Existing installs offer the update at the next logon.
 
 DOING AN UNINSTALL / REINSTALL:
   - "Add or remove programs" → Teale → Uninstall.
   - The uninstaller stops the service and the tray, then removes files
-    under C:\Teale EXCEPT C:\Teale\data (which holds the identity key).
+    under C:\Teale EXCEPT C:\Teale\data (identity key, account session) and
+    C:\Teale\models (downloaded GGUFs).
+    It also restores the AC sleep/hibernate/lid settings recorded at install.
     Leaving the identity intact preserves credit-earning history across
     reinstalls. To start fresh: manually delete C:\Teale\data before
     reinstalling.

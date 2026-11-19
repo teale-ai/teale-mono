@@ -174,6 +174,14 @@ struct PrivacyPlaceholderPlanner {
     var placeholderMap = [String: String]()
     var nextIndexByPrefix = [String: Int]()
 
+    /// Replace detected spans with placeholders.
+    ///
+    /// Span offsets are Unicode scalar (code point) offsets: that is what
+    /// the Python helper (Python `str` indices) and the Rust node
+    /// (`char_offset_to_byte_index` in node/src/privacy_filter.rs) use.
+    /// Slicing by `Character` (grapheme cluster) instead would shift every
+    /// cut after an emoji, flag or combining mark and leak part of the PII.
+    /// Spans whose offsets fall outside the text are skipped, as in Rust.
     mutating func replaceSpans(
         in text: String,
         spans: [PrivacyDetectedSpan]
@@ -185,11 +193,13 @@ struct PrivacyPlaceholderPlanner {
             return lhs.start < rhs.start
         }
 
+        let scalars = Array(text.unicodeScalars)
         var result = ""
         var cursor = 0
         for span in sortedSpans {
             guard span.start >= cursor, span.end >= span.start else { continue }
-            result += substring(in: text, from: cursor, to: span.start)
+            guard span.start >= 0, span.end <= scalars.count else { continue }
+            result += Self.string(from: scalars, start: cursor, end: span.start)
             let semanticKey = "\(span.label)\u{1F}\(span.text)"
             let placeholder = placeholderBySemanticKey[semanticKey] ?? {
                 let prefix = placeholderPrefix(for: span.label)
@@ -203,16 +213,19 @@ struct PrivacyPlaceholderPlanner {
             result += placeholder
             cursor = span.end
         }
-        result += substring(in: text, from: cursor, to: text.count)
+        result += Self.string(from: scalars, start: cursor, end: scalars.count)
         return result
     }
 
-    private func substring(in text: String, from startOffset: Int, to endOffset: Int) -> String {
-        guard startOffset < endOffset else { return "" }
-        let lower = text.index(text.startIndex, offsetBy: max(0, min(startOffset, text.count)))
-        let upper = text.index(text.startIndex, offsetBy: max(0, min(endOffset, text.count)))
+    /// Scalars `[start, end)` as a String (empty when the range is empty or
+    /// out of bounds).
+    private static func string(from scalars: [Unicode.Scalar], start: Int, end: Int) -> String {
+        let lower = max(0, min(start, scalars.count))
+        let upper = max(0, min(end, scalars.count))
         guard lower < upper else { return "" }
-        return String(text[lower..<upper])
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: scalars[lower..<upper])
+        return String(view)
     }
 
     private func placeholderPrefix(for label: String) -> String {
@@ -397,46 +410,58 @@ public actor DesktopPrivacyFilter {
             "--device",
             "cpu",
         ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        // Never leave stdout/stderr on an undrained Pipe: once its 64 KiB
+        // buffer fills the helper blocks and never becomes ready.
+        let log = ManagedSubprocess.openLogFile(named: "privacy-filter-helper.log")
+        process.standardOutput = log
+        process.standardError = log
+        process.standardInput = FileHandle.nullDevice
         try process.run()
+        ManagedSubprocess.register(process)
         helperProcess = process
     }
 
+    /// The helper script comes from exactly two places: an explicit
+    /// `TEALE_OPF_HELPER_SCRIPT` absolute path, or the copy bundled in the
+    /// app's Resources. It is never searched for relative to the current
+    /// working directory or the executable's parent directories, so running
+    /// the CLI from an untrusted directory cannot execute a planted script.
     private func locateHelperScript() throws -> URL {
-        if let override = ProcessInfo.processInfo.environment["TEALE_OPF_HELPER_SCRIPT"] {
+        if let override = ProcessInfo.processInfo.environment["TEALE_OPF_HELPER_SCRIPT"],
+           override.hasPrefix("/") {
             let url = URL(fileURLWithPath: override)
             if FileManager.default.fileExists(atPath: url.path) {
                 return url
             }
+            throw DesktopPrivacyFilterError.helperUnavailable(
+                "TEALE_OPF_HELPER_SCRIPT points at a missing file: \(override)"
+            )
         }
 
-        for candidate in candidateRoots() {
-            let script = candidate.appendingPathComponent("scripts/privacy_filter_helper.py")
-            if FileManager.default.fileExists(atPath: script.path) {
-                return script
-            }
+        if let bundled = Bundle.main.url(forResource: "privacy_filter_helper", withExtension: "py"),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
         }
 
         throw DesktopPrivacyFilterError.helperUnavailable(
-            "scripts/privacy_filter_helper.py was not found"
+            "privacy_filter_helper.py is not bundled with this build; set TEALE_OPF_HELPER_SCRIPT to its absolute path"
         )
     }
 
-    private func candidateRoots() -> [URL] {
-        var roots = [URL]()
-        let fileManager = FileManager.default
-        if let cwd = fileManager.currentDirectoryPath.removingPercentEncoding {
-            roots.append(URL(fileURLWithPath: cwd))
+    /// Stop the helper this actor spawned (app quit, privacy filter turned
+    /// off). Normal process exit also kills it via `ManagedSubprocess`'s
+    /// exit hook.
+    public func shutdownHelper() async {
+        guard let process = helperProcess else { return }
+        helperProcess = nil
+        await ManagedSubprocess.terminate(process, grace: 2)
+        ManagedSubprocess.unregister(process)
+    }
+
+    deinit {
+        if let process = helperProcess, process.isRunning {
+            process.terminate()
         }
-        if let executableURL = Bundle.main.executableURL {
-            var current = executableURL.deletingLastPathComponent()
-            for _ in 0..<8 {
-                roots.append(current)
-                current.deleteLastPathComponent()
-            }
-        }
-        return roots
     }
 #endif
 }

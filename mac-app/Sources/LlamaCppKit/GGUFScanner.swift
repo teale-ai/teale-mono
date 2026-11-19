@@ -48,11 +48,10 @@ public struct GGUFScanner: Sendable {
             dirs.append((lmStudio, .lmStudio))
         }
 
-        // Ollama models
-        let ollama = home.appendingPathComponent(".ollama/models/blobs")
-        if fm.fileExists(atPath: ollama.path) {
-            dirs.append((ollama, .ollama))
-        }
+        // Ollama is intentionally not scanned: its blobs are content-
+        // addressed `sha256-…` files with no `.gguf` extension or model name,
+        // so they could never pass the extension filter below, and a blob
+        // with no name cannot be mapped to a model id anyway.
 
         // HuggingFace cache (some GGUF files end up here)
         let hfCache = home.appendingPathComponent(".cache/huggingface/hub")
@@ -183,7 +182,6 @@ public struct GGUFModelInfo: Identifiable, Sendable {
 
     public enum ModelSource: String, Sendable {
         case lmStudio
-        case ollama
         case huggingFaceCache
         case tealeCache
         case custom
@@ -202,10 +200,12 @@ public struct GGUFModelInfo: Identifiable, Sendable {
             parameterCount: paramCount,
             quantization: quant,
             estimatedSizeGB: sizeGB,
-            requiredRAMGB: sizeGB * 1.3,  // GGUF models need ~1.3x file size in RAM
+            requiredRAMGB: sizeGB * ModelFit.footprintPerWeightGB,  // weights + KV + runtime (ModelFit estimate)
             family: inferFamily(),
             description: "GGUF model from \(source.rawValue)",
-            openrouterId: OpenRouterIdResolver.resolve(filename: path.lastPathComponent)
+            openrouterId: OpenRouterIdResolver.resolve(filename: path.lastPathComponent),
+            format: .gguf,
+            servingBackend: .llamaCpp
         )
     }
 

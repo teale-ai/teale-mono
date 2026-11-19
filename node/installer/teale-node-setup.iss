@@ -17,9 +17,13 @@
 ;   3. Open this file in Inno Setup Compiler → Build → Compile
 ;   4. Output: output/Teale.exe (ready to upload to Google Drive)
 
-; Timestamp-style version to match mac-app's CFBundleShortVersionString
-; (see mac-app/Sources/InferencePoolApp/Info.plist). Bump for every release.
-#define AppVer "2026.06.25.1900"
+; Timestamp-style version (YYYY.MM.DD.HHMM). CI passes it from the release tag:
+;   ISCC /DAppVer=2026.11.13.1946 teale-node-setup.iss   (tag teale-2026.11.13.1946)
+; Local builds without /DAppVer get 0.0.0.0, which check-update.ps1 treats as
+; an unversioned dev build and never nags about.
+#ifndef AppVer
+  #define AppVer "0.0.0.0"
+#endif
 
 [Setup]
 AppId={{E314A631-5889-4A53-B275-D90DF6F4A4F1}
@@ -67,7 +71,6 @@ Source: "uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "check-update.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; App icon for the Start-menu shortcut, uninstall entry and teale:// links.
 Source: "teale.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "supabase-config.json"; DestDir: "{app}\config"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 Name: "{app}\models"
@@ -117,10 +120,9 @@ Filename: "powershell.exe"; \
     Parameters: "-ExecutionPolicy Bypass -Command ""Set-Content -Path '{app}\version.txt' -Value 'v{#AppVer}' -Encoding UTF8"""; \
     Flags: runhidden waituntilterminated
 
-; Register on-logon update-check scheduled task.
-Filename: "schtasks.exe"; \
-    Parameters: "/Create /TN ""TealeUpdateCheck"" /TR ""powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File '{app}\check-update.ps1'"" /SC ONLOGON /RL HIGHEST /F"; \
-    Flags: runhidden waituntilterminated
+; The on-logon update-check task (any user, unelevated) is registered by
+; post-install.ps1 with Register-ScheduledTask; schtasks.exe cannot express
+; an "any member of Users" principal.
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""TealeUpdateCheck"" /F"; Flags: runhidden waituntilterminated

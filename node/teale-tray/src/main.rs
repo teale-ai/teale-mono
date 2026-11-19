@@ -12,6 +12,9 @@ mod windows_app;
 #[cfg(target_os = "linux")]
 mod linux_app;
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod shared;
+
 #[cfg(target_os = "windows")]
 fn main() -> anyhow::Result<()> {
     windows_app::run()

@@ -203,7 +203,8 @@ final class SharedTypesTests: XCTestCase {
             memoryBandwidthGBs: 200.0,
             tier: .tier2
         )
-        XCTAssertEqual(hw.availableRAMForModelsGB, 28.0)
+        // ModelFit: min(0.75 x 32, 32 - 4) = 24
+        XCTAssertEqual(hw.availableRAMForModelsGB, 24.0)
     }
 
     func testEngineStatusDisplayText() {

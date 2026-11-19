@@ -6,6 +6,12 @@ pub struct WindowsCatalogModel {
     pub display_name: &'static str,
     pub download_urls: &'static [&'static str],
     pub file_name: &'static str,
+    /// Lowercase hex SHA-256 of the GGUF, taken from the Hugging Face LFS
+    /// object id of the exact file the URLs point at. Empty = no pinned
+    /// hash; the download is then only checked against `size_bytes`.
+    pub sha256: &'static str,
+    /// Exact file size in bytes (0 = unknown).
+    pub size_bytes: u64,
     pub size_gb: f64,
     pub required_ram_gb: f64,
     pub default_context: u32,
@@ -27,6 +33,8 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
             "https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B-GGUF/resolve/main/Hermes-3-Llama-3.1-8B.Q5_K_M.gguf",
         ],
         file_name: "hermes-3-llama-3.1-8b-Q5_K_M.gguf",
+        sha256: "b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3",
+        size_bytes: 5_732_987_008,
         size_gb: 5.7,
         required_ram_gb: 16.0,
         default_context: 8192,
@@ -42,6 +50,8 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
             "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         ],
         file_name: "llama-3.1-8b-instruct-Q4_K_M.gguf",
+        sha256: "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c",
+        size_bytes: 4_920_739_232,
         size_gb: 4.9,
         required_ram_gb: 16.0,
         default_context: 8192,
@@ -57,7 +67,9 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
             "https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf",
         ],
         file_name: "qwen3-8b-Q4_K_M.gguf",
-        size_gb: 5.1,
+        sha256: "54fffa050078e984116639c83dfb64b5aa6d4cd474e018b076777c632bbccccd",
+        size_bytes: 5_027_784_224,
+        size_gb: 5.0,
         required_ram_gb: 24.0,
         default_context: 16384,
         max_context: 40960,
@@ -69,10 +81,12 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
         id: "mistralai/mistral-small-3.2-24b-instruct",
         display_name: "Mistral Small 3.2 24B Instruct Q4_K_M",
         download_urls: &[
-            "https://huggingface.co/bartowski/Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+            "https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
         ],
         file_name: "mistral-small-3.2-24b-instruct-Q4_K_M.gguf",
-        size_gb: 15.2,
+        sha256: "80f5bda68f156f12650ca03a0a2dbfae06a215ac41caa773b8631a479f82415e",
+        size_bytes: 14_333_915_264,
+        size_gb: 14.3,
         required_ram_gb: 32.0,
         default_context: 16384,
         max_context: 131072,
@@ -87,6 +101,8 @@ pub const WINDOWS_MODEL_CATALOG: &[WindowsCatalogModel] = &[
             "https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf",
         ],
         file_name: "llama-3.3-70b-instruct-Q4_K_M.gguf",
+        sha256: "32df3baccb556f9840059b2528b2dee4d3d516b24afdfb9d0c56ff5f63e3a664",
+        size_bytes: 42_520_398_816,
         size_gb: 42.5,
         required_ram_gb: 64.0,
         default_context: 32768,
@@ -251,6 +267,21 @@ mod tests {
         assert_eq!(context_for_model(hermes, 16.0, Some("vulkan")), 8192);
         assert_eq!(context_for_model(hermes, 24.0, Some("vulkan")), 16384);
         assert_eq!(context_for_model(hermes, 32.0, Some("vulkan")), 32768);
+    }
+
+    #[test]
+    fn catalog_hashes_and_sizes_are_well_formed() {
+        for model in WINDOWS_MODEL_CATALOG {
+            let hex_ok = model
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+            assert!(model.sha256.is_empty() || (model.sha256.len() == 64 && hex_ok));
+            if model.size_bytes > 0 {
+                let gb = model.size_bytes as f64 / 1e9;
+                assert!((gb - model.size_gb).abs() < 0.2, "{}", model.id);
+            }
+        }
     }
 
     #[test]

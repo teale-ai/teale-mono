@@ -1,7 +1,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Ed25519 identity matching Swift's WANNodeIdentity.
 /// nodeID = hex-encoded 32-byte public key (64 hex chars).
@@ -64,6 +64,11 @@ impl NodeIdentity {
             }
             let bytes: [u8; 32] = data.try_into().unwrap();
             let signing_key = SigningKey::from_bytes(&bytes);
+            // Re-apply owner-only permissions on every start: keys written by
+            // older Windows builds inherited the install tree's ACL.
+            if let Err(err) = crate::secure_file::restrict_to_owner(&path) {
+                warn!("could not restrict permissions on {:?}: {err}", path);
+            }
             info!(
                 "Loaded identity from {:?}, nodeID={}",
                 path,
@@ -72,17 +77,9 @@ impl NodeIdentity {
             Ok(Self { signing_key })
         } else {
             let signing_key = SigningKey::generate(&mut OsRng);
-            // Create parent directories
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&path, signing_key.to_bytes())?;
-            // Set file permissions to 0600 on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-            }
+            // 0600 on Unix; SYSTEM/Administrators/current-account-only ACL
+            // on Windows.
+            crate::secure_file::write_private(&path, &signing_key.to_bytes())?;
             info!(
                 "Generated new identity at {:?}, nodeID={}",
                 path,
@@ -91,6 +88,16 @@ impl NodeIdentity {
             Ok(Self { signing_key })
         }
     }
+}
+
+/// Per-node data directory (holds the identity key and the gateway account
+/// session). On the Windows service this is `C:\Teale\data\Teale` because the
+/// installer sets `APPDATA=C:\Teale\data` for the NSSM service.
+pub fn data_dir() -> PathBuf {
+    identity_file_path()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn identity_file_path() -> PathBuf {

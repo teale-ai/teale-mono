@@ -1,8 +1,27 @@
-# Device → Model Matrix (routing source of truth)
+# Device → Model Matrix (planning reference)
 
 _Generated 2026-04-18. Inputs: `openrouter-open-weight-catalog.md` (162 open-weight models filtered by demand) and `mac-fleet-configurations.md` (top-10 supply-side Mac configs)._
 
-This matrix is the source of truth for the gateway's routing decisions and for fleet-side disk pre-population.
+This matrix is a **planning reference** for fleet load-outs and disk pre-population. It is not read by any code and is not the source of truth for routing:
+
+- What the gateway routes is `gateway/models.yaml` plus the slugs nodes advertise.
+- What a Mac advertises is decided by `OpenRouterIdResolver` (`mac-app/Sources/SharedTypes/ModelDescriptor.swift`), which only emits slugs present in `gateway/models.yaml` (enforced by a test).
+- What a Mac offers to download/load is `ModelCatalog` filtered by the fit rule below.
+
+Many models below are not in the Swift catalog or in `gateway/models.yaml`; they are candidates, not commitments.
+
+## Fit rule (single rule, shared with the app)
+
+The Mac app's `ModelFit` (`mac-app/Sources/SharedTypes/ModelStorage.swift`) decides whether a model fits a device. The catalog filter, `HardwareCapability.availableRAMForModelsGB` and the MLX loader's memory guard all call it:
+
+```
+budget(RAM)  = min(0.75 × RAM, RAM − 4 GB)        (never below 1 GB)
+footprint    = model's requiredRAMGB (weights + KV cache + runtime)
+               or 1.25 × weight size when requiredRAMGB is unknown
+fits         = footprint ≤ budget
+```
+
+For RAM ≥ 16 GB the budget is 0.75 × RAM, so with the 1.25 × weights footprint estimate this is the same as **weights ≤ 0.6 × RAM** — the "Headroom (×0.6 RAM)" column below, compared against Q4_K_M weight sizes.
 
 ## How to read it
 
@@ -10,7 +29,7 @@ For each Mac config row × model column, the cell is one of:
 
 - **D** — `default`. The model is preloaded into RAM at boot. Routing prefers `D` matches first (zero swap latency).
 - **S** — `swap-eligible`. Model GGUF is kept on disk. Gateway can issue a `loadModel` ClusterMessage to swap it in (eviction + mmap, ~3–30s depending on size and SSD speed).
-- **—** — `unsupported`. Model exceeds 60% of the device's unified RAM budget. Never route here.
+- **—** — `unsupported`. Model fails the fit rule above (Q4_K_M weights > 0.6 × unified RAM). Never route here.
 
 Only Q4_K_M sizing is shown; same model at Q5_K_M or Q8_0 needs ~1.2× / ~1.7× the RAM and may demote a cell from S to —.
 

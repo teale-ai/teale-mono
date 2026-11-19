@@ -31,3 +31,11 @@ pub use relay::{
     DiscoverPayload, IncomingRelayMessage, OutgoingRelayMessage, PeerNotificationPayload,
     RegisterPayload, RelayDataPayload, RelayErrorPayload, RelaySessionPayload,
 };
+
+/// Total per-request budget (prefill + generation) a supply node allows a
+/// streamed inference before it cuts the backend stream. One definition
+/// shared by the node (which enforces it) and the gateway (which sizes its
+/// sole-supplier first-token ceiling and heavy-hold TTL below/above it).
+/// History and rationale live with the enforcement in
+/// `node/src/inference.rs`.
+pub const STREAM_BUDGET_SECONDS: u64 = 1800;

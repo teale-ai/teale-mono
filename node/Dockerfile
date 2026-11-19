@@ -1,47 +1,63 @@
-# teale-node Docker image — NVIDIA CUDA GPU support
-# Build: docker build -t teale/node .
-# Run:   docker run -v /path/to/models:/models --gpus all teale/node
+# teale-node Docker image — NVIDIA CUDA runtime base
+#
+# teale-node is a member of the repo's Cargo workspace (version, edition and
+# teale-protocol come from the root Cargo.toml), so build from the REPO ROOT:
+#   docker build -f node/Dockerfile -t teale/node .
+# Run:
+#   docker run -v /path/to/models:/models -v /path/to/teale-node.toml:/app/teale-node.toml \
+#     --gpus all teale/node
 
 # Stage 1: Build teale-node
-FROM rust:1.85-bookworm AS builder
+FROM rust:1-bookworm AS builder
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock* ./
-COPY src/ src/
+# Workspace manifest + every member manifest cargo needs to load the
+# workspace; only teale-node (and teale-protocol) are compiled.
+COPY Cargo.toml Cargo.lock ./
+COPY protocol/ protocol/
+COPY node/ node/
+COPY gateway/ gateway/
+COPY stress/ stress/
+COPY cli/ cli/
 
-RUN cargo build --release
+RUN cargo build --release -p teale-node
 
 # Stage 2: Runtime with llama.cpp
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
-RUN apt-get update && apt-get install -y \
+# Keep in sync with .github/llama-cpp-version.
+ARG LLAMA_RELEASE=b8840
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    libcurl4 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pre-built llama-server from llama.cpp releases.
-# The latest releases no longer publish a dedicated Linux CUDA tarball, so we
-# stage the generic Ubuntu x64 build here unless the caller mounts their own
-# CUDA-enabled binary.
+# Pre-built llama-server from llama.cpp releases. Releases no longer publish a
+# dedicated Linux CUDA tarball, so this stages the generic Ubuntu x64 build;
+# mount your own CUDA-enabled binary at /usr/local/bin/llama-server for GPU.
 RUN set -eux; \
-    release="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"; \
-    archive="llama-${release}-bin-ubuntu-x64.tar.gz"; \
-    curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${release}/${archive}" -o /tmp/llama.tar.gz; \
-    tar -xzf /tmp/llama.tar.gz -C /tmp; \
-    server="$(find /tmp -type f -name llama-server -print -quit)"; \
+    archive="llama-${LLAMA_RELEASE}-bin-ubuntu-x64.tar.gz"; \
+    curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_RELEASE}/${archive}" -o /tmp/llama.tar.gz; \
+    mkdir -p /tmp/llama /opt/llama; \
+    tar -xzf /tmp/llama.tar.gz -C /tmp/llama; \
+    server="$(find /tmp/llama -type f -name llama-server -print -quit)"; \
     test -n "${server}"; \
-    cp "${server}" /usr/local/bin/llama-server; \
-    chmod +x /usr/local/bin/llama-server || \
-    echo "WARNING: Could not download llama-server. Mount your own binary at /usr/local/bin/llama-server"
+    cp -a "$(dirname "${server}")/." /opt/llama/; \
+    ln -s /opt/llama/llama-server /usr/local/bin/llama-server; \
+    rm -rf /tmp/llama /tmp/llama.tar.gz
+
+ENV LD_LIBRARY_PATH=/opt/llama
 
 COPY --from=builder /build/target/release/teale-node /usr/local/bin/teale-node
 
-# Default config location
+# Default config location (mount your own teale-node.toml over it)
 WORKDIR /app
-COPY teale-node.example.toml /app/teale-node.toml
+COPY node/teale-node.example.toml /app/teale-node.toml
 
 # Model directory
 VOLUME /models
 
-# Override config values via environment or mount your own teale-node.toml
 ENTRYPOINT ["teale-node", "--config", "/app/teale-node.toml"]
