@@ -556,7 +556,9 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_account_email_codes_email_created
         ON account_email_codes(email, created_at DESC);
     "#,
-    // 014_ledger_anchoring.sql — external verifiability for the credit ledger.
+    // user_version 18 — ledger_anchoring (historically labelled
+    // "014_ledger_anchoring.sql"; it landed after 017, so it is applied as the
+    // 18th migration). External verifiability for the credit ledger.
     // Hashes live in a side table so the money path (INSERT INTO ledger) stays
     // untouched; anchors are Merkle roots published to Solana by an
     // operator-signed memo transaction. See docs/ledger-verifiability.md.
@@ -583,7 +585,8 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_ledger_anchors_status ON ledger_anchors(status);
     "#,
-    // 018_account_sessions.sql — passwordless gateway-native auth. Opaque
+    // user_version 19 — account_sessions (historically labelled
+    // "018_account_sessions.sql"). Passwordless gateway-native auth. Opaque
     // session tokens (SHA-256 hashed at rest) for human accounts, plus a
     // single-use magic-link token on email code rows. See
     // docs/passwordless-auth-migration.md.
@@ -605,7 +608,8 @@ const MIGRATIONS: &[&str] = &[
 
     ALTER TABLE account_email_codes ADD COLUMN link_token_hash TEXT;
     "#,
-    // 019_pin_member_offers_exit.sql — a member device offers itself as a
+    // user_version 20 — pin_member_offers_exit (historically labelled
+    // "019_pin_member_offers_exit.sql"). A member device offers itself as a
     // SOCKS5 exit node for this network (Phase 1 exit-node data plane).
     // Device-sovereign: set by the device on /sync; surfaced in the signed
     // netmap so consumers can pick an exit. Independent of serves_models —
@@ -614,94 +618,79 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE pin_members ADD COLUMN offers_exit INTEGER NOT NULL DEFAULT 0;
     "#,
-    // 020_taylor_email_change.sql — one-shot account email change (the
-    // founder's explicit request, Sep 5 2026): taylor@hou.vc ->
-    // taylor@teale.com. account_user_id (the PK/FK everywhere) is untouched,
-    // so sessions, devices, balances, and history all carry over; logging in
-    // with the new email resolves the same account via the wallet lookup.
-    // Guarded: no-op if a teale.com wallet row already exists (e.g. he
-    // signed up fresh first) — that case needs a manual merge instead.
+    // user_version 21, 22, 23 — historical one-shot data fixes for a single
+    // production account (an email change, a case-split account merge and a
+    // duplicate network rename; historically labelled 020-022). They already
+    // ran in production, so they are kept as no-ops purely to preserve the
+    // user_version numbering. The data they touched is deliberately not
+    // reproduced in source.
     r#"
-    UPDATE account_wallets
-       SET email = 'taylor@teale.com',
-           updated_at = CAST(strftime('%s','now') AS INTEGER)
-     WHERE email = 'taylor@hou.vc'
-       AND NOT EXISTS (SELECT 1 FROM account_wallets WHERE email = 'taylor@teale.com');
+    DELETE FROM schema_version WHERE 0;
     "#,
-    // 021_merge_taylor_case_split_accounts.sql — one-shot merge of the
-    // founder's case-duplicated accounts into the canonical UPPERCASE row
-    // (the April-era account that owns the networks and holds the balance).
-    // Three rows collapse into one:
-    //   canonical  270E90AF-4661-4DF1-949B-1A0BA1F705EE (110,039,367 credits)
-    //   dupe       270e90af-4661-4df1-949b-1a0ba1f705ee (779,922 credits,
-    //              github taylorhou, the 5 current fleet devices)
-    //   email-acct email:taylor@hou.vc (89,292 credits, owns pins 0CTOPUS
-    //              2ba90751 + houdini 615b4d98, 3 api_keys, 1 session)
-    // Also reverses the bogus 100,000-credit welcome bonus (account_ledger
-    // id 104) that the case-split re-link minted onto the canonical row.
-    // Guarded: every statement is keyed to these exact ids, so it is a no-op
-    // on any other database. Pre-deploy backup: teale-backup-pre-021.db on
-    // the gateway volume (integrity-checked).
     r#"
-    UPDATE OR IGNORE account_devices SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE account_sessions SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE api_keys SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE account_onchain_deposits SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE account_withdrawals SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE referral_codes SET owner_account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE owner_account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE referral_claims SET referred_account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE referred_account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE pins SET owner_account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE owner_account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE pin_roles SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-    UPDATE OR IGNORE account_ledger SET account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
-
-    UPDATE account_wallets SET
-        email = 'taylor@teale.com',
-        github_username = 'taylorhou',
-        balance_credits = balance_credits
-            + COALESCE((SELECT balance_credits FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee'), 0)
-            + COALESCE((SELECT balance_credits FROM account_wallets WHERE account_user_id = 'email:taylor@hou.vc'), 0)
-            - 100000,
-        usdc_cents = usdc_cents
-            + COALESCE((SELECT usdc_cents FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee'), 0)
-            + COALESCE((SELECT usdc_cents FROM account_wallets WHERE account_user_id = 'email:taylor@hou.vc'), 0),
-        updated_at = CAST(strftime('%s','now') AS INTEGER)
-     WHERE account_user_id = '270E90AF-4661-4DF1-949B-1A0BA1F705EE'
-       AND EXISTS (SELECT 1 FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee');
-
-    INSERT INTO account_ledger (account_user_id, asset, amount, type, timestamp, device_id, note)
-     SELECT '270E90AF-4661-4DF1-949B-1A0BA1F705EE', 'credits', -100000, 'REVERSAL',
-            CAST(strftime('%s','now') AS INTEGER), NULL,
-            'Reversal of bogus welcome bonus (account_ledger id 104) minted by the case-split re-link'
-     WHERE EXISTS (SELECT 1 FROM account_wallets WHERE account_user_id = '270e90af-4661-4df1-949b-1a0ba1f705ee');
-
-    DELETE FROM account_wallets
-     WHERE account_user_id IN ('270e90af-4661-4df1-949b-1a0ba1f705ee', 'email:taylor@hou.vc');
+    DELETE FROM schema_version WHERE 0;
     "#,
-    // 022_rename_legacy_dupe_network.sql — one-shot rename of the legacy
-    // case-split dupe network. The account merge (021) left the canonical
-    // account seeing TWO networks named 'teale-internal', which made
-    // `--net teale-internal` ambiguous in the CLI. Fleet-verified Sep 5
-    // 2026: the dupe (join-code gen 7) has zero live machines (active=0,
-    // pending=0 across all five fleet Macs); the canonical network
-    // (380ed740…) carries the real membership (active=4). Guarded: keyed
-    // to the exact dupe pin_id + name, so it is a no-op on any other
-    // database. Non-destructive display-name change only.
     r#"
-    UPDATE pins SET name = 'teale-internal-legacy'
-     WHERE pin_id = '49251acb-e669-4a1b-808f-994c96aacb07'
-       AND name = 'teale-internal';
+    DELETE FROM schema_version WHERE 0;
+    "#,
+    // user_version 24 — auth_hardening.
+    // - account_email_bonuses: the welcome bonus is granted at most once per
+    //   verified email address, on the verified-email login that creates the
+    //   account (see ledger::resolve_login_account).
+    // - index the magic-link token lookup.
+    // - index token expiry for the periodic auth-row sweep.
+    // Device tokens and share-key tokens are rewritten as SHA-256 digests by
+    // the code step for this version (`hash_plaintext_bearer_tokens`). That
+    // step is one-way: plaintext bearers are never stored again.
+    r#"
+    CREATE TABLE IF NOT EXISTS account_email_bonuses (
+        email TEXT PRIMARY KEY,
+        account_user_id TEXT NOT NULL,
+        amount_credits INTEGER NOT NULL,
+        granted_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_email_codes_link_token
+        ON account_email_codes(link_token_hash)
+        WHERE link_token_hash IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_tokens_expires ON tokens(expires_at);
     "#,
 ];
+
+/// user_version whose code step hashes plaintext device / share-key tokens.
+const HASH_BEARER_TOKENS_VERSION: i64 = 24;
+
+/// Env var that allows booting on an in-memory ledger when the configured DB
+/// path cannot be opened. Local development only: an in-memory ledger loses
+/// every balance, session and deposit on restart.
+pub const ALLOW_IN_MEMORY_DB_ENV: &str = "TEALE_ALLOW_IN_MEMORY_DB";
+
+pub fn in_memory_fallback_allowed() -> bool {
+    std::env::var(ALLOW_IN_MEMORY_DB_ENV).is_ok_and(|v| v.trim() == "1")
+}
+
+/// Open the ledger DB at `path`. If it cannot be opened, startup fails unless
+/// `TEALE_ALLOW_IN_MEMORY_DB=1` explicitly opts into an in-memory ledger.
+pub fn open_or_fail(path: &str) -> anyhow::Result<DbPool> {
+    match open(path) {
+        Ok(pool) => Ok(pool),
+        Err(err) if in_memory_fallback_allowed() => {
+            tracing::warn!(
+                "could not open ledger DB at {} ({}); {}=1 so falling back to an \
+                 in-memory ledger (all state is lost on restart)",
+                path,
+                err,
+                ALLOW_IN_MEMORY_DB_ENV
+            );
+            open_in_memory()
+        }
+        Err(err) => Err(anyhow::anyhow!(
+            "could not open ledger DB at {path}: {err}. Refusing to start on an in-memory \
+             ledger; fix the volume/path or set {ALLOW_IN_MEMORY_DB_ENV}=1 for local development"
+        )),
+    }
+}
 
 pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
     let conn = Connection::open(path)?;
@@ -717,7 +706,8 @@ pub fn open<P: AsRef<Path>>(path: P) -> anyhow::Result<DbPool> {
     Ok(pool)
 }
 
-/// Open an in-memory DB — used only by tests.
+/// Open an in-memory DB — used by tests (and by `open_or_fail` when the
+/// in-memory fallback is explicitly allowed).
 pub fn open_in_memory() -> anyhow::Result<DbPool> {
     let conn = Connection::open_in_memory()?;
     migrate(&conn)?;
@@ -731,16 +721,62 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     // SQLite's built-in `user_version` pragma tracks which migrations have
     // already applied. Existing DBs from before versioning was added start at
     // 0; migrations 1 and 2 are idempotent (CREATE … IF NOT EXISTS) so they
-    // re-run harmlessly, and we only advance the version after each batch.
+    // re-run harmlessly. Each migration (SQL, optional code step, version
+    // bump) commits atomically, so a failure leaves the DB at the previous
+    // version instead of half-migrated.
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (i, sql) in MIGRATIONS.iter().enumerate() {
         let target = (i + 1) as i64;
         if target > current {
-            conn.execute_batch(sql)?;
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)?;
+            if target == HASH_BEARER_TOKENS_VERSION {
+                hash_plaintext_bearer_tokens(&tx)?;
+            }
             // PRAGMA user_version doesn't accept a bound parameter; the value
             // is a controlled integer so string interpolation is safe here.
-            conn.execute_batch(&format!("PRAGMA user_version = {}", target))?;
+            tx.execute_batch(&format!("PRAGMA user_version = {}", target))?;
+            tx.commit()?;
         }
+    }
+    Ok(())
+}
+
+/// One-way migration of device tokens and share-key tokens to SHA-256
+/// digests (`ledger::hash_bearer_token`). Rows already carrying the hashed
+/// prefix are skipped, so re-running is harmless. Expired device tokens are
+/// dropped instead of hashed.
+fn hash_plaintext_bearer_tokens(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute("DELETE FROM tokens WHERE expires_at <= ?", [unix_now()])?;
+    let device_tokens: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT token FROM tokens WHERE token NOT LIKE 'sha256:%'")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for token in &device_tokens {
+        conn.execute(
+            "UPDATE tokens SET token = ? WHERE token = ?",
+            rusqlite::params![ledger::hash_bearer_token(token), token],
+        )?;
+    }
+    let share_tokens: Vec<(String, String)> = {
+        let mut stmt =
+            conn.prepare("SELECT key_id, token FROM share_keys WHERE token NOT LIKE 'sha256:%'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (key_id, token) in &share_tokens {
+        conn.execute(
+            "UPDATE share_keys SET token = ? WHERE key_id = ?",
+            rusqlite::params![ledger::hash_bearer_token(token), key_id],
+        )?;
+    }
+    if !device_tokens.is_empty() || !share_tokens.is_empty() {
+        tracing::info!(
+            device_tokens = device_tokens.len(),
+            share_keys = share_tokens.len(),
+            "hashed plaintext bearer tokens at rest"
+        );
     }
     Ok(())
 }
@@ -775,6 +811,84 @@ pub fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn user_version(conn: &Connection) -> i64 {
+        conn.pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn migrations_reach_latest_version() {
+        let pool = open_in_memory().unwrap();
+        let conn = pool.lock();
+        assert_eq!(user_version(&conn), MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn bearer_hash_migration_rewrites_plaintext_rows_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        // Bring the DB to the version just before the hashing step.
+        for sql in &MIGRATIONS[..(HASH_BEARER_TOKENS_VERSION - 1) as usize] {
+            conn.execute_batch(sql).unwrap();
+        }
+        let previous = HASH_BEARER_TOKENS_VERSION - 1;
+        conn.execute_batch(&format!("PRAGMA user_version = {previous}"))
+            .unwrap();
+        let now = unix_now();
+        conn.execute(
+            "INSERT INTO devices (device_id, first_seen, last_seen) VALUES ('dev', ?, ?)",
+            [now, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tokens (token, device_id, expires_at) VALUES ('tok_dev_live', 'dev', ?)",
+            [now + 3600],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tokens (token, device_id, expires_at) VALUES ('tok_dev_old', 'dev', ?)",
+            [now - 1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO share_keys
+                (key_id, token, issuer_device_id, label, expires_at, budget_credits,
+                 consumed_credits, created_at, revoked_at)
+             VALUES ('k1', 'tok_share_raw', 'dev', NULL, ?, 10, 0, ?, NULL)",
+            [now + 3600, now],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), HASH_BEARER_TOKENS_VERSION);
+
+        let tokens: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT token FROM tokens").unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(tokens, vec![ledger::hash_bearer_token("tok_dev_live")]);
+        let share: String = conn
+            .query_row(
+                "SELECT token FROM share_keys WHERE key_id = 'k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(share, ledger::hash_bearer_token("tok_share_raw"));
+
+        // Re-running the code step leaves hashed rows untouched.
+        hash_plaintext_bearer_tokens(&conn).unwrap();
+        let share_again: String = conn
+            .query_row(
+                "SELECT token FROM share_keys WHERE key_id = 'k1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(share_again, share);
+    }
 
     /// Removes the temp DB and its WAL/SHM sidecar files, even if an assert fails.
     struct TempDb(std::path::PathBuf);

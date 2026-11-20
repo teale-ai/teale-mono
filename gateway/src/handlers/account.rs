@@ -1,22 +1,35 @@
 //! Account-level wallet and linked-device endpoints.
 //!
-//! These routes are protected by bearer auth. Linked Teale devices remain the
-//! authority for account-linking and device-management actions, while
-//! account-scoped API keys may read/send from the owning human account.
+//! These routes are protected by bearer auth. `/v1/account/link` is
+//! device-bound (it links the calling device) and requires an account-session
+//! ownership proof for existing accounts (see `link_account`). Summary, send,
+//! sweep and device removal also accept the account's own session; wallet
+//! on-chain endpoints stay device-bound. Account-scoped API keys may
+//! read/send from the owning human account.
 
 use axum::{
     extract::{Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     Extension, Json,
 };
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::auth::{AuthPrincipal, PrincipalKind};
 use crate::db::DbPool;
 use crate::error::GatewayError;
-use crate::ledger::{self, AccountLinkMetadata};
+use crate::ledger::{self, AccountLinkMetadata, LinkProof};
 use crate::solana::{self, DepositVerificationError, WithdrawalVerificationError};
 use crate::state::AppState;
+
+/// Header carrying the account-session ownership proof on `/v1/account/link`
+/// (contract B). Value: a `tsess_…` token from the email verify / magic-link
+/// flow.
+pub const ACCOUNT_SESSION_HEADER: &str = "x-teale-account-session";
+
+/// Error code returned (403) when a link needs an account-session proof.
+pub const ACCOUNT_SESSION_REQUIRED: &str = "account_session_required";
 
 #[derive(Debug, Deserialize)]
 pub struct LinkAccountReq {
@@ -28,11 +41,52 @@ pub struct LinkAccountReq {
     #[serde(rename = "displayName")]
     display_name: Option<String>,
     phone: Option<String>,
-    email: Option<String>,
+    // `email` is intentionally not accepted: account emails are only bound
+    // by verified email flows. Older clients that still send it are ignored.
     #[serde(rename = "githubUsername")]
     github_username: Option<String>,
     #[serde(rename = "referralCode")]
     referral_code: Option<String>,
+}
+
+/// Errors from `/v1/account/link`: ordinary gateway errors, or a 403 with the
+/// stable `account_session_required` code clients key on.
+#[derive(Debug)]
+pub enum LinkAccountError {
+    Gateway(GatewayError),
+    SessionRequired(String),
+}
+
+impl From<GatewayError> for LinkAccountError {
+    fn from(err: GatewayError) -> Self {
+        Self::Gateway(err)
+    }
+}
+
+impl IntoResponse for LinkAccountError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Gateway(err) => err.into_response(),
+            Self::SessionRequired(message) => {
+                let body = json!({
+                    "error": {
+                        "message": message,
+                        "type": ACCOUNT_SESSION_REQUIRED,
+                        "code": ACCOUNT_SESSION_REQUIRED,
+                    }
+                });
+                (StatusCode::FORBIDDEN, Json(body)).into_response()
+            }
+        }
+    }
+}
+
+fn account_session_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(ACCOUNT_SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,24 +163,51 @@ fn require_device(principal: &AuthPrincipal) -> Result<&str, GatewayError> {
     }
 }
 
+/// POST /v1/account/link — link the calling device to an account
+/// (contract B). With an `X-Teale-Account-Session` header the session must
+/// belong to exactly `accountUserID`; the link may then also re-point the
+/// device. Without it the link may only create a brand-new, empty account
+/// for a device that is not linked elsewhere. Anything else is a 403
+/// `account_session_required`. Links never mint a welcome bonus; a referral
+/// code is honoured only on a session-backed link of the account's first
+/// device.
 pub async fn link_account(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    headers: HeaderMap,
     Json(req): Json<LinkAccountReq>,
-) -> Result<Json<ledger::AccountWalletSnapshot>, GatewayError> {
+) -> Result<Json<ledger::AccountWalletSnapshot>, LinkAccountError> {
     let requester_device_id = require_device(&principal)?;
     let pool = require_pool(&state)?;
     if req.account_user_id.trim().is_empty() {
-        return Err(GatewayError::BadRequest("accountUserID is required".into()));
+        return Err(GatewayError::BadRequest("accountUserID is required".into()).into());
     }
 
     let account_user_id = ledger::normalize_account_user_id(&req.account_user_id);
-    // The welcome bonus is for genuinely new accounts only: linking an
-    // existing wallet (or re-linking after a client-side id change) must
-    // not mint again.
-    let is_new_account =
-        !ledger::account_wallet_exists(pool, &account_user_id).map_err(GatewayError::Other)?;
-    ledger::link_device_to_account(
+    // Pre-#173 lowercase UUID accounts are renamed (never merged) to the
+    // canonical uppercase id before ownership is checked.
+    ledger::canonicalize_legacy_account_id(pool, &account_user_id).map_err(GatewayError::Other)?;
+
+    let proof = match account_session_header(&headers) {
+        Some(token) => {
+            let session =
+                ledger::try_resolve_account_session(pool, token).map_err(GatewayError::Other)?;
+            let Some(session) = session else {
+                return Err(LinkAccountError::SessionRequired(
+                    "account session is invalid or expired; sign in again".into(),
+                ));
+            };
+            if session.account_user_id != account_user_id {
+                return Err(LinkAccountError::SessionRequired(
+                    "account session belongs to a different account".into(),
+                ));
+            }
+            LinkProof::AccountSession
+        }
+        None => LinkProof::None,
+    };
+
+    let outcome = ledger::link_device_to_account_with_proof(
         pool,
         requester_device_id,
         &account_user_id,
@@ -135,19 +216,22 @@ pub async fn link_account(
             platform: req.platform,
             display_name: req.display_name,
             phone: req.phone,
-            email: req.email,
             github_username: req.github_username,
         },
+        proof,
     )
-    .map_err(GatewayError::Other)?;
-    if is_new_account {
-        let _ = ledger::apply_account_join_rewards(
-            pool,
-            requester_device_id,
-            &account_user_id,
-            req.referral_code.as_deref(),
-        )
-        .map_err(map_referral_error)?;
+    .map_err(|err| match err {
+        ledger::LinkDeviceError::SessionRequired(message) => {
+            LinkAccountError::SessionRequired(message.to_string())
+        }
+        ledger::LinkDeviceError::Other(err) => GatewayError::Other(err).into(),
+    })?;
+
+    if proof == LinkProof::AccountSession && outcome.first_device {
+        if let Some(code) = req.referral_code.as_deref() {
+            ledger::apply_account_referral(pool, requester_device_id, &account_user_id, code)
+                .map_err(map_referral_error)?;
+        }
     }
 
     let summary = ledger::account_summary_for_device(pool, requester_device_id)
@@ -325,13 +409,26 @@ pub async fn sweep_device(
     Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<SweepReq>,
 ) -> Result<Json<ledger::AccountSweepResult>, GatewayError> {
-    let requester_device_id = require_device(&principal)?;
+    // The account's own session may sweep any device linked to it; otherwise
+    // the caller must be a linked device.
+    if principal.account_session().is_none() {
+        require_device(&principal)?;
+    }
     let pool = require_pool(&state)?;
-    if req.device_id.trim().is_empty() {
+    let target = req.device_id.trim();
+    if target.is_empty() {
         return Err(GatewayError::BadRequest("deviceID is required".into()));
     }
-    let result = ledger::sweep_device_to_account(pool, requester_device_id, req.device_id.trim())
-        .map_err(GatewayError::Other)?;
+    let result = match principal.account_session() {
+        Some((account_user_id, _)) => {
+            ledger::sweep_device_into_account(pool, account_user_id, target)
+        }
+        None => {
+            let requester_device_id = require_device(&principal)?;
+            ledger::sweep_device_to_account(pool, requester_device_id, target)
+        }
+    }
+    .map_err(GatewayError::Other)?;
     Ok(Json(result))
 }
 
@@ -340,14 +437,26 @@ pub async fn remove_device(
     Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<RemoveDeviceReq>,
 ) -> Result<Json<ledger::AccountWalletSnapshot>, GatewayError> {
-    let requester_device_id = require_device(&principal)?;
+    // The account's own session may unlink any of its devices; a device
+    // bearer may unlink sibling devices (but not itself).
+    if principal.account_session().is_none() {
+        require_device(&principal)?;
+    }
     let pool = require_pool(&state)?;
-    if req.device_id.trim().is_empty() {
+    let target = req.device_id.trim();
+    if target.is_empty() {
         return Err(GatewayError::BadRequest("deviceID is required".into()));
     }
-    let summary =
-        ledger::remove_device_from_account(pool, requester_device_id, req.device_id.trim())
-            .map_err(GatewayError::Other)?;
+    let summary = match principal.account_session() {
+        Some((account_user_id, _)) => {
+            ledger::remove_device_from_account_for_account(pool, account_user_id, target)
+        }
+        None => {
+            let requester_device_id = require_device(&principal)?;
+            ledger::remove_device_from_account(pool, requester_device_id, target)
+        }
+    }
+    .map_err(GatewayError::Other)?;
     Ok(Json(summary))
 }
 
@@ -512,4 +621,222 @@ fn normalized_optional_string(value: Option<&str>) -> Option<String> {
         let trimmed = raw.trim();
         (!trimmed.is_empty()).then_some(trimmed.to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::http::HeaderValue;
+    use tokio::sync::broadcast;
+
+    use crate::auth::TokenTable;
+    use crate::config::Config;
+    use crate::db::open_in_memory;
+    use crate::model_metrics::ModelMetricsTracker;
+    use crate::registry::Registry;
+    use crate::relay_client::RelayHandle;
+    use crate::scheduler::Scheduler;
+
+    use super::*;
+
+    fn test_state() -> AppState {
+        let cfg = Config::defaults();
+        AppState {
+            config: cfg.clone(),
+            tokens: TokenTable::default(),
+            registry: Registry::new(cfg.reliability.clone()),
+            scheduler: Arc::new(Scheduler::new(cfg.scheduler.clone())),
+            relay: RelayHandle::test_handle(),
+            catalog: Arc::new(vec![]),
+            db: Some(open_in_memory().unwrap()),
+            group_tx: broadcast::channel(8).0,
+            model_metrics: Arc::new(ModelMetricsTracker::new()),
+            share_key_issuers: Default::default(),
+            providers: crate::providers::ProvidersHandle::empty_for_test(),
+            identity: None,
+            pin_join_limiter: Default::default(),
+            challenge_limiter: Default::default(),
+            started_at: std::time::Instant::now(),
+        }
+    }
+
+    fn device(device_id: &str) -> Extension<AuthPrincipal> {
+        Extension(AuthPrincipal {
+            kind: PrincipalKind::Device {
+                device_id: device_id.into(),
+            },
+        })
+    }
+
+    fn link_req(account_user_id: &str) -> Json<LinkAccountReq> {
+        Json(LinkAccountReq {
+            account_user_id: account_user_id.into(),
+            device_name: None,
+            platform: None,
+            display_name: None,
+            phone: None,
+            github_username: None,
+            referral_code: None,
+        })
+    }
+
+    fn session_headers(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCOUNT_SESSION_HEADER,
+            HeaderValue::from_str(token).unwrap(),
+        );
+        headers
+    }
+
+    /// Verified email login: creates the account and returns a session token.
+    fn sign_in(state: &AppState, email: &str) -> (String, String) {
+        let pool = state.db.as_ref().unwrap();
+        let login = ledger::resolve_login_account(pool, email).unwrap();
+        let session =
+            ledger::create_account_session(pool, &login.account_user_id, None, None).unwrap();
+        (login.account_user_id, session.token)
+    }
+
+    fn assert_session_required(err: LinkAccountError) {
+        assert!(
+            matches!(err, LinkAccountError::SessionRequired(_)),
+            "{err:?}"
+        );
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn link_with_a_valid_session_links_the_device() {
+        let state = test_state();
+        let (account, token) = sign_in(&state, "owner@example.com");
+        let Json(summary) = link_account(
+            State(state.clone()),
+            device("dev-1"),
+            session_headers(&token),
+            link_req(&account),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.account_user_id, account);
+        assert_eq!(summary.devices.len(), 1);
+        // The verified first login's welcome bonus is the only mint.
+        assert_eq!(summary.balance_credits, ledger::WELCOME_BONUS_CREDITS);
+    }
+
+    #[tokio::test]
+    async fn link_with_a_session_for_another_account_is_forbidden() {
+        let state = test_state();
+        let (_, token) = sign_in(&state, "owner@example.com");
+        let (victim, _) = sign_in(&state, "victim@example.com");
+        let err = link_account(
+            State(state.clone()),
+            device("dev-1"),
+            session_headers(&token),
+            link_req(&victim),
+        )
+        .await
+        .unwrap_err();
+        assert_session_required(err);
+    }
+
+    #[tokio::test]
+    async fn link_without_session_creates_an_empty_new_account() {
+        let state = test_state();
+        let account = "8D7C6B5A-4E3F-4A2B-9C1D-0E1F2A3B4C5D";
+        let Json(summary) = link_account(
+            State(state.clone()),
+            device("dev-1"),
+            HeaderMap::new(),
+            link_req(account),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.account_user_id, account);
+        assert_eq!(summary.balance_credits, 0, "no link-time welcome bonus");
+        assert!(summary.transactions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn link_without_session_to_an_existing_account_is_forbidden() {
+        let state = test_state();
+        let (account, _) = sign_in(&state, "owner@example.com");
+        let err = link_account(
+            State(state.clone()),
+            device("attacker-dev"),
+            HeaderMap::new(),
+            link_req(&account),
+        )
+        .await
+        .unwrap_err();
+        assert_session_required(err);
+    }
+
+    #[tokio::test]
+    async fn repointing_a_linked_device_without_session_is_forbidden() {
+        let state = test_state();
+        let Json(_) = link_account(
+            State(state.clone()),
+            device("dev-1"),
+            HeaderMap::new(),
+            link_req("acct-original"),
+        )
+        .await
+        .unwrap();
+        let err = link_account(
+            State(state.clone()),
+            device("dev-1"),
+            HeaderMap::new(),
+            link_req("acct-new"),
+        )
+        .await
+        .unwrap_err();
+        assert_session_required(err);
+        let pool = state.db.as_ref().unwrap();
+        assert_eq!(
+            ledger::account_user_id_for_device(pool, "dev-1").as_deref(),
+            Some("acct-original")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_can_sweep_and_remove_its_own_devices() {
+        let state = test_state();
+        let (account, token) = sign_in(&state, "owner@example.com");
+        let Json(_) = link_account(
+            State(state.clone()),
+            device("dev-1"),
+            session_headers(&token),
+            link_req(&account),
+        )
+        .await
+        .unwrap();
+        let principal = Extension(AuthPrincipal {
+            kind: PrincipalKind::AccountSession {
+                account_user_id: account.clone(),
+                session_id: "session-1".into(),
+            },
+        });
+        let Json(swept) = sweep_device(
+            State(state.clone()),
+            principal.clone(),
+            Json(SweepReq {
+                device_id: "dev-1".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(swept.swept_credits, 0);
+        let Json(summary) = remove_device(
+            State(state.clone()),
+            principal,
+            Json(RemoveDeviceReq {
+                device_id: "dev-1".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(summary.devices.is_empty());
+    }
 }

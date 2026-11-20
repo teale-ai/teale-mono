@@ -2,14 +2,27 @@
 //!
 //! These endpoints are protected by the normal device bearer middleware. The
 //! email code proves control of an address; the device bearer proves the app
-//! instance that is asking to link the account.
+//! instance that is asking to link the account. Verify is a verified email
+//! flow like `/v1/auth/email/verify`: it resolves (or creates) the account
+//! bound to the address and also returns an account session, which clients
+//! present as the `X-Teale-Account-Session` link proof.
 
-use axum::{extract::State, Json};
+use std::net::SocketAddr;
+
+use axum::{
+    extract::{ConnectInfo, State},
+    http::HeaderMap,
+    Extension, Json,
+};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::auth::AuthPrincipal;
 use crate::error::GatewayError;
+use crate::handlers::account_auth::{
+    check_email_request_rate, check_email_verify_rate, map_email_code_error, map_login_error,
+};
 use crate::ledger;
 use crate::state::AppState;
 
@@ -36,12 +49,20 @@ pub struct EmailCodeVerifyRes {
     #[serde(rename = "accountUserID")]
     pub account_user_id: String,
     pub email: String,
+    /// Account session for the verified account (link ownership proof).
+    #[serde(rename = "sessionToken")]
+    pub session_token: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
 }
 
 pub async fn request(
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(req): Json<EmailCodeRequestReq>,
 ) -> Result<Json<EmailCodeRequestRes>, GatewayError> {
+    check_email_request_rate(&headers, peer.map(|ConnectInfo(addr)| addr))?;
     let pool = state
         .db
         .as_ref()
@@ -49,8 +70,8 @@ pub async fn request(
     let email = ledger::normalize_account_email(&req.email)
         .ok_or_else(|| GatewayError::BadRequest("valid email is required".into()))?;
     let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000));
-    let created = ledger::create_account_email_code(pool, &email, &code)
-        .map_err(|err| GatewayError::BadRequest(err.to_string()))?;
+    let created =
+        ledger::create_account_email_code(pool, &email, &code).map_err(map_email_code_error)?;
     send_email_code(&email, &code).await?;
     Ok(Json(EmailCodeRequestRes {
         email: created.email,
@@ -60,17 +81,27 @@ pub async fn request(
 
 pub async fn verify(
     State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(req): Json<EmailCodeVerifyReq>,
 ) -> Result<Json<EmailCodeVerifyRes>, GatewayError> {
+    check_email_verify_rate(&headers, peer.map(|ConnectInfo(addr)| addr))?;
     let pool = state
         .db
         .as_ref()
         .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
     let verified = ledger::verify_account_email_code(pool, &req.email, &req.code)
-        .map_err(|err| GatewayError::BadRequest(err.to_string()))?;
+        .map_err(map_email_code_error)?;
+    let login = ledger::resolve_login_account(pool, &verified.email).map_err(map_login_error)?;
+    let device_id = principal.device_id();
+    let issued = ledger::create_account_session(pool, &login.account_user_id, device_id, None)
+        .map_err(GatewayError::Other)?;
     Ok(Json(EmailCodeVerifyRes {
-        account_user_id: verified.account_user_id,
+        account_user_id: login.account_user_id,
         email: verified.email,
+        session_token: issued.token,
+        expires_at: issued.expires_at,
     }))
 }
 

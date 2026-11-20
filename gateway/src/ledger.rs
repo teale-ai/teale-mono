@@ -20,12 +20,14 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::db::{unix_now, DbPool};
 
+/// Welcome bonus, granted once per verified email address when a verified
+/// email login creates the account (and once per device at device exchange).
 pub const WELCOME_BONUS_CREDITS: i64 = 100_000;
 pub const CHALLENGE_TTL_SECONDS: i64 = 300;
 pub const TOKEN_TTL_SECONDS: i64 = 86_400;
@@ -35,6 +37,71 @@ pub const REFERRAL_BONUS_CREDITS: i64 = 1_000_000;
 pub const EMAIL_CODE_TTL_SECONDS: i64 = 10 * 60;
 pub const EMAIL_CODE_RESEND_WINDOW_SECONDS: i64 = 60;
 pub const EMAIL_CODE_MAX_ATTEMPTS: i64 = 5;
+/// At most this many sign-in / verification emails per address per 24 h.
+pub const EMAIL_CODE_DAILY_CAP_PER_ADDRESS: i64 = 10;
+/// Email code rows are kept this long (well past their TTL) so the daily
+/// per-address cap can count them; the maintenance sweep deletes older rows.
+pub const EMAIL_CODE_RETENTION_SECONDS: i64 = 2 * 86_400;
+/// Usage-report batch ids are remembered this long for replay detection.
+pub const PIN_USAGE_BATCH_RETENTION_SECONDS: i64 = 30 * 86_400;
+/// `account_sessions.last_seen_at` is written at most this often per session.
+pub const SESSION_TOUCH_INTERVAL_SECONDS: i64 = 60;
+
+/// Prefix marking a bearer stored as a SHA-256 digest (device tokens and
+/// share-key tokens). Lets the one-way migration skip already-hashed rows.
+pub const HASHED_BEARER_PREFIX: &str = "sha256:";
+
+/// Digest stored at rest for device tokens and share-key tokens. The raw
+/// token is returned to the client once at issuance and never persisted.
+pub fn hash_bearer_token(token: &str) -> String {
+    format!(
+        "{HASHED_BEARER_PREFIX}{}",
+        hex::encode(Sha256::digest(token.as_bytes()))
+    )
+}
+
+/// The mint pool cannot cover a mint. Every mint path refuses instead of
+/// issuing credits the pool does not hold (see docs/ledger-verifiability.md).
+/// Admin and referral mints surface this as an error; welcome bonuses are
+/// simply not granted.
+#[derive(Debug, thiserror::Error)]
+#[error("mint pool exhausted: {remaining} credits remaining, {requested} requested")]
+pub struct MintPoolExhausted {
+    pub remaining: i64,
+    pub requested: i64,
+}
+
+/// Debit the mint pool by `amount` or refuse with [`MintPoolExhausted`]
+/// without touching anything.
+fn debit_mint_pool_tx(tx: &rusqlite::Transaction<'_>, amount: i64) -> anyhow::Result<()> {
+    if amount <= 0 {
+        return Ok(());
+    }
+    let changed = tx.execute(
+        "UPDATE mint_pool SET remaining = remaining - ? WHERE id = 1 AND remaining >= ?",
+        params![amount, amount],
+    )?;
+    if changed == 0 {
+        let remaining: i64 = tx
+            .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or(0);
+        return Err(MintPoolExhausted {
+            remaining,
+            requested: amount,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// A sign-in / verification email was refused by a rate limit (daily
+/// per-address cap). Handlers map it to 429.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct EmailRateLimited(pub String);
 
 /// Share-key bounds. Enforced by `mint_share_key`.
 pub const SHARE_KEY_MIN_EXPIRES_IN: i64 = 60; // 1 minute
@@ -347,13 +414,15 @@ pub struct BalanceSnapshot {
     pub usdc_cents: i64,
 }
 
+/// Client-supplied profile metadata carried by `/v1/account/link`. There is
+/// deliberately no email field: `account_wallets.email` is only ever written
+/// by verified email flows (`resolve_login_account`), never by link metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountLinkMetadata {
     pub device_name: Option<String>,
     pub platform: Option<String>,
     pub display_name: Option<String>,
     pub phone: Option<String>,
-    pub email: Option<String>,
     pub github_username: Option<String>,
 }
 
@@ -458,14 +527,6 @@ pub struct ReferralCodeSnapshot {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeviceJoinRewards {
-    #[serde(rename = "welcomeBonusCredits")]
-    pub welcome_bonus_credits: i64,
-    #[serde(rename = "referralBonusCredits")]
-    pub referral_bonus_credits: i64,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AccountJoinRewards {
     #[serde(rename = "welcomeBonusCredits")]
     pub welcome_bonus_credits: i64,
     #[serde(rename = "referralBonusCredits")]
@@ -1024,21 +1085,20 @@ pub fn apply_device_join_rewards(
 
     let mut rewards = DeviceJoinRewards::default();
     if has_bonus.is_none() {
-        tx.execute(
-            "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
-            params![WELCOME_BONUS_CREDITS],
-        )?;
-        tx.execute(
-            "INSERT INTO ledger (device_id, type, amount, timestamp, note)
-             VALUES (?, 'BONUS', ?, ?, 'Welcome to Teale')",
-            params![device_id, WELCOME_BONUS_CREDITS, now],
-        )?;
-        tx.execute(
-            "UPDATE balances SET balance = balance + ?, total_earned = total_earned + ?
-             WHERE device_id = ?",
-            params![WELCOME_BONUS_CREDITS, WELCOME_BONUS_CREDITS, device_id],
-        )?;
-        rewards.welcome_bonus_credits = WELCOME_BONUS_CREDITS;
+        match credit_device_wallet_tx(
+            &tx,
+            device_id,
+            WELCOME_BONUS_CREDITS,
+            "BONUS",
+            "Welcome to Teale",
+            now,
+        ) {
+            Ok(()) => rewards.welcome_bonus_credits = WELCOME_BONUS_CREDITS,
+            Err(err) if err.is::<MintPoolExhausted>() => {
+                tracing::warn!(device_id, "welcome bonus not granted: {err}");
+            }
+            Err(err) => return Err(ReferralError::Other(err)),
+        }
     }
 
     if let Some(referral_code) = normalized_optional_string(referral_code) {
@@ -1050,51 +1110,32 @@ pub fn apply_device_join_rewards(
     Ok(rewards)
 }
 
-pub fn apply_account_join_rewards(
+/// Apply a referral code for an account. Only called for session-backed
+/// links (the account is bound to a verified email) on the account's first
+/// linked device, so referral bonuses cannot be farmed with throwaway
+/// account ids. The welcome bonus is no longer granted at link time: it is
+/// granted by `resolve_login_account` on the verified-email first login.
+pub fn apply_account_referral(
     pool: &DbPool,
     requester_device_id: &str,
     account_user_id: &str,
-    referral_code: Option<&str>,
-) -> Result<AccountJoinRewards, ReferralError> {
+    referral_code: &str,
+) -> Result<i64, ReferralError> {
+    let Some(referral_code) = normalized_optional_string(Some(referral_code)) else {
+        return Ok(0);
+    };
     let mut conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
-
-    let has_bonus: Option<i64> = tx
-        .query_row(
-            "SELECT 1 FROM account_ledger
-             WHERE account_user_id = ? AND type = 'BONUS' LIMIT 1",
-            [account_user_id],
-            |r| r.get(0),
-        )
-        .ok();
-
-    let mut rewards = AccountJoinRewards::default();
-    if has_bonus.is_none() {
-        credit_account_wallet_tx(
-            &tx,
-            account_user_id,
-            WELCOME_BONUS_CREDITS,
-            "BONUS",
-            Some(requester_device_id),
-            "Welcome to Teale",
-            now,
-        )?;
-        rewards.welcome_bonus_credits = WELCOME_BONUS_CREDITS;
-    }
-
-    if let Some(referral_code) = normalized_optional_string(referral_code) {
-        rewards.referral_bonus_credits = apply_referral_for_account_tx(
-            &tx,
-            requester_device_id,
-            account_user_id,
-            &referral_code,
-            now,
-        )?;
-    }
-
+    let credits = apply_referral_for_account_tx(
+        &tx,
+        requester_device_id,
+        account_user_id,
+        &referral_code,
+        now,
+    )?;
     tx.commit()?;
-    Ok(rewards)
+    Ok(credits)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1305,39 +1346,48 @@ pub fn consume_challenge(pool: &DbPool, device_id: &str, nonce: &str) -> anyhow:
     Ok(ok)
 }
 
+/// Persist a freshly issued device token. Only its SHA-256 digest is stored;
+/// the caller returns the raw token to the device exactly once.
 pub fn issue_token(pool: &DbPool, device_id: &str, token: &str) -> anyhow::Result<i64> {
     let conn = pool.lock();
     let now = unix_now();
     let expires = now + TOKEN_TTL_SECONDS;
     conn.execute(
         "INSERT INTO tokens (token, device_id, expires_at) VALUES (?, ?, ?)",
-        params![token, device_id, expires],
+        params![hash_bearer_token(token), device_id, expires],
     )?;
     Ok(expires)
 }
 
-pub fn resolve_token(pool: &DbPool, token: &str) -> Option<String> {
+/// Resolve a device bearer to its device id. `Ok(None)` for unknown or
+/// expired tokens; `Err` only for database failures (callers map it to 500).
+pub fn try_resolve_token(pool: &DbPool, token: &str) -> anyhow::Result<Option<String>> {
     let conn = pool.lock();
     let now = unix_now();
-    conn.query_row(
-        "SELECT device_id FROM tokens WHERE token = ? AND expires_at > ?",
-        params![token, now],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
+    let device_id = conn
+        .query_row(
+            "SELECT device_id FROM tokens WHERE token = ? AND expires_at > ?",
+            params![hash_bearer_token(token), now],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(device_id)
+}
+
+/// Lenient form of [`try_resolve_token`] for handlers that only need a yes/no.
+pub fn resolve_token(pool: &DbPool, token: &str) -> Option<String> {
+    try_resolve_token(pool, token).ok().flatten()
 }
 
 /// Record a bonus and mint-pool debit atomically. Returns the balance after.
+/// Test-only helper for seeding device balances.
+#[cfg(test)]
 pub fn record_bonus(pool: &DbPool, device_id: &str, amount: i64) -> anyhow::Result<i64> {
     let mut conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
 
-    // Debit mint pool (skip if would go negative — bonus still granted out of "reserves")
-    tx.execute(
-        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
-        params![amount],
-    )?;
+    debit_mint_pool_tx(&tx, amount)?;
 
     tx.execute(
         "INSERT INTO ledger (device_id, type, amount, timestamp, note)
@@ -1376,10 +1426,7 @@ fn credit_device_wallet_tx(
         "INSERT OR IGNORE INTO balances (device_id) VALUES (?)",
         [device_id],
     )?;
-    tx.execute(
-        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
-        params![amount_credits],
-    )?;
+    debit_mint_pool_tx(tx, amount_credits)?;
     tx.execute(
         "INSERT INTO ledger (device_id, type, amount, timestamp, note)
          VALUES (?, ?, ?, ?, ?)",
@@ -1402,10 +1449,7 @@ fn credit_account_wallet_tx(
     note: &str,
     now: i64,
 ) -> anyhow::Result<()> {
-    tx.execute(
-        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
-        params![amount_credits],
-    )?;
+    debit_mint_pool_tx(tx, amount_credits)?;
     tx.execute(
         "UPDATE account_wallets
          SET balance_credits = balance_credits + ?, updated_at = ?
@@ -1426,34 +1470,6 @@ fn credit_account_wallet_tx(
         ],
     )?;
     Ok(())
-}
-
-pub fn record_account_bonus(
-    pool: &DbPool,
-    account_user_id: &str,
-    amount_credits: i64,
-    device_id: Option<&str>,
-    note: &str,
-) -> anyhow::Result<i64> {
-    let mut conn = pool.lock();
-    let now = unix_now();
-    let tx = conn.transaction()?;
-    credit_account_wallet_tx(
-        &tx,
-        account_user_id,
-        amount_credits,
-        "BONUS",
-        device_id,
-        note,
-        now,
-    )?;
-    let balance: i64 = tx.query_row(
-        "SELECT balance_credits FROM account_wallets WHERE account_user_id = ?",
-        [account_user_id],
-        |r| r.get(0),
-    )?;
-    tx.commit()?;
-    Ok(balance)
 }
 
 fn new_referral_code() -> String {
@@ -1957,10 +1973,11 @@ pub fn refund_expired_share_keys(pool: &DbPool) -> anyhow::Result<ExpiredShareKe
 }
 
 /// Admin-initiated mint: credit a device wallet with `amount` credits, debit
-/// the mint pool (clamping at zero so we never go negative), and record an
-/// ADMIN_MINT ledger entry. Used by the admin top-up endpoint.
+/// the mint pool, and record an ADMIN_MINT ledger entry. Used by the admin
+/// top-up endpoint. Refused with [`MintPoolExhausted`] when the pool cannot
+/// cover `amount` (the pool never goes negative and is never over-issued).
 ///
-/// Like `record_bonus`, counts toward the recipient's `total_earned` so the
+/// Like a welcome bonus, counts toward the recipient's `total_earned` so the
 /// wallet history shows the top-up as an earn (distinguishable by ledger type
 /// from a welcome bonus).
 pub fn admin_mint(pool: &DbPool, device_id: &str, amount: i64, note: &str) -> anyhow::Result<i64> {
@@ -1981,10 +1998,7 @@ pub fn admin_mint(pool: &DbPool, device_id: &str, amount: i64, note: &str) -> an
         [device_id],
     )?;
 
-    tx.execute(
-        "UPDATE mint_pool SET remaining = MAX(0, remaining - ?) WHERE id = 1",
-        params![amount],
-    )?;
+    debit_mint_pool_tx(&tx, amount)?;
     tx.execute(
         "INSERT INTO ledger (device_id, type, amount, timestamp, note)
          VALUES (?, ?, ?, ?, ?)",
@@ -2031,6 +2045,7 @@ pub fn reset_genesis(pool: &DbPool) -> anyhow::Result<GenesisResetReport> {
 
     tx.execute("DELETE FROM tokens", [])?;
     tx.execute("DELETE FROM challenges", [])?;
+    tx.execute("DELETE FROM account_email_bonuses", [])?;
     tx.execute("DELETE FROM referral_claims", [])?;
     tx.execute("DELETE FROM referral_codes", [])?;
     tx.execute("DELETE FROM account_withdrawals", [])?;
@@ -2481,6 +2496,14 @@ fn format_recipient_note(sender_label: &str, memo: Option<&str>) -> String {
     }
 }
 
+fn is_uuid_shape(v: &str) -> bool {
+    v.len() == 36
+        && v.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
 /// Canonical form for account ids. UUID-shaped ids are uppercased so the
 /// same account can never split across case variants - SQLite TEXT PRIMARY
 /// KEYs compare case-sensitively, and Apple Foundation's uuidString emits
@@ -2488,49 +2511,243 @@ fn format_recipient_note(sender_label: &str, memo: Option<&str>) -> String {
 /// provider ids) pass through unchanged.
 pub fn normalize_account_user_id(value: &str) -> String {
     let v = value.trim();
-    let is_uuid = v.len() == 36
-        && v.chars().enumerate().all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        });
-    if is_uuid {
+    if is_uuid_shape(v) {
         return v.to_ascii_uppercase();
     }
     // email-derived ids: the address is case-insensitive per RFC 5321 and
     // our normalize_account_email already lowercases it - keep the id form
-    // canonical too so "EMAIL:Taylor@Hou.vc" can never fork an account.
-    if v.len() > 6 && v[..6].eq_ignore_ascii_case("email:") {
-        return format!("email:{}", v[6..].to_lowercase());
+    // canonical too so "EMAIL:Pilot@Example.com" can never fork an account.
+    if let (Some(prefix), Some(rest)) = (v.get(..6), v.get(6..)) {
+        if !rest.is_empty() && prefix.eq_ignore_ascii_case("email:") {
+            return format!("email:{}", rest.to_lowercase());
+        }
     }
     v.to_string()
+}
+
+/// `email:{addr}` ids are derived from a verified address. They can only be
+/// created by a verified email login or linked with an account session.
+fn is_email_account_id(account_user_id: &str) -> bool {
+    account_user_id.starts_with("email:")
 }
 
 /// True when a wallet row already exists for the (normalized) account id.
 pub fn account_wallet_exists(pool: &DbPool, account_user_id: &str) -> anyhow::Result<bool> {
     let account_user_id = normalize_account_user_id(account_user_id);
     let conn = pool.lock();
-    let row: Option<i64> = conn
+    Ok(wallet_exists_locked(&conn, &account_user_id)?)
+}
+
+fn wallet_exists_locked(
+    conn: &rusqlite::Connection,
+    account_user_id: &str,
+) -> rusqlite::Result<bool> {
+    let row = conn
         .query_row(
             "SELECT 1 FROM account_wallets WHERE account_user_id = ?",
-            [&account_user_id],
-            |r| r.get(0),
+            [account_user_id],
+            |_| Ok(()),
         )
-        .ok();
+        .optional()?;
     Ok(row.is_some())
 }
 
+/// Every column that stores an account id, renamed together by
+/// [`canonicalize_legacy_account_id`].
+const ACCOUNT_ID_COLUMNS: &[(&str, &str)] = &[
+    ("account_wallets", "account_user_id"),
+    ("account_devices", "account_user_id"),
+    ("account_ledger", "account_user_id"),
+    ("account_onchain_deposits", "account_user_id"),
+    ("account_withdrawals", "account_user_id"),
+    ("account_sessions", "account_user_id"),
+    ("account_email_bonuses", "account_user_id"),
+    ("api_keys", "account_user_id"),
+    ("referral_codes", "owner_account_user_id"),
+    ("referral_claims", "referred_account_user_id"),
+    ("pins", "owner_account_user_id"),
+    ("pin_roles", "account_user_id"),
+    ("pin_roles", "granted_by"),
+    ("pin_members", "approved_by"),
+    ("pin_members", "removed_by"),
+    ("pin_model_policy", "set_by"),
+];
+
+/// Pre-#173 clients stored UUID account ids in lowercase; ids are now
+/// normalized to uppercase. When `account_user_id` is an uppercase UUID that
+/// has no wallet but its lowercase form does, rename the lowercase rows to
+/// the uppercase id across every account table in one transaction, so the
+/// existing balance and history follow the user. Balances are never merged:
+/// if both forms exist the rows are left alone and a warning is logged.
+/// Returns true when a rename happened.
+pub fn canonicalize_legacy_account_id(
+    pool: &DbPool,
+    account_user_id: &str,
+) -> anyhow::Result<bool> {
+    if !is_uuid_shape(account_user_id) {
+        return Ok(false);
+    }
+    let legacy = account_user_id.to_ascii_lowercase();
+    if legacy == account_user_id || account_user_id != account_user_id.to_ascii_uppercase() {
+        return Ok(false);
+    }
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let canonical_exists = wallet_exists_locked(&tx, account_user_id)?;
+    let legacy_exists = wallet_exists_locked(&tx, &legacy)?;
+    if !legacy_exists {
+        return Ok(false);
+    }
+    if canonical_exists {
+        tracing::warn!(
+            account_user_id,
+            legacy_account_user_id = %legacy,
+            "account exists in both uppercase and lowercase form; not merging"
+        );
+        return Ok(false);
+    }
+    // Parent and child keys change together; check the foreign keys at
+    // commit instead of after each statement.
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+    for (table, column) in ACCOUNT_ID_COLUMNS {
+        tx.execute(
+            &format!("UPDATE {table} SET {column} = ?1 WHERE {column} = ?2"),
+            params![account_user_id, legacy],
+        )?;
+    }
+    tx.execute(
+        "UPDATE referral_claims SET referrer_id = ?1
+         WHERE referrer_kind = 'account' AND referrer_id = ?2",
+        params![account_user_id, legacy],
+    )?;
+    tx.commit()?;
+    tracing::info!(
+        account_user_id,
+        legacy_account_user_id = %legacy,
+        "renamed legacy lowercase account id to its canonical uppercase form"
+    );
+    Ok(true)
+}
+
+/// Ownership proof presented with a link request (contract B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkProof {
+    /// A valid account session for exactly the target account.
+    AccountSession,
+    /// No proof: only creating a brand-new account is allowed (or a no-op
+    /// re-link of a device that is already linked to that same account).
+    None,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LinkDeviceError {
+    /// The link needs an `X-Teale-Account-Session` proof.
+    #[error("{0}")]
+    SessionRequired(&'static str),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl From<rusqlite::Error> for LinkDeviceError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LinkOutcome {
+    /// The link created the account wallet.
+    pub created_account: bool,
+    /// No device was linked to the account before this call.
+    pub first_device: bool,
+}
+
+/// Link a device to an account, enforcing contract B atomically:
+/// - with [`LinkProof::AccountSession`] (the handler already checked that the
+///   session belongs to `account_user_id`) the link is allowed, including
+///   re-pointing a device that is linked elsewhere;
+/// - with [`LinkProof::None`] the link is allowed only when the account does
+///   not exist yet, the device is not linked to a different account and the
+///   id is not an `email:` id. Re-linking a device to the account it is
+///   already on is a harmless metadata refresh and stays allowed.
+///
+/// Never writes `account_wallets.email` and never mints a bonus.
+pub fn link_device_to_account_with_proof(
+    pool: &DbPool,
+    device_id: &str,
+    account_user_id: &str,
+    metadata: &AccountLinkMetadata,
+    proof: LinkProof,
+) -> Result<LinkOutcome, LinkDeviceError> {
+    let account_user_id = normalize_account_user_id(account_user_id);
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
+    let account_exists = wallet_exists_locked(&tx, &account_user_id)?;
+    let current_account: Option<String> = tx
+        .query_row(
+            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
+            [device_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let already_linked_here = current_account.as_deref() == Some(account_user_id.as_str());
+    if proof == LinkProof::None && !already_linked_here {
+        if account_exists {
+            return Err(LinkDeviceError::SessionRequired(
+                "this account already exists; sign in with email and retry with an account session",
+            ));
+        }
+        if current_account.is_some() {
+            return Err(LinkDeviceError::SessionRequired(
+                "this device is linked to a different account; sign in with email to move it",
+            ));
+        }
+        if is_email_account_id(&account_user_id) {
+            return Err(LinkDeviceError::SessionRequired(
+                "email accounts can only be linked with an account session",
+            ));
+        }
+    }
+    let outcome = link_device_tx(&tx, device_id, &account_user_id, metadata, account_exists)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+/// Unchecked link used by unit tests to set up fixtures. Production code goes
+/// through [`link_device_to_account_with_proof`].
+#[cfg(test)]
 pub fn link_device_to_account(
     pool: &DbPool,
     device_id: &str,
     account_user_id: &str,
     metadata: &AccountLinkMetadata,
 ) -> anyhow::Result<()> {
-    let account_user_id = &normalize_account_user_id(account_user_id);
+    let account_user_id = normalize_account_user_id(account_user_id);
     let mut conn = pool.lock();
-    let now = unix_now();
     let tx = conn.transaction()?;
+    let account_exists = wallet_exists_locked(&tx, &account_user_id)?;
+    link_device_tx(&tx, device_id, &account_user_id, metadata, account_exists)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn link_device_tx(
+    tx: &rusqlite::Transaction<'_>,
+    device_id: &str,
+    account_user_id: &str,
+    metadata: &AccountLinkMetadata,
+    account_exists: bool,
+) -> anyhow::Result<LinkOutcome> {
+    let now = unix_now();
+    let first_device = tx
+        .query_row(
+            "SELECT 1 FROM account_devices WHERE account_user_id = ? LIMIT 1",
+            [account_user_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_none();
     let normalized_phone = metadata.phone.as_deref().and_then(normalize_phone_value);
-    let normalized_email = metadata.email.as_deref().and_then(normalize_email);
     let normalized_github = metadata
         .github_username
         .as_deref()
@@ -2547,18 +2764,16 @@ pub fn link_device_to_account(
         "INSERT INTO account_wallets
             (account_user_id, display_name, phone, email, github_username,
              balance_credits, usdc_cents, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+         VALUES (?, ?, ?, NULL, ?, 0, 0, ?, ?)
          ON CONFLICT(account_user_id) DO UPDATE SET
             display_name = COALESCE(excluded.display_name, account_wallets.display_name),
             phone = COALESCE(excluded.phone, account_wallets.phone),
-            email = COALESCE(excluded.email, account_wallets.email),
             github_username = COALESCE(excluded.github_username, account_wallets.github_username),
             updated_at = excluded.updated_at",
         params![
             account_user_id,
             metadata.display_name.as_deref(),
             normalized_phone.as_deref(),
-            normalized_email.as_deref(),
             normalized_github.as_deref(),
             now,
             now,
@@ -2587,8 +2802,10 @@ pub fn link_device_to_account(
             now,
         ],
     )?;
-    tx.commit()?;
-    Ok(())
+    Ok(LinkOutcome {
+        created_account: !account_exists,
+        first_device,
+    })
 }
 
 pub fn transfer_from_device_wallet(
@@ -3142,25 +3359,30 @@ pub fn account_onchain_summary(
     Ok(onchain_snapshot_from_state(account_user_id, &state))
 }
 
+/// Sweep a linked device's balance into the account the requesting device
+/// is linked to.
 pub fn sweep_device_to_account(
     pool: &DbPool,
     requester_device_id: &str,
     target_device_id: &str,
 ) -> anyhow::Result<AccountSweepResult> {
+    let Some(account_user_id) = account_user_id_for_device(pool, requester_device_id) else {
+        anyhow::bail!("requesting device is not linked to an account");
+    };
+    sweep_device_into_account(pool, &account_user_id, target_device_id)
+}
+
+/// Sweep a device's balance into `account_user_id`. The target device must
+/// be linked to that account (checked inside the transaction).
+pub fn sweep_device_into_account(
+    pool: &DbPool,
+    account_user_id: &str,
+    target_device_id: &str,
+) -> anyhow::Result<AccountSweepResult> {
+    let account_user_id = account_user_id.to_string();
     let mut conn = pool.lock();
     let now = unix_now();
     let tx = conn.transaction()?;
-
-    let requester_account: Option<String> = tx
-        .query_row(
-            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
-            [requester_device_id],
-            |r| r.get(0),
-        )
-        .ok();
-    let Some(account_user_id) = requester_account else {
-        anyhow::bail!("requesting device is not linked to an account");
-    };
 
     let target_account: Option<String> = tx
         .query_row(
@@ -3258,20 +3480,21 @@ pub fn remove_device_from_account(
     if requester_device_id == target_device_id {
         anyhow::bail!("current device cannot remove itself from this account");
     }
-
-    let mut conn = pool.lock();
-    let tx = conn.transaction()?;
-    let requester_account: Option<String> = tx
-        .query_row(
-            "SELECT account_user_id FROM account_devices WHERE device_id = ?",
-            [requester_device_id],
-            |r| r.get(0),
-        )
-        .ok();
-    let Some(account_user_id) = requester_account else {
+    let Some(account_user_id) = account_user_id_for_device(pool, requester_device_id) else {
         anyhow::bail!("requesting device is not linked to an account");
     };
+    remove_device_from_account_for_account(pool, &account_user_id, target_device_id)
+}
 
+/// Unlink `target_device_id` from `account_user_id` (account-session path).
+/// The target must currently be linked to that account.
+pub fn remove_device_from_account_for_account(
+    pool: &DbPool,
+    account_user_id: &str,
+    target_device_id: &str,
+) -> anyhow::Result<AccountWalletSnapshot> {
+    let mut conn = pool.lock();
+    let tx = conn.transaction()?;
     let target_account: Option<String> = tx
         .query_row(
             "SELECT account_user_id FROM account_devices WHERE device_id = ?",
@@ -3279,7 +3502,7 @@ pub fn remove_device_from_account(
             |r| r.get(0),
         )
         .ok();
-    if target_account.as_deref() != Some(account_user_id.as_str()) {
+    if target_account.as_deref() != Some(account_user_id) {
         anyhow::bail!("target device is not linked to this account");
     }
 
@@ -3289,7 +3512,7 @@ pub fn remove_device_from_account(
     )?;
     tx.commit()?;
     drop(conn);
-    account_summary(pool, &account_user_id)
+    account_summary(pool, account_user_id)
 }
 
 fn list_account_withdrawals_locked(
@@ -5216,6 +5439,7 @@ pub fn mint_share_key(
     let token = format!("tok_share_{}", uuid::Uuid::new_v4().simple());
     let expires_at = now + expires_in_seconds;
 
+    // Only the digest is stored; the raw token is returned once below.
     tx.execute(
         "INSERT INTO share_keys
          (key_id, token, issuer_device_id, label, expires_at, budget_credits,
@@ -5223,7 +5447,7 @@ pub fn mint_share_key(
          VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, 1, ?, NULL)",
         params![
             &key_id,
-            &token,
+            hash_bearer_token(&token),
             issuer_device_id,
             normalized_label,
             expires_at,
@@ -5286,7 +5510,7 @@ pub fn resolve_share_key(
             "SELECT key_id, issuer_device_id, expires_at, budget_credits,
                     consumed_credits, revoked_at
              FROM share_keys WHERE token = ?",
-            [token],
+            [hash_bearer_token(token)],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -5601,7 +5825,7 @@ pub fn preview_share_key(pool: &DbPool, token: &str) -> Option<ShareKeyPreview> 
             "SELECT sk.label, sk.budget_credits, sk.consumed_credits, sk.expires_at,
                     sk.issuer_device_id, sk.revoked_at
              FROM share_keys sk WHERE sk.token = ?",
-            [token],
+            [hash_bearer_token(token)],
             |r| {
                 Ok((
                     r.get(0)?,
@@ -5721,6 +5945,39 @@ pub fn account_user_id_for_email(email: &str) -> String {
     format!("email:{}", email)
 }
 
+/// Per-address send limits shared by both email-code flows: a 60 s resend
+/// window and a rolling 24 h cap (refused with [`EmailRateLimited`]).
+fn check_email_send_limits(
+    conn: &rusqlite::Connection,
+    email: &str,
+    now: i64,
+) -> anyhow::Result<()> {
+    let recent: Option<i64> = conn
+        .query_row(
+            "SELECT created_at FROM account_email_codes
+             WHERE email = ? AND consumed_at IS NULL
+             ORDER BY created_at DESC LIMIT 1",
+            [email],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(created_at) = recent {
+        if now - created_at < EMAIL_CODE_RESEND_WINDOW_SECONDS {
+            anyhow::bail!("wait before requesting another code");
+        }
+    }
+    let sent_today: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM account_email_codes WHERE email = ? AND created_at > ?",
+        params![email, now - 86_400],
+        |r| r.get(0),
+    )?;
+    if sent_today >= EMAIL_CODE_DAILY_CAP_PER_ADDRESS {
+        let message = "too many codes requested for this address today; try again later";
+        return Err(EmailRateLimited(message.to_string()).into());
+    }
+    Ok(())
+}
+
 pub fn create_account_email_code(
     pool: &DbPool,
     email: &str,
@@ -5731,20 +5988,7 @@ pub fn create_account_email_code(
     let code_hash = hash_account_email_code(&email, code);
     let conn = pool.lock();
     let now = unix_now();
-    let recent: Option<i64> = conn
-        .query_row(
-            "SELECT created_at FROM account_email_codes
-             WHERE email = ? AND consumed_at IS NULL
-             ORDER BY created_at DESC LIMIT 1",
-            [&email],
-            |r| r.get(0),
-        )
-        .ok();
-    if let Some(created_at) = recent {
-        if now - created_at < EMAIL_CODE_RESEND_WINDOW_SECONDS {
-            anyhow::bail!("wait before requesting another code");
-        }
-    }
+    check_email_send_limits(&conn, &email, now)?;
     let expires_at = now + EMAIL_CODE_TTL_SECONDS;
     conn.execute(
         "INSERT INTO account_email_codes
@@ -5784,7 +6028,7 @@ pub fn verify_account_email_code(
             [&email],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .ok();
+        .optional()?;
     let Some((id, code_hash, expires_at, attempts)) = row else {
         anyhow::bail!("code not found or already used");
     };
@@ -5861,34 +6105,165 @@ fn hash_account_session_token(token: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Resolve the account id a login should bind to. Users who previously
-/// linked with a Supabase UUID keep that id (wallets, balances, and devices
-/// follow the email); net-new emails get a deterministic `email:{addr}` id.
-pub fn account_user_id_for_login(pool: &DbPool, email: &str) -> anyhow::Result<String> {
+#[derive(Debug, thiserror::Error)]
+pub enum LoginAccountError {
+    #[error("more than one account is bound to this email; contact support")]
+    AmbiguousEmail,
+    #[error(
+        "the account derived from this email is bound to a different address; contact support"
+    )]
+    EmailMismatch,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl From<rusqlite::Error> for LoginAccountError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
+/// The account a verified email login binds to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginAccount {
+    pub account_user_id: String,
+    /// This login created the account wallet.
+    pub created: bool,
+    /// Welcome bonus granted by this login (0 when none was granted).
+    pub welcome_bonus_credits: i64,
+}
+
+/// Resolve (or create) the account a verified email login binds to. Every
+/// verified email flow (code verify, magic link, device-bound email-code
+/// verify) goes through here, and it is the only writer of
+/// `account_wallets.email`:
+/// - exactly one wallet carries the address: that account (users who linked
+///   with a Supabase UUID keep that id);
+/// - more than one wallet carries it: refused (fail closed, no guessing);
+/// - none: the deterministic `email:{addr}` account. A pre-existing
+///   `email:{addr}` row with no email is bound to the address; one bound to
+///   another address is refused. A newly created account receives the
+///   welcome bonus, at most once per verified email address.
+pub fn resolve_login_account(
+    pool: &DbPool,
+    email: &str,
+) -> Result<LoginAccount, LoginAccountError> {
     let email =
         normalize_account_email(email).ok_or_else(|| anyhow::anyhow!("valid email is required"))?;
-    let conn = pool.lock();
-    let existing: Option<String> = conn
+    let mut conn = pool.lock();
+    let now = unix_now();
+    let tx = conn.transaction()?;
+    let matches: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT account_user_id FROM account_wallets
+             WHERE LOWER(email) = ? ORDER BY account_user_id LIMIT 2",
+        )?;
+        let rows = stmt.query_map([&email], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    match matches.as_slice() {
+        [] => {}
+        [account_user_id] => {
+            return Ok(LoginAccount {
+                account_user_id: account_user_id.clone(),
+                created: false,
+                welcome_bonus_credits: 0,
+            });
+        }
+        _ => {
+            tracing::warn!(email = %email, "login refused: several account wallets share this email");
+            return Err(LoginAccountError::AmbiguousEmail);
+        }
+    }
+
+    let account_user_id = account_user_id_for_email(&email);
+    let bound_email: Option<Option<String>> = tx
         .query_row(
-            "SELECT account_user_id FROM account_wallets WHERE LOWER(email) = ?",
-            [&email],
+            "SELECT email FROM account_wallets WHERE account_user_id = ?",
+            [&account_user_id],
             |r| r.get(0),
         )
-        .ok();
-    if let Some(id) = existing {
-        return Ok(id);
+        .optional()?;
+    match bound_email {
+        Some(Some(_)) => return Err(LoginAccountError::EmailMismatch),
+        Some(None) => {
+            tx.execute(
+                "UPDATE account_wallets SET email = ?, updated_at = ? WHERE account_user_id = ?",
+                params![email, now, account_user_id],
+            )?;
+            tx.commit()?;
+            return Ok(LoginAccount {
+                account_user_id,
+                created: false,
+                welcome_bonus_credits: 0,
+            });
+        }
+        None => {}
     }
-    let account_user_id = account_user_id_for_email(&email);
-    let now = unix_now();
-    conn.execute(
+
+    tx.execute(
         "INSERT INTO account_wallets
             (account_user_id, display_name, phone, email, github_username,
              balance_credits, usdc_cents, created_at, updated_at)
-         VALUES (?, NULL, NULL, ?, NULL, 0, 0, ?, ?)
-         ON CONFLICT(account_user_id) DO NOTHING",
+         VALUES (?, NULL, NULL, ?, NULL, 0, 0, ?, ?)",
         params![account_user_id, email, now, now],
     )?;
-    Ok(account_user_id)
+    let welcome_bonus_credits = grant_verified_email_bonus_tx(&tx, &account_user_id, &email, now)?;
+    tx.commit()?;
+    Ok(LoginAccount {
+        account_user_id,
+        created: true,
+        welcome_bonus_credits,
+    })
+}
+
+/// Welcome bonus for a verified-email first login, at most once per address
+/// (tracked in `account_email_bonuses`, so deleting and re-creating an
+/// account cannot re-mint it). Not granted when the mint pool is exhausted.
+fn grant_verified_email_bonus_tx(
+    tx: &rusqlite::Transaction<'_>,
+    account_user_id: &str,
+    email: &str,
+    now: i64,
+) -> anyhow::Result<i64> {
+    let already_granted = tx
+        .query_row(
+            "SELECT 1 FROM account_email_bonuses WHERE email = ?",
+            [email],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_granted {
+        return Ok(0);
+    }
+    match credit_account_wallet_tx(
+        tx,
+        account_user_id,
+        WELCOME_BONUS_CREDITS,
+        "BONUS",
+        None,
+        "Welcome to Teale",
+        now,
+    ) {
+        Ok(()) => {}
+        Err(err) if err.is::<MintPoolExhausted>() => {
+            tracing::warn!(account_user_id, "welcome bonus not granted: {err}");
+            return Ok(0);
+        }
+        Err(err) => return Err(err),
+    }
+    tx.execute(
+        "INSERT INTO account_email_bonuses (email, account_user_id, amount_credits, granted_at)
+         VALUES (?, ?, ?, ?)",
+        params![email, account_user_id, WELCOME_BONUS_CREDITS, now],
+    )?;
+    Ok(WELCOME_BONUS_CREDITS)
+}
+
+/// The account id a verified login binds to (see [`resolve_login_account`]).
+pub fn account_user_id_for_login(pool: &DbPool, email: &str) -> anyhow::Result<String> {
+    Ok(resolve_login_account(pool, email)?.account_user_id)
 }
 
 /// Mint a session for an account. Returns the plaintext token once; only the
@@ -5929,44 +6304,64 @@ pub fn create_account_session(
     })
 }
 
-/// Resolve a session token to a live session. Expired or revoked tokens miss.
-/// Sliding renewal: past the half-life, the expiry is extended to a fresh TTL.
-pub fn resolve_account_session(pool: &DbPool, token: &str) -> Option<AccountSession> {
+/// Resolve a session token to a live session. `Ok(None)` for unknown, expired
+/// or revoked tokens; `Err` only for database failures (callers map it to
+/// 500). Sliding renewal: past the half-life, the expiry is extended to a
+/// fresh TTL. `last_seen_at` is otherwise written at most once per
+/// [`SESSION_TOUCH_INTERVAL_SECONDS`].
+pub fn try_resolve_account_session(
+    pool: &DbPool,
+    token: &str,
+) -> anyhow::Result<Option<AccountSession>> {
     if !token.starts_with("tsess_") {
-        return None;
+        return Ok(None);
     }
     let token_hash = hash_account_session_token(token);
     let conn = pool.lock();
     let now = unix_now();
-    let row: Option<(String, String, i64)> = conn
+    let row: Option<(String, String, i64, i64)> = conn
         .query_row(
-            "SELECT id, account_user_id, expires_at FROM account_sessions
+            "SELECT id, account_user_id, expires_at, last_seen_at FROM account_sessions
              WHERE token_hash = ? AND revoked_at IS NULL",
             [token_hash.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .ok();
-    let (session_id, account_user_id, mut expires_at) = row?;
+        .optional()?;
+    let Some((session_id, account_user_id, mut expires_at, last_seen_at)) = row else {
+        return Ok(None);
+    };
     if expires_at < now {
-        return None;
+        return Ok(None);
     }
-    if now > expires_at - ACCOUNT_SESSION_TTL_SECONDS / 2 {
+    let touch = if now > expires_at - ACCOUNT_SESSION_TTL_SECONDS / 2 {
         expires_at = now + ACCOUNT_SESSION_TTL_SECONDS;
-        let _ = conn.execute(
+        conn.execute(
             "UPDATE account_sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?",
             params![expires_at, now, session_id],
-        );
-    } else {
-        let _ = conn.execute(
+        )
+        .map(|_| ())
+    } else if now - last_seen_at >= SESSION_TOUCH_INTERVAL_SECONDS {
+        conn.execute(
             "UPDATE account_sessions SET last_seen_at = ? WHERE id = ?",
             params![now, session_id],
-        );
+        )
+        .map(|_| ())
+    } else {
+        Ok(())
+    };
+    if let Err(err) = touch {
+        tracing::warn!(session_id = %session_id, "could not update account session: {err}");
     }
-    Some(AccountSession {
+    Ok(Some(AccountSession {
         session_id,
         account_user_id,
         expires_at,
-    })
+    }))
+}
+
+/// Lenient form of [`try_resolve_account_session`].
+pub fn resolve_account_session(pool: &DbPool, token: &str) -> Option<AccountSession> {
+    try_resolve_account_session(pool, token).ok().flatten()
 }
 
 /// Revoke a session by its plaintext token (logout). Returns true if a live
@@ -6009,20 +6404,7 @@ pub fn create_account_email_login_code(
     let link_token_hash = hash_account_session_token(link_token);
     let conn = pool.lock();
     let now = unix_now();
-    let recent: Option<i64> = conn
-        .query_row(
-            "SELECT created_at FROM account_email_codes
-             WHERE email = ? AND consumed_at IS NULL
-             ORDER BY created_at DESC LIMIT 1",
-            [&email],
-            |r| r.get(0),
-        )
-        .ok();
-    if let Some(created_at) = recent {
-        if now - created_at < EMAIL_CODE_RESEND_WINDOW_SECONDS {
-            anyhow::bail!("wait before requesting another code");
-        }
-    }
+    check_email_send_limits(&conn, &email, now)?;
     let expires_at = now + EMAIL_CODE_TTL_SECONDS;
     conn.execute(
         "INSERT INTO account_email_codes
@@ -6058,7 +6440,7 @@ pub fn verify_account_email_link_token(
             [link_token_hash.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .ok();
+        .optional()?;
     let Some((id, email, expires_at)) = row else {
         anyhow::bail!("link not found or already used");
     };
@@ -6073,6 +6455,51 @@ pub fn verify_account_email_link_token(
     Ok(AccountEmailCodeVerification {
         account_user_id: account_user_id_for_email(&email),
         email,
+    })
+}
+
+/// Rows removed by one [`prune_expired_auth_rows`] pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AuthPruneReport {
+    pub tokens: usize,
+    pub challenges: usize,
+    pub email_codes: usize,
+    pub sessions: usize,
+    pub pin_usage_batches: usize,
+}
+
+impl AuthPruneReport {
+    pub fn total(&self) -> usize {
+        self.tokens + self.challenges + self.email_codes + self.sessions + self.pin_usage_batches
+    }
+}
+
+/// Delete auth rows that can never be used again: expired device tokens and
+/// challenges, email codes past their retention window, revoked or expired
+/// account sessions, and old usage-report batch ids. Run periodically by the
+/// maintenance loop (`state::spawn_auth_maintenance_loop`).
+pub fn prune_expired_auth_rows(pool: &DbPool, now: i64) -> anyhow::Result<AuthPruneReport> {
+    let conn = pool.lock();
+    let tokens = conn.execute("DELETE FROM tokens WHERE expires_at <= ?", [now])?;
+    let challenges = conn.execute("DELETE FROM challenges WHERE expires_at <= ?", [now])?;
+    let email_codes = conn.execute(
+        "DELETE FROM account_email_codes WHERE created_at < ?",
+        [now - EMAIL_CODE_RETENTION_SECONDS],
+    )?;
+    let sessions = conn.execute(
+        "DELETE FROM account_sessions WHERE revoked_at IS NOT NULL OR expires_at < ?",
+        [now],
+    )?;
+    let pin_usage_batches = conn.execute(
+        "DELETE FROM pin_usage_batches WHERE received_at < ?",
+        [now - PIN_USAGE_BATCH_RETENTION_SECONDS],
+    )?;
+    Ok(AuthPruneReport {
+        tokens,
+        challenges,
+        email_codes,
+        sessions,
+        pin_usage_batches,
     })
 }
 
@@ -6114,26 +6541,271 @@ mod tests {
         assert!(!revoke_account_session(&pool, &issued.token));
     }
 
+    /// Test fixture: bind an email to a wallet. Production writes
+    /// `account_wallets.email` only through `resolve_login_account`.
+    fn set_wallet_email(pool: &DbPool, account_user_id: &str, email: &str) {
+        let conn = pool.lock();
+        conn.execute(
+            "UPDATE account_wallets SET email = ? WHERE account_user_id = ?",
+            params![email, account_user_id],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn login_binds_existing_wallet_by_email() {
         let pool = open_in_memory().unwrap();
-        // A user who previously linked with a Supabase UUID keeps that id.
+        // A user who previously linked with a Supabase UUID (and whose wallet
+        // already carries the address) keeps that id.
         link_device_to_account(
             &pool,
             "dev-supabase",
             "4f0c3d1e-uuid-style-id",
-            &AccountLinkMetadata {
-                device_name: None,
-                platform: None,
-                display_name: None,
-                phone: None,
-                email: Some("pilot@example.com".to_string()),
-                github_username: None,
-            },
+            &AccountLinkMetadata::default(),
         )
         .unwrap();
-        let account = account_user_id_for_login(&pool, "PILOT@example.com").unwrap();
-        assert_eq!(account, "4f0c3d1e-uuid-style-id");
+        set_wallet_email(&pool, "4f0c3d1e-uuid-style-id", "pilot@example.com");
+        let login = resolve_login_account(&pool, "PILOT@example.com").unwrap();
+        assert_eq!(login.account_user_id, "4f0c3d1e-uuid-style-id");
+        assert!(!login.created);
+        assert_eq!(login.welcome_bonus_credits, 0);
+    }
+
+    #[test]
+    fn link_metadata_never_binds_an_email() {
+        let pool = open_in_memory().unwrap();
+        let outcome = link_device_to_account_with_proof(
+            &pool,
+            "dev-a",
+            "attacker-account",
+            &AccountLinkMetadata::default(),
+            LinkProof::None,
+        )
+        .unwrap();
+        assert!(outcome.created_account);
+        assert_eq!(account_email_for_user(&pool, "attacker-account"), None);
+        // A victim's first login therefore lands in their own email account.
+        let login = resolve_login_account(&pool, "victim@example.com").unwrap();
+        assert_eq!(login.account_user_id, "email:victim@example.com");
+        assert!(login.created);
+    }
+
+    #[test]
+    fn login_fails_closed_when_several_wallets_share_an_email() {
+        let pool = open_in_memory().unwrap();
+        for (device, account) in [("dev-a", "account-a"), ("dev-b", "account-b")] {
+            link_device_to_account(&pool, device, account, &AccountLinkMetadata::default())
+                .unwrap();
+            set_wallet_email(&pool, account, "shared@example.com");
+        }
+        let err = resolve_login_account(&pool, "shared@example.com").unwrap_err();
+        assert!(matches!(err, LoginAccountError::AmbiguousEmail));
+    }
+
+    #[test]
+    fn verified_first_login_grants_the_welcome_bonus_once() {
+        let pool = open_in_memory().unwrap();
+        let first = resolve_login_account(&pool, "new@example.com").unwrap();
+        assert!(first.created);
+        assert_eq!(first.welcome_bonus_credits, WELCOME_BONUS_CREDITS);
+        let balance = account_balance_credits(&pool, &first.account_user_id);
+        assert_eq!(balance, WELCOME_BONUS_CREDITS);
+
+        // Logging in again binds the same account and mints nothing.
+        let second = resolve_login_account(&pool, "NEW@example.com").unwrap();
+        assert_eq!(second.account_user_id, first.account_user_id);
+        assert!(!second.created);
+        assert_eq!(second.welcome_bonus_credits, 0);
+
+        // Even if the wallet is deleted, the address never earns a second bonus.
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "DELETE FROM account_ledger WHERE account_user_id = ?",
+                [&first.account_user_id],
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM account_wallets WHERE account_user_id = ?",
+                [&first.account_user_id],
+            )
+            .unwrap();
+        }
+        let third = resolve_login_account(&pool, "new@example.com").unwrap();
+        assert!(third.created);
+        assert_eq!(third.welcome_bonus_credits, 0);
+    }
+
+    #[test]
+    fn mints_are_refused_when_the_pool_is_exhausted() {
+        let pool = open_in_memory().unwrap();
+        {
+            let conn = pool.lock();
+            conn.execute("UPDATE mint_pool SET remaining = 10 WHERE id = 1", [])
+                .unwrap();
+        }
+        // The welcome bonus is skipped; the login itself still succeeds.
+        let login = resolve_login_account(&pool, "late@example.com").unwrap();
+        assert!(login.created);
+        assert_eq!(login.welcome_bonus_credits, 0);
+        // Admin mints beyond the pool are refused without touching it.
+        let err = admin_mint(&pool, "dev", 11, "top-up").unwrap_err();
+        assert!(err.is::<MintPoolExhausted>());
+        assert_eq!(mint_pool_snapshot(&pool).unwrap().remaining, 10);
+        assert_eq!(admin_mint(&pool, "dev", 10, "top-up").unwrap(), 10);
+        assert_eq!(mint_pool_snapshot(&pool).unwrap().remaining, 0);
+    }
+
+    #[test]
+    fn link_without_session_only_creates_new_accounts() {
+        let pool = open_in_memory().unwrap();
+        let meta = AccountLinkMetadata::default();
+        let link = |device: &str, account: &str, proof: LinkProof| {
+            link_device_to_account_with_proof(&pool, device, account, &meta, proof)
+        };
+
+        // A brand-new account: allowed, empty, no bonus.
+        let outcome = link("dev-a", "acct-a", LinkProof::None).unwrap();
+        assert!(outcome.created_account);
+        assert!(outcome.first_device);
+        assert_eq!(account_balance_credits(&pool, "acct-a"), 0);
+        // Re-linking a device to the account it is already on is a refresh.
+        assert!(link("dev-a", "acct-a", LinkProof::None).is_ok());
+        // Another device cannot attach itself to the existing account...
+        let err = link("dev-b", "acct-a", LinkProof::None).unwrap_err();
+        assert!(matches!(err, LinkDeviceError::SessionRequired(_)));
+        // ...and a linked device cannot be re-pointed elsewhere.
+        let err = link("dev-a", "acct-b", LinkProof::None).unwrap_err();
+        assert!(matches!(err, LinkDeviceError::SessionRequired(_)));
+        // email: ids belong to verified logins.
+        let reserved = link("dev-c", "email:v@example.com", LinkProof::None);
+        assert!(matches!(reserved, Err(LinkDeviceError::SessionRequired(_))));
+
+        // A session proof (checked by the handler) allows both.
+        let outcome = link("dev-b", "acct-a", LinkProof::AccountSession).unwrap();
+        assert!(!outcome.created_account);
+        assert!(!outcome.first_device);
+        assert!(link("dev-a", "acct-b", LinkProof::AccountSession).is_ok());
+        assert_eq!(
+            account_user_id_for_device(&pool, "dev-a").as_deref(),
+            Some("acct-b")
+        );
+    }
+
+    #[test]
+    fn legacy_lowercase_account_is_renamed_not_merged() {
+        let pool = open_in_memory().unwrap();
+        let upper = "0E1D2C3B-4A59-4687-9A0B-1C2D3E4F5A6B";
+        let lower = upper.to_ascii_lowercase();
+        {
+            // A pre-#173 wallet stored under the lowercase id.
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO account_wallets
+                    (account_user_id, balance_credits, usdc_cents, created_at, updated_at)
+                 VALUES (?, 4242, 0, 0, 0)",
+                [&lower],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO devices (device_id, first_seen, last_seen) VALUES ('old-dev', 0, 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO account_devices
+                    (device_id, account_user_id, linked_at, last_seen)
+                 VALUES ('old-dev', ?, 0, 0)",
+                [&lower],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO account_ledger (account_user_id, asset, amount, type, timestamp)
+                 VALUES (?, 'credits', 4242, 'TRANSFER_IN', 0)",
+                [&lower],
+            )
+            .unwrap();
+        }
+
+        assert!(canonicalize_legacy_account_id(&pool, upper).unwrap());
+        assert!(!account_wallet_exists_exact(&pool, &lower));
+        assert_eq!(account_balance_credits(&pool, upper), 4242);
+        assert_eq!(
+            account_user_id_for_device(&pool, "old-dev").as_deref(),
+            Some(upper)
+        );
+        let summary = account_summary(&pool, upper).unwrap();
+        assert_eq!(summary.transactions.len(), 1);
+        // Idempotent: nothing left to rename.
+        assert!(!canonicalize_legacy_account_id(&pool, upper).unwrap());
+
+        // When both forms exist, nothing is merged or moved.
+        let other_upper = "1F2E3D4C-5B6A-4798-8B1C-2D3E4F5A6B7C";
+        let other_lower = other_upper.to_ascii_lowercase();
+        link_device_to_account(&pool, "dev-u", other_upper, &AccountLinkMetadata::default())
+            .unwrap();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO account_wallets
+                    (account_user_id, balance_credits, usdc_cents, created_at, updated_at)
+                 VALUES (?, 7, 0, 0, 0)",
+                [&other_lower],
+            )
+            .unwrap();
+        }
+        assert!(!canonicalize_legacy_account_id(&pool, other_upper).unwrap());
+        assert!(account_wallet_exists_exact(&pool, &other_lower));
+        assert_eq!(account_balance_credits(&pool, &other_lower), 7);
+        assert_eq!(account_balance_credits(&pool, other_upper), 0);
+    }
+
+    fn account_wallet_exists_exact(pool: &DbPool, account_user_id: &str) -> bool {
+        wallet_exists_locked(&pool.lock(), account_user_id).unwrap()
+    }
+
+    #[test]
+    fn prune_removes_dead_auth_rows_only() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "dev").unwrap();
+        let now = unix_now();
+        issue_token(&pool, "dev", "tok_live").unwrap();
+        {
+            let conn = pool.lock();
+            conn.execute(
+                "INSERT INTO tokens (token, device_id, expires_at) VALUES ('dead', 'dev', ?)",
+                [now - 1],
+            )
+            .unwrap();
+        }
+        let live = account_user_id_for_login(&pool, "keep@example.com").unwrap();
+        let kept = create_account_session(&pool, &live, None, None).unwrap();
+        let revoked = create_account_session(&pool, &live, None, None).unwrap();
+        assert!(revoke_account_session(&pool, &revoked.token));
+
+        let report = prune_expired_auth_rows(&pool, now).unwrap();
+        assert_eq!(report.tokens, 1);
+        assert_eq!(report.sessions, 1);
+        assert_eq!(resolve_token(&pool, "tok_live").as_deref(), Some("dev"));
+        assert!(resolve_account_session(&pool, &kept.token).is_some());
+    }
+
+    #[test]
+    fn device_tokens_are_hashed_at_rest() {
+        let pool = open_in_memory().unwrap();
+        upsert_device(&pool, "dev").unwrap();
+        issue_token(&pool, "dev", "tok_dev_secret").unwrap();
+        let stored: String = {
+            let conn = pool.lock();
+            conn.query_row("SELECT token FROM tokens LIMIT 1", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(stored, hash_bearer_token("tok_dev_secret"));
+        assert_eq!(
+            resolve_token(&pool, "tok_dev_secret").as_deref(),
+            Some("dev")
+        );
+        assert!(resolve_token(&pool, &stored).is_none());
     }
 
     #[test]
@@ -6696,7 +7368,14 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at, funded)
                  VALUES (?, ?, ?, NULL, ?, ?, 0, ?, NULL, 0)",
-                params![key_id, token, issuer, now + 3600, 10_000i64, now],
+                params![
+                    key_id,
+                    hash_bearer_token(token),
+                    issuer,
+                    now + 3600,
+                    10_000i64,
+                    now
+                ],
             )
             .unwrap();
         }
@@ -6852,7 +7531,14 @@ mod tests {
                  (key_id, token, issuer_device_id, label, expires_at,
                   budget_credits, consumed_credits, created_at, revoked_at)
                  VALUES (?, ?, ?, NULL, ?, ?, 0, ?, NULL)",
-                params![key_id, token, issuer, now - 1, 100i64, now - 10],
+                params![
+                    key_id,
+                    hash_bearer_token(token),
+                    issuer,
+                    now - 1,
+                    100i64,
+                    now - 10
+                ],
             )
             .unwrap();
         }
@@ -6950,7 +7636,7 @@ mod tests {
     fn link_normalizes_uuid_case_into_one_account() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "device-a").unwrap();
-        let upper = "270E90AF-1234-5678-9ABC-DEF012345678";
+        let upper = "3C5D7E9F-1234-5678-9ABC-DEF012345678";
         let lower = &upper.to_ascii_lowercase();
         let meta = AccountLinkMetadata::default();
         link_device_to_account(&pool, "device-a", lower, &meta).unwrap();
@@ -6968,12 +7654,12 @@ mod tests {
         assert_eq!(rows, 1);
         // email: ids canonicalize to lowercase regardless of input case.
         assert_eq!(
-            normalize_account_user_id("email:taylor@hou.vc"),
-            "email:taylor@hou.vc"
+            normalize_account_user_id("email:pilot@example.com"),
+            "email:pilot@example.com"
         );
         assert_eq!(
-            normalize_account_user_id("EMAIL:Taylor@Hou.vc"),
-            "email:taylor@hou.vc"
+            normalize_account_user_id("EMAIL:Pilot@Example.com"),
+            "email:pilot@example.com"
         );
     }
 
@@ -6989,47 +7675,41 @@ mod tests {
             &AccountLinkMetadata {
                 device_name: Some("X1 Carbon".into()),
                 platform: Some("windows".into()),
-                display_name: Some("Taylor".into()),
+                display_name: Some("Pilot".into()),
                 phone: Some("+15551234567".into()),
-                email: None,
-                github_username: Some("thou48".into()),
+                github_username: Some("pilot-gh".into()),
             },
         )
         .unwrap();
 
         let summary = account_summary_for_device(&pool, "device-a").unwrap();
         assert_eq!(summary.account_user_id, "user-123");
-        assert_eq!(summary.display_name.as_deref(), Some("Taylor"));
+        assert_eq!(summary.display_name.as_deref(), Some("Pilot"));
         assert_eq!(summary.devices.len(), 1);
         assert_eq!(summary.devices[0].device_id, "device-a");
         assert_eq!(summary.devices[0].device_name.as_deref(), Some("X1 Carbon"));
     }
 
     #[test]
-    fn account_join_rewards_grant_new_wallet_bonus() {
+    fn account_scoped_sweep_and_remove_stay_inside_the_account() {
         let pool = open_in_memory().unwrap();
         upsert_device(&pool, "device-a").unwrap();
-        link_device_to_account(
-            &pool,
-            "device-a",
-            "user-123",
-            &AccountLinkMetadata {
-                phone: Some("+12813238228".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        record_bonus(&pool, "device-a", 700).unwrap();
+        let meta = AccountLinkMetadata::default();
+        link_device_to_account(&pool, "device-a", "user-123", &meta).unwrap();
+        link_device_to_account(&pool, "device-x", "someone-else", &meta).unwrap();
 
-        let rewards = apply_account_join_rewards(&pool, "device-a", "user-123", None).unwrap();
-        assert_eq!(rewards.welcome_bonus_credits, WELCOME_BONUS_CREDITS);
-        assert_eq!(rewards.referral_bonus_credits, 0);
+        let swept = sweep_device_into_account(&pool, "user-123", "device-a").unwrap();
+        assert_eq!(swept.swept_credits, 700);
+        assert_eq!(swept.account.balance_credits, 700);
+        // A device on another account can be neither swept nor removed.
+        assert!(sweep_device_into_account(&pool, "user-123", "device-x").is_err());
+        assert!(remove_device_from_account_for_account(&pool, "user-123", "device-x").is_err());
 
-        let summary = account_summary(&pool, "user-123").unwrap();
-        assert_eq!(summary.balance_credits, WELCOME_BONUS_CREDITS);
-        assert!(summary
-            .transactions
-            .iter()
-            .any(|entry| entry.type_ == "BONUS" && entry.amount == WELCOME_BONUS_CREDITS));
+        let summary =
+            remove_device_from_account_for_account(&pool, "user-123", "device-a").unwrap();
+        assert!(summary.devices.is_empty());
+        assert_eq!(account_user_id_for_device(&pool, "device-a"), None);
     }
 
     #[test]
@@ -7102,15 +7782,15 @@ mod tests {
             "user-123",
             &AccountLinkMetadata {
                 phone: Some("+1 (555) 123-4567".into()),
-                email: Some("Taylor@example.com".into()),
-                github_username: Some("@TaylorHou".into()),
+                github_username: Some("@PilotUser".into()),
                 ..Default::default()
             },
         )
         .unwrap();
+        set_wallet_email(&pool, "user-123", "pilot@example.com");
 
         let receipt =
-            transfer_from_device_wallet(&pool, "sender", "taylor@example.com", 90, None).unwrap();
+            transfer_from_device_wallet(&pool, "sender", "pilot@example.com", 90, None).unwrap();
         assert_eq!(receipt.recipient.kind, "account");
         assert_eq!(
             receipt.recipient.account_user_id.as_deref(),
@@ -7135,9 +7815,8 @@ mod tests {
         link_device_to_account(
             &pool,
             "recipient-device",
-            "270E90AF-4661-4DF1-949B-1A0BA1F705EE",
+            "7A3B9C1D-2E4F-4A6B-8C0D-1E2F3A4B5C6D",
             &AccountLinkMetadata {
-                email: Some("account@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7146,7 +7825,7 @@ mod tests {
         let receipt = transfer_from_device_wallet(
             &pool,
             "sender",
-            "270E90AF-4661-4DF1-949B-1A0BA1F705EE",
+            "7A3B9C1D-2E4F-4A6B-8C0D-1E2F3A4B5C6D",
             90,
             Some("alms from thou32"),
         )
@@ -7154,11 +7833,11 @@ mod tests {
         assert_eq!(receipt.recipient.kind, "account");
         assert_eq!(
             receipt.recipient.account_user_id.as_deref(),
-            Some("270E90AF-4661-4DF1-949B-1A0BA1F705EE")
+            Some("7A3B9C1D-2E4F-4A6B-8C0D-1E2F3A4B5C6D")
         );
         assert_eq!(get_balance(&pool, "sender").balance_credits, 310);
 
-        let summary = account_summary(&pool, "270E90AF-4661-4DF1-949B-1A0BA1F705EE").unwrap();
+        let summary = account_summary(&pool, "7A3B9C1D-2E4F-4A6B-8C0D-1E2F3A4B5C6D").unwrap();
         assert_eq!(summary.balance_credits, 90);
         assert!(summary
             .transactions
@@ -7177,7 +7856,6 @@ mod tests {
             "sender-device",
             "sender-account",
             &AccountLinkMetadata {
-                email: Some("sender@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7220,7 +7898,6 @@ mod tests {
             owner_device,
             "user-123",
             &AccountLinkMetadata {
-                email: Some("taylor@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7286,7 +7963,6 @@ mod tests {
             "device-a",
             "user-123",
             &AccountLinkMetadata {
-                email: Some("taylor@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7333,7 +8009,6 @@ mod tests {
             "sender-device",
             "sender-account",
             &AccountLinkMetadata {
-                email: Some("sender@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7343,11 +8018,11 @@ mod tests {
             "recipient-device",
             "recipient-account",
             &AccountLinkMetadata {
-                email: Some("recipient@example.com".into()),
                 ..Default::default()
             },
         )
         .unwrap();
+        set_wallet_email(&pool, "recipient-account", "recipient@example.com");
         record_account_onchain_deposit(
             &pool,
             "recipient-device",
@@ -7422,7 +8097,6 @@ mod tests {
             "device-a",
             "user-123",
             &AccountLinkMetadata {
-                email: Some("treasury@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7492,7 +8166,6 @@ mod tests {
             "device-a",
             "user-123",
             &AccountLinkMetadata {
-                email: Some("payout@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7563,7 +8236,6 @@ mod tests {
             "device-a",
             "user-123",
             &AccountLinkMetadata {
-                email: Some("reject@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7641,7 +8313,6 @@ mod tests {
             "device-a",
             "user-123",
             &AccountLinkMetadata {
-                email: Some("earner@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7676,7 +8347,6 @@ mod tests {
             "device-a",
             "user-123",
             &AccountLinkMetadata {
-                email: Some("withdraw@example.com".into()),
                 ..Default::default()
             },
         )
@@ -7800,12 +8470,10 @@ mod tests {
             "ref-device",
             "ref-account",
             &AccountLinkMetadata {
-                email: Some("ref@example.com".into()),
                 ..Default::default()
             },
         )
         .unwrap();
-        apply_account_join_rewards(&pool, "ref-device", "ref-account", None).unwrap();
         let code = referral_code_for_device(&pool, "ref-device").unwrap();
 
         link_device_to_account(
@@ -7813,27 +8481,22 @@ mod tests {
             "new-device",
             "new-account",
             &AccountLinkMetadata {
-                email: Some("new@example.com".into()),
                 ..Default::default()
             },
         )
         .unwrap();
-        let rewards =
-            apply_account_join_rewards(&pool, "new-device", "new-account", Some(&code.code))
-                .unwrap();
-        assert_eq!(rewards.welcome_bonus_credits, WELCOME_BONUS_CREDITS);
-        assert_eq!(rewards.referral_bonus_credits, REFERRAL_BONUS_CREDITS);
+        let credits =
+            apply_account_referral(&pool, "new-device", "new-account", &code.code).unwrap();
+        assert_eq!(credits, REFERRAL_BONUS_CREDITS);
+        // A second claim for the same account is refused.
+        let err =
+            apply_account_referral(&pool, "new-device", "new-account", &code.code).unwrap_err();
+        assert!(matches!(err, ReferralError::AccountAlreadyClaimed));
 
         let referrer = account_summary(&pool, "ref-account").unwrap();
         let referred = account_summary(&pool, "new-account").unwrap();
-        assert_eq!(
-            referrer.balance_credits,
-            WELCOME_BONUS_CREDITS + REFERRAL_BONUS_CREDITS
-        );
-        assert_eq!(
-            referred.balance_credits,
-            WELCOME_BONUS_CREDITS + REFERRAL_BONUS_CREDITS
-        );
+        assert_eq!(referrer.balance_credits, REFERRAL_BONUS_CREDITS);
+        assert_eq!(referred.balance_credits, REFERRAL_BONUS_CREDITS);
     }
 
     #[test]
@@ -7847,12 +8510,11 @@ mod tests {
             "new-device",
             "user-123",
             &AccountLinkMetadata {
-                phone: Some("+12813238228".into()),
+                phone: Some("+15555550100".into()),
                 ..Default::default()
             },
         )
         .unwrap();
-        apply_account_join_rewards(&pool, "new-device", "user-123", None).unwrap();
         record_account_onchain_deposit(
             &pool,
             "new-device",
@@ -7963,7 +8625,7 @@ mod tests {
                  VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, 0)",
                 params![
                     "ki2",
-                    "tok_share_old2",
+                    hash_bearer_token("tok_share_old2"),
                     issuer,
                     now + 3600,
                     1_000i64,

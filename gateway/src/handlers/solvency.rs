@@ -1,11 +1,33 @@
 //! GET /v1/solvency - public proof-of-reserves view: outstanding credit
 //! liabilities vs the on-chain USDC treasury that backs them. Anyone can
 //! cross-check the treasury figure against a Solana explorer.
+//!
+//! The endpoint is public and each computation makes two Solana RPC calls
+//! and one Coinbase call, so a successful snapshot is cached for
+//! [`SOLVENCY_CACHE_TTL`]; concurrent misses wait on one computation instead
+//! of each hitting the upstreams.
+
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use axum::{extract::State, Json};
 use serde_json::{json, Value};
 
 use crate::db::unix_now;
+use crate::error::GatewayError;
+use crate::ledger;
+use crate::solana;
+use crate::state::AppState;
+
+/// How long a computed solvency snapshot is served from cache.
+pub const SOLVENCY_CACHE_TTL: Duration = Duration::from_secs(60);
+
+type CachedSnapshot = Option<(Instant, Value)>;
+
+fn solvency_cache() -> &'static tokio::sync::Mutex<CachedSnapshot> {
+    static CACHE: OnceLock<tokio::sync::Mutex<CachedSnapshot>> = OnceLock::new();
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(None))
+}
 
 /// Live SOL/USD spot price from Coinbase's public market-data API (no auth).
 /// Source: https://api.coinbase.com/v2/prices/SOL-USD/spot
@@ -28,12 +50,22 @@ async fn fetch_sol_usd_price() -> Result<f64, String> {
         .filter(|p| *p > 0.0)
         .ok_or_else(|| format!("coinbase spot: unexpected response: {resp}"))
 }
-use crate::error::GatewayError;
-use crate::ledger;
-use crate::solana;
-use crate::state::AppState;
 
 pub async fn solvency(State(state): State<AppState>) -> Result<Json<Value>, GatewayError> {
+    // Holding the lock across the computation is deliberate: it collapses a
+    // burst of cache misses into a single set of upstream calls.
+    let mut cache = solvency_cache().lock().await;
+    if let Some((computed, body)) = cache.as_ref() {
+        if computed.elapsed() < SOLVENCY_CACHE_TTL {
+            return Ok(Json(body.clone()));
+        }
+    }
+    let body = compute_solvency(&state).await?;
+    *cache = Some((Instant::now(), body.clone()));
+    Ok(Json(body))
+}
+
+async fn compute_solvency(state: &AppState) -> Result<Value, GatewayError> {
     let pool = state
         .db
         .as_ref()
@@ -75,7 +107,7 @@ pub async fn solvency(State(state): State<AppState>) -> Result<Json<Value>, Gate
         10_000
     };
 
-    Ok(Json(json!({
+    Ok(json!({
         "treasuryAddress": state.config.solana.treasury_address,
         "treasuryUsdcMicro": treasury_micro,
         "treasuryUsdc": treasury_micro as f64 / 1_000_000.0,
@@ -104,5 +136,6 @@ pub async fn solvency(State(state): State<AppState>) -> Result<Json<Value>, Gate
             state.config.solana.treasury_address
         ),
         "computedAt": unix_now(),
-    })))
+        "cacheTtlSeconds": SOLVENCY_CACHE_TTL.as_secs(),
+    }))
 }

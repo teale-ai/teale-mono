@@ -1,6 +1,7 @@
 //! Admin endpoints for the centralized 3rd-party provider marketplace.
 //!
-//! All routes require the same admin scope used by `/v1/admin/mint` etc.
+//! All routes require the same admin scope used by `/v1/admin/mint` etc.: a
+//! static bearer scoped `admin` or `internal`.
 
 use axum::{
     extract::{Path, State},
@@ -10,19 +11,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::auth::{AuthPrincipal, PrincipalKind};
+use crate::auth::{self, AuthPrincipal};
 use crate::error::GatewayError;
 use crate::ledger;
 use crate::providers::registry::{self as provreg, ProviderStatus, ProviderWireFormat};
 use crate::state::AppState;
 
 fn require_admin(principal: &AuthPrincipal) -> Result<(), GatewayError> {
-    match &principal.kind {
-        PrincipalKind::Static { .. } => Ok(()),
-        _ => Err(GatewayError::Forbidden(
-            "admin endpoints require a static bearer".into(),
-        )),
-    }
+    auth::require_admin_scope(principal)
 }
 
 #[derive(Debug, Deserialize)]

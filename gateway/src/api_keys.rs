@@ -96,12 +96,19 @@ pub struct ResolvedApiKey {
     pub credit_limit: Option<i64>,
     pub usage_credits: i64,
     pub disabled: bool,
+    pub last_used_at: Option<i64>,
 }
 
 impl ResolvedApiKey {
     pub fn remaining_credit_limit(&self) -> Option<i64> {
         self.credit_limit
             .map(|limit| (limit - self.usage_credits).max(0))
+    }
+
+    /// Whether `last_used_at` is stale enough to be written again.
+    pub fn needs_touch(&self, now: i64) -> bool {
+        self.last_used_at
+            .is_none_or(|last| now - last >= LAST_USED_TOUCH_INTERVAL_SECONDS)
     }
 }
 
@@ -396,16 +403,22 @@ pub fn delete_api_key(
     Ok(())
 }
 
-/// Auth middleware path: look up a key by its plaintext bearer.
-pub fn resolve_api_key(pool: &DbPool, token: &str) -> Option<ResolvedApiKey> {
+/// Auth middleware path: look up a key by its plaintext bearer. `Ok(None)`
+/// when the token is not a (known) API key; `Err` only for database
+/// failures, which the middleware surfaces as 500 rather than 401.
+pub fn try_resolve_api_key(
+    pool: &DbPool,
+    token: &str,
+) -> Result<Option<ResolvedApiKey>, ApiKeyError> {
     if !looks_like_api_key(token) {
-        return None;
+        return Ok(None);
     }
     let key_hash = hash_token(token);
     let conn = pool.lock();
     let row = conn
         .query_row(
-            "SELECT key_id, account_user_id, role, credit_limit, usage_credits, disabled
+            "SELECT key_id, account_user_id, role, credit_limit, usage_credits, disabled,
+                    last_used_at
              FROM api_keys WHERE key_hash = ?",
             [key_hash],
             |r| {
@@ -416,27 +429,46 @@ pub fn resolve_api_key(pool: &DbPool, token: &str) -> Option<ResolvedApiKey> {
                     r.get::<_, Option<i64>>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
                 ))
             },
         )
-        .ok()?;
-    let (key_id, account_user_id, role_s, credit_limit, usage_credits, disabled) = row;
-    let role = ApiKeyRole::parse(&role_s)?;
-    Some(ResolvedApiKey {
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let (key_id, account_user_id, role_s, credit_limit, usage_credits, disabled, last_used) = row;
+    let Some(role) = ApiKeyRole::parse(&role_s) else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedApiKey {
         key_id,
         account_user_id,
         role,
         credit_limit,
         usage_credits,
         disabled: disabled != 0,
-    })
+        last_used_at: last_used,
+    }))
 }
 
-/// Bump `last_used_at` to "now". Best-effort; ignores errors.
-pub fn touch_last_used(pool: &DbPool, key_id: &str) {
+/// Lenient form of [`try_resolve_api_key`].
+pub fn resolve_api_key(pool: &DbPool, token: &str) -> Option<ResolvedApiKey> {
+    try_resolve_api_key(pool, token).ok().flatten()
+}
+
+/// `last_used_at` is written at most this often per key, so busy keys don't
+/// take the global connection mutex for a write on every request.
+pub const LAST_USED_TOUCH_INTERVAL_SECONDS: i64 = 60;
+
+/// Bump `last_used_at` to `now` unless it was already bumped within
+/// [`LAST_USED_TOUCH_INTERVAL_SECONDS`].
+pub fn touch_last_used(pool: &DbPool, key_id: &str, now: i64) -> Result<(), ApiKeyError> {
     let conn = pool.lock();
-    let _ = conn.execute(
-        "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
-        params![unix_now(), key_id],
-    );
+    conn.execute(
+        "UPDATE api_keys SET last_used_at = ?
+         WHERE key_id = ? AND (last_used_at IS NULL OR last_used_at <= ?)",
+        params![now, key_id, now - LAST_USED_TOUCH_INTERVAL_SECONDS],
+    )?;
+    Ok(())
 }
