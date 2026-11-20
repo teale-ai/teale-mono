@@ -889,4 +889,76 @@ mod tests {
             .unwrap();
         assert_eq!(share_again, share);
     }
+
+    /// Removes the temp DB and its WAL/SHM sidecar files, even if an assert fails.
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "teale-db-{}-{}-{}.sqlite",
+                tag,
+                std::process::id(),
+                nanos
+            ));
+            TempDb(path)
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut p = self.0.clone().into_os_string();
+                p.push(suffix);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+            }
+        }
+    }
+
+    fn snapshot(pool: &DbPool) -> (String, i64, i64, i64) {
+        let conn = pool.lock();
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT remaining FROM mint_pool WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        (journal, foreign_keys, version, remaining)
+    }
+
+    /// The production open path (file-backed, WAL, foreign keys on, migrations,
+    /// mint-pool seed) is otherwise untested: every other test uses
+    /// `open_in_memory`. This guards it across SQLite driver upgrades.
+    #[test]
+    fn open_on_disk_sets_pragmas_migrates_and_reopens() {
+        let tmp = TempDb::new("open");
+
+        let first = {
+            let pool = open(&tmp.0).unwrap();
+            snapshot(&pool)
+        };
+        assert_eq!(first.0.to_lowercase(), "wal");
+        assert_eq!(first.1, 1, "foreign_keys must be ON");
+        assert_eq!(first.2, MIGRATIONS.len() as i64);
+        assert_eq!(first.3, INITIAL_MINT_POOL);
+
+        // Re-opening an existing file must not re-run migrations or re-seed.
+        let second = {
+            let pool = open(&tmp.0).unwrap();
+            snapshot(&pool)
+        };
+        assert_eq!(second, first);
+    }
 }
