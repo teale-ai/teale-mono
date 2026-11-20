@@ -782,10 +782,24 @@ impl Registry {
     }
 
     pub fn quarantine(&self, node_id: &str, duration_secs: u64) {
+        self.quarantine_for(node_id, duration_secs, "unspecified");
+    }
+
+    /// Same as `quarantine`, but records the trigger reason in the log and
+    /// in `gateway_quarantines_total{reason}`. Behavior is identical.
+    pub fn quarantine_for(&self, node_id: &str, duration_secs: u64, reason: &str) {
         if let Some(mut dev) = self.devices.get_mut(node_id) {
             dev.quarantined_until =
                 Some(Instant::now() + std::time::Duration::from_secs(duration_secs));
-            tracing::warn!(node = node_id, "device quarantined for {}s", duration_secs);
+            crate::metrics::QUARANTINES_TOTAL
+                .with_label_values(&[reason])
+                .inc();
+            tracing::warn!(
+                node = node_id,
+                reason = reason,
+                "device quarantined for {}s",
+                duration_secs
+            );
         }
     }
 
