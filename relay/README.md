@@ -9,11 +9,34 @@ It handles:
 - offer/answer forwarding
 - relayed `ClusterMessage` transport for inference when direct WAN transport fails
 
+The wire protocol (messages, discover filters, error codes, the register
+signature rule) is specified in [`docs/protocol.md`](../docs/protocol.md).
+
 ## Local Run
 
 ```bash
 cd relay
 bun run start
+```
+
+Environment:
+
+- `PORT` (default `8080`)
+- `RELAY_ENFORCE_SIGNATURES` (default `true`): every `register` must carry
+  `signature = hex(Ed25519.sign(utf8(nodeID)))` with `nodeID == publicKey`.
+  Set to `false` only as an emergency escape hatch; failures are then logged
+  (`register_rejected` events) but accepted.
+- `RELAY_ADMIN_TOKEN` (unset by default): when set, `/events` and `/peers`
+  require `Authorization: Bearer <token>`.
+- `RELAY_LOG_DIR` (default `/app/logs`)
+
+## Checks
+
+```bash
+cd relay
+bun install
+bun run typecheck   # tsc --noEmit, strict
+bun test            # eventlog.test.ts, server.test.ts
 ```
 
 Health check:
@@ -65,7 +88,8 @@ deploy.
 Query paths:
 
 - Live process: `GET /events?since=<iso|epoch_s>&kind=<kind>&node=<id-prefix>&limit=<n>`
-  (node IDs truncated to 16 chars, matching `/peers`). `/health` includes an
+  (node IDs truncated to 16 chars at any nesting level, matching `/peers`;
+  bearer token required when `RELAY_ADMIN_TOKEN` is set). `/health` includes an
   `eventlog` status block (ring size, oldest/newest timestamps, write failures).
 - Post-restart: on boot the tail of the file is replayed into memory, so
   `/events` serves seamless history across restarts. Full (untruncated) history

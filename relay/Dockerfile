@@ -5,6 +5,7 @@ WORKDIR /app
 COPY package.json .
 COPY server.ts .
 COPY eventlog.ts .
+COPY validate.ts .
 
 EXPOSE 8080
 

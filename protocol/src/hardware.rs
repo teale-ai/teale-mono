@@ -17,6 +17,8 @@ pub struct HardwareCapability {
     pub gpu_core_count: u32,
     #[serde(rename = "memoryBandwidthGBs")]
     pub memory_bandwidth_gbs: f64,
+    /// Device tier as a plain integer on the wire: 1 = backbone (Ultra/Max,
+    /// 64GB+), 2 = desktop, 3 = tablet, 4 = phone/SBC; 0 = virtual (gateway).
     pub tier: u32,
     #[serde(
         rename = "gpuBackend",
@@ -90,28 +92,6 @@ pub struct NodeCapabilities {
         skip_serializing_if = "Option::is_none"
     )]
     pub backend_slots_total: Option<u32>,
-}
-
-/// Device capability tier. 1 = backbone (Ultra/Max, 64GB+), 4 = phone/SBC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u32)]
-pub enum Tier {
-    Backbone = 1,
-    Desktop = 2,
-    Tablet = 3,
-    Leaf = 4,
-}
-
-impl Tier {
-    pub fn from_u32(v: u32) -> Option<Self> {
-        match v {
-            1 => Some(Tier::Backbone),
-            2 => Some(Tier::Desktop),
-            3 => Some(Tier::Tablet),
-            4 => Some(Tier::Leaf),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

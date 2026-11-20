@@ -1,4 +1,5 @@
-name = "mesh_kimi_fault_participant"
+# EXPERIMENTAL: not runnable as-is (see stress/README.md, "Experimental scenarios").
+name = "mesh_kimi_fault_head"
 gateway_url = "https://gateway.teale.com"
 token = "$GATEWAY_DEV_TOKEN"
 duration_seconds = 180
@@ -7,7 +8,7 @@ warmup_seconds = 15
 concurrency_cap = 2
 
 # Replace the SSH target before running.
-# This validates "drop one non-head / 16 GB participant before first token".
+# This validates "kill the head/coordinator before first token".
 
 [[requests]]
 model = "moonshotai/kimi-k2"
@@ -24,4 +25,4 @@ tool_choice = "auto"
 [[faults]]
 kind = "kill_backend"
 at_seconds = 30
-target = "REPLACE_WITH_PARTICIPANT_SSH_HOST"
+target = "REPLACE_WITH_HEAD_SSH_HOST"

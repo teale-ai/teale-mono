@@ -70,7 +70,13 @@ enum Command {
     #[command(subcommand)]
     Pin(pin_cmds::PinCommand),
     /// Run a stdio MCP server so agents can drive Teale natively.
-    Mcp,
+    /// Read-only tools only unless --allow-mutations is given.
+    Mcp {
+        /// Also expose tools that change state (supply, models, wallet sends,
+        /// settings, PIN membership/admin, exit routing).
+        #[arg(long)]
+        allow_mutations: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -153,7 +159,7 @@ async fn main() -> Result<()> {
         Command::Peers => peers(&api).await,
         Command::Settings(cmd) => settings(&api, cmd).await,
         Command::Pin(cmd) => pin_cmds::run(&api, cmd).await,
-        Command::Mcp => mcp::serve(api).await,
+        Command::Mcp { allow_mutations } => mcp::serve(api, allow_mutations).await,
     }
 }
 

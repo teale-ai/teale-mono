@@ -10,8 +10,6 @@ name = "teale-stress"
 path = "src/main.rs"
 
 [dependencies]
-teale-protocol = { workspace = true }
-
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

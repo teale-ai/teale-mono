@@ -29,9 +29,9 @@ normalization above plain supplier behavior.
 - Agentic scenarios:
   - [stress/scenarios/mesh_kimi_agentic_steady.toml](../stress/scenarios/mesh_kimi_agentic_steady.toml)
   - [stress/scenarios/mesh_kimi_agentic_burst.toml](../stress/scenarios/mesh_kimi_agentic_burst.toml)
-  - [stress/scenarios/mesh_dense405_agentic_steady.toml](../stress/scenarios/mesh_dense405_agentic_steady.toml)
-  - [stress/scenarios/mesh_kimi_fault_head.toml](../stress/scenarios/mesh_kimi_fault_head.toml)
-  - [stress/scenarios/mesh_kimi_fault_participant.toml](../stress/scenarios/mesh_kimi_fault_participant.toml)
+  - [stress/scenarios/experimental/mesh_dense405_agentic_steady.toml](../stress/scenarios/experimental/mesh_dense405_agentic_steady.toml)
+  - [stress/scenarios/experimental/mesh_kimi_fault_head.toml](../stress/scenarios/experimental/mesh_kimi_fault_head.toml)
+  - [stress/scenarios/experimental/mesh_kimi_fault_participant.toml](../stress/scenarios/experimental/mesh_kimi_fault_participant.toml)
 
 ## 1. Inventory The Candidate Fleet
 
@@ -172,7 +172,7 @@ Dense 405B steady-state:
 
 ```bash
 target/release/teale-stress run \
-  --scenario stress/scenarios/mesh_dense405_agentic_steady.toml \
+  --scenario stress/scenarios/experimental/mesh_dense405_agentic_steady.toml \
   --out runs/
 ```
 
@@ -189,11 +189,11 @@ Replace the placeholder SSH targets first, then run:
 
 ```bash
 target/release/teale-stress run \
-  --scenario stress/scenarios/mesh_kimi_fault_head.toml \
+  --scenario stress/scenarios/experimental/mesh_kimi_fault_head.toml \
   --out runs/
 
 target/release/teale-stress run \
-  --scenario stress/scenarios/mesh_kimi_fault_participant.toml \
+  --scenario stress/scenarios/experimental/mesh_kimi_fault_participant.toml \
   --out runs/
 ```
 

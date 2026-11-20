@@ -93,17 +93,32 @@ export function loadHistory(): number {
   return loaded;
 }
 
-const NODE_ID_KEYS = new Set(["node", "from", "to"]);
+const NODE_ID_KEYS = new Set(["node", "from", "to", "claimed"]);
+
+// Truncate node IDs at any depth (e.g. mass_close carries
+// `closed: [{ node, code, reason }]`). Array elements inherit their parent
+// key, so `{ node: [id, id] }` is truncated too.
+function truncateValue(value: JSONValue, key: string | undefined): JSONValue {
+  if (typeof value === "string") {
+    return key !== undefined && NODE_ID_KEYS.has(key) && value.length > 16
+      ? value.substring(0, 16) + "..."
+      : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => truncateValue(item, key));
+  }
+  if (value !== null && typeof value === "object") {
+    const out: { [key: string]: JSONValue } = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = truncateValue(v, k);
+    }
+    return out;
+  }
+  return value;
+}
 
 function truncateNodeIDs(event: RelayEvent): RelayEvent {
-  const out: RelayEvent = { ...event };
-  for (const key of Object.keys(out)) {
-    const value = out[key];
-    if (NODE_ID_KEYS.has(key) && typeof value === "string" && value.length > 16) {
-      out[key] = value.substring(0, 16) + "...";
-    }
-  }
-  return out;
+  return truncateValue(event, undefined) as RelayEvent;
 }
 
 export function queryEvents(params: URLSearchParams): RelayEvent[] {

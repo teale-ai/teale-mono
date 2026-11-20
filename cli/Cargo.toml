@@ -14,8 +14,13 @@ anyhow.workspace = true
 clap.workspace = true
 fs2 = "0.4.3"
 jsonc-parser = { version = "0.34.0", features = ["cst", "serde"] }
+# Deliberately not `reqwest.workspace = true`: the workspace entry also
+# enables `native-tls` and `stream` for the gateway, and workspace
+# inheritance can only add features. This keeps the standalone `teale`
+# binary (released via `cargo build -p teale-cli`) rustls-only.
+# Keep the version in step with [workspace.dependencies].
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { workspace = true, features = ["derive"] }
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 serde_yaml = "0.9.34"
