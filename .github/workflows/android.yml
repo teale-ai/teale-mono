@@ -26,15 +26,15 @@ jobs:
       run:
         working-directory: android-app
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # AGP 8.5 / Gradle 8.9 / Kotlin 1.9 all target JDK 17.
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
