@@ -22,7 +22,7 @@ tao = "0.30"
 wry = { version = "0.45", features = ["protocol"] }
 # Tray icon + menu. On Linux this uses libayatana-appindicator (loaded at
 # runtime) and needs libxdo at build time.
-tray-icon = "0.19"
+tray-icon = "0.26"
 toml = { workspace = true }
 
 # Windows message boxes + single-instance mutex.
