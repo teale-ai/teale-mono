@@ -40,7 +40,7 @@ parking_lot = { workspace = true }
 # laptop supply nodes keep serving with the lid closed on AC and pause
 # automatically on battery. See `node/src/power_win.rs`.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_System_Power",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
