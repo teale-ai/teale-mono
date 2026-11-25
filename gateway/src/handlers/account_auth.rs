@@ -5,9 +5,11 @@
 //! token (`tsess_…`, SHA-256 hashed at rest). No passwords, no Supabase.
 //! See docs/passwordless-auth-migration.md.
 
+use std::net::SocketAddr;
+
 use axum::{
-    extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    extract::{ConnectInfo, Path, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     Extension, Json,
 };
@@ -16,9 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::auth::AuthPrincipal;
+use crate::db::unix_now;
 use crate::error::GatewayError;
 use crate::ledger;
-use crate::state::AppState;
+use crate::state::{self, AppState, EmailAuthLimiter};
 
 #[derive(Debug, Deserialize)]
 pub struct EmailLoginRequestReq {
@@ -61,23 +64,81 @@ pub struct SessionInfoRes {
     pub session_id: String,
 }
 
+fn require_pool(state: &AppState) -> Result<&crate::db::DbPool, GatewayError> {
+    state
+        .db
+        .as_ref()
+        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))
+}
+
+/// Map email-code ledger errors: the daily per-address cap is a 429,
+/// everything else (bad code, resend window, expired) a 400.
+pub(crate) fn map_email_code_error(err: anyhow::Error) -> GatewayError {
+    if err.is::<ledger::EmailRateLimited>() {
+        GatewayError::RateLimited(err.to_string())
+    } else {
+        GatewayError::BadRequest(err.to_string())
+    }
+}
+
+/// Map login-resolution errors: wallets sharing an email (or an `email:` id
+/// bound to another address) are a 409 that needs support, not a retry.
+pub(crate) fn map_login_error(err: ledger::LoginAccountError) -> GatewayError {
+    match err {
+        ledger::LoginAccountError::AmbiguousEmail | ledger::LoginAccountError::EmailMismatch => {
+            GatewayError::Conflict(err.to_string())
+        }
+        ledger::LoginAccountError::Other(err) => GatewayError::Other(err),
+    }
+}
+
+/// Per-client-IP gate for the email request endpoints (G8).
+pub(crate) fn check_email_request_rate(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+) -> Result<(), GatewayError> {
+    let ip = state::client_ip(headers, peer);
+    if EmailAuthLimiter::global().request.allow(&ip, unix_now()) {
+        Ok(())
+    } else {
+        Err(GatewayError::RateLimited(
+            "too many sign-in emails requested from this address; try again later".into(),
+        ))
+    }
+}
+
+/// Per-client-IP gate for the email verify endpoints (G8).
+pub(crate) fn check_email_verify_rate(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+) -> Result<(), GatewayError> {
+    let ip = state::client_ip(headers, peer);
+    if EmailAuthLimiter::global().verify.allow(&ip, unix_now()) {
+        Ok(())
+    } else {
+        Err(GatewayError::RateLimited(
+            "too many verification attempts from this address; try again later".into(),
+        ))
+    }
+}
+
 /// POST /v1/auth/email/request — send a sign-in email with a 6-digit code
 /// and a magic link. Same response shape whether or not the address has an
 /// account; accounts are resolved at verify time.
 pub async fn request(
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(req): Json<EmailLoginRequestReq>,
 ) -> Result<Json<EmailLoginRequestRes>, GatewayError> {
-    let pool = state
-        .db
-        .as_ref()
-        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
+    check_email_request_rate(&headers, peer.map(|ConnectInfo(addr)| addr))?;
+    let pool = require_pool(&state)?;
     let email = ledger::normalize_account_email(&req.email)
         .ok_or_else(|| GatewayError::BadRequest("valid email is required".into()))?;
     let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000));
     let link_token = ledger::generate_account_session_token();
     let created = ledger::create_account_email_login_code(pool, &email, &code, &link_token)
-        .map_err(|err| GatewayError::BadRequest(err.to_string()))?;
+        .map_err(map_email_code_error)?;
     send_login_email(&email, &code, &link_token).await?;
     Ok(Json(EmailLoginRequestRes {
         email: created.email,
@@ -88,19 +149,18 @@ pub async fn request(
 /// POST /v1/auth/email/verify — consume a 6-digit code and mint a session.
 pub async fn verify(
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(req): Json<EmailLoginVerifyReq>,
 ) -> Result<Json<EmailLoginVerifyRes>, GatewayError> {
-    let pool = state
-        .db
-        .as_ref()
-        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
+    check_email_verify_rate(&headers, peer.map(|ConnectInfo(addr)| addr))?;
+    let pool = require_pool(&state)?;
     let verified = ledger::verify_account_email_code(pool, &req.email, &req.code)
-        .map_err(|err| GatewayError::BadRequest(err.to_string()))?;
-    let account_user_id =
-        ledger::account_user_id_for_login(pool, &verified.email).map_err(GatewayError::Other)?;
+        .map_err(map_email_code_error)?;
+    let login = ledger::resolve_login_account(pool, &verified.email).map_err(map_login_error)?;
     let issued = ledger::create_account_session(
         pool,
-        &account_user_id,
+        &login.account_user_id,
         req.device_id.as_deref(),
         req.device_name.as_deref(),
     )
@@ -108,53 +168,65 @@ pub async fn verify(
     Ok(Json(EmailLoginVerifyRes {
         session_token: issued.token,
         expires_at: issued.expires_at,
-        account_user_id,
+        account_user_id: login.account_user_id,
         email: verified.email,
     }))
 }
 
-/// GET /v1/auth/link/:token — magic-link sign-in. Consumes the link token,
-/// mints a session, and redirects to the app deep link. Browsers without the
-/// app get a minimal HTML page showing the token for manual entry.
-pub async fn link(
+/// GET /v1/auth/link/:token — magic-link landing page. Deliberately has no
+/// side effects (mail scanners and link prefetchers issue GETs): it neither
+/// consumes the token nor mints a session, it only renders a button that
+/// POSTs back to the same URL. The page never contains a session token.
+pub async fn link_page() -> Html<&'static str> {
+    Html(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <meta name=\"referrer\" content=\"no-referrer\">\
+         <title>Teale sign-in</title></head><body>\
+         <p>Continue signing in to Teale on this device.</p>\
+         <form method=\"post\"><button type=\"submit\">Sign in to Teale</button></form>\
+         </body></html>",
+    )
+}
+
+/// POST /v1/auth/link/:token — consume the magic-link token (single use) and
+/// mint a session. Browser form posts (`Accept: text/html`) get a 303 to the
+/// app deep link `teale://auth/session?token=…`; other clients get JSON in
+/// the same shape as `/v1/auth/email/verify`. The session token is never
+/// rendered into HTML.
+pub async fn link_consume(
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     Path(token): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, GatewayError> {
-    let pool = state
-        .db
-        .as_ref()
-        .ok_or_else(|| GatewayError::Other(anyhow::anyhow!("db not initialized")))?;
-    let verified = ledger::verify_account_email_link_token(pool, &token)
-        .map_err(|err| GatewayError::BadRequest(err.to_string()))?;
-    let account_user_id =
-        ledger::account_user_id_for_login(pool, &verified.email).map_err(GatewayError::Other)?;
-    let issued = ledger::create_account_session(pool, &account_user_id, None, None)
+    check_email_verify_rate(&headers, peer.map(|ConnectInfo(addr)| addr))?;
+    let pool = require_pool(&state)?;
+    let verified =
+        ledger::verify_account_email_link_token(pool, &token).map_err(map_email_code_error)?;
+    let login = ledger::resolve_login_account(pool, &verified.email).map_err(map_login_error)?;
+    let issued = ledger::create_account_session(pool, &login.account_user_id, None, None)
         .map_err(GatewayError::Other)?;
 
     let wants_html = headers
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.contains("text/html"))
-        .unwrap_or(false);
+        .is_some_and(|v| v.contains("text/html"));
     if wants_html {
         let deep_link = format!("teale://auth/session?token={}", issued.token);
-        let page = format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\">\
-             <meta http-equiv=\"refresh\" content=\"0;url={deep_link}\">\
-             <title>Teale sign-in</title></head><body>\
-             <p>Signed in as {}. <a href=\"{deep_link}\">Open Teale</a></p>\
-             <p>If the app did not open, paste this token into it:<br><code>{}</code></p>\
-             </body></html>",
-            html_escape(&verified.email),
-            issued.token
-        );
-        return Ok(Html(page).into_response());
+        let mut response = Redirect::to(&deep_link).into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(response);
     }
-    Ok(
-        Redirect::temporary(&format!("teale://auth/session?token={}", issued.token))
-            .into_response(),
-    )
+    let body = EmailLoginVerifyRes {
+        session_token: issued.token,
+        expires_at: issued.expires_at,
+        account_user_id: login.account_user_id,
+        email: verified.email,
+    };
+    Ok(Json(body).into_response())
 }
 
 /// GET /v1/auth/session — validate a session bearer and return the identity.
@@ -199,15 +271,6 @@ pub async fn logout(
         .unwrap_or("");
     ledger::revoke_account_session(pool, token);
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Minimal HTML escaping for values interpolated into the fallback page.
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 fn public_base_url() -> String {

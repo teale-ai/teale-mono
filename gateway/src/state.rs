@@ -40,6 +40,133 @@ impl PinJoinLimiter {
         attempts.push(now_unix);
         true
     }
+
+    /// Drop keys with no attempts left in the window (memory hygiene).
+    pub fn sweep(&self, now_unix: i64) {
+        self.inner.lock().retain(|_, attempts| {
+            attempts.retain(|t| now_unix - *t < Self::WINDOW_SECONDS);
+            !attempts.is_empty()
+        });
+    }
+}
+
+/// Generic per-key sliding-window limiter (same shape as `PinJoinLimiter`).
+#[derive(Debug, Clone)]
+pub struct SlidingWindowLimiter {
+    max_per_window: usize,
+    window_seconds: i64,
+    inner: Arc<parking_lot::Mutex<std::collections::HashMap<String, Vec<i64>>>>,
+}
+
+impl SlidingWindowLimiter {
+    pub fn new(max_per_window: usize, window_seconds: i64) -> Self {
+        Self {
+            max_per_window,
+            window_seconds,
+            inner: Default::default(),
+        }
+    }
+
+    /// Record an attempt; returns false when `key` is over the limit.
+    pub fn allow(&self, key: &str, now_unix: i64) -> bool {
+        let mut map = self.inner.lock();
+        let attempts = map.entry(key.to_string()).or_default();
+        attempts.retain(|t| now_unix - *t < self.window_seconds);
+        if attempts.len() >= self.max_per_window {
+            return false;
+        }
+        attempts.push(now_unix);
+        true
+    }
+
+    /// Drop keys with no attempts left in the window.
+    pub fn sweep(&self, now_unix: i64) {
+        let window = self.window_seconds;
+        self.inner.lock().retain(|_, attempts| {
+            attempts.retain(|t| now_unix - *t < window);
+            !attempts.is_empty()
+        });
+    }
+
+    /// Number of keys currently tracked.
+    pub fn tracked_keys(&self) -> usize {
+        self.inner.lock().len()
+    }
+}
+
+/// Per-client-IP limits for the public email sign-in endpoints
+/// (`/v1/auth/email/*` and the device-bound `/v1/account/email-code/*`).
+/// Combined with the per-address resend window and daily cap enforced in
+/// the ledger, this bounds email cost and code-guessing per source.
+/// Process-global so it needs no `AppState` field.
+#[derive(Debug, Clone)]
+pub struct EmailAuthLimiter {
+    pub request: SlidingWindowLimiter,
+    pub verify: SlidingWindowLimiter,
+}
+
+impl EmailAuthLimiter {
+    pub const REQUESTS_PER_HOUR: usize = 10;
+    pub const VERIFIES_PER_HOUR: usize = 30;
+    pub const WINDOW_SECONDS: i64 = 3600;
+
+    pub fn global() -> &'static EmailAuthLimiter {
+        static LIMITER: std::sync::OnceLock<EmailAuthLimiter> = std::sync::OnceLock::new();
+        LIMITER.get_or_init(|| EmailAuthLimiter {
+            request: SlidingWindowLimiter::new(Self::REQUESTS_PER_HOUR, Self::WINDOW_SECONDS),
+            verify: SlidingWindowLimiter::new(Self::VERIFIES_PER_HOUR, Self::WINDOW_SECONDS),
+        })
+    }
+
+    pub fn sweep(&self, now_unix: i64) {
+        self.request.sweep(now_unix);
+        self.verify.sweep(now_unix);
+    }
+}
+
+/// Client IP for rate limiting: Fly's proxy-set `Fly-Client-IP`, falling
+/// back to the socket peer address, then a shared "unknown" bucket.
+pub fn client_ip(headers: &axum::http::HeaderMap, peer: Option<std::net::SocketAddr>) -> String {
+    headers
+        .get("fly-client-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| peer.map(|addr| addr.ip().to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// How often the auth maintenance loop prunes dead rows and limiter keys.
+pub const AUTH_MAINTENANCE_INTERVAL_SECS: u64 = 600;
+
+/// Periodically delete expired device tokens, challenges, email codes,
+/// revoked/expired sessions and old usage-batch ids, and evict empty
+/// rate-limiter entries, so auth state does not grow without bound.
+pub fn spawn_auth_maintenance_loop(state: AppState) {
+    tokio::spawn(async move {
+        let period = std::time::Duration::from_secs(AUTH_MAINTENANCE_INTERVAL_SECS);
+        let mut tick = tokio::time::interval(period);
+        loop {
+            tick.tick().await;
+            let now = crate::db::unix_now();
+            state.pin_join_limiter.sweep(now);
+            state.challenge_limiter.sweep(now);
+            EmailAuthLimiter::global().sweep(now);
+            let Some(pool) = state.db.clone() else {
+                continue;
+            };
+            let prune = move || crate::ledger::prune_expired_auth_rows(&pool, now);
+            match tokio::task::spawn_blocking(prune).await {
+                Ok(Ok(report)) if report.total() > 0 => {
+                    tracing::info!(?report, "pruned expired auth rows");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => tracing::warn!("auth row pruning failed: {err}"),
+                Err(err) => tracing::warn!("auth row pruning task failed: {err}"),
+            }
+        }
+    });
 }
 
 /// Per-client-IP sliding-window rate limiter for /v1/auth/device/challenge.
@@ -84,6 +211,14 @@ impl ChallengeLimiter {
         }
         devices.insert(device_id.to_string(), now_unix);
         ChallengeLimitDecision::NewDevice
+    }
+
+    /// Drop client IPs with no device left in the window.
+    pub fn sweep(&self, now_unix: i64) {
+        self.inner.lock().retain(|_, devices| {
+            devices.retain(|_, first_seen| now_unix - *first_seen < Self::WINDOW_SECONDS);
+            !devices.is_empty()
+        });
     }
 }
 
@@ -176,6 +311,38 @@ mod tests {
             ChallengeLimitDecision::NewDevice,
             "window slides after an hour"
         );
+    }
+
+    #[test]
+    fn sliding_window_limiter_limits_and_evicts() {
+        let l = SlidingWindowLimiter::new(2, 60);
+        assert!(l.allow("1.2.3.4", 0));
+        assert!(l.allow("1.2.3.4", 1));
+        assert!(!l.allow("1.2.3.4", 2), "third attempt in window is refused");
+        assert!(l.allow("5.6.7.8", 2), "limit is per key");
+        assert!(l.allow("1.2.3.4", 61), "window slides");
+        l.sweep(1_000);
+        assert_eq!(l.tracked_keys(), 0, "idle keys are evicted");
+
+        let pins = PinJoinLimiter::default();
+        assert!(pins.allow("dev", 0));
+        pins.sweep(PinJoinLimiter::WINDOW_SECONDS);
+        assert!(pins.inner.lock().is_empty());
+
+        let challenges = ChallengeLimiter::default();
+        challenges.allow("ip", "dev", 0);
+        challenges.sweep(ChallengeLimiter::WINDOW_SECONDS);
+        assert!(challenges.inner.lock().is_empty());
+    }
+
+    #[test]
+    fn client_ip_prefers_fly_header_then_peer() {
+        let mut headers = axum::http::HeaderMap::new();
+        let peer: std::net::SocketAddr = "10.0.0.1:443".parse().unwrap();
+        assert_eq!(client_ip(&headers, Some(peer)), "10.0.0.1");
+        assert_eq!(client_ip(&headers, None), "unknown");
+        headers.insert("fly-client-ip", "203.0.113.9".parse().unwrap());
+        assert_eq!(client_ip(&headers, Some(peer)), "203.0.113.9");
     }
 
     #[test]

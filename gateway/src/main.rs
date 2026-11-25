@@ -74,19 +74,9 @@ async fn main() -> anyhow::Result<()> {
     );
     let catalog_models = Arc::new(catalog_models);
 
-    // Open ledger DB. If the path is unwritable, fall back to a tempfile so
-    // we still boot (Fly machines without an attached volume).
-    let pool = match db::open(&db_path) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            tracing::warn!(
-                "could not open ledger DB at {} ({}); falling back to in-memory",
-                db_path,
-                e
-            );
-            db::open_in_memory().ok()
-        }
-    };
+    // Open ledger DB. Startup fails if it cannot be opened, unless
+    // TEALE_ALLOW_IN_MEMORY_DB=1 explicitly opts into a throwaway ledger.
+    let pool = Some(db::open_or_fail(&db_path)?);
 
     // Note: pre-refactor share keys (funded=0) keep their legacy semantics
     // (settle_request falls back to debiting the issuer's wallet) until an
@@ -104,14 +94,11 @@ async fn main() -> anyhow::Result<()> {
 
     let (group_tx, _group_rx) = broadcast::channel(256);
 
-    // Centralized 3rd-party provider marketplace. We need a DbPool to load
-    // the registry; if the ledger DB couldn't open at all we fall back to a
-    // bootstrap pool (the same in-memory fallback the ledger uses) so the
-    // gateway still boots and can serve fleet-only traffic.
+    // Centralized 3rd-party provider marketplace, loaded from the ledger DB
+    // (no separate in-memory fallback: see db::open_or_fail).
     let providers_pool = pool
         .clone()
-        .or_else(|| db::open_in_memory().ok())
-        .expect("provider registry needs at least an in-memory DB");
+        .ok_or_else(|| anyhow::anyhow!("provider registry needs the ledger DB"))?;
     let provider_registry = ProviderRegistry::load(providers_pool)
         .map_err(|e| anyhow::anyhow!("load provider registry: {}", e))?;
     let providers_handle = ProvidersHandle::new(provider_registry);
@@ -194,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    teale_gateway::state::spawn_auth_maintenance_loop(state.clone());
     teale_gateway::probe::spawn_synthetic_probe_loop(state.clone());
     teale_gateway::benchmark::spawn_probation_benchmark_loop(state.clone());
 
@@ -446,7 +434,10 @@ async fn main() -> anyhow::Result<()> {
             "/v1/auth/email/verify",
             post(handlers::account_auth::verify),
         )
-        .route("/v1/auth/link/:token", get(handlers::account_auth::link))
+        .route(
+            "/v1/auth/link/:token",
+            get(handlers::account_auth::link_page).post(handlers::account_auth::link_consume),
+        )
         .route(
             "/v1/auth/keys/share/preview/:token",
             get(handlers::share_keys::preview),
@@ -471,7 +462,7 @@ async fn main() -> anyhow::Result<()> {
                     Level::INFO,
                     "http",
                     method = %req.method(),
-                    uri = %req.uri(),
+                    uri = %auth::redacted_request_target(req.uri()),
                 )
             }),
         );
@@ -499,7 +490,10 @@ async fn main() -> anyhow::Result<()> {
     socket.listen(1024)?;
     let listener = tokio::net::TcpListener::from_std(socket.into())?;
     info!("listening on {}", config.bind);
-    axum::serve(listener, app.into_make_service())
+    // ConnectInfo gives the email auth rate limiter a socket-address fallback
+    // when Fly-Client-IP is absent.
+    let make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    axum::serve(listener, make_service)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     info!("in-flight requests drained; exiting");

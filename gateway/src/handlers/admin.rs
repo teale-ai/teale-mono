@@ -1,13 +1,14 @@
 //! Admin-only endpoints.
 //!
-//! Operator endpoints for credit top-ups and share-key maintenance. Gated by a **static** bearer (from
-//! `GATEWAY_TOKENS` env). Device and share-key bearers are rejected so
-//! user-scoped tokens can never mint.
+//! Operator endpoints for credit top-ups and share-key maintenance. Gated by
+//! a **static** bearer (from `GATEWAY_TOKENS` env) whose scope is `admin` or
+//! `internal`. Device, share-key, session and partner-scoped (e.g.
+//! `openrouter`) bearers are rejected so they can never mint.
 
 use axum::{extract::State, Extension, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{AuthPrincipal, PrincipalKind};
+use crate::auth::{self, AuthPrincipal};
 use crate::db::DbPool;
 use crate::error::GatewayError;
 use crate::ledger;
@@ -15,11 +16,36 @@ use crate::solana;
 use crate::state::AppState;
 
 fn require_static(principal: &AuthPrincipal) -> Result<(), GatewayError> {
-    match &principal.kind {
-        PrincipalKind::Static { .. } => Ok(()),
-        _ => Err(GatewayError::Forbidden(
-            "admin endpoints require a static bearer".into(),
-        )),
+    auth::require_admin_scope(principal)
+}
+
+/// Env var that must be `1` for `/v1/admin/reset-genesis` to run at all.
+pub const RESET_GENESIS_ENV: &str = "TEALE_ALLOW_RESET_GENESIS";
+/// Exact confirmation value required in the reset-genesis request body.
+pub const RESET_GENESIS_CONFIRM: &str = "reset-genesis";
+
+#[derive(Debug, Deserialize)]
+pub struct ResetGenesisReq {
+    #[serde(default)]
+    pub confirm: String,
+}
+
+/// Reset-genesis wipes every wallet and ledger row, so it needs both an
+/// operator opt-in on the machine and an explicit confirmation in the body.
+fn check_reset_genesis_guard(
+    allow_env: Option<&str>,
+    body: Option<&ResetGenesisReq>,
+) -> Result<(), GatewayError> {
+    if allow_env.map(str::trim) != Some("1") {
+        return Err(GatewayError::Forbidden(format!(
+            "reset-genesis is disabled; set {RESET_GENESIS_ENV}=1 on the gateway to enable it"
+        )));
+    }
+    match body {
+        Some(req) if req.confirm == RESET_GENESIS_CONFIRM => Ok(()),
+        _ => Err(GatewayError::BadRequest(format!(
+            "body must be {{\"confirm\":\"{RESET_GENESIS_CONFIRM}\"}}"
+        ))),
     }
 }
 
@@ -222,12 +248,17 @@ pub async fn refund_expired_share_keys(
 }
 
 /// POST /v1/admin/reset-genesis — clear wallet, auth, referral, and on-chain
-/// accounting state so the network starts from a clean slate.
+/// accounting state so the network starts from a clean slate. Requires an
+/// admin-scoped static bearer, `TEALE_ALLOW_RESET_GENESIS=1` and the body
+/// `{"confirm":"reset-genesis"}`.
 pub async fn reset_genesis(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    body: Option<Json<ResetGenesisReq>>,
 ) -> Result<Json<ledger::GenesisResetReport>, GatewayError> {
     require_static(&principal)?;
+    let allow_env = std::env::var(RESET_GENESIS_ENV).ok();
+    check_reset_genesis_guard(allow_env.as_deref(), body.as_ref().map(|b| &b.0))?;
     let pool = require_pool(&state)?;
     let report = ledger::reset_genesis(pool)
         .map_err(|e| GatewayError::Other(anyhow::anyhow!("reset-genesis: {}", e)))?;
@@ -246,7 +277,7 @@ mod tests {
     use axum::Extension;
     use tokio::sync::broadcast;
 
-    use crate::auth::TokenTable;
+    use crate::auth::{PrincipalKind, TokenTable};
     use crate::config::Config;
     use crate::db::open_in_memory;
     use crate::ledger;
@@ -335,9 +366,69 @@ mod tests {
                     device_id: "dev".into(),
                 },
             }),
+            None,
         )
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    fn partner() -> Extension<AuthPrincipal> {
+        Extension(AuthPrincipal {
+            kind: PrincipalKind::Static {
+                scope: "openrouter".into(),
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn partner_scoped_static_tokens_cannot_call_admin_endpoints() {
+        let state = test_state();
+        let err = mint(
+            State(state.clone()),
+            partner(),
+            Json(MintReq {
+                device_id: "dev".into(),
+                amount: 1,
+                note: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+        let confirm = Json(ResetGenesisReq {
+            confirm: RESET_GENESIS_CONFIRM.into(),
+        });
+        let err = reset_genesis(State(state), partner(), Some(confirm))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::Forbidden(_)));
+    }
+
+    #[test]
+    fn reset_genesis_needs_env_opt_in_and_confirmation() {
+        let confirmed = ResetGenesisReq {
+            confirm: RESET_GENESIS_CONFIRM.into(),
+        };
+        let wrong = ResetGenesisReq {
+            confirm: "yes".into(),
+        };
+        assert!(matches!(
+            check_reset_genesis_guard(None, Some(&confirmed)),
+            Err(GatewayError::Forbidden(_))
+        ));
+        assert!(matches!(
+            check_reset_genesis_guard(Some("0"), Some(&confirmed)),
+            Err(GatewayError::Forbidden(_))
+        ));
+        assert!(matches!(
+            check_reset_genesis_guard(Some("1"), None),
+            Err(GatewayError::BadRequest(_))
+        ));
+        assert!(matches!(
+            check_reset_genesis_guard(Some("1"), Some(&wrong)),
+            Err(GatewayError::BadRequest(_))
+        ));
+        assert!(check_reset_genesis_guard(Some("1"), Some(&confirmed)).is_ok());
     }
 }

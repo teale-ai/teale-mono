@@ -9,7 +9,7 @@ gateway. Email magic links / one-time codes, no passwords, tokens hashed at
 rest, real sessions, email delivery via Resend. The gateway is already the
 source of truth for accounts, wallets, credits, and API keys; Supabase Auth is
 the one remaining external identity dependency, and its email delivery is the
-reason `account_email_codes` exists at all (see migration 017).
+reason `account_email_codes` exists at all (see migration user_version 17).
 
 ## What exists today
 
@@ -51,11 +51,42 @@ not the id format. Only net-new emails mint an `email:{address}` account.
 - Explicit revocation (`revoked_at`) for logout.
 - Sessions are a **fifth principal kind** in the bearer middleware:
   `PrincipalKind::AccountSession { account_user_id, session_id }`.
-- Sessions authorize **account management only**: account summary, API-key
-  management, devices, wallet ops. They cannot spend on inference — the
-  completions/messages paths keep requiring device tokens or API keys, and the
-  settle switch rejects `AccountSession` with 403. Inference spend stays with
-  API keys, which is the posture we want anyway.
+- Sessions authorize **account management only**. What a session bearer can
+  call today: `GET /v1/account/summary`, `POST /v1/account/send`, API-key
+  management (`/v1/keys*`), `POST /v1/account/sweep` and
+  `POST /v1/account/devices/remove` for devices linked to the session's
+  account, and `POST/GET /v1/pins` (create a network owned by the account /
+  list the account's networks). Device linking (`/v1/account/link`) and the
+  on-chain wallet endpoints (`/v1/account/wallet/*`) stay device-bound; a
+  session is presented to link as an ownership proof (see "Linking devices"
+  below). Sessions cannot spend on inference — the completions/messages paths
+  keep requiring device tokens or API keys, and the settle switch rejects
+  `AccountSession` with 403.
+- `last_seen_at` is written at most once a minute per session (and on sliding
+  renewal); database errors while resolving a session return 500, not 401.
+
+### Linking devices (ownership proof)
+
+`POST /v1/account/link` is called with the device bearer. Clients that hold a
+session add `X-Teale-Account-Session: tsess_…`:
+
+- With the header, the session's account must equal the (normalized)
+  `accountUserID`; the device is linked, including re-pointing a device that
+  was linked to another account.
+- Without the header, the link is allowed only when the account does not
+  exist yet, the device is not linked to a different account, and the id is
+  not an `email:` id. It creates an empty account (no bonus). Re-linking a
+  device to the account it is already on (a metadata refresh) is allowed.
+- Anything else is `403` with error code `account_session_required`.
+- `account_wallets.email` is never written from link metadata; only verified
+  email flows bind it. Login fails closed (409) if more than one wallet
+  carries the address.
+- The welcome bonus is granted once, when a verified-email first login creates
+  the account, at most once per verified address
+  (`account_email_bonuses`). Links never mint it. A referral code on link is
+  honoured only for a session-backed link of the account's first device.
+- Legacy lowercase-UUID accounts are renamed (never merged) to the canonical
+  uppercase id when a link names the uppercase form.
 
 ### Endpoints
 
@@ -68,11 +99,21 @@ Public (no bearer — these are how you get one):
   consumes the code (existing attempt limits apply), resolves or creates the
   account, mints a session, returns
   `{sessionToken, expiresAt, accountUserID, email}`.
-- `GET /v1/auth/link/:token` — magic-link path. Verifies the link token
-  (single-use, same row/TTL as the code), mints a session, and 302-redirects
-  to the app deep link `teale://auth/session?token=...`. If the request looks
-  like a browser with no app to catch the scheme, an HTML fallback page shows
-  the token for copy/paste.
+- `GET /v1/auth/link/:token` — magic-link landing page. Side-effect free (mail
+  scanners and prefetchers issue GETs): it neither consumes the token nor
+  mints a session, it renders a button that POSTs back to the same URL.
+- `POST /v1/auth/link/:token` — consumes the link token (single-use, same
+  row/TTL as the code) and mints a session. Browser form posts
+  (`Accept: text/html`) get a 303 to the app deep link
+  `teale://auth/session?token=...`; other clients get the same JSON as
+  `/v1/auth/email/verify`. The session token is never rendered into HTML, and
+  the HTTP trace span logs token-bearing paths redacted.
+- Rate limits: per client IP (`Fly-Client-IP`, else the socket address),
+  10 email requests and 30 verify/link attempts per hour; per address, a 60 s
+  resend window and at most 10 emails per rolling 24 h (429).
+- The device-bound `POST /v1/account/email-code/verify` is a verified flow
+  too: it resolves the same account and also returns `sessionToken` /
+  `expiresAt`.
 
 Session-authenticated:
 
@@ -81,7 +122,7 @@ Session-authenticated:
   happens here as a side effect of resolution.
 - `POST /v1/auth/logout` — revokes the session.
 
-### Storage (migration 018)
+### Storage (user_version 19, historically labelled "018_account_sessions")
 
 ```sql
 CREATE TABLE IF NOT EXISTS account_sessions (
@@ -115,7 +156,7 @@ link base URL comes from `GATEWAY_PUBLIC_BASE_URL` (default
 
 ## Phases
 
-1. **Gateway (this PR).** Migration 018, session ledger functions, the five
+1. **Gateway (this PR).** Migration user_version 19, session ledger functions, the five
    endpoints, the fifth middleware principal kind, account/API-key handler
    arms for sessions, tests. Purely additive: Supabase clients keep working;
    nothing user-facing changes until an app opts in.
@@ -136,8 +177,13 @@ link base URL comes from `GATEWAY_PUBLIC_BASE_URL` (default
   DB read leak does not yield usable credentials.
 - Session tokens are 128-bit random, hashed at rest, and bearer-only in
   transit (HTTPS).
-- Magic links redirect to an app-scheme URL, never to a page that would log
-  the token in access logs beyond the single click.
+- Magic links are consumed only by an explicit POST from the landing page;
+  the resulting session goes to an app-scheme redirect (or JSON), never into
+  HTML. Token-bearing request paths are redacted in the HTTP trace span.
+- Device tokens and share-key tokens are stored as SHA-256 digests too
+  (user_version 24 migrated existing rows one-way).
+- Expired tokens/challenges, old email codes and revoked/expired sessions are
+  pruned every 10 minutes.
 - Email enumeration: `/v1/auth/email/request` returns the same shape for
   known and unknown addresses (it always sends mail; account creation happens
   at verify time, not request time).
