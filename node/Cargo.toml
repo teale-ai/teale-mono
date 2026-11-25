@@ -31,7 +31,7 @@ clap = { workspace = true }
 thiserror = { workspace = true }
 
 toml = "0.8"
-sysinfo = "0.32"
+sysinfo = "0.40"
 url = "2"
 which = "7"
 parking_lot = { workspace = true }
